@@ -14,7 +14,7 @@ export async function collectCodexUsage(
 ): Promise<UsageSnapshot[]> {
   const runner = options.runner ?? runJsonCommand
   const packageRunner = resolvePackageRunner()
-  const sinceArgs = process.env.TOKENBOARD_SINCE ? ['--since', process.env.TOKENBOARD_SINCE] : []
+  const sinceArgs = buildSinceArgs()
   const json = await runner(
     packageRunner.command,
     packageRunner.runPackageArgs('@ccusage/codex@latest', 'ccusage-codex', ['daily', '--json', ...sinceArgs])
@@ -30,4 +30,13 @@ export async function collectCodexUsage(
     collectedAt: options.collectedAt,
     sessions
   })
+}
+
+function buildSinceArgs() {
+  const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
+  if (!since || since === 'all') {
+    return []
+  }
+
+  return ['--since', since]
 }

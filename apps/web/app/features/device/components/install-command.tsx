@@ -90,6 +90,8 @@ export function createInstallPrompt(input: {
     '- 不要使用浏览器、Playwright、网页抓取、fetch 或 curl 去访问 GitHub 页面。',
     '- 不要打印 upload token、配对响应、配置文件内容或任何本地隐私数据。',
     '- 如果已经安装了 TokenBoard skill，可以直接运行其中的 setup 脚本；否则用 git clone/update 仓库后运行脚本。',
+    '- 执行 setup 前必须先向用户确认每日任务触发时间：默认是 09:00,12:00,18:00,23:00；如果用户要自定义，只接受 24 小时制 HH:MM 逗号分隔列表。',
+    '- 根据用户确认的时间把 setup 命令中的 --schedule-times 参数替换为实际值，不要让用户手工创建定时任务。',
     '',
     'macOS / Linux / Git Bash：',
     '```bash',
@@ -100,7 +102,7 @@ export function createInstallPrompt(input: {
     '  mkdir -p "$HOME/.tokenboard"',
     `  git clone ${collectorRepoUrl} "$repo"`,
     'fi',
-    `node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${input.pairingCode} --base-url ${input.baseUrl} --timezone ${input.timezone}`,
+    `node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${input.pairingCode} --base-url ${input.baseUrl} --timezone ${input.timezone} --schedule-times "09:00,12:00,18:00,23:00"`,
     '```',
     '',
     'Windows PowerShell：',
@@ -112,9 +114,9 @@ export function createInstallPrompt(input: {
     '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
     `  git clone ${collectorRepoUrl} $repo`,
     '}',
-    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${input.pairingCode} --base-url ${input.baseUrl} --timezone ${input.timezone}`,
+    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${input.pairingCode} --base-url ${input.baseUrl} --timezone ${input.timezone} --schedule-times "09:00,12:00,18:00,23:00"`,
     '```',
     '',
-    '完成后只汇报：config 是否写入、每日计划是否安装、首次同步是否成功。'
+    '完成后只汇报：config 是否写入、每日计划是否安装、已安装的触发时间、首次同步是否成功。'
   ].join('\n')
 }

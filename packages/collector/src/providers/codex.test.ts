@@ -67,6 +67,56 @@ describe('collectCodexUsage', () => {
     })
   })
 
+  test('uses configured default since window when env is unset', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+    vi.stubEnv('TOKENBOARD_SINCE', '')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '20260501')
+
+    await collectCodexUsage({
+      async runner(command, args) {
+        calls.push({ command, args })
+        return { data: [] }
+      }
+    })
+
+    expect(calls).toEqual([
+      {
+        command: 'npx',
+        args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260501']
+      },
+      {
+        command: 'npx',
+        args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260501']
+      }
+    ])
+  })
+
+  test('allows explicit full codex scan', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+    vi.stubEnv('TOKENBOARD_SINCE', 'all')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '20260501')
+
+    await collectCodexUsage({
+      async runner(command, args) {
+        calls.push({ command, args })
+        return { data: [] }
+      }
+    })
+
+    expect(calls).toEqual([
+      {
+        command: 'npx',
+        args: ['@ccusage/codex@latest', 'daily', '--json']
+      },
+      {
+        command: 'npx',
+        args: ['@ccusage/codex@latest', 'session', '--json']
+      }
+    ])
+  })
+
   test('uses since and selected package manager when configured', async () => {
     const calls: Array<{ command: string; args: string[] }> = []
     vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', 'bun')
