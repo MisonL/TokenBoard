@@ -19,14 +19,14 @@ describe('InstallCommand', () => {
   })
 
   test('generates a direct shell-oriented prompt that discourages browser detours', () => {
-    const prompt = createInstallPrompt(
-      'https://tokenboard.example',
-      'Asia/Shanghai',
-      'pair_123'
-    )
+    const prompt = createInstallPrompt({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai',
+      pairingCode: 'pair_123'
+    })
 
     expect(prompt).toContain('不要使用浏览器、Playwright、网页抓取、fetch 或 curl')
-    expect(prompt).toContain('git clone https://github.com/MisonL/TokenBoard.git')
+    expect(prompt).toContain('git clone https://github.com/evepupil/TokenBoard.git')
     expect(prompt).toContain('git -C "$repo" pull --ff-only')
     expect(prompt).toContain('skills/tokenboard/scripts/setup.mjs')
     expect(prompt).toContain('--pairing-code pair_123')
@@ -34,5 +34,17 @@ describe('InstallCommand', () => {
     expect(prompt).toContain('--timezone Asia/Shanghai')
     expect(prompt).not.toContain('从这个 GitHub repo 路径安装')
     expect(prompt).not.toContain('node scripts/setup.mjs')
+  })
+
+  test('allows deployments to override the collector repo url', () => {
+    const prompt = createInstallPrompt({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai',
+      pairingCode: 'pair_123',
+      collectorRepoUrl: 'https://github.com/example/TokenBoard.git'
+    })
+
+    expect(prompt).toContain('git clone https://github.com/example/TokenBoard.git')
+    expect(prompt).not.toContain('git clone https://github.com/evepupil/TokenBoard.git')
   })
 })

@@ -1,18 +1,24 @@
 import { Copy } from 'lucide'
 import { LucideIcon } from '../../../components/ui/icon'
 
-const collectorRepoUrl = 'https://github.com/MisonL/TokenBoard.git'
+export const defaultCollectorRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
 
 export type InstallCommandProps = {
   baseUrl: string
   timezone: string
+  collectorRepoUrl?: string
   pairingCode?: string
   expiresAt?: string
 }
 
 export function InstallCommand(props: InstallCommandProps) {
   const prompt = props.pairingCode
-    ? createInstallPrompt(props.baseUrl, props.timezone, props.pairingCode)
+    ? createInstallPrompt({
+        baseUrl: props.baseUrl,
+        timezone: props.timezone,
+        pairingCode: props.pairingCode,
+        collectorRepoUrl: props.collectorRepoUrl
+      })
     : ''
 
   return (
@@ -69,7 +75,13 @@ export function InstallCommand(props: InstallCommandProps) {
   )
 }
 
-export function createInstallPrompt(baseUrl: string, timezone: string, pairingCode: string) {
+export function createInstallPrompt(input: {
+  baseUrl: string
+  timezone: string
+  pairingCode: string
+  collectorRepoUrl?: string
+}) {
+  const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
   return [
     '请在这台机器上安装并运行 TokenBoard collector。',
     '',
@@ -88,7 +100,7 @@ export function createInstallPrompt(baseUrl: string, timezone: string, pairingCo
     '  mkdir -p "$HOME/.tokenboard"',
     `  git clone ${collectorRepoUrl} "$repo"`,
     'fi',
-    `node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${pairingCode} --base-url ${baseUrl} --timezone ${timezone}`,
+    `node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${input.pairingCode} --base-url ${input.baseUrl} --timezone ${input.timezone}`,
     '```',
     '',
     'Windows PowerShell：',
@@ -100,7 +112,7 @@ export function createInstallPrompt(baseUrl: string, timezone: string, pairingCo
     '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
     `  git clone ${collectorRepoUrl} $repo`,
     '}',
-    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${pairingCode} --base-url ${baseUrl} --timezone ${timezone}`,
+    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${input.pairingCode} --base-url ${input.baseUrl} --timezone ${input.timezone}`,
     '```',
     '',
     '完成后只汇报：config 是否写入、每日计划是否安装、首次同步是否成功。'
