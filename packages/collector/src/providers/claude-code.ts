@@ -12,9 +12,11 @@ export async function collectClaudeCodeUsage(
   options: CollectUsageOptions = {}
 ): Promise<UsageSnapshot[]> {
   const runner = options.runner ?? runJsonCommand
+  const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
+  const sinceArgs = since && since !== 'all' ? ['--since', since] : []
   const [json, sessions] = await Promise.all([
-    runner('npx', ['ccusage@latest', 'daily', '--json', '--breakdown']),
-    runner('npx', ['ccusage@latest', 'session', '--json'])
+    runner('npx', ['ccusage@latest', 'daily', '--json', '--breakdown', ...sinceArgs]),
+    runner('npx', ['ccusage@latest', 'session', '--json', ...sinceArgs])
   ])
 
   return normalizeCcusageDailyJson(json, {

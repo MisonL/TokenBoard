@@ -12,7 +12,7 @@ Use the bundled scripts to install TokenBoard collection on the user's machine. 
 When the user provides a pairing code, run:
 
 ```bash
-node scripts/setup.mjs --pairing-code <pairing-code>
+TOKENBOARD_CODEX_BATCH_SIZE=200 node scripts/setup.mjs --pairing-code <pairing-code>
 ```
 
 Optional flags:
@@ -24,11 +24,12 @@ Optional flags:
 --skip-collector
 --skip-schedule
 --skip-initial-sync
+--repo-url https://github.com/evepupil/TokenBoard.git
 ```
 
 After setup, report whether config was written, schedule was installed, and initial sync succeeded. Do not show `uploadToken`.
 
-The setup script clones or updates `https://github.com/evepupil/TokenBoard.git` into `~/.tokenboard/TokenBoard`, runs `pnpm install`, writes local config, installs the daily schedule unless skipped, and runs an initial sync unless skipped.
+The setup script clones or updates `https://github.com/evepupil/TokenBoard.git` into `~/.tokenboard/TokenBoard`, runs `pnpm install`, writes local config, installs the daily schedule unless skipped, and runs a full-history initial sync unless skipped. Do not change the initial sync to a 7-day window unless the user explicitly asks. Codex history is processed in batches during full scans; use `TOKENBOARD_CODEX_BATCH_SIZE=200` by default, lower it only when the user needs lower peak resource usage. Use `--repo-url` or `TOKENBOARD_REPO_URL` only when the local environment requires a non-default collector source.
 
 If the user pasted a TokenBoard install prompt from the website, follow the prompt and run the included setup command. Treat pairing codes as short-lived secrets and do not repeat them unless needed to execute setup.
 

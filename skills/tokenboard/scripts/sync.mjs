@@ -3,12 +3,14 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { readConfig, parseArgs, collectorDir } from './config.mjs'
+import { readSince } from './sync-options.mjs'
 
 const flags = parseArgs(process.argv.slice(2))
 const config = readConfig()
 const mode = flags.mode || 'sync'
 const source = flags.source || config.source || 'all'
 const repoDir = config.collectorDir || collectorDir()
+const since = readSince({ flags, config })
 
 if (!existsSync(repoDir)) {
   console.error(`TokenBoard collector is not installed: ${repoDir}`)
@@ -21,7 +23,9 @@ const env = {
   TOKENBOARD_ENDPOINT: config.endpoint,
   TOKENBOARD_UPLOAD_TOKEN: config.uploadToken,
   TOKENBOARD_TIMEZONE: config.timezone,
-  TOKENBOARD_SOURCE: source
+  TOKENBOARD_SOURCE: source,
+  TOKENBOARD_SINCE: since,
+  TOKENBOARD_DEFAULT_SINCE: since
 }
 
 const result = spawnSync(

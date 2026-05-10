@@ -69,44 +69,171 @@ describe('collectCodexUsage', () => {
     })
   })
 
-  test('scopes since scans by active Codex session files instead of session directory dates', async () => {
-    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))
-    const activeOldSession = join(
-      codexHome,
-      'sessions',
-      '2026',
-      '03',
-      '25',
-      'active-old-session.jsonl'
-    )
-    const inactiveOldSession = join(
-      codexHome,
-      'sessions',
-      '2026',
-      '03',
-      '20',
-      'inactive-old-session.jsonl'
-    )
-    const activeCurrentSession = join(
-      codexHome,
-      'sessions',
-      '2026',
-      '05',
-      '09',
-      'active-current-session.jsonl'
-    )
+  test('uses configured default since window when env is unset', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const codexHome = await createEmptyCodexHome()
+    vi.stubEnv('TOKENBOARD_SINCE', '')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '20260501')
 
     try {
-      await writeJsonl(activeOldSession, [
-        tokenCountEvent('2026-05-09T04:24:07.234Z', 10)
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', '01', 'active.jsonl'), [
+        tokenCountEvent('2026-05-01T04:24:07.234Z', 10)
       ])
-      await writeJsonl(inactiveOldSession, [
+      await collectCodexUsage({
+        codexHome,
+        async runner(command, args) {
+          calls.push({ command, args })
+          return { data: [] }
+        }
+      })
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+
+    expect(calls).toEqual([
+      {
+        command: 'npx',
+        args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260501']
+      },
+      {
+        command: 'npx',
+        args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260501']
+      }
+    ])
+  })
+
+  test('allows explicit full codex scan in batches', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))
+    vi.stubEnv('TOKENBOARD_SINCE', 'all')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '20260501')
+    vi.stubEnv('TOKENBOARD_CODEX_BATCH_SIZE', '2')
+
+    try {
+      await writeJsonl(join(codexHome, 'sessions', '2026', '03', '20', 'first.jsonl'), [
         tokenCountEvent('2026-03-20T04:24:07.234Z', 10)
       ])
-      await utimes(inactiveOldSession, new Date('2026-03-20T04:24:07.234Z'), new Date('2026-03-20T04:24:07.234Z'))
-      await writeJsonl(activeCurrentSession, [
-        tokenCountEvent('2026-05-09T04:25:07.234Z', 10)
+      await writeJsonl(join(codexHome, 'sessions', '2026', '04', '20', 'second.jsonl'), [
+        tokenCountEvent('2026-04-20T04:24:07.234Z', 10)
       ])
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', '09', 'third.jsonl'), [
+        tokenCountEvent('2026-05-09T04:24:07.234Z', 10)
+      ])
+
+      const scopedHomes = new Set<string>()
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-09T10:00:00.000Z',
+        async runner(command, args, options) {
+          calls.push({ command, args })
+          scopedHomes.add(String(options?.env?.CODEX_HOME))
+          if (args[1] === 'session') {
+            return {
+              data: [
+                {
+                  sessionId: `session-${scopedHomes.size}`,
+                  lastActivity: 'May 9, 2026',
+                  models: {
+                    'gpt-5': {
+                      inputTokens: 1,
+                      outputTokens: 2
+                    }
+                  }
+                }
+              ]
+            }
+          }
+          return {
+            data: [
+              {
+                date: '2026-05-09',
+                model: 'gpt-5',
+                inputTokens: 1,
+                outputTokens: 2,
+                costUSD: 0.01
+              }
+            ]
+          }
+        }
+      })
+
+      expect(calls).toEqual([
+        {
+          command: 'npx',
+          args: ['@ccusage/codex@latest', 'daily', '--json']
+        },
+        {
+          command: 'npx',
+          args: ['@ccusage/codex@latest', 'session', '--json']
+        },
+        {
+          command: 'npx',
+          args: ['@ccusage/codex@latest', 'daily', '--json']
+        },
+        {
+          command: 'npx',
+          args: ['@ccusage/codex@latest', 'session', '--json']
+        }
+      ])
+      expect(scopedHomes.size).toBe(2)
+      expect(snapshots).toEqual([
+        expect.objectContaining({
+          usageDate: '2026-05-09',
+          model: 'gpt-5',
+          inputTokens: 2,
+          outputTokens: 4,
+          totalTokens: 6,
+          costUsd: 0.02,
+          sessionCount: 2
+        })
+      ])
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('caps the configured Codex batch size', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))
+    const calls: Array<{ command: string; args: string[] }> = []
+    const scopedHomes = new Set<string>()
+    vi.stubEnv('TOKENBOARD_SINCE', 'all')
+    vi.stubEnv('TOKENBOARD_CODEX_BATCH_SIZE', '1000000')
+
+    try {
+      for (let index = 0; index < 1001; index += 1) {
+        await writeJsonl(join(codexHome, 'sessions', '2026', '05', '09', `session-${index}.jsonl`), [
+          tokenCountEvent('2026-05-09T04:24:07.234Z', 1)
+        ])
+      }
+
+      await collectCodexUsage({
+        codexHome,
+        async runner(command, args, options) {
+          calls.push({ command, args })
+          scopedHomes.add(String(options?.env?.CODEX_HOME))
+          return { data: [] }
+        }
+      })
+
+      expect(scopedHomes.size).toBe(2)
+      expect(calls).toHaveLength(4)
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('scopes since scans by active Codex session files instead of session directory dates', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))
+    const activeOldSession = join(codexHome, 'sessions', '2026', '03', '25', 'active-old-session.jsonl')
+    const inactiveOldSession = join(codexHome, 'sessions', '2026', '03', '20', 'inactive-old-session.jsonl')
+    const activeCurrentSession = join(codexHome, 'sessions', '2026', '05', '09', 'active-current-session.jsonl')
+
+    try {
+      await writeJsonl(activeOldSession, [tokenCountEvent('2026-05-09T04:24:07.234Z', 10)])
+      await writeJsonl(inactiveOldSession, [tokenCountEvent('2026-03-20T04:24:07.234Z', 10)])
+      await utimes(inactiveOldSession, new Date('2026-03-20T04:24:07.234Z'), new Date('2026-03-20T04:24:07.234Z'))
+      await writeJsonl(activeCurrentSession, [tokenCountEvent('2026-05-09T04:25:07.234Z', 10)])
 
       const scopedHomes: string[] = []
       const scopedFiles = {
@@ -154,6 +281,12 @@ async function writeJsonl(file: string, rows: unknown[]) {
   await writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, {
     flag: 'w'
   })
+}
+
+async function createEmptyCodexHome() {
+  const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))
+  await mkdir(join(codexHome, 'sessions'), { recursive: true })
+  return codexHome
 }
 
 async function fileContainsTokenCount(file: string) {

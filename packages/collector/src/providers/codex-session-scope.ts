@@ -11,6 +11,7 @@ type CodexSessionScopeOptions = {
   since?: string
   until?: string
   now?: Date
+  batchSize?: number
 }
 
 export type CodexSessionScope = {
@@ -21,25 +22,65 @@ export type CodexSessionScope = {
 export async function createCodexSessionScope(
   options: CodexSessionScopeOptions = {}
 ): Promise<CodexSessionScope | null> {
+  const scopes: CodexSessionScope[] = []
+  try {
+    for await (const scope of createCodexSessionScopeBatches({
+      ...options,
+      batchSize: Number.MAX_SAFE_INTEGER
+    })) {
+      scopes.push(scope)
+    }
+    return scopes[0] ?? null
+  } catch (error) {
+    await Promise.all(scopes.map((scope) => scope.cleanup()))
+    throw error
+  }
+}
+
+export async function* createCodexSessionScopeBatches(
+  options: CodexSessionScopeOptions = {}
+): AsyncGenerator<CodexSessionScope> {
   const since = parseFilterDate(options.since, 'start')
   const until = parseFilterDate(options.until, 'end')
-  if (!since && !until) {
-    return null
+  const includeAll = options.since === 'all' && !until
+  if (!includeAll && !since && !until) {
+    return
   }
 
   const sourceCodexHome = resolve(options.codexHome || process.env.CODEX_HOME || join(process.env.HOME || '', '.codex'))
   const sourceSessionsDir = join(sourceCodexHome, CODEX_SESSIONS_DIR)
-  const activeFiles = await findActiveSessionFiles(sourceSessionsDir, {
-    since,
-    until,
-    now: options.now || new Date()
-  })
+  const directory = await stat(sourceSessionsDir).catch(() => null)
+  if (!directory?.isDirectory()) {
+    return
+  }
 
+  const batchSize = normalizeBatchSize(options.batchSize)
+  const batch: string[] = []
+  const filter = { since, until, now: options.now || new Date() }
+  const files = await glob(JSONL_GLOB, { cwd: sourceSessionsDir })
+  for await (const file of files) {
+    const absoluteFile = isAbsolute(file) ? file : join(sourceSessionsDir, file)
+    if (!includeAll && !(await isActiveSessionFile(absoluteFile, filter))) {
+      continue
+    }
+
+    batch.push(absoluteFile)
+    if (batch.length >= batchSize) {
+      yield await createScope(sourceSessionsDir, batch.splice(0, batch.length))
+    }
+  }
+
+  if (batch.length > 0) {
+    yield await createScope(sourceSessionsDir, batch)
+  }
+}
+
+async function createScope(sourceSessionsDir: string, files: string[]) {
   const scopedHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))
   const scopedSessionsDir = join(scopedHome, CODEX_SESSIONS_DIR)
   await mkdir(scopedSessionsDir, { recursive: true })
 
-  for (const file of activeFiles) {
+  for (const file of files) {
     const relativePath = relative(sourceSessionsDir, file)
     const target = join(scopedSessionsDir, relativePath)
     await mkdir(dirname(target), { recursive: true })
@@ -52,25 +93,11 @@ export async function createCodexSessionScope(
   }
 }
 
-async function findActiveSessionFiles(
-  sessionsDir: string,
-  options: { since?: Date; until?: Date; now: Date }
-) {
-  const directory = await stat(sessionsDir).catch(() => null)
-  if (!directory?.isDirectory()) {
-    return []
+function normalizeBatchSize(value: number | undefined) {
+  if (!value || !Number.isFinite(value) || value < 1) {
+    return 200
   }
-
-  const files = await glob(JSONL_GLOB, { cwd: sessionsDir })
-  const activeFiles: string[] = []
-  for await (const file of files) {
-    const absoluteFile = isAbsolute(file) ? file : join(sessionsDir, file)
-    if (await isActiveSessionFile(absoluteFile, options)) {
-      activeFiles.push(absoluteFile)
-    }
-  }
-
-  return activeFiles
+  return Math.min(Math.floor(value), 1000)
 }
 
 async function isActiveSessionFile(

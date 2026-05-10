@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { createCodexSessionScope } from './codex-session-scope'
+import { createCodexSessionScope, createCodexSessionScopeBatches } from './codex-session-scope'
 
 describe('createCodexSessionScope', () => {
   test('returns null when no date filter is configured', async () => {
@@ -102,6 +102,40 @@ describe('createCodexSessionScope', () => {
   test('rejects invalid date filters', async () => {
     await expect(createCodexSessionScope({ since: '2026/05/09' })).rejects.toThrow(/Invalid Codex usage date filter/)
   })
+
+  test('streams full scans in bounded batches', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    try {
+      await writeJsonl(join(codexHome, 'sessions', '2026', '03', '20', 'first.jsonl'), [
+        tokenCountEvent('2026-03-20T04:24:07.234Z')
+      ])
+      await writeJsonl(join(codexHome, 'sessions', '2026', '04', '20', 'second.jsonl'), [
+        tokenCountEvent('2026-04-20T04:24:07.234Z')
+      ])
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', '09', 'third.jsonl'), [
+        tokenCountEvent('2026-05-09T04:24:07.234Z')
+      ])
+
+      const batches = []
+      for await (const scope of createCodexSessionScopeBatches({ codexHome, since: 'all', batchSize: 2 })) {
+        try {
+          batches.push({
+            first: await fileExists(join(scope.codexHome, 'sessions', '2026', '03', '20', 'first.jsonl')),
+            second: await fileExists(join(scope.codexHome, 'sessions', '2026', '04', '20', 'second.jsonl')),
+            third: await fileExists(join(scope.codexHome, 'sessions', '2026', '05', '09', 'third.jsonl'))
+          })
+        } finally {
+          await scope.cleanup()
+        }
+      }
+
+      expect(batches).toHaveLength(2)
+      expect(batches.flatMap((batch) => Object.values(batch)).filter(Boolean)).toHaveLength(3)
+      expect(batches.every((batch) => Object.values(batch).filter(Boolean).length <= 2)).toBe(true)
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
 })
 
 async function writeJsonl(file: string, rows: unknown[]) {
@@ -124,4 +158,10 @@ function tokenCountEvent(timestamp: string) {
       }
     }
   }
+}
+
+async function fileExists(file: string) {
+  return stat(file)
+    .then(() => true)
+    .catch(() => false)
 }

@@ -1,7 +1,11 @@
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectClaudeCodeUsage } from './claude-code'
 
 describe('collectClaudeCodeUsage', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
   test('runs ccusage daily json with breakdown and normalizes the output', async () => {
     const calls: Array<{ command: string; args: string[] }> = []
     const snapshots = await collectClaudeCodeUsage({
@@ -60,5 +64,52 @@ describe('collectClaudeCodeUsage', () => {
       totalTokens: 10,
       sessionCount: 1
     })
+  })
+
+  test('uses configured since window', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    vi.stubEnv('TOKENBOARD_SINCE', '20260509')
+
+    await collectClaudeCodeUsage({
+      async runner(command, args) {
+        calls.push({ command, args })
+        return { data: [] }
+      }
+    })
+
+    expect(calls).toEqual([
+      {
+        command: 'npx',
+        args: ['ccusage@latest', 'daily', '--json', '--breakdown', '--since', '20260509']
+      },
+      {
+        command: 'npx',
+        args: ['ccusage@latest', 'session', '--json', '--since', '20260509']
+      }
+    ])
+  })
+
+  test('allows explicit full scan without passing all to ccusage', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    vi.stubEnv('TOKENBOARD_SINCE', 'all')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '20260509')
+
+    await collectClaudeCodeUsage({
+      async runner(command, args) {
+        calls.push({ command, args })
+        return { data: [] }
+      }
+    })
+
+    expect(calls).toEqual([
+      {
+        command: 'npx',
+        args: ['ccusage@latest', 'daily', '--json', '--breakdown']
+      },
+      {
+        command: 'npx',
+        args: ['ccusage@latest', 'session', '--json']
+      }
+    ])
   })
 })

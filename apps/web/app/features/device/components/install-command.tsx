@@ -1,6 +1,8 @@
 import { Copy } from 'lucide'
 import { LucideIcon } from '../../../components/ui/icon'
 
+const collectorRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
+
 export type InstallCommandProps = {
   baseUrl: string
   timezone: string
@@ -68,6 +70,13 @@ export function InstallCommand(props: InstallCommandProps) {
 }
 
 export function createInstallPrompt(baseUrl: string, timezone: string, pairingCode: string) {
+  const bashPairingCode = escapeBashArg(pairingCode)
+  const bashBaseUrl = escapeBashArg(baseUrl)
+  const bashTimezone = escapeBashArg(timezone)
+  const powerShellPairingCode = escapePowerShellArg(pairingCode)
+  const powerShellBaseUrl = escapePowerShellArg(baseUrl)
+  const powerShellTimezone = escapePowerShellArg(timezone)
+
   return [
     '请在这台机器上安装并运行 TokenBoard collector。',
     '',
@@ -76,6 +85,10 @@ export function createInstallPrompt(baseUrl: string, timezone: string, pairingCo
     '- 不要使用浏览器、Playwright、网页抓取、fetch 或 curl 去访问 GitHub 页面。',
     '- 不要打印 upload token、配对响应、配置文件内容或任何本地隐私数据。',
     '- 如果已经安装了 TokenBoard skill，可以直接运行其中的 setup 脚本；否则用 git clone/update 仓库后运行脚本。',
+    '- 首次安装默认执行全量同步，用于补齐历史 Claude Code / Codex 用量；不要擅自改成最近 7 天窗口。',
+    '- 历史会话很多时首次全量可能耗时较长；保持命令运行，不要把长时间解析误判为失败。',
+    '- 使用 TOKENBOARD_CODEX_BATCH_SIZE=200 控制 Codex 历史会话分批处理，只有用户明确要求降低资源峰值时才调小。',
+    '- 只有用户明确要求跳过首次同步时，才允许添加 --skip-initial-sync。',
     '',
     'macOS / Linux / Git Bash：',
     '```bash',
@@ -84,9 +97,9 @@ export function createInstallPrompt(baseUrl: string, timezone: string, pairingCo
     '  git -C "$repo" pull --ff-only',
     'else',
     '  mkdir -p "$HOME/.tokenboard"',
-    '  git clone https://github.com/evepupil/TokenBoard.git "$repo"',
+    `  git clone ${escapeBashArg(collectorRepoUrl)} "$repo"`,
     'fi',
-    `node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${pairingCode} --base-url ${baseUrl} --timezone ${timezone}`,
+    `TOKENBOARD_CODEX_BATCH_SIZE=200 node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${bashPairingCode} --base-url ${bashBaseUrl} --timezone ${bashTimezone}`,
     '```',
     '',
     'Windows PowerShell：',
@@ -96,11 +109,23 @@ export function createInstallPrompt(baseUrl: string, timezone: string, pairingCo
     '  git -C $repo pull --ff-only',
     '} else {',
     '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
-    '  git clone https://github.com/evepupil/TokenBoard.git $repo',
+    `  git clone ${escapePowerShellArg(collectorRepoUrl)} $repo`,
     '}',
-    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${pairingCode} --base-url ${baseUrl} --timezone ${timezone}`,
+    '$env:TOKENBOARD_CODEX_BATCH_SIZE = "200"',
+    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${powerShellPairingCode} --base-url ${powerShellBaseUrl} --timezone ${powerShellTimezone}`,
     '```',
     '',
     '完成后只汇报：config 是否写入、每日计划是否安装、首次同步是否成功。'
   ].join('\n')
+}
+
+function escapeBashArg(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+function escapePowerShellArg(value: string) {
+  return `"${value
+    .replaceAll('`', '``')
+    .replaceAll('"', '`"')
+    .replaceAll('$', '`$')}"`
 }

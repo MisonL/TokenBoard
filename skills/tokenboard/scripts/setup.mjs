@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { hostname, platform } from 'node:os'
 import { parseArgs, writeConfig } from './config.mjs'
+import { buildInitialSyncArgs } from './setup-options.mjs'
 
 const flags = parseArgs(process.argv.slice(2))
 const pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE
@@ -61,8 +62,15 @@ if (!flags['skip-schedule']) {
 }
 
 if (!flags['skip-initial-sync']) {
-  const sync = spawnSync(process.execPath, [scriptPath('./sync.mjs'), '--mode', 'sync', '--source', 'all'], {
-    stdio: 'inherit'
-  })
+  const sync = spawnSync(
+    process.execPath,
+    [
+      scriptPath('./sync.mjs'),
+      ...buildInitialSyncArgs({ flags })
+    ],
+    {
+      stdio: 'inherit'
+    }
+  )
   if (sync.status !== 0) process.exit(sync.status ?? 1)
 }
