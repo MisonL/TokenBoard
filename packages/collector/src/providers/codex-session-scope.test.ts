@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { glob, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
@@ -132,6 +132,31 @@ describe('createCodexSessionScope', () => {
       expect(batches).toHaveLength(2)
       expect(batches.flatMap((batch) => Object.values(batch)).filter(Boolean)).toHaveLength(3)
       expect(batches.every((batch) => Object.values(batch).filter(Boolean).length <= 2)).toBe(true)
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('combines every matching file in the compatibility scope API', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    try {
+      for (let index = 0; index < 1001; index += 1) {
+        await writeJsonl(join(codexHome, 'sessions', '2026', '05', `${index}.jsonl`), [
+          tokenCountEvent('2026-05-09T04:24:07.234Z')
+        ])
+      }
+
+      const scope = await createCodexSessionScope({ codexHome, since: 'all' })
+      expect(scope).not.toBeNull()
+      try {
+        const scopedFiles = []
+        for await (const file of glob('**/*.jsonl', { cwd: join(scope!.codexHome, 'sessions') })) {
+          scopedFiles.push(file)
+        }
+        expect(scopedFiles).toHaveLength(1001)
+      } finally {
+        await scope?.cleanup()
+      }
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
