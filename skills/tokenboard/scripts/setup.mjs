@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { hostname, platform } from 'node:os'
 import { parseArgs, writeConfig } from './config.mjs'
-import { buildInitialSyncArgs } from './setup-options.mjs'
+import { buildInitialSyncArgs, buildInstallCollectorArgs } from './setup-options.mjs'
 
 const flags = parseArgs(process.argv.slice(2))
 const pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE
@@ -48,9 +48,16 @@ function scriptPath(name) {
 }
 
 if (!flags['skip-collector']) {
-  const installCollector = spawnSync(process.execPath, [scriptPath('./install-collector.mjs')], {
-    stdio: 'inherit'
-  })
+  const installCollector = spawnSync(
+    process.execPath,
+    buildInstallCollectorArgs({
+      flags,
+      installCollectorScript: scriptPath('./install-collector.mjs')
+    }),
+    {
+      stdio: 'inherit'
+    }
+  )
   if (installCollector.status !== 0) process.exit(installCollector.status ?? 1)
 }
 
