@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { hostname, platform } from 'node:os'
 import { parseArgs, readPackageManager, writeConfig } from './config.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
+import { buildInstallCollectorArgs } from './setup-options.mjs'
 
 const flags = parseArgs(process.argv.slice(2))
 const pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE
@@ -54,7 +55,11 @@ function scriptPath(name) {
 if (!flags['skip-collector']) {
   const installCollector = spawnSync(
     process.execPath,
-    [scriptPath('./install-collector.mjs'), '--package-manager', packageManager],
+    buildInstallCollectorArgs({
+      flags,
+      packageManager,
+      installCollectorScript: scriptPath('./install-collector.mjs')
+    }),
     {
       stdio: 'inherit'
     }

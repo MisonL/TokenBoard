@@ -143,3 +143,15 @@ test('normalizePathEnv prepends missing local and node bin directories once', ()
     '/home/tokenboard/.bun/bin:/home/tokenboard/.local/bin:/opt/node/bin:/usr/bin:/bin'
   )
 })
+
+test('normalizePathEnv preserves Windows PATH separators and drive letters', () => {
+  assert.equal(
+    normalizePathEnv({
+      pathEnv: 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
+      homeDir: 'C:\\Users\\tokenboard',
+      nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+      delimiter: ';'
+    }),
+    'C:\\Users\\tokenboard\\.bun\\bin;C:\\Users\\tokenboard\\.local\\bin;C:\\Program Files\\nodejs;C:\\Windows\\System32'
+  )
+})

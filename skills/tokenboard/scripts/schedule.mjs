@@ -145,12 +145,12 @@ function escapeXml(value) {
     .replaceAll("'", '&apos;')
 }
 
-export function normalizePathEnv({ pathEnv, homeDir, nodePath }) {
-  const paths = pathEnv.split(':').filter(Boolean)
-  prependOnce(paths, dirname(nodePath))
-  prependOnce(paths, `${homeDir}/.local/bin`)
-  prependOnce(paths, `${homeDir}/.bun/bin`)
-  return paths.join(':')
+export function normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter = ':' }) {
+  const paths = pathEnv.split(delimiter).filter(Boolean)
+  prependOnce(paths, dirnameForDelimiter(nodePath, delimiter))
+  prependOnce(paths, joinForDelimiter(homeDir, '.local', 'bin', delimiter))
+  prependOnce(paths, joinForDelimiter(homeDir, '.bun', 'bin', delimiter))
+  return paths.join(delimiter)
 }
 
 function prependOnce(paths, value) {
@@ -159,4 +159,18 @@ function prependOnce(paths, value) {
     paths.splice(index, 1)
   }
   paths.unshift(value)
+}
+
+function dirnameForDelimiter(value, delimiter) {
+  if (delimiter !== ';') {
+    return dirname(value)
+  }
+
+  const index = Math.max(value.lastIndexOf('\\'), value.lastIndexOf('/'))
+  return index >= 0 ? value.slice(0, index) : '.'
+}
+
+function joinForDelimiter(base, first, second, delimiter) {
+  const separator = delimiter === ';' ? '\\' : '/'
+  return [base.replace(/[\\/]$/, ''), first, second].join(separator)
 }
