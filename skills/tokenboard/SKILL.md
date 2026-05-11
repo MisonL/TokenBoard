@@ -25,11 +25,12 @@ Optional flags:
 --skip-schedule
 --skip-initial-sync
 --package-manager pnpm|bun|npm
+--schedule-times 09:00,12:00,18:00,23:00
 ```
 
 After setup, report whether config was written, schedule was installed, and initial sync succeeded. Do not show `uploadToken`.
 
-The setup script clones or updates `https://github.com/evepupil/TokenBoard.git` into `~/.tokenboard/TokenBoard`, runs `pnpm install` by default, writes local config, installs the daily schedule unless skipped, and runs an initial sync unless skipped. Use `--repo-url`, `TOKENBOARD_REPO_URL`, `--package-manager bun`, `--package-manager npm`, or `TOKENBOARD_PACKAGE_MANAGER=pnpm|bun|npm` only when the local environment requires a non-default collector source or package manager.
+The setup script clones or updates `https://github.com/evepupil/TokenBoard.git` into `~/.tokenboard/TokenBoard`, runs `pnpm install` by default, writes local config, installs the daily schedule unless skipped, and runs an initial sync using the configured package manager unless skipped. The default schedule is `09:00,12:00,18:00,23:00`; use `--schedule-times` only after confirming a custom 24-hour `HH:MM` comma-separated list with the user. Use `--repo-url`, `TOKENBOARD_REPO_URL`, `--package-manager bun`, `--package-manager npm`, or `TOKENBOARD_PACKAGE_MANAGER=pnpm|bun|npm` only when the local environment requires a non-default collector source or package manager.
 
 If the user pasted a TokenBoard install prompt from the website, follow the prompt and run the included setup command. Treat pairing codes as short-lived secrets and do not repeat them unless needed to execute setup.
 
