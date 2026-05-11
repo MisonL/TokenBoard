@@ -13,7 +13,8 @@ import {
   launchAgentLabel,
   parseScheduleTimes,
   serviceName,
-  timerName
+  timerName,
+  windowsTaskName
 } from './schedule.mjs'
 
 const scriptPath = fileURLToPath(new URL('./sync.mjs', import.meta.url))
@@ -61,7 +62,20 @@ function installWindows(runtime, scheduleTimes) {
   })) {
     runOrThrow(runtime, 'schtasks.exe', task.args)
   }
+  runOrThrow(runtime, 'powershell.exe', buildWindowsStaleTaskCleanupArgs(scheduleTimes))
   return { platform: 'win32', scheduleTimes }
+}
+
+export function buildWindowsStaleTaskCleanupArgs(scheduleTimes) {
+  const currentTaskNames = new Set(scheduleTimes.map(windowsTaskName))
+  const currentList = [...currentTaskNames]
+    .map((taskName) => `'${taskName}'`)
+    .join(',')
+  const command = [
+    `$current = @(${currentList})`,
+    `Get-ScheduledTask -TaskPath '\\' | Where-Object { (($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' })) -and $current -notcontains $_.TaskName } | Unregister-ScheduledTask -Confirm:$false`
+  ].join('; ')
+  return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command]
 }
 
 function installMac(runtime, scheduleTimes) {

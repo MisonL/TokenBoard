@@ -5,7 +5,7 @@ export const timerName = 'tokenboard-daily-sync.timer'
 export const launchAgentLabel = 'com.tokenboard.daily-sync'
 export const dailyScheduleTimes = ['09:00', '12:00', '18:00', '23:00']
 
-export function buildWindowsTaskArgs({ nodePath, scriptPath, taskName = 'TokenBoardDailySync', startTime = dailyScheduleTimes[0] }) {
+export function buildWindowsTaskArgs({ nodePath, scriptPath, taskName = windowsTaskName(dailyScheduleTimes[0]), startTime = dailyScheduleTimes[0] }) {
   const taskCommand = `"${nodePath}" "${scriptPath}" --mode sync --source all`
   return [
     '/Create',
@@ -22,12 +22,12 @@ export function buildWindowsTaskArgs({ nodePath, scriptPath, taskName = 'TokenBo
 }
 
 export function buildWindowsTaskDefinitions({ nodePath, scriptPath, scheduleTimes = dailyScheduleTimes }) {
-  return scheduleTimes.map((startTime, index) => ({
-    name: windowsTaskName(startTime, index),
+  return scheduleTimes.map((startTime) => ({
+    name: windowsTaskName(startTime),
     args: buildWindowsTaskArgs({
       nodePath,
       scriptPath,
-      taskName: windowsTaskName(startTime, index),
+      taskName: windowsTaskName(startTime),
       startTime
     })
   }))
@@ -124,8 +124,8 @@ export function parseScheduleTimes(value = dailyScheduleTimes.join(',')) {
   return [...new Set(scheduleTimes)].sort()
 }
 
-function windowsTaskName(startTime, index) {
-  return index === 0 ? 'TokenBoardDailySync' : `TokenBoardDailySync${startTime.replace(':', '')}`
+export function windowsTaskName(startTime) {
+  return `TokenBoardDailySync${startTime.replace(':', '')}`
 }
 
 function parseScheduleTime(time) {

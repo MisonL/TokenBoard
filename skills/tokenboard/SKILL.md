@@ -63,6 +63,23 @@ Check local config and schedule hint:
 node scripts/status.mjs
 ```
 
+## Uninstall
+
+Remove the local daily schedule without deleting config, upload token, logs, or the collector checkout:
+
+```bash
+node scripts/uninstall.mjs
+```
+
+Explicit cleanup options:
+
+```bash
+node scripts/uninstall.mjs --remove-collector
+node scripts/uninstall.mjs --remove-config
+node scripts/uninstall.mjs --remove-config-dir
+node scripts/uninstall.mjs --all
+```
+
 ## Troubleshooting
 
 - If Node is missing, ask the user to install Node.js 20 or newer.

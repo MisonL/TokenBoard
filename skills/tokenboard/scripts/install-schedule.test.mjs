@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { installSchedule } from './install-schedule.mjs'
+import { buildWindowsStaleTaskCleanupArgs, installSchedule } from './install-schedule.mjs'
 
 test('installs macOS LaunchAgent through an isolated launchctl harness', () => {
   const harness = createHarness('darwin')
@@ -92,12 +92,28 @@ test('creates Windows scheduled tasks through an isolated schtasks harness', () 
 
     assert.deepEqual(harness.calls.map(commandLine), [
       'schtasks.exe --version',
-      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync /TR "node-test" "sync-test.mjs" --mode sync --source all /ST 08:15',
-      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync2145 /TR "node-test" "sync-test.mjs" --mode sync --source all /ST 21:45'
+      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync0815 /TR "node-test" "sync-test.mjs" --mode sync --source all /ST 08:15',
+      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync2145 /TR "node-test" "sync-test.mjs" --mode sync --source all /ST 21:45',
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $current = @('TokenBoardDailySync0815','TokenBoardDailySync2145'); Get-ScheduledTask -TaskPath '\\' | Where-Object { (($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' })) -and $current -notcontains $_.TaskName } | Unregister-ScheduledTask -Confirm:$false"
     ])
   } finally {
     harness.cleanup()
   }
+})
+
+test('builds Windows stale task cleanup for all TokenBoard task names outside the current schedule', () => {
+  const args = buildWindowsStaleTaskCleanupArgs(['09:00', '12:00'])
+  const command = args.at(-1)
+
+  assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-ExecutionPolicy', 'Bypass'])
+  assert.match(command, /\$current = @\('TokenBoardDailySync0900','TokenBoardDailySync1200'\)/)
+  assert.match(command, /Get-ScheduledTask -TaskPath '\\'/)
+  assert.match(command, /\$_.TaskName -like 'TokenBoardDailySync\*'/)
+  assert.match(command, /\$_.Actions \| Where-Object/)
+  assert.match(command, /\$_.Execute -like '\*node\*'/)
+  assert.match(command, /\$_.Arguments -like '\*TokenBoard\*skills\*tokenboard\*scripts\*sync\.mjs\*'/)
+  assert.match(command, /\$current -notcontains \$_.TaskName/)
+  assert.match(command, /Unregister-ScheduledTask -Confirm:\$false/)
 })
 
 function createHarness(platform) {

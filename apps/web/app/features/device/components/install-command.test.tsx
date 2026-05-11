@@ -1,6 +1,6 @@
 import { renderToString } from 'hono/jsx/dom/server'
 import { describe, expect, test } from 'vitest'
-import { createInstallPrompt, InstallCommand } from './install-command'
+import { createInstallPrompt, createUninstallCommand, InstallCommand } from './install-command'
 
 describe('InstallCommand', () => {
   test('renders a copy action for the generated install prompt', async () => {
@@ -14,8 +14,11 @@ describe('InstallCommand', () => {
     )
 
     expect(html).toContain('data-copy-target="install-prompt-text"')
+    expect(html).toContain('data-copy-target="uninstall-command-text"')
     expect(html).toContain('aria-label="复制安装提示词"')
+    expect(html).toContain('aria-label="复制卸载命令"')
     expect(html).toContain('skills/tokenboard/scripts/setup.mjs')
+    expect(html).toContain('skills/tokenboard/scripts/uninstall.mjs')
   })
 
   test('generates a direct shell-oriented prompt that discourages browser detours', () => {
@@ -51,6 +54,25 @@ describe('InstallCommand', () => {
     expect(prompt).toContain("--repo-url 'https://github.com/example/TokenBoard.git'")
     expect(prompt).toContain('--repo-url "https://github.com/example/TokenBoard.git"')
     expect(prompt).not.toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
+  })
+
+  test('generates one-command uninstall instructions', () => {
+    const command = createUninstallCommand()
+
+    expect(command).toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
+    expect(command).toContain('git -C "$repo" pull --ff-only')
+    expect(command).toContain('skills/tokenboard/scripts/uninstall.mjs" --all')
+    expect(command).toContain('skills\\tokenboard\\scripts\\uninstall.mjs") --all')
+  })
+
+  test('uses overridden repo url for uninstall command bootstrap', () => {
+    const command = createUninstallCommand({
+      collectorRepoUrl: 'https://github.com/example/TokenBoard.git'
+    })
+
+    expect(command).toContain("git clone 'https://github.com/example/TokenBoard.git'")
+    expect(command).toContain('git clone "https://github.com/example/TokenBoard.git" $repo')
+    expect(command).not.toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
   })
 
   test('escapes install prompt command arguments for shells', () => {

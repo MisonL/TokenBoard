@@ -9,7 +9,7 @@ import {
   parseScheduleTimes
 } from './schedule.mjs'
 
-test('builds the existing Windows scheduled task shape', () => {
+test('builds the Windows scheduled task shape with time-suffixed names', () => {
   const args = buildWindowsTaskArgs({
     nodePath: 'C:\\Program Files\\nodejs\\node.exe',
     scriptPath: 'C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs'
@@ -21,7 +21,7 @@ test('builds the existing Windows scheduled task shape', () => {
     '/SC',
     'DAILY',
     '/TN',
-    'TokenBoardDailySync',
+    'TokenBoardDailySync0900',
     '/TR',
     '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs" --mode sync --source all',
     '/ST',
@@ -37,7 +37,7 @@ test('builds Windows scheduled task definitions for every daily sync time', () =
 
   assert.deepEqual(
     tasks.map((task) => task.name),
-    ['TokenBoardDailySync', 'TokenBoardDailySync1200', 'TokenBoardDailySync1800', 'TokenBoardDailySync2300']
+    ['TokenBoardDailySync0900', 'TokenBoardDailySync1200', 'TokenBoardDailySync1800', 'TokenBoardDailySync2300']
   )
   assert.deepEqual(
     tasks.map((task) => task.args.at(-1)),

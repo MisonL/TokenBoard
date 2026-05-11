@@ -20,6 +20,9 @@ export function InstallCommand(props: InstallCommandProps) {
         collectorRepoUrl: props.collectorRepoUrl
       })
     : ''
+  const uninstallCommand = createUninstallCommand({
+    collectorRepoUrl: props.collectorRepoUrl
+  })
 
   return (
     <section class="mx-auto flex max-w-4xl flex-col gap-5">
@@ -71,6 +74,26 @@ export function InstallCommand(props: InstallCommandProps) {
           </div>
         </section>
       ) : null}
+
+      <section class="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5 shadow-xl shadow-black/10 backdrop-blur">
+        <div class="flex flex-col gap-1">
+          <h2 class="text-base font-black">一键卸载 collector</h2>
+        </div>
+        <div class="relative mt-4">
+          <button
+            type="button"
+            class="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-muted)] shadow-sm transition hover:border-lime-300/50 hover:text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-lime-300/30"
+            data-copy-target="uninstall-command-text"
+            aria-label="复制卸载命令"
+            title="复制卸载命令"
+          >
+            <LucideIcon icon={Copy} size={17} />
+          </button>
+          <pre id="uninstall-command-text" class="overflow-x-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4 pr-16 text-sm leading-6 text-[var(--app-text)]">
+            {uninstallCommand}
+          </pre>
+        </div>
+      </section>
     </section>
   )
 }
@@ -129,6 +152,40 @@ export function createInstallPrompt(input: {
     '```',
     '',
     '完成后只汇报：config 是否写入、每日计划是否安装、已安装的触发时间、首次同步是否成功。'
+  ].join('\n')
+}
+
+export function createUninstallCommand(input: {
+  collectorRepoUrl?: string
+} = {}) {
+  const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
+  const bashRepoUrl = escapeBashArg(collectorRepoUrl)
+  const powerShellRepoUrl = escapePowerShellArg(collectorRepoUrl)
+
+  return [
+    'macOS / Linux / Git Bash：',
+    '```bash',
+    'repo="$HOME/.tokenboard/TokenBoard"',
+    'if [ -d "$repo/.git" ]; then',
+    '  git -C "$repo" pull --ff-only',
+    'else',
+    '  mkdir -p "$HOME/.tokenboard"',
+    `  git clone ${bashRepoUrl} "$repo"`,
+    'fi',
+    'node "$repo/skills/tokenboard/scripts/uninstall.mjs" --all',
+    '```',
+    '',
+    'Windows PowerShell：',
+    '```powershell',
+    '$repo = Join-Path $HOME ".tokenboard\\TokenBoard"',
+    'if (Test-Path (Join-Path $repo ".git")) {',
+    '  git -C $repo pull --ff-only',
+    '} else {',
+    '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
+    `  git clone ${powerShellRepoUrl} $repo`,
+    '}',
+    'node (Join-Path $repo "skills\\tokenboard\\scripts\\uninstall.mjs") --all',
+    '```'
   ].join('\n')
 }
 
