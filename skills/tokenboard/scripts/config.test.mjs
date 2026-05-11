@@ -6,7 +6,7 @@ test('uses bun.exe on Windows package manager commands', () => {
   assert.equal(packageManagerCommand('bun', 'win32'), 'bun.exe')
 })
 
-test('uses cmd shims for npm and pnpm on Windows', () => {
-  assert.equal(packageManagerCommand('pnpm', 'win32'), 'pnpm.cmd')
+test('uses executable package manager commands on Windows when available', () => {
+  assert.equal(packageManagerCommand('pnpm', 'win32'), 'pnpm.exe')
   assert.equal(packageManagerCommand('npm', 'win32'), 'npm.cmd')
 })

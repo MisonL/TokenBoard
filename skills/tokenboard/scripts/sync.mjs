@@ -67,12 +67,13 @@ export function buildSyncInvocation({
   const packageManager = readPackageManager(flags, config)
   const since = readSince({ flags, config, env })
   const delimiter = platform === 'win32' ? ';' : ':'
+  const command = packageManagerCommand(packageManager, platform)
   return {
-    command: packageManagerCommand(packageManager, platform),
+    command,
     args: packageManagerRunArgs(packageManager, mode, ['--source', source]),
     cwd: join(repoDir, 'packages', 'collector'),
     repoDir,
-    shell: platform === 'win32' && packageManager !== 'bun',
+    shell: platform === 'win32' && command.endsWith('.cmd'),
     env: {
       ...env,
       PATH: normalizePathEnv({

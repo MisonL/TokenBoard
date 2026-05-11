@@ -33,11 +33,11 @@ export function packageManagerCommand(packageManager, platform = process.platfor
     return packageManager
   }
 
-  if (packageManager === 'bun') {
-    return 'bun.exe'
+  if (packageManager === 'bun' || packageManager === 'pnpm') {
+    return `${packageManager}.exe`
   }
 
-  return `${packageManager}.cmd`
+  return 'npm.cmd'
 }
 
 export function packageManagerRunArgs(packageManager, scriptName, scriptArgs = []) {

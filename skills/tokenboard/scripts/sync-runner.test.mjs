@@ -19,7 +19,29 @@ test('builds Windows sync invocation with semicolon PATH delimiter', () => {
     platform: 'win32'
   })
 
+  assert.equal(invocation.command, 'pnpm.exe')
+  assert.equal(invocation.shell, false)
   assert.equal(invocation.env.PATH, 'C:\\Users\\tokenboard\\.bun\\bin;C:\\Users\\tokenboard\\.local\\bin;C:\\Program Files\\nodejs;C:\\Windows\\System32')
+})
+
+test('builds Windows npm sync invocation through cmd shim', () => {
+  const invocation = buildSyncInvocation({
+    flags: { mode: 'sync', 'package-manager': 'npm' },
+    config: {
+      collectorDir: 'C:\\Users\\tokenboard\\.tokenboard\\TokenBoard',
+      endpoint: 'https://tokenboard.example',
+      uploadToken: 'token',
+      timezone: 'Asia/Shanghai',
+      source: 'all'
+    },
+    pathEnv: 'C:\\Windows\\System32',
+    homeDir: 'C:\\Users\\tokenboard',
+    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+    platform: 'win32'
+  })
+
+  assert.equal(invocation.command, 'npm.cmd')
+  assert.equal(invocation.shell, true)
 })
 
 test('builds Windows bun sync invocation with bun executable', () => {
