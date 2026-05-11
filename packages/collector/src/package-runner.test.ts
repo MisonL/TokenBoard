@@ -46,4 +46,17 @@ describe('resolvePackageRunner', () => {
       '--json'
     ])
   })
+
+  test('supports pnpm dlx package invocation', () => {
+    vi.stubEnv('TOKENBOARD_PNPM_BIN', '/opt/bin/pnpm')
+    const runner = resolvePackageRunner('pnpm')
+
+    expect(runner.command).toBe('/opt/bin/pnpm')
+    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json'])).toEqual([
+      'dlx',
+      'ccusage@latest',
+      'daily',
+      '--json'
+    ])
+  })
 })

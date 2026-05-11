@@ -26,6 +26,13 @@ export function resolvePackageRunner(packageManager = process.env.TOKENBOARD_PAC
     }
   }
 
+  if (packageManager === 'pnpm') {
+    return {
+      command: process.env.TOKENBOARD_PNPM_BIN || 'pnpm',
+      runPackageArgs: (packageName, _binaryName, packageArgs) => ['dlx', packageName, ...packageArgs]
+    }
+  }
+
   return {
     command: process.env.TOKENBOARD_NPX_BIN || 'npx',
     runPackageArgs: (packageName, _binaryName, packageArgs) => [packageName, ...packageArgs]
