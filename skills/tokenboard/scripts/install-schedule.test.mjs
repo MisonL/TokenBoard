@@ -59,6 +59,29 @@ test('installs Linux user systemd timer through an isolated systemd harness', ()
   }
 })
 
+test('installs Linux timer when USER is not exported', () => {
+  const harness = createHarness('linux')
+  try {
+    delete harness.options.env.USER
+    harness.options.env.LOGNAME = 'tokenboard-logname'
+
+    installSchedule({
+      ...harness.options,
+      argv: ['--schedule-times', '08:15']
+    })
+
+    assert.deepEqual(harness.calls.map(commandLine), [
+      'systemctl --user --version',
+      'systemctl --user daemon-reload',
+      'systemctl --user enable --now tokenboard-daily-sync.timer',
+      'loginctl --version',
+      'loginctl enable-linger tokenboard-logname'
+    ])
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('creates Windows scheduled tasks through an isolated schtasks harness', () => {
   const harness = createHarness('win32')
   try {

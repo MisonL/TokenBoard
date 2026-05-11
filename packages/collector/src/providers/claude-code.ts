@@ -14,14 +14,17 @@ export async function collectClaudeCodeUsage(
 ): Promise<UsageSnapshot[]> {
   const runner = options.runner ?? runJsonCommand
   const packageRunner = resolvePackageRunner()
-  const sinceArgs = process.env.TOKENBOARD_SINCE ? ['--since', process.env.TOKENBOARD_SINCE] : []
+  const rangeArgs = buildRangeArgs({
+    since: process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || '',
+    until: process.env.TOKENBOARD_UNTIL || ''
+  })
   const json = await runner(
     packageRunner.command,
-    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json', '--breakdown', ...sinceArgs])
+    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json', '--breakdown', ...rangeArgs])
   )
   const sessions = await runner(
     packageRunner.command,
-    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['session', '--json', ...sinceArgs])
+    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['session', '--json', ...rangeArgs])
   )
 
   return normalizeCcusageDailyJson(json, {
@@ -30,4 +33,15 @@ export async function collectClaudeCodeUsage(
     collectedAt: options.collectedAt,
     sessions
   })
+}
+
+function buildRangeArgs(options: { since?: string; until?: string }) {
+  const args: string[] = []
+  if (options.since && options.since !== 'all') {
+    args.push('--since', options.since)
+  }
+  if (options.until) {
+    args.push('--until', options.until)
+  }
+  return args
 }

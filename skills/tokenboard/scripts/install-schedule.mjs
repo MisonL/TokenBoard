@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { homedir, platform } from 'node:os'
+import { homedir, platform, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configDir, parseArgs, readConfig } from './config.mjs'
@@ -131,7 +131,20 @@ function requireUserSystemd(runtime) {
 
 function enableLinger(runtime) {
   requireCommand(runtime, 'loginctl')
-  runOrThrow(runtime, 'loginctl', ['enable-linger', runtime.env.USER || ''])
+  const user = resolveLingerUser(runtime)
+  runOrThrow(runtime, 'loginctl', user ? ['enable-linger', user] : ['enable-linger'])
+}
+
+function resolveLingerUser(runtime) {
+  const user = runtime.env.USER || runtime.env.LOGNAME || runtime.env.USERNAME
+  if (user) {
+    return user
+  }
+  try {
+    return userInfo().username
+  } catch {
+    return ''
+  }
 }
 
 function runOrThrow(runtime, command, args, options = {}) {
