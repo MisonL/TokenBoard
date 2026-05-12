@@ -57,7 +57,7 @@ describe('collectCodexUsage', () => {
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'session', '--json'],
-        options: { timeoutMs: 60000 }
+        options: { timeoutMs: 900000 }
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -92,7 +92,7 @@ describe('collectCodexUsage', () => {
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260501'],
-        options: { timeoutMs: 60000 }
+        options: { timeoutMs: 900000 }
       }
     ])
   })
@@ -154,7 +154,7 @@ describe('collectCodexUsage', () => {
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'session', '--json'],
-        options: { timeoutMs: 60000 }
+        options: { timeoutMs: 900000 }
       }
     ])
   })
@@ -181,7 +181,7 @@ describe('collectCodexUsage', () => {
       {
         command: '/opt/bin/bunx',
         args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260509'],
-        options: { timeoutMs: 60000 }
+        options: { timeoutMs: 900000 }
       }
     ])
   })

@@ -11,7 +11,7 @@ export type CollectCodexUsageOptions = {
 }
 
 const DEFAULT_DAILY_TIMEOUT_MS = 900_000
-const DEFAULT_SESSION_TIMEOUT_MS = 60_000
+const DEFAULT_SESSION_TIMEOUT_MS = 900_000
 
 export async function collectCodexUsage(
   options: CollectCodexUsageOptions = {}
