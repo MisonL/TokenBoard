@@ -82,8 +82,9 @@ ${intervals}
 `
 }
 
-export function buildLinuxSystemdUnits({ nodePath, scriptPath, packageManager, pathEnv, homeDir, scheduleTimes = dailyScheduleTimes }) {
+export function buildLinuxSystemdUnits({ nodePath, scriptPath, packageManager, pathEnv, homeDir, timezone, scheduleTimes = dailyScheduleTimes }) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath })
+  const timezoneSuffix = typeof timezone === 'string' && timezone.length > 0 ? ` ${timezone}` : ''
   return {
     service: `[Unit]
 Description=TokenBoard daily sync
@@ -98,7 +99,7 @@ ExecStart=${nodePath} ${scriptPath} --mode sync --source all
 Description=Run TokenBoard daily sync
 
 [Timer]
-${scheduleTimes.map((time) => `OnCalendar=${time}`).join('\n')}
+${scheduleTimes.map((time) => `OnCalendar=${time}${timezoneSuffix}`).join('\n')}
 Persistent=true
 
 [Install]

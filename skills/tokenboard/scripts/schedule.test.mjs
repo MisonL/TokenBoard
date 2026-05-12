@@ -89,6 +89,21 @@ test('builds Linux user systemd units with pnpm available in PATH', () => {
   assert.match(units.timer, /Persistent=true/)
 })
 
+test('builds Linux user systemd calendar times with configured timezone', () => {
+  const units = buildLinuxSystemdUnits({
+    nodePath: '/usr/bin/node',
+    scriptPath: '/home/tokenboard/.tokenboard/TokenBoard/skills/tokenboard/scripts/sync.mjs',
+    packageManager: 'pnpm',
+    pathEnv: '/usr/bin:/bin',
+    homeDir: '/home/tokenboard',
+    timezone: 'Asia/Shanghai',
+    scheduleTimes: ['06:00', '09:00']
+  })
+
+  assert.match(units.timer, /OnCalendar=06:00 Asia\/Shanghai/)
+  assert.match(units.timer, /OnCalendar=09:00 Asia\/Shanghai/)
+})
+
 test('builds schedules with custom daily sync times', () => {
   const scheduleTimes = parseScheduleTimes('08:15,21:45')
   const windowsTasks = buildWindowsTaskDefinitions({

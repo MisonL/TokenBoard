@@ -117,6 +117,7 @@ function installLinux(runtime, scheduleTimes) {
     packageManager: config.packageManager || runtime.env.TOKENBOARD_PACKAGE_MANAGER || 'pnpm',
     pathEnv: runtime.env.PATH || '/usr/local/bin:/usr/bin:/bin',
     homeDir: runtime.homeDir,
+    timezone: config.timezone,
     scheduleTimes
   })
   runtime.writeFile(join(unitDir, serviceName), units.service)

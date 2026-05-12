@@ -11,4 +11,14 @@ describe('runJsonCommand', () => {
 
     expect(result).toEqual({ argv: ['value with spaces'] })
   })
+
+  test('fails visibly when a command exceeds the configured timeout', async () => {
+    await expect(
+      runJsonCommand(
+        process.execPath,
+        ['-e', 'setTimeout(() => console.log(JSON.stringify({ ok: true })), 50)'],
+        { timeoutMs: 1 }
+      )
+    ).rejects.toThrow()
+  })
 })

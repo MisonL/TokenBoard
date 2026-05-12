@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
+import type { CommandRunnerOptions } from '../command'
 import { collectCodexUsage } from './codex'
 
 describe('collectCodexUsage', () => {
@@ -7,13 +8,13 @@ describe('collectCodexUsage', () => {
   })
 
   test('runs codex ccusage daily json and normalizes cache input aliases', async () => {
-    const calls: Array<{ command: string; args: string[] }> = []
+    const calls: Array<{ command: string; args: string[]; options?: CommandRunnerOptions }> = []
     vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
     const snapshots = await collectCodexUsage({
       timezone: 'Asia/Shanghai',
       collectedAt: '2026-04-28T10:00:00.000Z',
-      async runner(command, args) {
-        calls.push({ command, args })
+      async runner(command, args, options) {
+        calls.push({ command, args, options })
         if (args[1] === 'session') {
           return {
             data: [
@@ -50,11 +51,13 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: 'npx',
-        args: ['@ccusage/codex@latest', 'daily', '--json']
+        args: ['@ccusage/codex@latest', 'daily', '--json'],
+        options: undefined
       },
       {
         command: 'npx',
-        args: ['@ccusage/codex@latest', 'session', '--json']
+        args: ['@ccusage/codex@latest', 'session', '--json'],
+        options: { timeoutMs: 60000 }
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -90,6 +93,41 @@ describe('collectCodexUsage', () => {
         args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260501']
       }
     ])
+  })
+
+  test('keeps daily codex snapshots when session count collection fails', async () => {
+    const errors: string[] = []
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+
+    const snapshots = await collectCodexUsage({
+      stderr: (line) => errors.push(line),
+      async runner(_command, args) {
+        if (args[1] === 'session') {
+          throw new Error('session timed out')
+        }
+        return {
+          data: [
+            {
+              date: '2026-05-12',
+              model: 'gpt-5',
+              inputTokens: 1,
+              outputTokens: 2,
+              totalTokens: 3
+            }
+          ]
+        }
+      }
+    })
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toMatchObject({
+      source: 'codex',
+      usageDate: '2026-05-12',
+      model: 'gpt-5',
+      totalTokens: 3,
+      sessionCount: 0
+    })
+    expect(errors).toEqual(['Skipping codex session counts: session timed out'])
   })
 
   test('allows explicit full codex scan', async () => {
