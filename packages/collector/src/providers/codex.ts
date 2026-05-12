@@ -10,6 +10,7 @@ export type CollectCodexUsageOptions = {
   stderr?: (line: string) => void
 }
 
+const DEFAULT_DAILY_TIMEOUT_MS = 900_000
 const DEFAULT_SESSION_TIMEOUT_MS = 60_000
 
 export async function collectCodexUsage(
@@ -20,7 +21,8 @@ export async function collectCodexUsage(
   const sinceArgs = buildSinceArgs()
   const json = await runner(
     packageRunner.command,
-    packageRunner.runPackageArgs('@ccusage/codex@latest', 'ccusage-codex', ['daily', '--json', ...sinceArgs])
+    packageRunner.runPackageArgs('@ccusage/codex@latest', 'ccusage-codex', ['daily', '--json', ...sinceArgs]),
+    { timeoutMs: readDailyTimeoutMs() }
   )
   const sessions = await collectSessionCounts({
     runner,
@@ -58,6 +60,14 @@ async function collectSessionCounts({
     stderr(`Skipping codex session counts: ${errorMessage(error)}`)
     return { data: [] }
   }
+}
+
+function readDailyTimeoutMs() {
+  const value = Number.parseInt(process.env.TOKENBOARD_CODEX_DAILY_TIMEOUT_MS || '', 10)
+  if (Number.isFinite(value) && value > 0) {
+    return value
+  }
+  return DEFAULT_DAILY_TIMEOUT_MS
 }
 
 function readSessionTimeoutMs() {

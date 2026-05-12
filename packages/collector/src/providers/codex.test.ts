@@ -52,7 +52,7 @@ describe('collectCodexUsage', () => {
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'daily', '--json'],
-        options: undefined
+        options: { timeoutMs: 900000 }
       },
       {
         command: 'npx',
@@ -71,14 +71,14 @@ describe('collectCodexUsage', () => {
   })
 
   test('uses configured default since window when env is unset', async () => {
-    const calls: Array<{ command: string; args: string[] }> = []
+    const calls: Array<{ command: string; args: string[]; options?: CommandRunnerOptions }> = []
     vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
     vi.stubEnv('TOKENBOARD_SINCE', '')
     vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '20260501')
 
     await collectCodexUsage({
-      async runner(command, args) {
-        calls.push({ command, args })
+      async runner(command, args, options) {
+        calls.push({ command, args, options })
         return { data: [] }
       }
     })
@@ -86,11 +86,13 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: 'npx',
-        args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260501']
+        args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260501'],
+        options: { timeoutMs: 900000 }
       },
       {
         command: 'npx',
-        args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260501']
+        args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260501'],
+        options: { timeoutMs: 60000 }
       }
     ])
   })
@@ -131,14 +133,14 @@ describe('collectCodexUsage', () => {
   })
 
   test('allows explicit full codex scan', async () => {
-    const calls: Array<{ command: string; args: string[] }> = []
+    const calls: Array<{ command: string; args: string[]; options?: CommandRunnerOptions }> = []
     vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
     vi.stubEnv('TOKENBOARD_SINCE', 'all')
     vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '20260501')
 
     await collectCodexUsage({
-      async runner(command, args) {
-        calls.push({ command, args })
+      async runner(command, args, options) {
+        calls.push({ command, args, options })
         return { data: [] }
       }
     })
@@ -146,24 +148,26 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: 'npx',
-        args: ['@ccusage/codex@latest', 'daily', '--json']
+        args: ['@ccusage/codex@latest', 'daily', '--json'],
+        options: { timeoutMs: 900000 }
       },
       {
         command: 'npx',
-        args: ['@ccusage/codex@latest', 'session', '--json']
+        args: ['@ccusage/codex@latest', 'session', '--json'],
+        options: { timeoutMs: 60000 }
       }
     ])
   })
 
   test('uses since and selected package manager when configured', async () => {
-    const calls: Array<{ command: string; args: string[] }> = []
+    const calls: Array<{ command: string; args: string[]; options?: CommandRunnerOptions }> = []
     vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', 'bun')
     vi.stubEnv('TOKENBOARD_BUNX_BIN', '/opt/bin/bunx')
     vi.stubEnv('TOKENBOARD_SINCE', '20260509')
 
     await collectCodexUsage({
-      async runner(command, args) {
-        calls.push({ command, args })
+      async runner(command, args, options) {
+        calls.push({ command, args, options })
         return { data: [] }
       }
     })
@@ -171,12 +175,32 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: '/opt/bin/bunx',
-        args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260509']
+        args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260509'],
+        options: { timeoutMs: 900000 }
       },
       {
         command: '/opt/bin/bunx',
-        args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260509']
+        args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260509'],
+        options: { timeoutMs: 60000 }
       }
     ])
+  })
+
+  test('uses configured daily timeout for the required codex total collection', async () => {
+    const calls: Array<{ args: string[]; options?: CommandRunnerOptions }> = []
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+    vi.stubEnv('TOKENBOARD_CODEX_DAILY_TIMEOUT_MS', '300000')
+
+    await collectCodexUsage({
+      async runner(_command, args, options) {
+        calls.push({ args, options })
+        return { data: [] }
+      }
+    })
+
+    expect(calls[0]).toEqual({
+      args: ['@ccusage/codex@latest', 'daily', '--json'],
+      options: { timeoutMs: 300000 }
+    })
   })
 })
