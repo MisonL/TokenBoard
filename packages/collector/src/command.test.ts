@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
-import { runJsonCommand } from './command'
+import { commandShellOption, runJsonCommand } from './command'
 
 describe('runJsonCommand', () => {
   test('passes arguments directly without shell parsing', async () => {
@@ -75,5 +75,12 @@ describe('runJsonCommand', () => {
       )
     ).rejects.toThrow()
     expect(retryLogs).toEqual([])
+  })
+
+  test('runs Windows command shims through the shell', () => {
+    expect(commandShellOption('npm.cmd', 'win32')).toBe(true)
+    expect(commandShellOption('pnpm.bat', 'win32')).toBe(true)
+    expect(commandShellOption('pnpm', 'win32')).toBe(false)
+    expect(commandShellOption('npm.cmd', 'linux')).toBe(false)
   })
 })

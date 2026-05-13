@@ -3,7 +3,10 @@ export type PackageRunner = {
   runPackageArgs(packageName: string, binaryName: string, packageArgs: string[]): string[]
 }
 
-export function resolvePackageRunner(packageManager = process.env.TOKENBOARD_PACKAGE_MANAGER): PackageRunner {
+export function resolvePackageRunner(
+  packageManager = process.env.TOKENBOARD_PACKAGE_MANAGER,
+  platform = process.platform
+): PackageRunner {
   if (packageManager === 'bun') {
     return {
       command: process.env.TOKENBOARD_BUNX_BIN || 'bunx',
@@ -13,7 +16,7 @@ export function resolvePackageRunner(packageManager = process.env.TOKENBOARD_PAC
 
   if (packageManager === 'npm') {
     return {
-      command: process.env.TOKENBOARD_NPM_BIN || 'npm',
+      command: process.env.TOKENBOARD_NPM_BIN || packageCommand('npm', platform),
       runPackageArgs: (packageName, binaryName, packageArgs) => [
         'exec',
         '--yes',
@@ -28,13 +31,17 @@ export function resolvePackageRunner(packageManager = process.env.TOKENBOARD_PAC
 
   if (packageManager === 'pnpm') {
     return {
-      command: process.env.TOKENBOARD_PNPM_BIN || 'pnpm',
+      command: process.env.TOKENBOARD_PNPM_BIN || packageCommand('pnpm', platform),
       runPackageArgs: (packageName, _binaryName, packageArgs) => ['dlx', packageName, ...packageArgs]
     }
   }
 
   return {
-    command: process.env.TOKENBOARD_NPX_BIN || 'npx',
+    command: process.env.TOKENBOARD_NPX_BIN || packageCommand('npx', platform),
     runPackageArgs: (packageName, _binaryName, packageArgs) => [packageName, ...packageArgs]
   }
+}
+
+function packageCommand(command: string, platform: string) {
+  return platform === 'win32' ? `${command}.cmd` : command
 }

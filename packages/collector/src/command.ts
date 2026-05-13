@@ -36,7 +36,7 @@ export const runJsonCommand: CommandRunner = async (command, args, options = {})
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const { stdout } = await execFileAsync(command, args, {
-        shell: false,
+        shell: commandShellOption(command),
         maxBuffer: 128 * 1024 * 1024,
         timeout: options.timeoutMs ?? readCommandTimeoutMs(),
         env: options.env
@@ -56,6 +56,10 @@ export const runJsonCommand: CommandRunner = async (command, args, options = {})
   }
 
   throw new Error(`Command failed without a result: ${command}`)
+}
+
+export function commandShellOption(command: string, platform = process.platform) {
+  return platform === 'win32' && /\.(cmd|bat)$/i.test(command)
 }
 
 function readCommandTimeoutMs() {

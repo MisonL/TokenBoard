@@ -18,6 +18,14 @@ describe('resolvePackageRunner', () => {
     ])
   })
 
+  test('uses Windows command shims on win32', () => {
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+
+    expect(resolvePackageRunner(undefined, 'win32').command).toBe('npx.cmd')
+    expect(resolvePackageRunner('npm', 'win32').command).toBe('npm.cmd')
+    expect(resolvePackageRunner('pnpm', 'win32').command).toBe('pnpm.cmd')
+  })
+
   test('supports bunx when package manager is bun', () => {
     vi.stubEnv('TOKENBOARD_BUNX_BIN', '/opt/bin/bunx')
     const runner = resolvePackageRunner('bun')
