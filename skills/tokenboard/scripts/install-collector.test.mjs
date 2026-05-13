@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { packageManagerCommand } from './config.mjs'
 import { buildInstallCollectorPlan } from './install-collector.mjs'
 
 test('clones the configured collector repo before installing dependencies', () => {
@@ -17,7 +18,7 @@ test('clones the configured collector repo before installing dependencies', () =
         options: {}
       },
       {
-        command: 'pnpm',
+        command: packageManagerCommand('pnpm'),
         args: ['install'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       }
@@ -45,7 +46,7 @@ test('updates the existing collector origin before pulling', () => {
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
-        command: 'npm',
+        command: packageManagerCommand('npm'),
         args: ['install'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       }
