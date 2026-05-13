@@ -12,22 +12,30 @@ import {
 } from './config.mjs'
 import { normalizePathEnv } from './schedule.mjs'
 import { readSince } from './sync-options.mjs'
+import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
 
 if (isMain()) {
   const flags = parseArgs(process.argv.slice(2))
   const config = readConfig()
+  const homeDir = homedir()
   const invocation = buildSyncInvocation({
     flags,
     config,
     pathEnv: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
-    homeDir: homedir(),
+    homeDir,
     nodePath: process.execPath,
     platform: process.platform
+  })
+  const logs = createScheduledLogRuntime({
+    env: process.env,
+    homeDir,
+    scheduled: flags.scheduled === true
   })
 
   if (!existsSync(invocation.repoDir)) {
     console.error(`TokenBoard collector is not installed: ${invocation.repoDir}`)
     console.error('Run setup.mjs again or run install-collector.mjs.')
+    closeScheduledLogRuntime(logs)
     process.exit(1)
   }
 
@@ -37,16 +45,18 @@ if (isMain()) {
     {
       cwd: invocation.cwd,
       env: invocation.env,
-      stdio: 'inherit',
+      stdio: logs ? ['ignore', logs.stdoutFd, logs.stderrFd] : 'inherit',
       shell: invocation.shell
     }
   )
 
   if (result.error) {
     console.error(`Failed to run ${invocation.command}: ${result.error.message}`)
+    closeScheduledLogRuntime(logs)
     process.exit(1)
   }
 
+  closeScheduledLogRuntime(logs)
   process.exit(result.status ?? 1)
 }
 

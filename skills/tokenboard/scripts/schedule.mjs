@@ -6,7 +6,7 @@ export const launchAgentLabel = 'com.tokenboard.daily-sync'
 export const dailyScheduleTimes = ['09:00', '12:00', '18:00', '23:00']
 
 export function buildWindowsTaskArgs({ nodePath, scriptPath, taskName = windowsTaskName(dailyScheduleTimes[0]), startTime = dailyScheduleTimes[0] }) {
-  const taskCommand = `"${nodePath}" "${scriptPath}" --mode sync --source all`
+  const taskCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --source all --scheduled`
   return [
     '/Create',
     '/F',
@@ -55,6 +55,10 @@ export function buildMacLaunchAgentPlist({ nodePath, scriptPath, packageManager,
 \t\t<string>${escapeXml(normalizedPath)}</string>
 \t\t<key>TOKENBOARD_PACKAGE_MANAGER</key>
 \t\t<string>${escapeXml(packageManager)}</string>
+\t\t<key>TOKENBOARD_SCHEDULED_SYNC</key>
+\t\t<string>1</string>
+\t\t<key>TOKENBOARD_LOG_DIR</key>
+\t\t<string>${escapeXml(logDir)}</string>
 \t</dict>
 \t<key>Label</key>
 \t<string>${launchAgentLabel}</string>
@@ -66,6 +70,7 @@ export function buildMacLaunchAgentPlist({ nodePath, scriptPath, packageManager,
 \t\t<string>sync</string>
 \t\t<string>--source</string>
 \t\t<string>all</string>
+\t\t<string>--scheduled</string>
 \t</array>
 \t<key>RunAtLoad</key>
 \t<false/>
@@ -92,8 +97,10 @@ Description=TokenBoard daily sync
 [Service]
 Type=oneshot
 Environment=TOKENBOARD_PACKAGE_MANAGER=${packageManager}
+Environment=TOKENBOARD_SCHEDULED_SYNC=1
+Environment=TOKENBOARD_LOG_DIR=${joinForDelimiter(homeDir, '.tokenboard', 'logs', ':')}
 Environment=PATH=${normalizedPath}
-ExecStart=${nodePath} ${scriptPath} --mode sync --source all
+ExecStart=${nodePath} ${scriptPath} --mode sync --source all --scheduled
 `,
     timer: `[Unit]
 Description=Run TokenBoard daily sync
@@ -174,4 +181,8 @@ function dirnameForDelimiter(value, delimiter) {
 function joinForDelimiter(base, first, second, delimiter) {
   const separator = delimiter === ';' ? '\\' : '/'
   return [base.replace(/[\\/]$/, ''), first, second].join(separator)
+}
+
+function quoteWindowsArg(value) {
+  return `"${String(value).replaceAll('"', '""')}"`
 }

@@ -92,8 +92,8 @@ test('creates Windows scheduled tasks through an isolated schtasks harness', () 
 
     assert.deepEqual(harness.calls.map(commandLine), [
       'schtasks.exe --version',
-      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync0815 /TR "node-test" "sync-test.mjs" --mode sync --source all /ST 08:15',
-      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync2145 /TR "node-test" "sync-test.mjs" --mode sync --source all /ST 21:45',
+      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync0815 /TR "node-test" "sync-test.mjs" --mode sync --source all --scheduled /ST 08:15',
+      'schtasks.exe /Create /F /SC DAILY /TN TokenBoardDailySync2145 /TR "node-test" "sync-test.mjs" --mode sync --source all --scheduled /ST 21:45',
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $current = @('TokenBoardDailySync0815','TokenBoardDailySync2145'); Get-ScheduledTask -TaskPath '\\' | Where-Object { (($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' })) -and $current -notcontains $_.TaskName } | Unregister-ScheduledTask -Confirm:$false"
     ])
   } finally {

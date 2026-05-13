@@ -23,7 +23,7 @@ test('builds the Windows scheduled task shape with time-suffixed names', () => {
     '/TN',
     'TokenBoardDailySync0900',
     '/TR',
-    '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs" --mode sync --source all',
+    '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs" --mode sync --source all --scheduled',
     '/ST',
     '09:00'
   ])
@@ -57,8 +57,11 @@ test('builds macOS LaunchAgent plist for every daily sync time', () => {
 
   assert.match(plist, /<string>com\.tokenboard\.daily-sync<\/string>/)
   assert.match(plist, /<string>pnpm<\/string>/)
+  assert.match(plist, /<key>TOKENBOARD_SCHEDULED_SYNC<\/key>\s+<string>1<\/string>/)
+  assert.match(plist, /<key>TOKENBOARD_LOG_DIR<\/key>\s+<string>\/Users\/mison\/.tokenboard\/logs<\/string>/)
   assert.match(plist, /<string>\/Users\/mison\/.tokenboard\/logs\/daily-sync\.out\.log<\/string>/)
   assert.match(plist, /<string>\/Users\/mison\/.tokenboard\/logs\/daily-sync\.err\.log<\/string>/)
+  assert.match(plist, /<string>--scheduled<\/string>/)
   assert.equal([...plist.matchAll(/<key>Hour<\/key>\s+<integer>(\d+)<\/integer>/g)].map((match) => match[1]).join(','), '9,12,18,23')
   assert.equal([...plist.matchAll(/<key>Minute<\/key>\s+<integer>(\d+)<\/integer>/g)].map((match) => match[1]).join(','), '0,0,0,0')
 })
@@ -80,8 +83,10 @@ test('builds Linux user systemd units with pnpm available in PATH', () => {
   })
 
   assert.match(units.service, /Environment=TOKENBOARD_PACKAGE_MANAGER=pnpm/)
+  assert.match(units.service, /Environment=TOKENBOARD_SCHEDULED_SYNC=1/)
+  assert.match(units.service, /Environment=TOKENBOARD_LOG_DIR=\/home\/tokenboard\/.tokenboard\/logs/)
   assert.match(units.service, /Environment=PATH=\/home\/tokenboard\/.bun\/bin:\/home\/tokenboard\/.local\/bin:\/usr\/bin:\/bin/)
-  assert.match(units.service, /ExecStart=\/usr\/bin\/node \/home\/tokenboard\/.tokenboard\/TokenBoard\/skills\/tokenboard\/scripts\/sync.mjs --mode sync --source all/)
+  assert.match(units.service, /ExecStart=\/usr\/bin\/node \/home\/tokenboard\/.tokenboard\/TokenBoard\/skills\/tokenboard\/scripts\/sync.mjs --mode sync --source all --scheduled/)
   assert.match(units.timer, /OnCalendar=09:00/)
   assert.match(units.timer, /OnCalendar=12:00/)
   assert.match(units.timer, /OnCalendar=18:00/)
