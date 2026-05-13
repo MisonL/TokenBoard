@@ -1,6 +1,8 @@
-import { cp, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { cp, mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
 import { glob } from 'node:fs/promises'
 
 const CODEX_SESSIONS_DIR = 'sessions'
@@ -162,13 +164,7 @@ async function isActiveSessionFile(
     return true
   }
 
-  const content = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') {
-      return ''
-    }
-    throw new Error(`Unable to read Codex session file ${file}: ${error.message}`)
-  })
-  const tokenCountActivity = readTokenCountActivity(content, options)
+  const tokenCountActivity = await readTokenCountActivity(file, options)
   if (tokenCountActivity.hasInRangeTimestamp) {
     return true
   }
@@ -179,33 +175,47 @@ async function isActiveSessionFile(
   return false
 }
 
-function readTokenCountActivity(content: string, options: { since?: Date; until?: Date }) {
+async function readTokenCountActivity(file: string, options: { since?: Date; until?: Date }) {
   const activity = {
     hasAnyTimestamp: false,
     hasInRangeTimestamp: false
   }
 
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-
-    const entry = parseJsonRecord(trimmed)
-    if (!entry || entry.type !== 'event_msg') continue
-    const payload = readRecord(entry.payload)
-    if (payload?.type !== 'token_count') continue
-
-    const timestamp = typeof entry.timestamp === 'string' ? new Date(entry.timestamp) : null
-    if (!timestamp || Number.isNaN(timestamp.getTime())) {
-      continue
+  try {
+    const stream = createReadStream(file, { encoding: 'utf8' })
+    const lines = createInterface({ input: stream, crlfDelay: Infinity })
+    for await (const line of lines) {
+      const timestamp = readTokenCountTimestamp(line)
+      if (!timestamp) continue
+      activity.hasAnyTimestamp = true
+      if (isDateInRange(timestamp, options)) {
+        activity.hasInRangeTimestamp = true
+        lines.close()
+        break
+      }
     }
-    activity.hasAnyTimestamp = true
-    if (isDateInRange(timestamp, options)) {
-      activity.hasInRangeTimestamp = true
+  } catch (error) {
+    const cause = error as NodeJS.ErrnoException
+    if (cause.code === 'ENOENT') {
       return activity
     }
+    throw new Error(`Unable to read Codex session file ${file}: ${cause.message}`)
   }
 
   return activity
+}
+
+function readTokenCountTimestamp(line: string) {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+
+  const entry = parseJsonRecord(trimmed)
+  if (!entry || entry.type !== 'event_msg') return null
+  const payload = readRecord(entry.payload)
+  if (payload?.type !== 'token_count') return null
+
+  const timestamp = typeof entry.timestamp === 'string' ? new Date(entry.timestamp) : null
+  return timestamp && !Number.isNaN(timestamp.getTime()) ? timestamp : null
 }
 
 function isDateInRange(date: Date, options: { since?: Date; until?: Date }) {
