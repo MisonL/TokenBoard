@@ -3,6 +3,7 @@ import { dirname } from 'node:path'
 export const serviceName = 'tokenboard-daily-sync.service'
 export const timerName = 'tokenboard-daily-sync.timer'
 export const launchAgentLabel = 'com.tokenboard.daily-sync'
+export const windowsWrapperName = 'tokenboard-daily-sync.cmd'
 export const dailyScheduleTimes = ['09:00', '12:00', '18:00', '23:00']
 
 export function buildWindowsTaskArgs({
@@ -11,10 +12,11 @@ export function buildWindowsTaskArgs({
   packageManager = 'pnpm',
   pathEnv = 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
   homeDir = '',
+  taskCommand,
   taskName = windowsTaskName(dailyScheduleTimes[0]),
   startTime = dailyScheduleTimes[0]
 }) {
-  const taskCommand = buildWindowsTaskCommand({
+  const command = taskCommand || buildWindowsTaskCommand({
     nodePath,
     scriptPath,
     packageManager,
@@ -29,7 +31,7 @@ export function buildWindowsTaskArgs({
     '/TN',
     taskName,
     '/TR',
-    taskCommand,
+    command,
     '/ST',
     startTime
   ]
@@ -41,6 +43,7 @@ export function buildWindowsTaskDefinitions({
   packageManager = 'pnpm',
   pathEnv = 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
   homeDir = '',
+  taskCommand,
   scheduleTimes = dailyScheduleTimes
 }) {
   return scheduleTimes.map((startTime) => ({
@@ -51,10 +54,26 @@ export function buildWindowsTaskDefinitions({
       packageManager,
       pathEnv,
       homeDir,
+      taskCommand,
       taskName: windowsTaskName(startTime),
       startTime
     })
   }))
+}
+
+export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, pathEnv, homeDir }) {
+  const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter: ';' })
+  const logDir = joinForDelimiter(homeDir, '.tokenboard', 'logs', ';')
+  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --source all --scheduled`
+  return [
+    '@echo off',
+    `set "TOKENBOARD_PACKAGE_MANAGER=${escapeWindowsCmdValue(packageManager)}"`,
+    'set "TOKENBOARD_SCHEDULED_SYNC=1"',
+    `set "TOKENBOARD_LOG_DIR=${escapeWindowsCmdValue(logDir)}"`,
+    `set "PATH=${escapeWindowsCmdValue(normalizedPath)}"`,
+    syncCommand,
+    ''
+  ].join('\r\n')
 }
 
 export function buildWindowsTaskCommand({ nodePath, scriptPath, packageManager, pathEnv, homeDir }) {

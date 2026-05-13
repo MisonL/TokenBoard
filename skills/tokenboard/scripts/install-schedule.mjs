@@ -8,12 +8,14 @@ import { configDir, parseArgs, readConfig } from './config.mjs'
 import {
   buildLinuxSystemdUnits,
   buildMacLaunchAgentPlist,
+  buildWindowsTaskScript,
   buildWindowsTaskDefinitions,
   dailyScheduleTimes,
   launchAgentLabel,
   parseScheduleTimes,
   serviceName,
   timerName,
+  windowsWrapperName,
   windowsTaskName
 } from './schedule.mjs'
 
@@ -56,12 +58,22 @@ export function installSchedule(options = {}) {
 function installWindows(runtime, scheduleTimes) {
   requireCommand(runtime, 'schtasks.exe')
   const config = runtime.readConfig()
+  const wrapperPath = join(runtime.configDir, windowsWrapperName)
+  runtime.mkdir(runtime.configDir, { recursive: true })
+  runtime.writeFile(wrapperPath, buildWindowsTaskScript({
+    nodePath: runtime.nodePath,
+    scriptPath: runtime.scriptPath,
+    packageManager: config.packageManager || runtime.env.TOKENBOARD_PACKAGE_MANAGER || 'pnpm',
+    pathEnv: runtime.env.PATH || 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
+    homeDir: runtime.homeDir
+  }))
   for (const task of buildWindowsTaskDefinitions({
     nodePath: runtime.nodePath,
     scriptPath: runtime.scriptPath,
     packageManager: config.packageManager || runtime.env.TOKENBOARD_PACKAGE_MANAGER || 'pnpm',
     pathEnv: runtime.env.PATH || 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
     homeDir: runtime.homeDir,
+    taskCommand: `"${wrapperPath}"`,
     scheduleTimes
   })) {
     runOrThrow(runtime, 'schtasks.exe', task.args)

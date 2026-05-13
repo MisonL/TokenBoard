@@ -4,6 +4,7 @@ import {
   buildLinuxSystemdUnits,
   buildMacLaunchAgentPlist,
   buildWindowsTaskArgs,
+  buildWindowsTaskScript,
   buildWindowsTaskDefinitions,
   normalizePathEnv,
   parseScheduleTimes
@@ -198,4 +199,33 @@ test('builds Windows scheduled task command with explicit runtime environment', 
   assert.match(taskCommand, /C:\\Program Files\\nodejs\\node\.exe/)
   assert.match(taskCommand, /C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync\.mjs/)
   assert.match(taskCommand, /--mode sync --source all --scheduled/)
+})
+
+test('builds Windows scheduled task args with a short wrapper command', () => {
+  const args = buildWindowsTaskArgs({
+    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+    scriptPath: 'C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs',
+    taskCommand: '"C:\\Users\\mison\\.tokenboard\\tokenboard-daily-sync.cmd"'
+  })
+  const taskCommand = args[args.indexOf('/TR') + 1]
+
+  assert.equal(taskCommand, '"C:\\Users\\mison\\.tokenboard\\tokenboard-daily-sync.cmd"')
+  assert.ok(taskCommand.length < 261)
+})
+
+test('builds Windows scheduled sync wrapper script with explicit runtime environment', () => {
+  const script = buildWindowsTaskScript({
+    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+    scriptPath: 'C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs',
+    packageManager: 'bun',
+    pathEnv: 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
+    homeDir: 'C:\\Users\\mison'
+  })
+
+  assert.match(script, /@echo off/)
+  assert.match(script, /set "TOKENBOARD_PACKAGE_MANAGER=bun"/)
+  assert.match(script, /set "TOKENBOARD_SCHEDULED_SYNC=1"/)
+  assert.match(script, /set "TOKENBOARD_LOG_DIR=C:\\Users\\mison\\.tokenboard\\logs"/)
+  assert.match(script, /set "PATH=C:\\Users\\mison\\.bun\\bin;C:\\Users\\mison\\.local\\bin;C:\\Program Files\\nodejs;C:\\Windows\\System32"/)
+  assert.match(script, /"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\mison\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync\.mjs" --mode sync --source all --scheduled/)
 })
