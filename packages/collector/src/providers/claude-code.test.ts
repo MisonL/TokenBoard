@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
+import type { CommandRunnerOptions } from '../command'
 import { collectClaudeCodeUsage } from './claude-code'
 
 describe('collectClaudeCodeUsage', () => {
@@ -179,5 +180,26 @@ describe('collectClaudeCodeUsage', () => {
         args: ['ccusage@latest', 'session', '--json']
       }
     ])
+  })
+
+  test('enables package command retries for online package execution', async () => {
+    const calls: Array<{ args: string[]; options?: CommandRunnerOptions }> = []
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+    vi.stubEnv('TOKENBOARD_PACKAGE_COMMAND_RETRIES', '4')
+
+    await collectClaudeCodeUsage({
+      async runner(_command, args, options) {
+        calls.push({ args, options })
+        return { data: [] }
+      }
+    })
+
+    expect(calls[0]).toEqual({
+      args: ['ccusage@latest', 'daily', '--json', '--breakdown'],
+      options: {
+        retries: 4,
+        onRetry: expect.any(Function)
+      }
+    })
   })
 })

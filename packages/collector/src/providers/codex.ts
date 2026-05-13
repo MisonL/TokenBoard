@@ -12,6 +12,7 @@ export type CollectCodexUsageOptions = {
 
 const DEFAULT_DAILY_TIMEOUT_MS = 900_000
 const DEFAULT_SESSION_TIMEOUT_MS = 900_000
+const DEFAULT_PACKAGE_COMMAND_RETRIES = 2
 
 export async function collectCodexUsage(
   options: CollectCodexUsageOptions = {}
@@ -22,12 +23,19 @@ export async function collectCodexUsage(
   const json = await runner(
     packageRunner.command,
     packageRunner.runPackageArgs('@ccusage/codex@latest', 'ccusage-codex', ['daily', '--json', ...sinceArgs]),
-    { timeoutMs: readDailyTimeoutMs() }
+    packageCommandOptions({
+      timeoutMs: readDailyTimeoutMs(),
+      stderr: options.stderr
+    })
   )
   const sessions = await collectSessionCounts({
     runner,
     command: packageRunner.command,
     args: packageRunner.runPackageArgs('@ccusage/codex@latest', 'ccusage-codex', ['session', '--json', ...sinceArgs]),
+    options: packageCommandOptions({
+      timeoutMs: readSessionTimeoutMs(),
+      stderr: options.stderr
+    }),
     stderr: options.stderr
   })
 
@@ -43,23 +51,47 @@ async function collectSessionCounts({
   runner,
   command,
   args,
+  options,
   stderr = console.error
 }: {
   runner: CommandRunner
   command: string
   args: string[]
+  options: Parameters<CommandRunner>[2]
   stderr?: (line: string) => void
 }) {
   try {
     return await runner(
       command,
       args,
-      { timeoutMs: readSessionTimeoutMs() }
+      options
     )
   } catch (error) {
     stderr(`Skipping codex session counts: ${errorMessage(error)}`)
     return { data: [] }
   }
+}
+
+function packageCommandOptions({
+  timeoutMs,
+  stderr = console.error
+}: {
+  timeoutMs: number
+  stderr?: (line: string) => void
+}) {
+  return {
+    timeoutMs,
+    retries: readPackageCommandRetries(),
+    onRetry: stderr
+  }
+}
+
+function readPackageCommandRetries() {
+  const value = Number.parseInt(process.env.TOKENBOARD_PACKAGE_COMMAND_RETRIES || '', 10)
+  if (Number.isFinite(value) && value >= 0) {
+    return value
+  }
+  return DEFAULT_PACKAGE_COMMAND_RETRIES
 }
 
 function readDailyTimeoutMs() {

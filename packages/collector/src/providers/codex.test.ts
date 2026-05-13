@@ -52,12 +52,12 @@ describe('collectCodexUsage', () => {
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'daily', '--json'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       },
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'session', '--json'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -87,12 +87,12 @@ describe('collectCodexUsage', () => {
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260501'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       },
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260501'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       }
     ])
   })
@@ -149,12 +149,12 @@ describe('collectCodexUsage', () => {
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'daily', '--json'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       },
       {
         command: 'npx',
         args: ['@ccusage/codex@latest', 'session', '--json'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       }
     ])
   })
@@ -176,12 +176,12 @@ describe('collectCodexUsage', () => {
       {
         command: '/opt/bin/bunx',
         args: ['@ccusage/codex@latest', 'daily', '--json', '--since', '20260509'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       },
       {
         command: '/opt/bin/bunx',
         args: ['@ccusage/codex@latest', 'session', '--json', '--since', '20260509'],
-        options: { timeoutMs: 900000 }
+        options: expectedCommandOptions(900000)
       }
     ])
   })
@@ -200,7 +200,15 @@ describe('collectCodexUsage', () => {
 
     expect(calls[0]).toEqual({
       args: ['@ccusage/codex@latest', 'daily', '--json'],
-      options: { timeoutMs: 300000 }
+      options: expectedCommandOptions(300000)
     })
   })
 })
+
+function expectedCommandOptions(timeoutMs: number) {
+  return {
+    timeoutMs,
+    retries: 2,
+    onRetry: expect.any(Function)
+  }
+}

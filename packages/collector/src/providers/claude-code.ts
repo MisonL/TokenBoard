@@ -7,7 +7,10 @@ export type CollectUsageOptions = {
   timezone?: string
   collectedAt?: string
   runner?: CommandRunner
+  stderr?: (line: string) => void
 }
+
+const DEFAULT_PACKAGE_COMMAND_RETRIES = 2
 
 export async function collectClaudeCodeUsage(
   options: CollectUsageOptions = {}
@@ -20,11 +23,13 @@ export async function collectClaudeCodeUsage(
   })
   const json = await runner(
     packageRunner.command,
-    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json', '--breakdown', ...rangeArgs])
+    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json', '--breakdown', ...rangeArgs]),
+    packageCommandOptions(options.stderr)
   )
   const sessions = await runner(
     packageRunner.command,
-    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['session', '--json', ...rangeArgs])
+    packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['session', '--json', ...rangeArgs]),
+    packageCommandOptions(options.stderr)
   )
 
   return normalizeCcusageDailyJson(json, {
@@ -33,6 +38,21 @@ export async function collectClaudeCodeUsage(
     collectedAt: options.collectedAt,
     sessions
   })
+}
+
+function packageCommandOptions(stderr: ((line: string) => void) | undefined) {
+  return {
+    retries: readPackageCommandRetries(),
+    onRetry: stderr ?? console.error
+  }
+}
+
+function readPackageCommandRetries() {
+  const value = Number.parseInt(process.env.TOKENBOARD_PACKAGE_COMMAND_RETRIES || '', 10)
+  if (Number.isFinite(value) && value >= 0) {
+    return value
+  }
+  return DEFAULT_PACKAGE_COMMAND_RETRIES
 }
 
 function buildRangeArgs(options: { since?: string; until?: string }) {
