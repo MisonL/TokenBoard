@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { packageManagerCommand } from './config.mjs'
 import { buildInstallCollectorPlan } from './install-collector.mjs'
 
 test('clones the configured collector repo before installing dependencies', () => {
@@ -18,8 +17,8 @@ test('clones the configured collector repo before installing dependencies', () =
         options: {}
       },
       {
-        command: packageManagerCommand('pnpm'),
-        args: ['install'],
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       }
     ]
@@ -47,8 +46,8 @@ test('updates the existing collector origin before pulling', () => {
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
-        command: packageManagerCommand('npm'),
-        args: ['install'],
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       }
     ]
@@ -76,11 +75,28 @@ test('removes an existing non-git collector directory before cloning', () => {
         options: {}
       },
       {
-        command: packageManagerCommand('bun'),
-        args: ['install'],
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       }
     ]
+  )
+})
+
+test('uses corepack pnpm for workspace dependency install on Windows', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      packageManager: 'npm',
+      exists: false,
+      platform: 'win32'
+    }).at(-1),
+    {
+      command: 'corepack.cmd',
+      args: ['pnpm', 'install', '--frozen-lockfile'],
+      options: { cwd: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard' }
+    }
   )
 })
 

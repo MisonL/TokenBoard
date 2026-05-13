@@ -3,7 +3,7 @@ import { existsSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
-import { collectorDir, configDir, mergeConfig, packageManagerCommand, parseArgs, readPackageManager } from './config.mjs'
+import { collectorDir, configDir, mergeConfig, parseArgs, readPackageManager } from './config.mjs'
 
 const defaultRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
 
@@ -21,7 +21,7 @@ function run(command, args, options = {}) {
   if (result.status !== 0) process.exit(result.status ?? 1)
 }
 
-export function buildInstallCollectorPlan({ dir, repoUrl, packageManager, exists, isGitRepo = exists, configDir }) {
+export function buildInstallCollectorPlan({ dir, repoUrl, packageManager, exists, isGitRepo = exists, configDir, platform = process.platform }) {
   if (exists && !isGitRepo && configDir && samePath(dir, configDir)) {
     throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${dir}`)
   }
@@ -41,8 +41,8 @@ export function buildInstallCollectorPlan({ dir, repoUrl, packageManager, exists
       ]
 
   steps.push({
-    command: packageManagerCommand(packageManager),
-    args: ['install'],
+    command: corepackCommand(platform),
+    args: ['pnpm', 'install', '--frozen-lockfile'],
     options: { cwd: dir }
   })
 
@@ -61,7 +61,8 @@ function runCli() {
     packageManager,
     exists: existsSync(dir),
     isGitRepo: existsSync(join(dir, '.git')),
-    configDir: configDir()
+    configDir: configDir(),
+    platform: process.platform
   })) {
     run(step.command, step.args, step.options)
   }
@@ -72,6 +73,10 @@ function runCli() {
 
 function samePath(leftPath, rightPath) {
   return resolve(leftPath) === resolve(rightPath)
+}
+
+function corepackCommand(platform) {
+  return platform === 'win32' ? 'corepack.cmd' : 'corepack'
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
