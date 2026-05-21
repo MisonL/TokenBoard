@@ -53,8 +53,11 @@ describe('listLeaderboard', () => {
         costUsd: 2.5
       }
     ])
-    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= ?')
-    expect(sqlStatements[0]).toContain('daily_usage.usage_date < ?')
+    expect(sqlStatements[0]).toContain('deduped_daily_usage')
+    expect(sqlStatements[0]).toContain('deduped_daily_usage.usage_date >= ?')
+    expect(sqlStatements[0]).toContain('deduped_daily_usage.usage_date < ?')
+    expect(sqlStatements[0]).toContain("device_id <> 'legacy'")
+    expect(sqlStatements[0]).toContain('NOT EXISTS')
     expect(sqlStatements[0]).toContain('ORDER BY totalTokens DESC, costUsd DESC')
     expect(bindings[0]).toEqual(['2026-04-01', '2026-05-01', 20])
   })

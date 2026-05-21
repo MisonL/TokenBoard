@@ -1,3 +1,5 @@
+import { dedupedDailyUsageCte } from '../usage/deduped-daily-usage'
+
 export type LeaderboardEntry = {
   rank: number
   slug: string
@@ -40,17 +42,18 @@ export async function listLeaderboard(
   const rows = await db
     .prepare(
       `
+        WITH ${dedupedDailyUsageCte}
         SELECT
           profiles.slug as slug,
           profiles.display_name as displayName,
-          COALESCE(SUM(daily_usage.total_tokens), 0) as totalTokens,
-          COALESCE(SUM(daily_usage.cost_usd), 0) as costUsd
+          COALESCE(SUM(deduped_daily_usage.total_tokens), 0) as totalTokens,
+          COALESCE(SUM(deduped_daily_usage.cost_usd), 0) as costUsd
         FROM profiles
-        JOIN daily_usage ON daily_usage.user_id = profiles.user_id
+        JOIN deduped_daily_usage ON deduped_daily_usage.user_id = profiles.user_id
         WHERE profiles.is_public = 1
           AND profiles.participates_in_leaderboards = 1
-          AND daily_usage.usage_date >= ?
-          AND daily_usage.usage_date < ?
+          AND deduped_daily_usage.usage_date >= ?
+          AND deduped_daily_usage.usage_date < ?
         GROUP BY profiles.user_id, profiles.slug, profiles.display_name
         ${orderBy}
         LIMIT ?

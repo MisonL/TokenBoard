@@ -16,8 +16,10 @@ describe('public card service', () => {
 
   test('returns public usage without leaking internal ids', async () => {
     const bindings: unknown[][] = []
+    const sqlStatements: string[] = []
     const db = {
       prepare(sql: string) {
+        sqlStatements.push(sql)
         return {
           bind(...values: unknown[]) {
             bindings.push(values)
@@ -67,6 +69,11 @@ describe('public card service', () => {
     expect(JSON.stringify(result)).not.toContain('internal-user-id')
     expect(bindings[0]).toEqual(['eve'])
     expect(bindings[1]).toEqual(['2026-04-29', '2026-04-29', '2026-04-01', '2026-04-01', 'internal-user-id'])
+    for (const sql of sqlStatements.slice(1)) {
+      expect(sql).toContain('deduped_daily_usage')
+      expect(sql).toContain("device_id <> 'legacy'")
+      expect(sql).toContain('NOT EXISTS')
+    }
   })
 
   test('rejects a private profile', async () => {

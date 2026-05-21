@@ -2,6 +2,7 @@
 import { ApiError } from '../../lib/errors'
 import { toIsoDate } from '../../lib/time'
 import { canShowPublicProfile } from '../settings/service'
+import { dedupedDailyUsageCte } from '../usage/deduped-daily-usage'
 import { renderUsageCardSvg } from './svg'
 
 export type PublicUsageProfile = {
@@ -130,12 +131,13 @@ async function getPublicTotals(db: D1Database, userId: string, today: string, mo
   return db
     .prepare(
       `
+        WITH ${dedupedDailyUsageCte}
         SELECT
           COALESCE(SUM(CASE WHEN usage_date = ? THEN total_tokens ELSE 0 END), 0) as todayTokens,
           COALESCE(SUM(CASE WHEN usage_date = ? THEN cost_usd ELSE 0 END), 0) as todayCostUsd,
           COALESCE(SUM(CASE WHEN usage_date >= ? THEN total_tokens ELSE 0 END), 0) as monthTokens,
           COALESCE(SUM(CASE WHEN usage_date >= ? THEN cost_usd ELSE 0 END), 0) as monthCostUsd
-        FROM daily_usage
+        FROM deduped_daily_usage
         WHERE user_id = ?
       `
     )
@@ -147,8 +149,9 @@ async function getSourceSplit(db: D1Database, userId: string, monthStart: string
   const rows = await db
     .prepare(
       `
+        WITH ${dedupedDailyUsageCte}
         SELECT source, COALESCE(SUM(total_tokens), 0) as totalTokens
-        FROM daily_usage
+        FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
         GROUP BY source
@@ -168,11 +171,12 @@ async function getTopModels(db: D1Database, userId: string, monthStart: string) 
   const rows = await db
     .prepare(
       `
+        WITH ${dedupedDailyUsageCte}
         SELECT
           model,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
           COALESCE(SUM(cost_usd), 0) as costUsd
-        FROM daily_usage
+        FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
         GROUP BY model
