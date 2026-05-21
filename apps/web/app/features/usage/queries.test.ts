@@ -61,6 +61,8 @@ describe('getUsageSummary', () => {
     expect(bindings[0]).toEqual(['seed-user', '2026-04-28', '2026-04-01'])
     expect(bindings[1]).toEqual(['seed-user', '2026-04-01'])
     expect(sqlStatements[0]).toContain('daily_usage')
+    expect(sqlStatements[0]).toContain('deduped_daily_usage')
+    expect(sqlStatements[1]).toContain('deduped_daily_usage')
     expect(sqlStatements[0]).toContain('LEFT JOIN device_stats')
   })
 })
@@ -102,6 +104,7 @@ describe('getDailyUsageTrend', () => {
       { usageDate: '2026-04-29', totalTokens: 340, costUsd: 0.34 }
     ])
     expect(bindings[0]).toEqual(['user_1', '2026-04-27', '2026-04-29'])
+    expect(sqlStatements[0]).toContain('deduped_daily_usage')
     expect(sqlStatements[0]).toContain('GROUP BY usage_date')
     expect(sqlStatements[0]).toContain('ORDER BY usage_date ASC')
   })
@@ -261,5 +264,35 @@ describe('getUsageDetails', () => {
     expect(sqlStatements[1]).toContain('GROUP BY usage_date, source, model')
     expect(sqlStatements[1]).toContain('device_id')
     expect(sqlStatements[1]).toContain('lower(model)')
+  })
+
+  test('dedupes legacy rows when querying all devices', async () => {
+    const sqlStatements: string[] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind() {
+            return {
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getUsageDetails(db, {
+      userId: 'user_1',
+      source: 'all',
+      startDate: '2026-04-27',
+      endDate: '2026-04-29'
+    })
+
+    expect(sqlStatements[0]).toContain('deduped_daily_usage')
+    expect(sqlStatements[1]).toContain('deduped_daily_usage')
+    expect(sqlStatements[0]).toContain("device_id <> 'legacy'")
+    expect(sqlStatements[0]).toContain('NOT EXISTS')
   })
 })

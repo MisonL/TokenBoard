@@ -1,4 +1,9 @@
 import type { UsageSource } from '@tokenboard/usage-core'
+import {
+  dedupedDailyUsageCte,
+  optionalDedupedDailyUsageWith,
+  usageTableForDeviceFilter
+} from './deduped-daily-usage'
 
 export type UsageSummaryInput = {
   userId: string
@@ -92,7 +97,8 @@ export async function getUsageSummary(
   const summary = await db
     .prepare(
       `
-        WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
+        WITH ${dedupedDailyUsageCte},
+        params(user_id, today, month_start) AS (SELECT ?, ?, ?),
         device_stats AS (
           SELECT
             devices.user_id,
@@ -102,14 +108,14 @@ export async function getUsageSummary(
           GROUP BY devices.user_id
         )
         SELECT
-          COALESCE(SUM(CASE WHEN daily_usage.usage_date = params.today THEN daily_usage.total_tokens ELSE 0 END), 0) as todayTokens,
-          COALESCE(SUM(CASE WHEN daily_usage.usage_date = params.today THEN daily_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
-          COALESCE(SUM(CASE WHEN daily_usage.usage_date >= params.month_start THEN daily_usage.total_tokens ELSE 0 END), 0) as monthTokens,
-          COALESCE(SUM(CASE WHEN daily_usage.usage_date >= params.month_start THEN daily_usage.cost_usd ELSE 0 END), 0) as monthCostUsd,
+          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as todayTokens,
+          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
+          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as monthTokens,
+          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as monthCostUsd,
           device_stats.lastSyncedAt as lastSyncedAt,
           COALESCE(device_stats.deviceCount, 0) as deviceCount
         FROM params
-        LEFT JOIN daily_usage ON daily_usage.user_id = params.user_id
+        LEFT JOIN deduped_daily_usage ON deduped_daily_usage.user_id = params.user_id
         LEFT JOIN device_stats ON device_stats.user_id = params.user_id
       `
     )
@@ -119,8 +125,9 @@ export async function getUsageSummary(
   const split = await db
     .prepare(
       `
+        WITH ${dedupedDailyUsageCte}
         SELECT source, COALESCE(SUM(total_tokens), 0) as totalTokens
-        FROM daily_usage
+        FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
         GROUP BY source
@@ -151,11 +158,12 @@ export async function getDailyUsageTrend(
   const rows = await db
     .prepare(
       `
+        WITH ${dedupedDailyUsageCte}
         SELECT
           usage_date as usageDate,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
           COALESCE(SUM(cost_usd), 0) as costUsd
-        FROM daily_usage
+        FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
           AND usage_date <= ?
@@ -186,16 +194,19 @@ export async function getUsageDetails(
   db: D1Database,
   input: UsageDetailsInput
 ): Promise<UsageDetails> {
+  const usageTable = usageTableForDeviceFilter(input.deviceId)
+  const usageWith = optionalDedupedDailyUsageWith(input.deviceId)
   const dailySourceRows = await db
     .prepare(
       `
+        ${usageWith}
         SELECT
           usage_date as usageDate,
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
           COALESCE(SUM(cost_usd), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
-        FROM daily_usage
+        FROM ${usageTable}
         WHERE user_id = ?
           AND usage_date >= ?
           AND usage_date <= ?
@@ -228,6 +239,7 @@ export async function getUsageDetails(
   const modelRowsResult = await db
     .prepare(
       `
+        ${usageWith}
         SELECT
           usage_date as usageDate,
           source,
@@ -239,7 +251,7 @@ export async function getUsageDetails(
           COALESCE(SUM(total_tokens), 0) as totalTokens,
           COALESCE(SUM(cost_usd), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
-        FROM daily_usage
+        FROM ${usageTable}
         WHERE user_id = ?
           AND usage_date >= ?
           AND usage_date <= ?
