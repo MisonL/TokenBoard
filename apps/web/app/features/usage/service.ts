@@ -101,8 +101,9 @@ function readIsoDate(value: string | undefined, fallback: string) {
 }
 
 function readDeviceId(value: string | undefined) {
-  if (!value || value === 'all') return 'all'
-  return /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : 'all'
+  const normalized = String(value ?? '').trim()
+  if (!normalized || normalized.toLowerCase() === 'all') return 'all'
+  return /^[A-Za-z0-9_-]{1,128}$/.test(normalized) ? normalized : 'all'
 }
 
 function csvCell(value: string | number) {

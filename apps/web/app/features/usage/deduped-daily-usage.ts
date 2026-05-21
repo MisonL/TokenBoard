@@ -15,9 +15,14 @@ deduped_daily_usage AS (
 )`
 
 export function usageTableForDeviceFilter(deviceId?: string) {
-  return deviceId ? 'daily_usage' : 'deduped_daily_usage'
+  return isSpecificDeviceFilter(deviceId) ? 'daily_usage' : 'deduped_daily_usage'
 }
 
 export function optionalDedupedDailyUsageWith(deviceId?: string) {
-  return deviceId ? '' : `WITH ${dedupedDailyUsageCte}`
+  return isSpecificDeviceFilter(deviceId) ? '' : `WITH ${dedupedDailyUsageCte}`
+}
+
+function isSpecificDeviceFilter(deviceId?: string) {
+  const normalized = String(deviceId ?? '').trim()
+  return Boolean(normalized && normalized.toLowerCase() !== 'all')
 }
