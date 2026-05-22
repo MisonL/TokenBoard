@@ -35,7 +35,9 @@ export async function collectCodexUsage(
       codexHome: options.codexHome,
       since,
       until,
-      batchSize: readBatchSize()
+      batchSize: readBatchSize(),
+      onMissingSessionFile: (sessionPath) =>
+        options.stderr?.(`Skipping Codex session file that disappeared before copy: ${sessionPath}`)
     })) {
       snapshots.push(...(await collectScopedBatch({
         runner,

@@ -1,10 +1,8 @@
 import { createReadStream } from 'node:fs'
-import { cp, mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
+import { cp, glob, mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
-import { glob } from 'node:fs/promises'
-
 const CODEX_SESSIONS_DIR = 'sessions'
 const JSONL_GLOB = '**/*.jsonl'
 
@@ -14,6 +12,7 @@ type CodexSessionScopeOptions = {
   until?: string
   now?: Date
   batchSize?: number
+  onMissingSessionFile?: (sessionPath: string) => void
 }
 
 export type CodexSessionScope = {
@@ -33,8 +32,9 @@ export async function createCodexSessionScope(
   let copied = 0
   try {
     for await (const file of iterateMatchingSessionFiles(scan)) {
-      await copySessionFile(scan.sourceSessionsDir, scope.codexHome, file)
-      copied += 1
+      if (await copySessionFile(scan.sourceSessionsDir, scope.codexHome, file, options.onMissingSessionFile)) {
+        copied += 1
+      }
     }
 
     if (copied === 0) {
@@ -62,12 +62,22 @@ export async function* createCodexSessionScopeBatches(
   for await (const file of iterateMatchingSessionFiles(scan)) {
     batch.push(file)
     if (batch.length >= batchSize) {
-      yield await createScope(scan.sourceSessionsDir, batch.splice(0, batch.length))
+      const scope = await createScope(
+        scan.sourceSessionsDir,
+        batch.splice(0, batch.length),
+        options.onMissingSessionFile
+      )
+      if (scope) {
+        yield scope
+      }
     }
   }
 
   if (batch.length > 0) {
-    yield await createScope(scan.sourceSessionsDir, batch)
+    const scope = await createScope(scan.sourceSessionsDir, batch, options.onMissingSessionFile)
+    if (scope) {
+      yield scope
+    }
   }
 }
 
@@ -108,11 +118,22 @@ async function* iterateMatchingSessionFiles(scan: {
   }
 }
 
-async function createScope(sourceSessionsDir: string, files: string[]) {
+async function createScope(
+  sourceSessionsDir: string,
+  files: string[],
+  onMissingSessionFile?: (sessionPath: string) => void
+) {
   const scope = await createEmptyScope()
+  let copied = 0
   try {
     for (const file of files) {
-      await copySessionFile(sourceSessionsDir, scope.codexHome, file)
+      if (await copySessionFile(sourceSessionsDir, scope.codexHome, file, onMissingSessionFile)) {
+        copied += 1
+      }
+    }
+    if (copied === 0) {
+      await scope.cleanup()
+      return null
     }
     return scope
   } catch (error) {
@@ -130,11 +151,26 @@ async function createEmptyScope() {
   }
 }
 
-async function copySessionFile(sourceSessionsDir: string, scopedHome: string, file: string) {
+async function copySessionFile(
+  sourceSessionsDir: string,
+  scopedHome: string,
+  file: string,
+  onMissingSessionFile?: (sessionPath: string) => void
+) {
   const relativePath = relative(sourceSessionsDir, file)
   const target = join(scopedHome, CODEX_SESSIONS_DIR, relativePath)
   await mkdir(dirname(target), { recursive: true })
-  await cp(file, target)
+  try {
+    await cp(file, target)
+    return true
+  } catch (error) {
+    const cause = error as NodeJS.ErrnoException
+    if (cause.code === 'ENOENT') {
+      onMissingSessionFile?.(relativePath)
+      return false
+    }
+    throw error
+  }
 }
 
 function normalizeBatchSize(value: number | undefined) {
@@ -241,11 +277,10 @@ function parseFilterDate(value: string | undefined, boundary: 'start' | 'end') {
     throw new Error(`Invalid Codex usage date filter: ${value}. Expected YYYYMMDD or YYYY-MM-DD.`)
   }
 
-  const date = new Date(Date.UTC(
-    Number.parseInt(compact.slice(0, 4), 10),
-    Number.parseInt(compact.slice(4, 6), 10) - 1,
-    Number.parseInt(compact.slice(6, 8), 10)
-  ))
+  const year = Number.parseInt(compact.slice(0, 4), 10)
+  const month = Number.parseInt(compact.slice(4, 6), 10) - 1
+  const day = Number.parseInt(compact.slice(6, 8), 10)
+  const date = new Date(Date.UTC(year, month, day))
   if (boundary === 'end') {
     date.setUTCHours(23, 59, 59, 999)
   }
@@ -261,7 +296,5 @@ function parseJsonRecord(value: string) {
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
