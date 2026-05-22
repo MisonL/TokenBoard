@@ -89,11 +89,11 @@ async function collectSnapshots(source: CliSource, timezone: string, deps: CliDe
 
   const snapshots: UsageSnapshot[] = []
   if (source === 'claude-code') {
-    snapshots.push(...(await deps.collectClaudeCodeUsage({ timezone })))
+    snapshots.push(...(await deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr })))
   }
 
   if (source === 'codex') {
-    snapshots.push(...(await deps.collectCodexUsage({ timezone })))
+    snapshots.push(...(await deps.collectCodexUsage({ timezone, stderr: deps.stderr })))
   }
 
   return snapshots
@@ -101,8 +101,8 @@ async function collectSnapshots(source: CliSource, timezone: string, deps: CliDe
 
 async function collectAllSnapshots(timezone: string, deps: CliDeps) {
   const snapshots: UsageSnapshot[] = []
-  await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage({ timezone }), snapshots, deps)
-  await collectOptionalSource('codex', () => deps.collectCodexUsage({ timezone }), snapshots, deps)
+  await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr }), snapshots, deps)
+  await collectOptionalSource('codex', () => deps.collectCodexUsage({ timezone, stderr: deps.stderr }), snapshots, deps)
   return snapshots
 }
 

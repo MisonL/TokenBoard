@@ -35,6 +35,17 @@ describe('parseUsageDetailsFilters', () => {
     })
   })
 
+  test('normalizes all-device filter variants', () => {
+    const filters = parseUsageDetailsFilters(
+      {
+        device: ' ALL '
+      },
+      new Date('2026-04-29T12:00:00.000Z')
+    )
+
+    expect(filters.deviceId).toBe('all')
+  })
+
   test('normalizes reversed date ranges', () => {
     const filters = parseUsageDetailsFilters(
       {

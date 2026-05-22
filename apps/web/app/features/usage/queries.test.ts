@@ -264,9 +264,90 @@ describe('getUsageDetails', () => {
     expect(sqlStatements[1]).toContain('GROUP BY usage_date, source, model')
     expect(sqlStatements[1]).toContain('device_id')
     expect(sqlStatements[1]).toContain('lower(model)')
+    expect(sqlStatements[0]).not.toContain('deduped_daily_usage')
+    expect(sqlStatements[1]).not.toContain('deduped_daily_usage')
   })
 
   test('dedupes legacy rows when querying all devices', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                const isDedupedQuery = sql.includes('FROM deduped_daily_usage')
+                const totalTokens = isDedupedQuery ? 100 : 1100
+                const costUsd = isDedupedQuery ? 1 : 11
+
+                if (sql.includes('GROUP BY usage_date, source, model')) {
+                  return {
+                    results: [
+                      {
+                        usageDate: '2026-04-29',
+                        source: 'codex',
+                        model: 'gpt-5',
+                        inputTokens: totalTokens,
+                        outputTokens: 0,
+                        cacheCreationTokens: 0,
+                        cacheReadTokens: 0,
+                        totalTokens,
+                        costUsd,
+                        sessionCount: 1
+                      }
+                    ]
+                  }
+                }
+
+                return {
+                  results: [
+                    {
+                      usageDate: '2026-04-29',
+                      source: 'codex',
+                      totalTokens,
+                      costUsd,
+                      sessionCount: 1
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const details = await getUsageDetails(db, {
+      userId: 'user_1',
+      source: 'all',
+      startDate: '2026-04-27',
+      endDate: '2026-04-29',
+      deviceId: 'all'
+    })
+
+    expect(details.summary).toEqual({
+      totalTokens: 100,
+      costUsd: 1,
+      sessionCount: 1,
+      activeDays: 1
+    })
+    expect(details.modelRows[0]?.totalTokens).toBe(100)
+    expect(sqlStatements[0]).toContain('deduped_daily_usage')
+    expect(sqlStatements[1]).toContain('deduped_daily_usage')
+    expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
+    expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
+    expect(sqlStatements[0]).toContain("device_id <> 'legacy'")
+    expect(sqlStatements[0]).toContain('NOT EXISTS')
+    expect(bindings).toEqual([
+      ['user_1', '2026-04-27', '2026-04-29', 'all', 'all', 'all', 'all', '', ''],
+      ['user_1', '2026-04-27', '2026-04-29', 'all', 'all', 'all', 'all', '', '']
+    ])
+  })
+
+  test('dedupes legacy rows when device filter is omitted', async () => {
     const sqlStatements: string[] = []
     const db = {
       prepare(sql: string) {
@@ -292,7 +373,73 @@ describe('getUsageDetails', () => {
 
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
     expect(sqlStatements[1]).toContain('deduped_daily_usage')
-    expect(sqlStatements[0]).toContain("device_id <> 'legacy'")
-    expect(sqlStatements[0]).toContain('NOT EXISTS')
+    expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
+    expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
+  })
+
+  test('dedupes legacy rows for all-device filter variants', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getUsageDetails(db, {
+      userId: 'user_1',
+      source: 'all',
+      startDate: '2026-04-27',
+      endDate: '2026-04-29',
+      deviceId: ' ALL '
+    })
+
+    expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
+    expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
+    expect(bindings[0]?.slice(5, 7)).toEqual(['all', 'all'])
+    expect(bindings[1]?.slice(5, 7)).toEqual(['all', 'all'])
+  })
+
+  test('normalizes invalid direct device filters to all devices', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getUsageDetails(db, {
+      userId: 'user_1',
+      source: 'all',
+      startDate: '2026-04-27',
+      endDate: '2026-04-29',
+      deviceId: 'dev bad!'
+    })
+
+    expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
+    expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
+    expect(bindings[0]?.slice(5, 7)).toEqual(['all', 'all'])
+    expect(bindings[1]?.slice(5, 7)).toEqual(['all', 'all'])
   })
 })

@@ -20,7 +20,7 @@ export function InstallCommand(props: InstallCommandProps) {
         collectorRepoUrl: props.collectorRepoUrl
       })
     : ''
-  const uninstallCommand = createUninstallCommand({
+  const uninstallCommands = createUninstallCommands({
     collectorRepoUrl: props.collectorRepoUrl
   })
 
@@ -68,7 +68,7 @@ export function InstallCommand(props: InstallCommandProps) {
             >
               <LucideIcon icon={Copy} size={17} />
             </button>
-            <pre id="install-prompt-text" class="overflow-x-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4 pr-16 text-sm leading-6 text-[var(--app-text)]">
+            <pre id="install-prompt-text" class="overflow-x-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4 pr-16 pt-14 text-sm leading-6 text-[var(--app-text)]">
               {prompt}
             </pre>
           </div>
@@ -79,22 +79,47 @@ export function InstallCommand(props: InstallCommandProps) {
         <div class="flex flex-col gap-1">
           <h2 class="text-base font-black">一键卸载 collector</h2>
         </div>
-        <div class="relative mt-4">
-          <button
-            type="button"
-            class="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-muted)] shadow-sm transition hover:border-lime-300/50 hover:text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-lime-300/30"
-            data-copy-target="uninstall-command-text"
-            aria-label="复制卸载命令"
-            title="复制卸载命令"
-          >
-            <LucideIcon icon={Copy} size={17} />
-          </button>
-          <pre id="uninstall-command-text" class="overflow-x-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4 pr-16 text-sm leading-6 text-[var(--app-text)]">
-            {uninstallCommand}
-          </pre>
+        <div class="mt-4 flex flex-col gap-4">
+          <CopyableCommandBlock
+            title="macOS / Linux / Git Bash"
+            command={uninstallCommands.bash}
+            targetId="uninstall-bash-command-text"
+            copyLabel="复制 macOS / Linux / Git Bash 卸载命令"
+          />
+          <CopyableCommandBlock
+            title="Windows PowerShell"
+            command={uninstallCommands.powerShell}
+            targetId="uninstall-powershell-command-text"
+            copyLabel="复制 Windows PowerShell 卸载命令"
+          />
         </div>
       </section>
     </section>
+  )
+}
+
+function CopyableCommandBlock(props: {
+  title: string
+  command: string
+  targetId: string
+  copyLabel: string
+}) {
+  return (
+    <div class="min-w-0">
+      <div class="relative rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4 pr-16 text-sm leading-6 text-[var(--app-text)]">
+        <button
+          type="button"
+          class="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-muted)] shadow-sm transition hover:border-lime-300/50 hover:text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-lime-300/30"
+          data-copy-target={props.targetId}
+          aria-label={props.copyLabel}
+          title={props.copyLabel}
+        >
+          <LucideIcon icon={Copy} size={17} />
+        </button>
+        <p class="font-mono">{props.title}：</p>
+        <pre id={props.targetId} class="mt-5 overflow-x-auto">{props.command}</pre>
+      </div>
+    </div>
   )
 }
 
@@ -117,12 +142,15 @@ export function createInstallPrompt(input: {
   const powerShellSetupRepoArg = collectorRepoUrl === defaultCollectorRepoUrl ? '' : ` --repo-url ${powerShellRepoUrl}`
 
   return [
-    '请在这台机器上安装并运行 TokenBoard collector。',
+    '请在这台机器上安装或升级 TokenBoard collector。',
+    '本提示词同时适用于首次安装和旧版 collector 升级；必须在需要同步用量的目标机器上执行。',
     '',
     '重要约束：',
     '- 只使用终端命令完成安装和 setup。',
     '- 不要使用浏览器、Playwright、网页抓取、fetch 或 curl 去访问 GitHub 页面。',
     '- 不要打印 upload token、配对响应、配置文件内容或任何本地隐私数据。',
+    '- 如果已经安装旧版 TokenBoard collector，更新现有 checkout 后重新运行 setup；setup 会重新配对设备、刷新 upload token/deviceId、刷新每日定时任务。',
+    '- 不要为了升级手动删除 ~/.tokenboard/config.json，也不要卸载旧计划任务；除非用户明确要求重装或卸载。',
     '- 如果已经安装了 TokenBoard skill，可以直接运行其中的 setup 脚本；否则用 git clone/update 仓库后运行脚本。',
     '- 首次安装默认执行全量同步，用于补齐历史 Claude Code / Codex 用量；不要擅自改成最近 7 天窗口。',
     '- 历史会话很多时首次全量可能耗时较长；保持命令运行，不要把长时间解析误判为失败。',
@@ -162,38 +190,53 @@ export function createInstallPrompt(input: {
   ].join('\n')
 }
 
-export function createUninstallCommand(input: {
+type UninstallCommandInput = {
   collectorRepoUrl?: string
-} = {}) {
+}
+
+export function createUninstallCommands(input: UninstallCommandInput = {}) {
   const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
   const bashRepoUrl = escapeBashArg(collectorRepoUrl)
   const powerShellRepoUrl = escapePowerShellArg(collectorRepoUrl)
 
+  return {
+    bash: [
+      'repo="$HOME/.tokenboard/TokenBoard"',
+      'if [ -d "$repo/.git" ]; then',
+      '  git -C "$repo" pull --ff-only',
+      'else',
+      '  if [ -e "$repo" ]; then rm -rf "$repo"; fi',
+      '  mkdir -p "$HOME/.tokenboard"',
+      `  git clone ${bashRepoUrl} "$repo"`,
+      'fi',
+      'node "$repo/skills/tokenboard/scripts/uninstall.mjs" --all'
+    ].join('\n'),
+    powerShell: [
+      '$repo = Join-Path $HOME ".tokenboard\\TokenBoard"',
+      'if (Test-Path (Join-Path $repo ".git")) {',
+      '  git -C $repo pull --ff-only',
+      '} else {',
+      '  if (Test-Path $repo) { Remove-Item -Recurse -Force $repo }',
+      '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
+      `  git clone ${powerShellRepoUrl} $repo`,
+      '}',
+      'node (Join-Path $repo "skills\\tokenboard\\scripts\\uninstall.mjs") --all'
+    ].join('\n')
+  }
+}
+
+export function createUninstallCommand(input: UninstallCommandInput = {}) {
+  const commands = createUninstallCommands(input)
+
   return [
     'macOS / Linux / Git Bash：',
     '```bash',
-    'repo="$HOME/.tokenboard/TokenBoard"',
-    'if [ -d "$repo/.git" ]; then',
-    '  git -C "$repo" pull --ff-only',
-    'else',
-    '  if [ -e "$repo" ]; then rm -rf "$repo"; fi',
-    '  mkdir -p "$HOME/.tokenboard"',
-    `  git clone ${bashRepoUrl} "$repo"`,
-    'fi',
-    'node "$repo/skills/tokenboard/scripts/uninstall.mjs" --all',
+    commands.bash,
     '```',
     '',
     'Windows PowerShell：',
     '```powershell',
-    '$repo = Join-Path $HOME ".tokenboard\\TokenBoard"',
-    'if (Test-Path (Join-Path $repo ".git")) {',
-    '  git -C $repo pull --ff-only',
-    '} else {',
-    '  if (Test-Path $repo) { Remove-Item -Recurse -Force $repo }',
-    '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
-    `  git clone ${powerShellRepoUrl} $repo`,
-    '}',
-    'node (Join-Path $repo "skills\\tokenboard\\scripts\\uninstall.mjs") --all',
+    commands.powerShell,
     '```'
   ].join('\n')
 }
