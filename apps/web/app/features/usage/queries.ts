@@ -1,6 +1,7 @@
 import type { UsageSource } from '@tokenboard/usage-core'
 import {
   dedupedDailyUsageCte,
+  normalizeDeviceFilter,
   optionalDedupedDailyUsageWith,
   usageTableForDeviceFilter
 } from './deduped-daily-usage'
@@ -194,8 +195,9 @@ export async function getUsageDetails(
   db: D1Database,
   input: UsageDetailsInput
 ): Promise<UsageDetails> {
-  const usageTable = usageTableForDeviceFilter(input.deviceId)
-  const usageWith = optionalDedupedDailyUsageWith(input.deviceId)
+  const deviceId = normalizeDeviceFilter(input.deviceId)
+  const usageTable = usageTableForDeviceFilter(deviceId)
+  const usageWith = optionalDedupedDailyUsageWith(deviceId)
   const dailySourceRows = await db
     .prepare(
       `
@@ -223,8 +225,8 @@ export async function getUsageDetails(
       input.endDate,
       input.source,
       input.source,
-      input.deviceId ?? 'all',
-      input.deviceId ?? 'all',
+      deviceId,
+      deviceId,
       input.modelQuery ?? '',
       input.modelQuery ?? ''
     )
@@ -268,8 +270,8 @@ export async function getUsageDetails(
       input.endDate,
       input.source,
       input.source,
-      input.deviceId ?? 'all',
-      input.deviceId ?? 'all',
+      deviceId,
+      deviceId,
       input.modelQuery ?? '',
       input.modelQuery ?? ''
     )

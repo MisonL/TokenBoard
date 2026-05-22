@@ -22,7 +22,12 @@ export function optionalDedupedDailyUsageWith(deviceId?: string) {
   return isSpecificDeviceFilter(deviceId) ? '' : `WITH ${dedupedDailyUsageCte}`
 }
 
-function isSpecificDeviceFilter(deviceId?: string) {
+export function normalizeDeviceFilter(deviceId?: string) {
   const normalized = String(deviceId ?? '').trim()
-  return Boolean(normalized && normalized.toLowerCase() !== 'all')
+  if (!normalized || normalized.toLowerCase() === 'all') return 'all'
+  return /^[A-Za-z0-9_-]{1,128}$/.test(normalized) ? normalized : 'all'
+}
+
+function isSpecificDeviceFilter(deviceId?: string) {
+  return normalizeDeviceFilter(deviceId) !== 'all'
 }
