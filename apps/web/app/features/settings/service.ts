@@ -141,6 +141,6 @@ function toProfileSettings(row: ProfileRow, origin: string): ProfileSettings {
     ...profile,
     publicJsonUrl: `${origin}/api/public/${profile.slug}.json`,
     publicSvgUrl,
-    publicMarkdown: `[![TokenBoard](${publicSvgUrl})](https://tokenboard.chaosyn.com)`
+    publicMarkdown: `[![TokenBoard](${publicSvgUrl})](${origin})`
   }
 }

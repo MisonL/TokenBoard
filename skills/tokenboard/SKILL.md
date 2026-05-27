@@ -12,18 +12,19 @@ Use the bundled scripts to install TokenBoard collection on the user's machine. 
 When the user provides a pairing code, run:
 
 ```bash
-TOKENBOARD_CODEX_BATCH_SIZE=200 node scripts/setup.mjs --pairing-code <pairing-code>
+TOKENBOARD_CODEX_BATCH_SIZE=200 node scripts/setup.mjs --pairing-code <pairing-code> --base-url <tokenboard-base-url>
 ```
 
 Optional flags:
 
 ```bash
---base-url https://tokenboard.chaosyn.com
+--base-url https://tokenboard.example.com
 --timezone Asia/Shanghai
 --device-name "Codex Desktop"
 --schedule-times 09:00,12:00,18:00,23:00
 --skip-collector
 --skip-schedule
+--skip-hook
 --skip-initial-sync
 --repo-url https://github.com/evepupil/TokenBoard.git
 --package-manager pnpm|bun|npm
@@ -31,7 +32,16 @@ Optional flags:
 
 After setup, report whether config was written, schedule was installed, and initial sync succeeded. Do not show `uploadToken`.
 
-The setup script clones or updates `https://github.com/evepupil/TokenBoard.git` into `~/.tokenboard/TokenBoard`, bootstraps workspace dependencies with `corepack pnpm install --frozen-lockfile`, writes local config, installs the daily schedule unless skipped, and runs a full-history initial sync unless skipped. Do not change the initial sync to a 7-day window unless the user explicitly asks. Codex history is processed in batches during full scans; use `TOKENBOARD_CODEX_BATCH_SIZE=200` by default, lower it only when the user needs lower peak resource usage. `--package-manager` controls how local usage providers are invoked after install; use `--repo-url`, `TOKENBOARD_REPO_URL`, `--package-manager bun`, `--package-manager npm`, or `TOKENBOARD_PACKAGE_MANAGER=pnpm|bun|npm` only when the local environment requires a non-default collector source or package manager.
+The setup script clones or updates `https://github.com/evepupil/TokenBoard.git` into `~/.tokenboard/TokenBoard`, bootstraps workspace dependencies with `corepack pnpm install --frozen-lockfile`, uses the collector dependency on local `ccusage`, writes local config, installs the daily schedule and notifier hooks unless skipped, and runs a full-history initial sync unless skipped. Do not change the initial sync to a 7-day window unless the user explicitly asks. Codex history is processed in batches during full scans; use `TOKENBOARD_CODEX_BATCH_SIZE=200` by default, lower it only when the user needs lower peak resource usage. `--package-manager` controls fallback provider invocation when the local `ccusage` binary is unavailable; use `--repo-url`, `TOKENBOARD_REPO_URL`, `--package-manager bun`, `--package-manager npm`, or `TOKENBOARD_PACKAGE_MANAGER=pnpm|bun|npm` only when the local environment requires a non-default collector source or package manager.
+
+Notifier hooks are recommended but optional. Use `--skip-hook` only when the user does not want setup
+to change Codex or Claude Code config during initial install. To install hooks later, run:
+
+```bash
+node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/install-hook.mjs --source all
+```
+
+Use `--source codex` or `--source claude-code` for a single integration.
 
 The default schedule is `09:00,12:00,18:00,23:00`. When the user asks for custom times, require `HH:MM` 24-hour values and pass them through `--schedule-times`. The scheduler target is platform-specific:
 
@@ -78,7 +88,15 @@ Check local config and installed schedule metadata:
 node scripts/status.mjs
 ```
 
-The JSON output includes `packageManager`, `collectorDir`, and `scheduleTimes`.
+The JSON output includes `packageManager`, `collectorDir`, `scheduleTimes`, and hook status.
+
+Notifier hooks use `~/.tokenboard/bin/notify.cjs` and only enqueue a background sync signal. They must not run `ccusage`, scan files, or upload in the foreground hook process.
+
+Hook sync sets `TOKENBOARD_HOOK_MODE=1`. In that mode the collector uses local cursor files in
+`~/.tokenboard` to parse only new or changed Codex and Claude session JSONL files. Upload failures
+leave cursor entries pending so the next hook can retry. The parser only identifies affected
+usage dates; uploaded snapshots are still produced by a narrow `ccusage` reconciliation window for
+those dates.
 
 ## Uninstall
 
@@ -88,7 +106,7 @@ Remove only the daily schedule by default:
 node scripts/uninstall.mjs
 ```
 
-Remove the schedule, collector checkout, and local config when the user asks for a full uninstall:
+Remove the schedule, notifier hooks, collector checkout, and local config when the user asks for a full uninstall:
 
 ```bash
 node scripts/uninstall.mjs --all
@@ -99,5 +117,5 @@ Scheduled runs write logs to `~/.tokenboard/logs/daily-sync.out.log` and `~/.tok
 ## Troubleshooting
 
 - If Node is missing, ask the user to install Node.js 20 or newer.
-- If the collector cannot reach `https://tokenboard.chaosyn.com`, ask the user to configure proxy environment variables or verify the TokenBoard custom domain.
+- If the collector cannot reach the configured TokenBoard base URL, ask the user to configure proxy environment variables or verify the TokenBoard custom domain.
 - If pairing fails, ask the user to generate a new pairing code from TokenBoard.

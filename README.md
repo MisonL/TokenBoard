@@ -8,12 +8,13 @@ aggregates to Cloudflare Workers + D1, and shows usage stats on a hosted dashboa
 Open the deployed site and visit:
 
 ```txt
-https://tokenboard.chaosyn.com/settings/install
+https://<your-tokenboard-domain>/settings/install
 ```
 
 Generate an install prompt, paste it into Codex or Claude Code, and let the agent install the
 TokenBoard skill. The skill runs `setup.mjs`, exchanges the short-lived pairing code for an upload
-token, installs the collector, creates the daily schedule, and runs the first sync.
+token, installs the collector, creates the daily schedule, installs lightweight notifier hooks, and
+runs the first sync.
 
 The collector uploads aggregate token counts only. It does not upload prompts, completions, file
 contents, or raw conversation logs.
@@ -30,15 +31,41 @@ Collector compatibility:
   `legacy` and paired-device rows. A concrete device filter still reads that device's raw rows.
 
 `setup.mjs` clones or updates the collector checkout in `~/.tokenboard/TokenBoard`, writes
-`~/.tokenboard/config.json`, installs the platform scheduler, and runs a full-history initial sync
-unless `--skip-initial-sync` is set. The default schedule is `09:00,12:00,18:00,23:00`, and
-custom schedules must be passed as `--schedule-times HH:MM,HH:MM`.
+`~/.tokenboard/config.json`, installs the platform scheduler and notifier hooks, and runs a
+full-history initial sync unless `--skip-initial-sync` is set. The default schedule is
+`09:00,12:00,18:00,23:00`, and custom schedules must be passed as
+`--schedule-times HH:MM,HH:MM`.
+
+Notifier hook installation is recommended but optional. Pass `--skip-hook` to setup when the user
+does not want Codex or Claude Code config changed during initial install. Hooks can be installed
+later with:
+
+```bash
+node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/install-hook.mjs --source all
+```
+
+Use `--source codex` or `--source claude-code` to install only one terminal integration.
 
 Scheduler targets:
 
 - macOS: `~/Library/LaunchAgents/com.tokenboard.daily-sync.plist`
 - Linux: `~/.config/systemd/user/tokenboard-daily-sync.timer`
 - Windows: one `TokenBoardDailySyncHHMM` scheduled task per configured time
+
+Notifier hooks:
+
+- Codex: `~/.codex/config.toml` `notify` points to `~/.tokenboard/bin/notify.cjs`.
+- Claude Code: `~/.claude/settings.json` `hooks.SessionEnd` runs the same notifier.
+- The notifier only appends `~/.tokenboard/notify.signal` and starts background `notify.mjs`;
+  it does not run `ccusage`, scan files, or upload from the foreground hook process.
+- Background notify runs use `~/.tokenboard/sync.lock`, `last-success.json`, `last-run.json`,
+  and `runs/*.json`. A 5-minute cooldown and trailing run coalesce bursts.
+- Hook syncs pass `TOKENBOARD_HOOK_MODE=1` to the collector. The collector keeps
+  `codex-cursor.json` and `claude-code-cursor.json` in `~/.tokenboard`, reprocesses only new or
+  changed session JSONL files, and marks those cursor entries pending until upload succeeds.
+- The hook parser reads only usage counters, model names, and timestamps from session JSONL files
+  to identify affected dates. Uploaded snapshots are still produced by a narrow `ccusage`
+  reconciliation window for those dates.
 
 Daily and manual sync default to a 7-day local-time lookback window. Use `--since all` only for
 explicit backfills. For large Codex histories, set `TOKENBOARD_CODEX_BATCH_SIZE=200` during full
@@ -61,19 +88,25 @@ pnpm build
 Deploy:
 
 ```bash
-pnpm --filter @tokenboard/web exec wrangler d1 migrations apply DB --remote
+cp apps/web/wrangler.production.example.jsonc apps/web/wrangler.production.jsonc
+# Fill route, BETTER_AUTH_URL, and D1 database_id in apps/web/wrangler.production.jsonc.
+pnpm --filter @tokenboard/web exec wrangler d1 migrations apply DB --remote --config wrangler.production.jsonc
 pnpm run deploy
 ```
 
-Run the D1 migrations as part of every server rollout. The current compatibility path depends on
-the device and snapshot-hash schema migrations, including `device_id` on upload tokens and
-`snapshot_hash` on `daily_usage`.
+The tracked `apps/web/wrangler.jsonc` is local-only and contains placeholder bindings. Production
+deploys use the ignored `apps/web/wrangler.production.jsonc` file so public source does not contain
+deployment-specific D1 ids or domains. Run the D1 migrations as part of every server rollout. The
+current compatibility path depends on the device and snapshot-hash schema migrations, including
+`device_id` on upload tokens and `snapshot_hash` on `daily_usage`.
 
 ## Package Managers
 
 The repository defaults to pnpm for development and CI. Collector workspace dependencies are always
 bootstrapped with `corepack pnpm install --frozen-lockfile`, including setup on Windows. The
-configured package manager controls how local usage providers are invoked after install:
+collector depends on `ccusage` directly, so the normal hot path uses the local
+`packages/collector/node_modules/.bin/ccusage` binary after install. If that binary is missing,
+the configured package manager is used as a fallback:
 
 ```bash
 node skills/tokenboard/scripts/install-collector.mjs --package-manager pnpm
@@ -88,10 +121,12 @@ node skills/tokenboard/scripts/sync.mjs --mode sync --source all --package-manag
 ```
 
 You can also set `TOKENBOARD_PACKAGE_MANAGER=pnpm|bun|npm`. When unset, scripts use pnpm.
+Set `TOKENBOARD_CCUSAGE_BIN=/path/to/ccusage` to force a specific local binary, or
+`TOKENBOARD_FORCE_PACKAGE_RUNNER=1` to force the fallback package-manager runner.
 
 ## Operations
 
-Inspect local config and installed schedule:
+Inspect local config, installed schedule, and hook status:
 
 ```bash
 node skills/tokenboard/scripts/status.mjs
@@ -103,7 +138,7 @@ Remove only the installed schedule:
 node skills/tokenboard/scripts/uninstall.mjs
 ```
 
-Remove the schedule, collector checkout, and local config directory:
+Remove the schedule, notifier hooks, collector checkout, and local config directory:
 
 ```bash
 node skills/tokenboard/scripts/uninstall.mjs --all

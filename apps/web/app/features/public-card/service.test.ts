@@ -119,10 +119,15 @@ describe('public card service', () => {
       }
     } as unknown as D1Database
 
-    const svg = await getPublicUsageCard(db, 'eve', new Date('2026-04-29T10:00:00.000Z'))
+    const svg = await getPublicUsageCard(
+      db,
+      'eve',
+      new Date('2026-04-29T10:00:00.000Z'),
+      'https://tokenboard.example.com'
+    )
 
     expect(svg).toContain('TokenBoard 统计')
-    expect(svg).toContain('https://tokenboard.chaosyn.com')
+    expect(svg).toContain('https://tokenboard.example.com')
     expect(svg).toContain('总 token')
     expect(svg).toContain('1,234,567')
     expect(svg).toContain('总额度')

@@ -106,10 +106,16 @@ export async function getPublicUsageJson(db: D1Database, slug: string, now = new
   }
 }
 
-export async function getPublicUsageCard(db: D1Database, slug: string, now = new Date()) {
+export async function getPublicUsageCard(
+  db: D1Database,
+  slug: string,
+  now = new Date(),
+  publicUrl = 'TokenBoard'
+) {
   const profile = await getPublicUsageProfile(db, slug, now)
   return renderUsageCardSvg({
     displayName: profile.displayName,
+    publicUrl,
     totalTokens: profile.totalTokens,
     totalCostUsd: profile.totalCostUsd,
     monthTokens: profile.monthTokens,
@@ -120,6 +126,7 @@ export async function getPublicUsageCard(db: D1Database, slug: string, now = new
 export function getEmptyPublicCard() {
   return renderUsageCardSvg({
     displayName: 'TokenBoard',
+    publicUrl: 'TokenBoard',
     totalTokens: 0,
     totalCostUsd: 0,
     monthTokens: 0,

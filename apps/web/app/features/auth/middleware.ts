@@ -28,6 +28,10 @@ export async function requireUser(c: Context): Promise<SessionUser> {
 }
 
 export async function getOptionalUser(c: Context): Promise<SessionUser | null> {
+  if (!hasBetterAuthSessionCookie(c.req.header('cookie'))) {
+    return null
+  }
+
   const session = await createAuth(c.env as Bindings, c.req.raw).api.getSession({
     headers: c.req.raw.headers
   })
@@ -109,6 +113,19 @@ function profileSlug(user: SessionUser) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 24)
   return `${base || 'user'}-${user.id.slice(0, 8).toLowerCase()}`
+}
+
+function hasBetterAuthSessionCookie(cookieHeader: string | null | undefined) {
+  if (!cookieHeader) return false
+  return cookieHeader.split(';').some((cookie) => {
+    const name = cookie.split('=', 1)[0]?.trim()
+    return [
+      'better-auth.session_token',
+      'better-auth-session_token',
+      '__Secure-better-auth.session_token',
+      '__Secure-better-auth-session_token'
+    ].includes(name ?? '')
+  })
 }
 
 function parseBearerToken(authorization: string) {

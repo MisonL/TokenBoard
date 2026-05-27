@@ -11,10 +11,10 @@ describe('settings service', () => {
   test('prefers configured public origin over request origin', () => {
     expect(
       getCanonicalPublicOrigin({
-        configuredOrigin: 'https://tokenboard.chaosyn.com/',
-        requestOrigin: 'https://tokenboard.yeton92479.workers.dev'
+        configuredOrigin: 'https://tokenboard.example.com/',
+        requestOrigin: 'https://preview.example.com'
       })
-    ).toBe('https://tokenboard.chaosyn.com')
+    ).toBe('https://tokenboard.example.com')
   })
 
   test('parses public profile form checkboxes', () => {
@@ -108,17 +108,17 @@ describe('settings service', () => {
     const settings = await getProfileSettings(
       db,
       'user_1',
-      'https://tokenboard.chaosyn.com'
+      'https://tokenboard.example.com'
     )
 
     expect(settings.publicJsonUrl).toBe(
-      'https://tokenboard.chaosyn.com/api/public/eve-tokenboard.json'
+      'https://tokenboard.example.com/api/public/eve-tokenboard.json'
     )
     expect(settings.publicSvgUrl).toBe(
-      'https://tokenboard.chaosyn.com/api/public/eve-tokenboard.svg'
+      'https://tokenboard.example.com/api/public/eve-tokenboard.svg'
     )
     expect(settings.publicMarkdown).toBe(
-      '[![TokenBoard](https://tokenboard.chaosyn.com/api/public/eve-tokenboard.svg)](https://tokenboard.chaosyn.com)'
+      '[![TokenBoard](https://tokenboard.example.com/api/public/eve-tokenboard.svg)](https://tokenboard.example.com)'
     )
   })
 

@@ -1,12 +1,11 @@
 export type UsageCardInput = {
   displayName: string
+  publicUrl: string
   totalTokens: number
   totalCostUsd: number
   monthTokens: number
   monthCostUsd: number
 }
-
-const publicUrl = 'https://tokenboard.chaosyn.com'
 
 export function renderUsageCardSvg(input: UsageCardInput) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="220" viewBox="0 0 520 220" role="img" aria-label="TokenBoard 统计">
@@ -35,7 +34,7 @@ export function renderUsageCardSvg(input: UsageCardInput) {
   <rect x="0.5" y="0.5" width="519" height="219" rx="15.5" fill="none" stroke="#78716c" stroke-opacity="0.36"/>
   ${logoMark()}
   <text x="94" y="41" fill="#fafaf9" font-family="Arial, sans-serif" font-size="20" font-weight="800">TokenBoard 统计</text>
-  <text x="94" y="64" fill="#a8a29e" font-family="Arial, sans-serif" font-size="13">${escapeXml(input.displayName)} · ${publicUrl}</text>
+  <text x="94" y="64" fill="#a8a29e" font-family="Arial, sans-serif" font-size="13">${escapeXml(input.displayName)} · ${escapeXml(input.publicUrl)}</text>
   ${metricBlock(24, 94, '总 token', formatInteger(input.totalTokens), true)}
   ${metricBlock(270, 94, '总额度', formatUsd(input.totalCostUsd))}
   ${metricBlock(24, 152, '本月 token', formatInteger(input.monthTokens))}
