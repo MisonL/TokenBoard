@@ -76,6 +76,9 @@ if (isMain()) {
 }
 
 export function shouldRunUpgrade({ flags = {}, env = process.env } = {}) {
+  if (flags.hook === true) {
+    return false
+  }
   if (flags['skip-upgrade'] === true) {
     return false
   }
