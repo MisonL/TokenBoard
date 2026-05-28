@@ -94,9 +94,9 @@ function InstallPromptSection(props: { prompt: string; expiresAt?: string; visib
         <h2 class="text-base font-black">粘贴到 Codex 或 Claude Code</h2>
         <p class="text-sm text-[var(--app-muted)]">过期时间：{props.expiresAt}</p>
       </div>
-      <div class="relative mt-4">
-        <CopyIconButton targetId="install-prompt-text" label="复制安装提示词" />
-        <pre id="install-prompt-text" class="overflow-x-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4 pr-16 pt-14 text-sm leading-6 text-[var(--app-text)]">
+      <div class="mt-4 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] text-sm leading-6 text-[var(--app-text)]">
+        <CopyBlockHeader title="安装提示词" targetId="install-prompt-text" label="复制安装提示词" />
+        <pre id="install-prompt-text" class="overflow-x-auto p-4">
           {props.prompt}
         </pre>
       </div>
@@ -166,11 +166,19 @@ function CopyableCommandBlock(props: {
 }) {
   return (
     <div class="min-w-0">
-      <div class="relative rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4 pr-16 text-sm leading-6 text-[var(--app-text)]">
-        <CopyIconButton targetId={props.targetId} label={props.copyLabel} />
-        <p class="font-mono">{props.title}：</p>
-        <pre id={props.targetId} class="mt-5 overflow-x-auto">{props.command}</pre>
+      <div class="overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] text-sm leading-6 text-[var(--app-text)]">
+        <CopyBlockHeader title={props.title} targetId={props.targetId} label={props.copyLabel} />
+        <pre id={props.targetId} class="overflow-x-auto p-4">{props.command}</pre>
       </div>
+    </div>
+  )
+}
+
+function CopyBlockHeader(props: { title: string; targetId: string; label: string }) {
+  return (
+    <div class="flex min-h-12 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-panel)] pl-4">
+      <p class="min-w-0 font-mono text-[var(--app-muted)]">{props.title}</p>
+      <CopyIconButton targetId={props.targetId} label={props.label} />
     </div>
   )
 }
@@ -179,7 +187,7 @@ function CopyIconButton(props: { targetId: string; label: string }) {
   return (
     <button
       type="button"
-      class="absolute right-3 top-3 inline-flex h-11 w-11 items-center justify-center rounded-md border border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-muted)] shadow-sm transition hover:border-lime-300/50 hover:text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-lime-300/30"
+      class="inline-flex min-h-12 w-12 shrink-0 items-center justify-center border-l border-[var(--app-border)] text-[var(--app-muted)] transition hover:bg-[var(--app-hover)] hover:text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-lime-300/30"
       data-copy-target={props.targetId}
       aria-label={props.label}
       title={props.label}
