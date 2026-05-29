@@ -25,6 +25,13 @@ describe('public card config', () => {
     })
   })
 
+  test('uses default config for invalid stored values', () => {
+    expect(parsePublicCardConfig(JSON.stringify({
+      language: 'de',
+      metrics: ['totalTokens', 'legacyMetric']
+    }))).toEqual(defaultPublicCardConfig)
+  })
+
   test('parses form slots as metric enablement and order', () => {
     expect(parsePublicCardConfigForm({
       cardLanguage: 'en',

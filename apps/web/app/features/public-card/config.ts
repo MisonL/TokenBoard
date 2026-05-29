@@ -75,7 +75,8 @@ export const publicCardConfigSchema = z.object({
 export function parsePublicCardConfig(value: unknown): PublicCardConfig {
   if (value === null || value === undefined || value === '') return publicCardConfigSchema.parse(undefined)
   const parsed = typeof value === 'string' ? parseJson(value) : value
-  return publicCardConfigSchema.parse(parsed)
+  const result = publicCardConfigSchema.safeParse(parsed)
+  return result.success ? result.data : publicCardConfigSchema.parse(undefined)
 }
 
 export function stringifyPublicCardConfig(config: PublicCardConfig) {
