@@ -86,7 +86,7 @@ function LeaderboardMobileItem(props: { entry: LeaderboardEntry }) {
     <article class="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <p class="text-xs font-black uppercase text-lime-300">#{props.entry.rank}</p>
+          <RankBadge rank={props.entry.rank} />
           <h2 class="mt-1 truncate text-lg font-black">{props.entry.displayName}</h2>
         </div>
         <p class="shrink-0 text-sm font-bold text-[var(--app-muted)]">{formatUsd(props.entry.costUsd)}</p>
@@ -120,8 +120,8 @@ function LeaderboardTable(props: { entries: LeaderboardEntry[] }) {
         <TableBody>
           {props.entries.map((entry) => (
             <TableRow class="border-0 bg-[var(--app-bg-soft)]">
-              <TableCell class="rounded-l-xl font-black text-lime-300">
-                #{entry.rank}
+              <TableCell class="rounded-l-xl">
+                <RankBadge rank={entry.rank} />
               </TableCell>
               <TableCell>{entry.displayName}</TableCell>
               <TableCell class="font-bold">{formatInteger(entry.totalTokens)}</TableCell>
@@ -134,6 +134,10 @@ function LeaderboardTable(props: { entries: LeaderboardEntry[] }) {
       </Table>
     </div>
   )
+}
+
+function RankBadge(props: { rank: number }) {
+  return <span class="app-rank-badge">#{props.rank}</span>
 }
 
 function formatInteger(value: number) {

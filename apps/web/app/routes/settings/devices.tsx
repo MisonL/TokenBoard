@@ -82,7 +82,7 @@ function DevicesHeader() {
     <header class="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5 shadow-xl shadow-black/10">
       <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p class="text-sm font-black uppercase tracking-[0.24em] text-lime-300">Devices</p>
+          <p class="app-accent-text text-sm font-black uppercase tracking-[0.24em]">Devices</p>
           <h1 class="mt-3 text-4xl font-black tracking-tight">设备管理</h1>
           <p class="mt-2 text-sm text-[var(--app-muted)]">
             查看采集器设备、同步状态，并停用不再使用的上传 token。
@@ -98,10 +98,10 @@ function DevicePageFlash(props: { saved: boolean; revoked: boolean }) {
   return (
     <>
       {props.saved ? (
-        <p class="rounded-md border border-lime-300/30 bg-lime-300/10 p-3 text-sm text-lime-100">设备名称已更新。</p>
+        <p class="app-flash-success p-3 text-sm">设备名称已更新。</p>
       ) : null}
       {props.revoked ? (
-        <p class="rounded-md border border-lime-300/30 bg-lime-300/10 p-3 text-sm text-lime-100">设备 token 已停用。</p>
+        <p class="app-flash-success p-3 text-sm">设备 token 已停用。</p>
       ) : null}
     </>
   )
@@ -216,11 +216,11 @@ function DeviceStatus(props: { device: UserDevice }) {
 
 function StatusPill(props: { tone: 'ok' | 'warning' | 'muted'; children: string }) {
   const classes = {
-    ok: 'border-lime-300/40 bg-lime-300/10 text-lime-100',
-    warning: 'border-amber-300/40 bg-amber-300/10 text-amber-100',
-    muted: 'border-[var(--app-border)] bg-[var(--app-bg-soft)] text-[var(--app-muted)]'
+    ok: 'app-status-pill app-status-pill-ok',
+    warning: 'app-status-pill app-status-pill-warning',
+    muted: 'app-status-pill app-status-pill-muted'
   }
-  return <span class={`inline-flex rounded-full border px-2 py-1 text-xs font-bold ${classes[props.tone]}`}>{props.children}</span>
+  return <span class={classes[props.tone]}>{props.children}</span>
 }
 
 function isStaleSync(lastSyncedAt: string) {

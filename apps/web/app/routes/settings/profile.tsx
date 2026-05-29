@@ -58,7 +58,7 @@ function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean }
       </CardHeader>
       <CardContent>
         {props.saved ? (
-          <p class="mb-4 rounded-md border border-lime-300/30 bg-lime-300/10 p-3 text-sm text-lime-100">设置已保存。</p>
+          <p class="app-flash-success mb-4 p-3 text-sm">设置已保存。</p>
         ) : null}
         <ProfileSettingsFields profile={props.profile} />
       </CardContent>

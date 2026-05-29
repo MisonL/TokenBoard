@@ -34,7 +34,7 @@ export default createRoute(async (c) => {
           </div>
           <div class="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
             <div class="mb-4 flex items-center justify-between text-sm">
-              <span class="font-bold text-lime-300">来源占比</span>
+              <span class="app-accent-text font-bold">来源占比</span>
               <span class="text-[var(--app-muted)]">最近 30 天</span>
             </div>
             <div class="h-4 overflow-hidden rounded-full bg-[var(--app-border)]">
