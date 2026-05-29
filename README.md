@@ -140,6 +140,11 @@ pnpm --filter @tokenboard/web exec wrangler d1 migrations apply DB --remote --co
 pnpm run deploy
 ```
 
+Production pushes to `master` also run the GitHub Actions deploy workflow. The workflow runs tests,
+type checks, and build first, then applies pending D1 migrations with Wrangler before deploying the
+Worker. Configure repository secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` for that
+workflow.
+
 The tracked `apps/web/wrangler.jsonc` contains the production Worker route, `BETTER_AUTH_URL`, and
 D1 binding used by git-push auto deploys. Run the D1 migrations as part of every server rollout. The
 current compatibility path depends on the device and snapshot-hash schema migrations, including
