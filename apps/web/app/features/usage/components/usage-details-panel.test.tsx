@@ -38,7 +38,7 @@ describe('UsageDetailsPanel', () => {
               totalTokensWithoutCacheRead: 120000,
               costUsd: 42.31,
               sessionCount: 12,
-              sourceSplit: [{ source: 'codex', totalTokens: 123456 }],
+              sourceSplit: [{ source: 'codex', totalTokens: 123456, totalTokensWithoutCacheRead: 120000 }],
               modelRows: []
             }
           ],
@@ -59,6 +59,7 @@ describe('UsageDetailsPanel', () => {
     expect(html).toContain('name="device"')
     expect(html).toContain('w-full sm:mt-7')
     expect(html).toContain('text-xs font-bold uppercase tracking-wide text-[var(--app-muted)] md:hidden')
+    expect(html).toContain('不含缓存读 100%')
   })
 
   test('renders empty source split text with readable muted contrast', async () => {

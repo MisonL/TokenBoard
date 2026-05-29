@@ -9,9 +9,17 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
     (total, item) => total + item.totalTokens,
     0
   )
+  const totalSourceTokensWithoutCacheRead = props.summary.sourceSplit.reduce(
+    (total, item) => total + item.totalTokensWithoutCacheRead,
+    0
+  )
   const trendMaxTokens = Math.max(...props.summary.dailyTrend.map((item) => item.totalTokens), 0)
   const trendTotalTokens = props.summary.dailyTrend.reduce(
     (total, item) => total + item.totalTokens,
+    0
+  )
+  const trendTotalTokensWithoutCacheRead = props.summary.dailyTrend.reduce(
+    (total, item) => total + item.totalTokensWithoutCacheRead,
     0
   )
 
@@ -50,19 +58,28 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
             <div>
               <CardTitle>30 天趋势</CardTitle>
               <CardDescription>
-                最近 30 天共 {formatInteger(trendTotalTokens)} tokens。
+                最近 30 天共 {formatInteger(trendTotalTokens)} tokens，不含缓存读 {formatInteger(trendTotalTokensWithoutCacheRead)}。
               </CardDescription>
             </div>
-            <Badge variant="outline">tokens</Badge>
+            <div class="flex flex-wrap justify-end gap-2">
+              <Badge variant="outline">total</Badge>
+              <Badge>不含缓存读</Badge>
+            </div>
           </CardHeader>
           <CardContent>
             <div class="flex h-44 items-end gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
               {props.summary.dailyTrend.map((item) => (
-                <div class="group relative flex h-full flex-1 items-end">
+                <div
+                  class="group relative flex h-full flex-1 items-end justify-center gap-px"
+                  title={`${item.usageDate}: ${formatInteger(item.totalTokens)} total / ${formatInteger(item.totalTokensWithoutCacheRead)} 不含缓存读`}
+                >
                   <div
-                    class={`w-full rounded-t transition ${item.totalTokens > 0 ? 'bg-lime-300/80 group-hover:bg-lime-200' : 'bg-[var(--app-border)]'}`}
+                    class={`w-1/2 rounded-t transition ${item.totalTokens > 0 ? 'bg-[var(--app-border)] group-hover:bg-[var(--app-muted)]' : 'bg-[var(--app-border)]'}`}
                     style={`height:${trendBarHeight(item.totalTokens, trendMaxTokens)}%`}
-                    title={`${item.usageDate}: ${formatInteger(item.totalTokens)} tokens`}
+                  />
+                  <div
+                    class={`w-1/2 rounded-t transition ${item.totalTokensWithoutCacheRead > 0 ? 'bg-lime-300/90 group-hover:bg-lime-200' : 'bg-[var(--app-border)]'}`}
+                    style={`height:${trendBarHeight(item.totalTokensWithoutCacheRead, trendMaxTokens)}%`}
                   />
                 </div>
               ))}
@@ -77,6 +94,7 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
         <Card>
           <CardHeader>
             <CardTitle>来源占比</CardTitle>
+            <CardDescription>按本月不含缓存读 token 计算，同时保留 total token 对照。</CardDescription>
           </CardHeader>
           <CardContent class="space-y-4 text-sm text-[var(--app-muted)]">
             {props.summary.sourceSplit.length > 0 ? (
@@ -85,11 +103,18 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
                   <div class="flex items-center justify-between gap-4">
                     <span>{formatSource(item.source)}</span>
                     <span class="font-bold text-[var(--app-text)]">
-                      {formatPercent(item.totalTokens, totalSourceTokens)}
+                      {formatPercent(item.totalTokensWithoutCacheRead, totalSourceTokensWithoutCacheRead)}
                     </span>
                   </div>
+                  <p class="mt-1 text-xs">
+                    {formatInteger(item.totalTokensWithoutCacheRead)} 不含缓存读 / {formatInteger(item.totalTokens)} total
+                  </p>
                   <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--app-border)]">
-                    <div class="h-full rounded-full bg-lime-300" style={`width:${formatPercent(item.totalTokens, totalSourceTokens)}`} />
+                    <div
+                      class="h-full rounded-full bg-lime-300"
+                      style={`width:${formatPercent(item.totalTokensWithoutCacheRead, totalSourceTokensWithoutCacheRead)}`}
+                      title={`Total 占比：${formatPercent(item.totalTokens, totalSourceTokens)}`}
+                    />
                   </div>
                 </div>
               ))

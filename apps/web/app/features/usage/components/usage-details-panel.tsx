@@ -111,7 +111,11 @@ function DailySummaryRowHeader(props: { row: UsageDetails['dailyRows'][number] }
       <MobileValue label="Sessions">{formatInteger(props.row.sessionCount)}</MobileValue>
       <div class="grid gap-1 md:block">
         <span class="text-xs font-bold uppercase tracking-wide text-[var(--app-muted)] md:hidden">来源</span>
-        <SourceSplit sourceSplit={props.row.sourceSplit} totalTokens={props.row.totalTokens} />
+        <SourceSplit
+          sourceSplit={props.row.sourceSplit}
+          totalTokens={props.row.totalTokens}
+          totalTokensWithoutCacheRead={props.row.totalTokensWithoutCacheRead}
+        />
       </div>
     </summary>
   )
@@ -129,6 +133,7 @@ function MobileValue(props: { label: string; children: string }) {
 function SourceSplit(props: {
   sourceSplit: UsageDetails['dailyRows'][number]['sourceSplit']
   totalTokens: number
+  totalTokensWithoutCacheRead: number
 }) {
   if (props.sourceSplit.length === 0) {
     return <span class="text-[var(--app-muted)]">无用量</span>
@@ -139,6 +144,8 @@ function SourceSplit(props: {
       {props.sourceSplit.map((item) => (
         <span class="rounded-full border border-[var(--app-border)] px-2 py-1 text-xs text-[var(--app-muted)]">
           {formatSource(item.source)} {formatPercent(item.totalTokens, props.totalTokens)}
+          {' · '}
+          不含缓存读 {formatPercent(item.totalTokensWithoutCacheRead, props.totalTokensWithoutCacheRead)}
         </span>
       ))}
     </span>

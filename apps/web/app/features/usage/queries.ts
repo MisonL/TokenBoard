@@ -24,6 +24,7 @@ export type UsageSummary = {
   sourceSplit: Array<{
     source: UsageSource
     totalTokens: number
+    totalTokensWithoutCacheRead: number
   }>
 }
 
@@ -36,6 +37,7 @@ export type DailyUsageTrendInput = {
 export type DailyUsageTrendItem = {
   usageDate: string
   totalTokens: number
+  totalTokensWithoutCacheRead: number
   costUsd: number
 }
 
@@ -57,6 +59,7 @@ export type UsageDetailsDailyRow = {
   sourceSplit: Array<{
     source: UsageSource
     totalTokens: number
+    totalTokensWithoutCacheRead: number
   }>
   modelRows: UsageDetailsModelRow[]
 }
@@ -136,7 +139,10 @@ export async function getUsageSummary(
     .prepare(
       `
         WITH ${dedupedDailyUsageCte}
-        SELECT source, COALESCE(SUM(total_tokens), 0) as totalTokens
+        SELECT
+          source,
+          COALESCE(SUM(total_tokens), 0) as totalTokens,
+          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead
         FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
@@ -145,7 +151,7 @@ export async function getUsageSummary(
       `
     )
     .bind(input.userId, input.monthStart)
-    .all<{ source: UsageSource; totalTokens: number }>()
+    .all<{ source: UsageSource; totalTokens: number; totalTokensWithoutCacheRead: number }>()
 
   return {
     todayTokens: Number(summary?.todayTokens ?? 0),
@@ -158,7 +164,8 @@ export async function getUsageSummary(
     deviceCount: Number(summary?.deviceCount ?? 0),
     sourceSplit: (split.results ?? []).map((row) => ({
       source: row.source,
-      totalTokens: Number(row.totalTokens)
+      totalTokens: Number(row.totalTokens),
+      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
     }))
   }
 }
@@ -174,6 +181,7 @@ export async function getDailyUsageTrend(
         SELECT
           usage_date as usageDate,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
+          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
         FROM deduped_daily_usage
         WHERE user_id = ?
@@ -192,13 +200,19 @@ export async function getDailyUsageTrend(
       {
         usageDate: row.usageDate,
         totalTokens: Number(row.totalTokens),
+        totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
         costUsd: Number(row.costUsd)
       }
     ])
   )
 
   return eachIsoDate(input.startDate, input.endDate).map(
-    (usageDate) => byDate.get(usageDate) ?? { usageDate, totalTokens: 0, costUsd: 0 }
+    (usageDate) => byDate.get(usageDate) ?? {
+      usageDate,
+      totalTokens: 0,
+      totalTokensWithoutCacheRead: 0,
+      costUsd: 0
+    }
   )
 }
 
@@ -368,7 +382,8 @@ function buildDailyDetails(
     daily.sessionCount += row.sessionCount
     daily.sourceSplit.push({
       source: row.source,
-      totalTokens: row.totalTokens
+      totalTokens: row.totalTokens,
+      totalTokensWithoutCacheRead: row.totalTokensWithoutCacheRead
     })
   }
 

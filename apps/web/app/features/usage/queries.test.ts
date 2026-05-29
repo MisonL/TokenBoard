@@ -31,8 +31,8 @@ describe('getUsageSummary', () => {
               async all() {
                 return {
                   results: [
-                    { source: 'claude-code', totalTokens: 800 },
-                    { source: 'codex', totalTokens: 400 }
+                    { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 650 },
+                    { source: 'codex', totalTokens: 400, totalTokensWithoutCacheRead: 250 }
                   ]
                 }
               }
@@ -58,8 +58,8 @@ describe('getUsageSummary', () => {
       lastSyncedAt: '2026-04-28T08:00:00.000Z',
       deviceCount: 2,
       sourceSplit: [
-        { source: 'claude-code', totalTokens: 800 },
-        { source: 'codex', totalTokens: 400 }
+        { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 650 },
+        { source: 'codex', totalTokens: 400, totalTokensWithoutCacheRead: 250 }
       ]
     })
     expect(bindings[0]).toEqual(['seed-user', '2026-04-28', '2026-04-01'])
@@ -85,8 +85,8 @@ describe('getDailyUsageTrend', () => {
               async all() {
                 return {
                   results: [
-                    { usageDate: '2026-04-27', totalTokens: 120, costUsd: 0.12 },
-                    { usageDate: '2026-04-29', totalTokens: 340, costUsd: 0.34 }
+                    { usageDate: '2026-04-27', totalTokens: 120, totalTokensWithoutCacheRead: 100, costUsd: 0.12 },
+                    { usageDate: '2026-04-29', totalTokens: 340, totalTokensWithoutCacheRead: 240, costUsd: 0.34 }
                   ]
                 }
               }
@@ -103,9 +103,9 @@ describe('getDailyUsageTrend', () => {
     })
 
     expect(trend).toEqual([
-      { usageDate: '2026-04-27', totalTokens: 120, costUsd: 0.12 },
-      { usageDate: '2026-04-28', totalTokens: 0, costUsd: 0 },
-      { usageDate: '2026-04-29', totalTokens: 340, costUsd: 0.34 }
+      { usageDate: '2026-04-27', totalTokens: 120, totalTokensWithoutCacheRead: 100, costUsd: 0.12 },
+      { usageDate: '2026-04-28', totalTokens: 0, totalTokensWithoutCacheRead: 0, costUsd: 0 },
+      { usageDate: '2026-04-29', totalTokens: 340, totalTokensWithoutCacheRead: 240, costUsd: 0.34 }
     ])
     expect(bindings[0]).toEqual(['user_1', '2026-04-27', '2026-04-29'])
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
@@ -196,7 +196,7 @@ describe('getUsageDetails', () => {
         totalTokensWithoutCacheRead: 100,
         costUsd: 0.12,
         sessionCount: 2,
-        sourceSplit: [{ source: 'claude-code', totalTokens: 120 }],
+        sourceSplit: [{ source: 'claude-code', totalTokens: 120, totalTokensWithoutCacheRead: 100 }],
         modelRows: []
       },
       {
@@ -214,7 +214,7 @@ describe('getUsageDetails', () => {
         totalTokensWithoutCacheRead: 240,
         costUsd: 0.34,
         sessionCount: 3,
-        sourceSplit: [{ source: 'claude-code', totalTokens: 340 }],
+        sourceSplit: [{ source: 'claude-code', totalTokens: 340, totalTokensWithoutCacheRead: 240 }],
         modelRows: [
           {
             usageDate: '2026-04-29',
