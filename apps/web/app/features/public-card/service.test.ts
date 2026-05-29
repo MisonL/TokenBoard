@@ -55,10 +55,10 @@ describe('public card service', () => {
               },
               async all() {
                 if (sql.includes('GROUP BY source')) {
-                  return { results: [{ source: 'codex', totalTokens: 300 }] }
+                  return { results: [{ source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240 }] }
                 }
 
-                return { results: [{ model: 'gpt-5.4', totalTokens: 500, costUsd: 1.5 }] }
+                return { results: [{ model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, costUsd: 1.5 }] }
               }
             }
           }
@@ -75,8 +75,8 @@ describe('public card service', () => {
       total: { tokens: 1200, tokensWithoutCacheRead: 900, costUsd: 3.75 },
       today: { tokens: 100, tokensWithoutCacheRead: 70, costUsd: 0.2 },
       month: { tokens: 500, tokensWithoutCacheRead: 380, costUsd: 1.5 },
-      sourceSplit: [{ source: 'codex', totalTokens: 300 }],
-      topModels: [{ model: 'gpt-5.4', totalTokens: 500, costUsd: 1.5 }]
+      sourceSplit: [{ source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240 }],
+      topModels: [{ model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, costUsd: 1.5 }]
     })
     expect(JSON.stringify(result)).not.toContain('internal-user-id')
     expect(bindings[0]).toEqual(['eve'])

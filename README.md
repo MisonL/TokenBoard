@@ -48,6 +48,10 @@ custom title/subtitle, public URL visibility, metric ordering, hidden metrics, l
 and reset to defaults. Invalid stored card config falls back to the default card instead of breaking
 the settings page.
 
+Public JSON includes both total token counts and `tokensWithoutCacheRead`, which is calculated as
+`input_tokens + output_tokens + cache_creation_tokens`. The same no-cache-read metrics can be shown
+on README SVG cards for total, monthly, or daily usage.
+
 ## Collector Behavior
 
 Sync entry points:

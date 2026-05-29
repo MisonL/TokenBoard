@@ -25,6 +25,27 @@ describe('public card config', () => {
     })
   })
 
+  test('truncates stored metric lists to rendered slots', () => {
+    expect(parsePublicCardConfig(JSON.stringify({
+      metrics: [
+        'totalTokens',
+        'totalCost',
+        'monthTokens',
+        'monthCost',
+        'todayTokens',
+        'todayCost',
+        'totalTokensWithoutCacheRead'
+      ]
+    })).metrics).toEqual([
+      'totalTokens',
+      'totalCost',
+      'monthTokens',
+      'monthCost',
+      'todayTokens',
+      'todayCost'
+    ])
+  })
+
   test('uses default config for invalid stored values', () => {
     expect(parsePublicCardConfig(JSON.stringify({
       language: 'de',

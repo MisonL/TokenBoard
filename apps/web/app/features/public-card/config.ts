@@ -72,7 +72,7 @@ export const publicCardConfigSchema = z.object({
     position: z.enum(publicCardGlowPositions).default(defaultPublicCardConfig.glow.position)
   }).default(defaultPublicCardConfig.glow),
   metrics: z.array(publicCardMetricSchema)
-    .max(6)
+    .transform((metrics) => metrics.slice(0, publicCardMetricSlotCount))
     .default([...defaultPublicCardConfig.metrics])
     .transform((metrics) => uniqueMetrics(metrics))
 }).default(defaultPublicCardConfig)

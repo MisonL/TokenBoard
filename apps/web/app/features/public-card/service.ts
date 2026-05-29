@@ -20,8 +20,8 @@ export type PublicUsageProfile = {
   monthTokensWithoutCacheRead: number
   monthCostUsd: number
   publicCardConfig: PublicCardConfig
-  sourceSplit: Array<{ source: UsageSource; totalTokens: number }>
-  topModels: Array<{ model: string; totalTokens: number; costUsd: number }>
+  sourceSplit: Array<{ source: UsageSource; totalTokens: number; totalTokensWithoutCacheRead: number }>
+  topModels: Array<{ model: string; totalTokens: number; totalTokensWithoutCacheRead: number; costUsd: number }>
 }
 
 type ProfileRow = {
@@ -200,7 +200,10 @@ async function getSourceSplit(db: D1Database, userId: string, monthStart: string
     .prepare(
       `
         WITH ${dedupedDailyUsageCte}
-        SELECT source, COALESCE(SUM(total_tokens), 0) as totalTokens
+        SELECT
+          source,
+          COALESCE(SUM(total_tokens), 0) as totalTokens,
+          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead
         FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
@@ -209,11 +212,12 @@ async function getSourceSplit(db: D1Database, userId: string, monthStart: string
       `
     )
     .bind(userId, monthStart)
-    .all<{ source: UsageSource; totalTokens: number }>()
+    .all<{ source: UsageSource; totalTokens: number; totalTokensWithoutCacheRead: number }>()
 
   return (rows.results ?? []).map((row) => ({
     source: row.source,
-    totalTokens: Number(row.totalTokens)
+    totalTokens: Number(row.totalTokens),
+    totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
   }))
 }
 
@@ -225,6 +229,7 @@ async function getTopModels(db: D1Database, userId: string, monthStart: string) 
         SELECT
           model,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
+          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
         FROM deduped_daily_usage
         WHERE user_id = ?
@@ -235,11 +240,12 @@ async function getTopModels(db: D1Database, userId: string, monthStart: string) 
       `
     )
     .bind(userId, monthStart)
-    .all<{ model: string; totalTokens: number; costUsd: number }>()
+    .all<{ model: string; totalTokens: number; totalTokensWithoutCacheRead: number; costUsd: number }>()
 
   return (rows.results ?? []).map((row) => ({
     model: row.model,
     totalTokens: Number(row.totalTokens),
+    totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
     costUsd: Number(row.costUsd)
   }))
 }
