@@ -1,0 +1,83 @@
+import { describe, expect, test } from 'vitest'
+import { encryptSecret } from './crypto'
+import type { DailyTokenReport } from './adapters'
+import type { DueWebhookSubscription } from './queries'
+import { sendWebhookRequest } from './webhook-client'
+
+const testEncryptionKey = 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY='
+
+describe('webhook client', () => {
+  test('rejects Feishu business failures returned with HTTP 200', async () => {
+    const encryptedUrl = await encryptSecret('https://open.feishu.cn/open-apis/bot/v2/hook/test', testEncryptionKey)
+
+    await expect(sendWebhookRequest({
+      env: { DB: {} as D1Database, WEBHOOK_ENCRYPTION_KEY: testEncryptionKey },
+      subscription: subscriptionRow(encryptedUrl, 'feishu'),
+      report: dailyReport(),
+      now: new Date('2026-04-29T01:30:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify({
+        StatusCode: 19021,
+        StatusMessage: 'invalid signature'
+      }), { status: 200 })
+    })).rejects.toThrow('Webhook returned application code 19021: invalid signature')
+  })
+
+  test('accepts Feishu zero business status', async () => {
+    const encryptedUrl = await encryptSecret('https://open.feishu.cn/open-apis/bot/v2/hook/test', testEncryptionKey)
+
+    const response = await sendWebhookRequest({
+      env: { DB: {} as D1Database, WEBHOOK_ENCRYPTION_KEY: testEncryptionKey },
+      subscription: subscriptionRow(encryptedUrl, 'feishu'),
+      report: dailyReport(),
+      now: new Date('2026-04-29T01:30:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify({
+        StatusCode: 0,
+        StatusMessage: 'success'
+      }), { status: 200 })
+    })
+
+    expect(response.status).toBe(200)
+  })
+})
+
+function dailyReport(): DailyTokenReport {
+  return {
+    displayName: 'Example',
+    reportDate: '2026-04-29',
+    timezone: 'Asia/Shanghai',
+    dashboardUrl: 'https://tokenboard.example.com/dashboard',
+    totalTokens: 100,
+    totalTokensWithoutCacheRead: 80,
+    cacheReadRate: 0.2,
+    costUsd: 0.1,
+    sessionCount: 1,
+    sourceSplit: [],
+    topModels: []
+  }
+}
+
+function subscriptionRow(encryptedUrl: string, provider: DueWebhookSubscription['provider']): DueWebhookSubscription {
+  return {
+    id: 'sub_1',
+    userId: 'user_1',
+    displayName: 'Example',
+    name: '日报',
+    provider,
+    webhookUrlEncrypted: encryptedUrl,
+    webhookUrlHost: 'open.feishu.cn',
+    webhookUrlMasked: 'open.feishu.cn/...',
+    signingSecretEncrypted: null,
+    timezone: 'Asia/Shanghai',
+    scheduleTimeLocal: '09:30',
+    sendEmptyReport: false,
+    enabled: true,
+    nextRunAt: '2026-04-29T01:30:00.000Z',
+    pendingReportDate: null,
+    failureCount: 0,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    lastError: null,
+    createdAt: '2026-04-28T00:00:00.000Z',
+    updatedAt: '2026-04-28T00:00:00.000Z'
+  }
+}

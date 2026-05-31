@@ -9,6 +9,11 @@
   "assets": {
     "directory": "./dist"
   },
+  "triggers": {
+    "crons": [
+      "*/15 * * * *"
+    ]
+  },
   "workers_dev": false,
   "routes": [
     {

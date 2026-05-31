@@ -1,4 +1,5 @@
-import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { sql } from 'drizzle-orm'
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
@@ -134,6 +135,67 @@ export const dailyUsage = sqliteTable(
   ]
 )
 
+export const webhookSubscriptions = sqliteTable(
+  'webhook_subscriptions',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    provider: text('provider').notNull(),
+    webhookUrlEncrypted: text('webhook_url_encrypted').notNull(),
+    webhookUrlHost: text('webhook_url_host').notNull(),
+    webhookUrlMasked: text('webhook_url_masked').notNull(),
+    signingSecretEncrypted: text('signing_secret_encrypted'),
+    timezone: text('timezone').notNull().default('UTC'),
+    scheduleTimeLocal: text('schedule_time_local').notNull().default('09:00'),
+    sendEmptyReport: integer('send_empty_report', { mode: 'boolean' }).notNull().default(false),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    nextRunAt: text('next_run_at').notNull(),
+    pendingReportDate: text('pending_report_date'),
+    lockedUntil: text('locked_until'),
+    lockedAt: text('locked_at'),
+    failureCount: integer('failure_count').notNull().default(0),
+    lastSuccessAt: text('last_success_at'),
+    lastFailureAt: text('last_failure_at'),
+    lastError: text('last_error'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
+  },
+  (table) => [
+    index('webhook_subscriptions_user_idx').on(table.userId, table.createdAt),
+    index('webhook_subscriptions_due_idx').on(table.enabled, table.nextRunAt, table.lockedUntil)
+  ]
+)
+
+export const webhookDeliveryLogs = sqliteTable(
+  'webhook_delivery_logs',
+  {
+    id: text('id').primaryKey(),
+    subscriptionId: text('subscription_id')
+      .notNull()
+      .references(() => webhookSubscriptions.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    reportDate: text('report_date').notNull(),
+    kind: text('kind').notNull().default('daily'),
+    status: text('status').notNull(),
+    httpStatus: integer('http_status'),
+    attempt: integer('attempt').notNull().default(1),
+    error: text('error'),
+    durationMs: integer('duration_ms').notNull().default(0),
+    createdAt: text('created_at').notNull()
+  },
+  (table) => [
+    index('webhook_delivery_logs_subscription_idx').on(table.subscriptionId, table.createdAt),
+    uniqueIndex('webhook_delivery_logs_daily_success_idx')
+      .on(table.subscriptionId, table.reportDate, table.kind)
+      .where(sql`${table.status} = 'success' AND ${table.kind} = 'daily'`)
+  ]
+)
+
 export const schema = {
   users,
   sessions,
@@ -143,5 +205,7 @@ export const schema = {
   uploadTokens,
   pairingCodes,
   devices,
-  dailyUsage
+  dailyUsage,
+  webhookSubscriptions,
+  webhookDeliveryLogs
 }

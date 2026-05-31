@@ -3,6 +3,7 @@ export type Bindings = {
   BETTER_AUTH_SECRET?: string
   BETTER_AUTH_URL?: string
   TOKENBOARD_COLLECTOR_REPO_URL?: string
+  WEBHOOK_ENCRYPTION_KEY?: string
   GITHUB_CLIENT_ID?: string
   GITHUB_CLIENT_SECRET?: string
 }
