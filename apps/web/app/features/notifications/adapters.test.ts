@@ -60,7 +60,7 @@ describe('notification adapters', () => {
     const url = new URL(payload.url)
 
     expect(url.searchParams.get('timestamp')).toBe('1777424400000')
-    expect(url.searchParams.get('sign')).toBeTruthy()
+    expect(url.searchParams.get('sign')).toBe('271FYrVJTyHSiWISNOt9wkeJS60pGSCXu8bJqFB+Gqw=')
     expect(payload.body).toMatchObject({
       msgtype: 'markdown',
       markdown: {
@@ -81,7 +81,7 @@ describe('notification adapters', () => {
     expect(payload.url).toBe('https://open.feishu.cn/open-apis/bot/v2/hook/test')
     expect(payload.body).toMatchObject({
       timestamp: '1777424400',
-      sign: expect.any(String),
+      sign: 'gHYRDlE5oblzGdxSCvKCNHdIetIgJ8BKxQv+yMn4kvU=',
       msg_type: 'interactive',
       card: {
         schema: '2.0',
