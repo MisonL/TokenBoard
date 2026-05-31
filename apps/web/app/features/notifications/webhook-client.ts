@@ -71,7 +71,9 @@ function assertWebhookBusinessResponse(text: string) {
       throw new Error(`Webhook returned application code ${code.raw}: ${firstString(data.errmsg, data.msg, data.StatusMessage, data.statusMessage, data.message) ?? 'unknown error'}`)
     }
   } catch (error) {
-    if (error instanceof SyntaxError) return
+    if (error instanceof SyntaxError) {
+      throw new Error('Webhook returned non-JSON response')
+    }
     throw error
   }
 }

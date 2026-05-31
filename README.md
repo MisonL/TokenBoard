@@ -51,7 +51,7 @@ and reset to defaults. Invalid stored card config falls back to the default card
 the settings page.
 
 Public JSON includes total token counts, `tokensWithoutCacheRead`, and `cacheReadRate`.
-`tokensWithoutCacheRead` is `input_tokens + output_tokens + cache_creation_tokens`; `cacheReadRate`
+`tokensWithoutCacheRead` is `total_tokens - cache_read_tokens`; `cacheReadRate`
 is `(total_tokens - tokensWithoutCacheRead) / total_tokens`, or `0` when total is zero. Dashboard
 source splits, details, CSV export, README SVG cards, leaderboards, and notifications use the same
 derived cache-rate definition.

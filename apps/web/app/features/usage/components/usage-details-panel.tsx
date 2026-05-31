@@ -147,7 +147,7 @@ function SourceSplit(props: {
     <span class="flex flex-wrap gap-2">
       {props.sourceSplit.map((item) => (
         <span class="rounded-full border border-[var(--app-border)] px-2 py-1 text-xs text-[var(--app-muted)]">
-          {formatSource(item.source)} {formatPercent(item.totalTokens, props.totalTokens)}
+          {formatSource(item.source)} {formatPercent(item.totalTokensWithoutCacheRead, props.totalTokensWithoutCacheRead)}
           {' · '}
           缓存率 {formatPercentRate(item.cacheReadRate)}
         </span>

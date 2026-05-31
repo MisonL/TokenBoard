@@ -15,6 +15,14 @@ export const usageSnapshotSchema = z.object({
   costUsd: z.number().nonnegative(),
   sessionCount: z.number().int().nonnegative(),
   collectedAt: z.string().datetime()
+}).superRefine((snapshot, ctx) => {
+  if (snapshot.cacheReadTokens > snapshot.totalTokens) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['cacheReadTokens'],
+      message: 'cacheReadTokens must not exceed totalTokens'
+    })
+  }
 })
 
 export type UsageSource = z.infer<typeof usageSourceSchema>

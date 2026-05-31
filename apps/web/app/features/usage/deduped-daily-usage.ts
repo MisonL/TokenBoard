@@ -22,6 +22,11 @@ export function optionalDedupedDailyUsageWith(deviceId?: string) {
   return isSpecificDeviceFilter(deviceId) ? '' : `WITH ${dedupedDailyUsageCte}`
 }
 
+export function tokensWithoutCacheReadSql(tableAlias?: string) {
+  const prefix = tableAlias ? `${tableAlias}.` : ''
+  return `${prefix}total_tokens - ${prefix}cache_read_tokens`
+}
+
 export function normalizeDeviceFilter(deviceId?: string) {
   const normalized = String(deviceId ?? '').trim()
   if (!normalized || normalized.toLowerCase() === 'all') return 'all'

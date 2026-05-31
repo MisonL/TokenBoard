@@ -106,7 +106,7 @@ function selectCustomOption(option: HTMLElement) {
     const selected = item === option
     item.setAttribute('aria-selected', selected ? 'true' : 'false')
     const mark = item.lastElementChild
-    mark?.classList.toggle('text-lime-300', selected)
+    mark?.classList.toggle('app-accent-text', selected)
     mark?.classList.toggle('text-transparent', !selected)
   })
 

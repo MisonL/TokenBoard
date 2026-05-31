@@ -56,6 +56,18 @@ describe('webhook client', () => {
     expect(response.status).toBe(200)
   })
 
+  test('rejects non-JSON provider responses returned with HTTP 200', async () => {
+    const encryptedUrl = await encryptSecret('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test', testEncryptionKey)
+
+    await expect(sendWebhookRequest({
+      env: { DB: {} as D1Database, WEBHOOK_ENCRYPTION_KEY: testEncryptionKey },
+      subscription: subscriptionRow(encryptedUrl, 'wecom'),
+      report: dailyReport(),
+      now: new Date('2026-04-29T01:30:00.000Z'),
+      fetcher: async () => new Response('ok', { status: 200 })
+    })).rejects.toThrow('Webhook returned non-JSON response')
+  })
+
   test('rejects DingTalk string business failures returned with HTTP 200', async () => {
     const encryptedUrl = await encryptSecret('https://oapi.dingtalk.com/robot/send?access_token=test', testEncryptionKey)
 
@@ -122,6 +134,7 @@ function subscriptionRow(encryptedUrl: string, provider: DueWebhookSubscription[
     enabled: true,
     nextRunAt: '2026-04-29T01:30:00.000Z',
     pendingReportDate: null,
+    lockedAt: null,
     failureCount: 0,
     lastSuccessAt: null,
     lastFailureAt: null,

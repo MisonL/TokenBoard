@@ -44,6 +44,7 @@ initBrowserTimezone()
 initTimezoneInputs()
 
 initCopyButtons()
+initConfirmableActions()
 initAppNavigation()
 initCustomSelects()
 initPublicCardPreview()
@@ -112,6 +113,21 @@ function initCopyButtons() {
       button.setAttribute('aria-label', originalLabel)
       button.setAttribute('title', originalTitle)
     }, 1600)
+  })
+}
+
+function initConfirmableActions() {
+  document.addEventListener('click', (event) => {
+    if (!(event.target instanceof Element)) return
+
+    const button = event.target.closest<HTMLButtonElement>('[data-confirm]')
+    if (!button) return
+
+    const message = button.dataset.confirm?.trim()
+    if (message && !window.confirm(message)) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
   })
 }
 

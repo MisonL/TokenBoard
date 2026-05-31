@@ -1,4 +1,4 @@
-import { dedupedDailyUsageCte } from '../usage/deduped-daily-usage'
+import { dedupedDailyUsageCte, tokensWithoutCacheReadSql } from '../usage/deduped-daily-usage'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
 import type { DailyTokenReport } from './adapters'
 
@@ -69,7 +69,7 @@ function readReportTotals(input: {
         WITH ${dedupedDailyUsageCte}
         SELECT
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
         FROM deduped_daily_usage
@@ -93,7 +93,7 @@ function readReportSourceSplit(input: {
         SELECT
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead
         FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date = ?
@@ -117,7 +117,7 @@ function readReportTopModels(input: {
         SELECT
           model,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
         FROM deduped_daily_usage
         WHERE user_id = ?

@@ -92,6 +92,8 @@ export async function recordDeliveryFailure(input: {
 
   if (input.kind === 'daily') {
     await markSubscriptionFailure(input)
+  } else {
+    await markSubscriptionTestFailure(input)
   }
 }
 
@@ -127,7 +129,7 @@ async function markSubscriptionFailure(input: {
   now: Date
 }) {
   const shouldRetry = input.attempt < maxAttempts
-  await input.db
+  const result = await input.db
     .prepare(
       `
         UPDATE webhook_subscriptions
@@ -141,6 +143,7 @@ async function markSubscriptionFailure(input: {
           last_error = ?,
           updated_at = ?
         WHERE id = ?
+          AND locked_at = ?
       `
     )
     .bind(
@@ -150,13 +153,15 @@ async function markSubscriptionFailure(input: {
       input.now.toISOString(),
       input.error,
       input.now.toISOString(),
-      input.subscription.id
+      input.subscription.id,
+      input.subscription.lockedAt
     )
     .run()
+  assertClaimedUpdate(result)
 }
 
 async function markSubscriptionSuccess(db: D1Database, subscription: DueWebhookSubscription, now: Date) {
-  await db
+  const result = await db
     .prepare(
       `
         UPDATE webhook_subscriptions
@@ -170,6 +175,7 @@ async function markSubscriptionSuccess(db: D1Database, subscription: DueWebhookS
           last_error = NULL,
           updated_at = ?
         WHERE id = ?
+          AND locked_at = ?
       `
     )
     .bind(
@@ -180,9 +186,11 @@ async function markSubscriptionSuccess(db: D1Database, subscription: DueWebhookS
       }),
       now.toISOString(),
       now.toISOString(),
-      subscription.id
+      subscription.id,
+      subscription.lockedAt
     )
     .run()
+  assertClaimedUpdate(result)
 }
 
 async function markSubscriptionSkippedState(
@@ -190,7 +198,7 @@ async function markSubscriptionSkippedState(
   subscription: DueWebhookSubscription,
   now: Date
 ) {
-  await db
+  const result = await db
     .prepare(
       `
         UPDATE webhook_subscriptions
@@ -203,6 +211,7 @@ async function markSubscriptionSkippedState(
           last_error = NULL,
           updated_at = ?
         WHERE id = ?
+          AND locked_at = ?
       `
     )
     .bind(
@@ -212,7 +221,35 @@ async function markSubscriptionSkippedState(
         scheduleTimeLocal: subscription.scheduleTimeLocal
       }),
       now.toISOString(),
-      subscription.id
+      subscription.id,
+      subscription.lockedAt
+    )
+    .run()
+  assertClaimedUpdate(result)
+}
+
+async function markSubscriptionTestFailure(input: {
+  db: D1Database
+  subscription: DueWebhookSubscription
+  error: string
+  now: Date
+}) {
+  await input.db
+    .prepare(
+      `
+        UPDATE webhook_subscriptions
+        SET
+          last_failure_at = ?,
+          last_error = ?,
+          updated_at = ?
+        WHERE id = ?
+      `
+    )
+    .bind(
+      input.now.toISOString(),
+      input.error,
+      input.now.toISOString(),
+      input.subscription.id
     )
     .run()
 }
@@ -234,4 +271,10 @@ function nextRunAfterFailure(input: {
 
 function addMinutes(date: Date, minutes: number) {
   return new Date(date.getTime() + minutes * 60 * 1000)
+}
+
+function assertClaimedUpdate(result: D1Result<unknown>) {
+  if (Number(result.meta?.changes ?? 0) <= 0) {
+    throw new Error('Webhook subscription claim is no longer current')
+  }
 }

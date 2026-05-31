@@ -91,7 +91,7 @@ describe('listLeaderboard', () => {
     })
 
     expect(sqlStatements[0]).toContain('totalTokensWithoutCacheRead')
-    expect(sqlStatements[0]).toContain('deduped_daily_usage.input_tokens + deduped_daily_usage.output_tokens + deduped_daily_usage.cache_creation_tokens')
+    expect(sqlStatements[0]).toContain('deduped_daily_usage.total_tokens - deduped_daily_usage.cache_read_tokens')
     expect(sqlStatements[0]).toContain('ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC, costUsd DESC')
   })
 })

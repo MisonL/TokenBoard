@@ -2,7 +2,7 @@
 import { ApiError } from '../../lib/errors'
 import { toIsoDate } from '../../lib/time'
 import { canShowPublicProfile } from '../settings/service'
-import { dedupedDailyUsageCte } from '../usage/deduped-daily-usage'
+import { dedupedDailyUsageCte, tokensWithoutCacheReadSql } from '../usage/deduped-daily-usage'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
 import { parsePublicCardConfig, type PublicCardConfig } from './config'
 import { renderUsageCardSvg } from './svg'
@@ -214,13 +214,13 @@ async function getPublicTotals(db: D1Database, userId: string, today: string, mo
         WITH ${dedupedDailyUsageCte}
         SELECT
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as totalCostUsd,
           COALESCE(SUM(CASE WHEN usage_date = ? THEN total_tokens ELSE 0 END), 0) as todayTokens,
-          COALESCE(SUM(CASE WHEN usage_date = ? THEN input_tokens + output_tokens + cache_creation_tokens ELSE 0 END), 0) as todayTokensWithoutCacheRead,
+          COALESCE(SUM(CASE WHEN usage_date = ? THEN ${tokensWithoutCacheReadSql()} ELSE 0 END), 0) as todayTokensWithoutCacheRead,
           COALESCE(SUM(CASE WHEN usage_date = ? THEN cost_usd ELSE 0 END), 0) as todayCostUsd,
           COALESCE(SUM(CASE WHEN usage_date >= ? THEN total_tokens ELSE 0 END), 0) as monthTokens,
-          COALESCE(SUM(CASE WHEN usage_date >= ? THEN input_tokens + output_tokens + cache_creation_tokens ELSE 0 END), 0) as monthTokensWithoutCacheRead,
+          COALESCE(SUM(CASE WHEN usage_date >= ? THEN ${tokensWithoutCacheReadSql()} ELSE 0 END), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(CASE WHEN usage_date >= ? THEN cost_usd ELSE 0 END), 0) as monthCostUsd
         FROM deduped_daily_usage
         WHERE user_id = ?
@@ -238,12 +238,12 @@ async function getSourceSplit(db: D1Database, userId: string, monthStart: string
         SELECT
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead
         FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
         GROUP BY source
-        ORDER BY totalTokens DESC
+        ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
       `
     )
     .bind(userId, monthStart)
@@ -268,13 +268,13 @@ async function getTopModels(db: D1Database, userId: string, monthStart: string) 
         SELECT
           model,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
         FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
         GROUP BY model
-        ORDER BY totalTokens DESC
+        ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
         LIMIT 5
       `
     )

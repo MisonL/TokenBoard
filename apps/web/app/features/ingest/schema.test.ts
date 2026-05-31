@@ -22,6 +22,17 @@ describe('ingest schemas', () => {
     expect(ingestRequestSchema.parse({ snapshots: [] })).toEqual({ snapshots: [] })
   })
 
+  test('rejects cache reads that exceed provider total tokens', () => {
+    expect(() =>
+      ingestRequestSchema.parse({
+        snapshots: [{
+          ...baseSnapshot,
+          cacheReadTokens: baseSnapshot.totalTokens + 1
+        }]
+      })
+    ).toThrow('cacheReadTokens must not exceed totalTokens')
+  })
+
   test('accepts large legacy snapshot batches from old collectors', () => {
     const snapshots = Array.from({ length: 501 }, (_, index) => ({
       ...baseSnapshot,

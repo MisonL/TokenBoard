@@ -100,21 +100,21 @@ function LeaderboardMobileItem(props: { entry: LeaderboardEntry }) {
         <p class="shrink-0 text-sm font-bold text-[var(--app-muted)]">{formatUsd(props.entry.costUsd)}</p>
       </div>
       <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <div>
+        <div class="min-w-0">
           <dt class="text-xs font-bold uppercase text-[var(--app-muted)]">Tokens</dt>
-          <dd class="mt-1 font-black">{formatInteger(props.entry.totalTokens)}</dd>
+          <dd class="mt-1 break-words font-black tabular-nums">{formatInteger(props.entry.totalTokens)}</dd>
         </div>
-        <div>
+        <div class="min-w-0">
           <dt class="text-xs font-bold uppercase text-[var(--app-muted)]">不含缓存读</dt>
-          <dd class="mt-1 font-black">{formatInteger(props.entry.totalTokensWithoutCacheRead)}</dd>
+          <dd class="mt-1 break-words font-black tabular-nums">{formatInteger(props.entry.totalTokensWithoutCacheRead)}</dd>
         </div>
-        <div>
+        <div class="min-w-0">
           <dt class="text-xs font-bold uppercase text-[var(--app-muted)]">费用</dt>
-          <dd class="mt-1 font-black">{formatUsd(props.entry.costUsd)}</dd>
+          <dd class="mt-1 break-words font-black tabular-nums">{formatUsd(props.entry.costUsd)}</dd>
         </div>
-        <div>
+        <div class="min-w-0">
           <dt class="text-xs font-bold uppercase text-[var(--app-muted)]">缓存率</dt>
-          <dd class="mt-1 font-black">{formatPercentRate(props.entry.cacheReadRate)}</dd>
+          <dd class="mt-1 break-words font-black tabular-nums">{formatPercentRate(props.entry.cacheReadRate)}</dd>
         </div>
       </dl>
     </article>

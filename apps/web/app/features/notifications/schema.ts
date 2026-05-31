@@ -39,6 +39,10 @@ export type WebhookSubscriptionSummary = {
   updatedAt: string
 }
 
+export type ClaimedWebhookSubscription = WebhookSubscriptionSummary & {
+  lockedAt: string | null
+}
+
 export function parseWebhookSubscriptionForm(form: Record<string, unknown>): WebhookSubscriptionForm {
   return webhookSubscriptionFormSchema.parse({
     name: String(form.name ?? ''),

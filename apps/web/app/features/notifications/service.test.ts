@@ -83,10 +83,14 @@ describe('notification service', () => {
   test('returns failure for failed test sends', async () => {
     const secret = testEncryptionKey
     const encryptedUrl = await encryptSecret('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcdef', secret)
+    const statements: string[] = []
+    const bindings: unknown[][] = []
     const db = {
       prepare(sql: string) {
+        statements.push(sql)
         return {
-          bind() {
+          bind(...values: unknown[]) {
+            bindings.push(values)
             return {
               async first() {
                 if (sql.includes('FROM webhook_subscriptions')) return dueSubscriptionRow(encryptedUrl)
@@ -125,6 +129,8 @@ describe('notification service', () => {
     })
 
     expect(result).toEqual({ status: 'failure' })
+    expect(statements.some((sql) => sql.includes('last_failure_at') && !sql.includes('pending_report_date'))).toBe(true)
+    expect(bindings.flat()).toContain('Webhook returned 500: provider failed')
   })
 
   test('sends due daily report once and schedules the next local run', async () => {
@@ -192,7 +198,7 @@ describe('notification service', () => {
       now: new Date('2026-04-29T01:31:00.000Z'),
       fetcher: async (url, init) => {
         fetchCalls.push({ url: String(url), body: String(init?.body), signal: init?.signal })
-        return new Response('ok', { status: 200 })
+        return new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
       }
     })
 
@@ -205,6 +211,8 @@ describe('notification service', () => {
     expect(statements.some((sql) => sql.includes('INSERT INTO webhook_delivery_logs'))).toBe(true)
     expect(statements.some((sql) => sql.includes('last_success_at'))).toBe(true)
     expect(statements.some((sql) => sql.includes('locked_until = ?'))).toBe(true)
+    expect(statements.some((sql) => sql.includes('last_success_at') && sql.includes('locked_at = ?'))).toBe(true)
+    expect(bindings.some((values) => values.includes('sub_1') && values.includes('2026-04-29T01:31:00.000Z'))).toBe(true)
     expect(bindings.flat()).toContain('2026-04-30T01:30:00.000Z')
   })
 
@@ -277,7 +285,7 @@ describe('notification service', () => {
         now: new Date('2026-04-29T01:31:00.000Z'),
         fetcher: async (url) => {
           fetchCalls.push(String(url))
-          return new Response('ok', { status: 200 })
+          return new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
         }
       })
 
@@ -358,7 +366,7 @@ describe('notification service', () => {
         BETTER_AUTH_URL: 'https://tokenboard.example.com'
       },
       now: new Date('2026-04-29T01:31:00.000Z'),
-      fetcher: async () => new Response('ok', { status: 200 })
+      fetcher: async () => new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
     })
 
     expect(result).toEqual({ checked: 1, sent: 1, failed: 0, skipped: 0 })
@@ -428,7 +436,7 @@ describe('notification service', () => {
         now: new Date('2026-04-29T01:31:00.000Z'),
         fetcher: async (url) => {
           fetchCalls.push(String(url))
-          return new Response('ok', { status: 200 })
+          return new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
         }
       })
 
@@ -493,7 +501,7 @@ describe('notification service', () => {
         BETTER_AUTH_URL: 'https://tokenboard.example.com'
       },
       now: new Date('2026-04-29T16:01:00.000Z'),
-      fetcher: async () => new Response('ok', { status: 200 })
+      fetcher: async () => new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
     })
 
     expect(result).toEqual({ checked: 1, sent: 1, failed: 0, skipped: 0 })
@@ -539,7 +547,7 @@ describe('notification service', () => {
       now: new Date('2026-04-29T01:31:00.000Z'),
       fetcher: async (url) => {
         fetchCalls.push(String(url))
-        return new Response('ok', { status: 200 })
+        return new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
       }
     })
 
@@ -603,7 +611,7 @@ describe('notification service', () => {
         now: new Date('2026-04-29T01:31:00.000Z'),
         fetcher: async (url, init) => {
           fetchCalls.push({ url: String(url), body: String(init?.body), signal: init?.signal })
-          return new Response('ok', { status: 200 })
+          return new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
         }
       })
 
@@ -724,7 +732,7 @@ describe('notification service', () => {
       now: new Date('2026-04-29T01:31:00.000Z'),
       fetcher: async (url) => {
         fetchCalls.push(String(url))
-        return new Response('ok', { status: 200 })
+        return new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
       }
     })
 
@@ -733,6 +741,8 @@ describe('notification service', () => {
     expect(fetchCalls).toHaveLength(0)
     expect(bindings.flat()).toContain('skipped')
     expect(updateStatements.some((sql) => sql.includes('last_success_at'))).toBe(false)
+    expect(updateStatements.some((sql) => sql.includes('locked_at = ?'))).toBe(true)
+    expect(bindings.some((values) => values.includes('sub_1') && values.includes('2026-04-29T01:31:00.000Z'))).toBe(true)
   })
 
   test('does not record webhook failure when skipped delivery state fails', async () => {
@@ -824,6 +834,7 @@ function dueSubscriptionRow(
     enabled: true,
     nextRunAt: '2026-04-29T01:30:00.000Z',
     pendingReportDate: null,
+    lockedAt: null,
     failureCount: 0,
     lastSuccessAt: null,
     lastFailureAt: null,

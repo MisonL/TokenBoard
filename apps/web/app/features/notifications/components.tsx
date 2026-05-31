@@ -172,20 +172,21 @@ function SubscriptionActions(props: { subscription: WebhookSubscriptionSummary }
       <SubscriptionAction action={props.subscription.enabled ? 'disable' : 'enable'}>
         {props.subscription.enabled ? '停用' : '启用'}
       </SubscriptionAction>
-      <SubscriptionAction action="delete" variant="danger">删除</SubscriptionAction>
+      <SubscriptionAction action="delete" confirm="确认删除这个 Webhook 通知配置？" variant="danger">删除</SubscriptionAction>
     </div>
   )
 }
 
-function SubscriptionAction(props: { action: string; children: string; variant?: 'danger' }) {
+function SubscriptionAction(props: { action: string; children: string; confirm?: string; variant?: 'danger' }) {
   return (
     <button
-      class={`min-h-11 rounded-xl border px-4 py-3 text-sm font-bold transition ${props.variant === 'danger'
-        ? 'border-red-400/40 text-red-600 hover:bg-red-500/10'
+      class={`min-h-11 rounded-xl border px-4 py-3 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300 ${props.variant === 'danger'
+        ? 'border-red-400/40 text-red-700 hover:bg-red-500/10 dark:text-red-300'
         : 'border-[var(--app-border)] text-[var(--app-text)] hover:border-lime-300'}`}
       type="submit"
       name="action"
       value={props.action}
+      data-confirm={props.confirm}
     >
       {props.children}
     </button>

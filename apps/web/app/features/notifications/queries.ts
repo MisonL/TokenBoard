@@ -1,6 +1,6 @@
-import type { WebhookProvider, WebhookSubscriptionSummary } from './schema'
+import type { ClaimedWebhookSubscription, WebhookProvider, WebhookSubscriptionSummary } from './schema'
 
-export type WebhookSubscriptionSecretRow = WebhookSubscriptionSummary & {
+export type WebhookSubscriptionSecretRow = ClaimedWebhookSubscription & {
   userId: string
   displayName: string
   webhookUrlEncrypted: string
@@ -69,6 +69,7 @@ export async function getWebhookSubscriptionForUser(
           webhook_subscriptions.enabled,
           webhook_subscriptions.next_run_at as nextRunAt,
           webhook_subscriptions.pending_report_date as pendingReportDate,
+          webhook_subscriptions.locked_at as lockedAt,
           webhook_subscriptions.failure_count as failureCount,
           webhook_subscriptions.last_success_at as lastSuccessAt,
           webhook_subscriptions.last_failure_at as lastFailureAt,
@@ -112,6 +113,7 @@ export async function listDueWebhookSubscriptions(
           webhook_subscriptions.enabled,
           webhook_subscriptions.next_run_at as nextRunAt,
           webhook_subscriptions.pending_report_date as pendingReportDate,
+          webhook_subscriptions.locked_at as lockedAt,
           webhook_subscriptions.failure_count as failureCount,
           webhook_subscriptions.last_success_at as lastSuccessAt,
           webhook_subscriptions.last_failure_at as lastFailureAt,
@@ -249,6 +251,7 @@ export async function insertDeliveryLog(input: {
 function normalizeSecretRow(row: WebhookSubscriptionSecretRow): WebhookSubscriptionSecretRow {
   return {
     ...normalizeSubscriptionSummary(row),
+    lockedAt: row.lockedAt ?? null,
     userId: row.userId,
     displayName: row.displayName,
     webhookUrlEncrypted: row.webhookUrlEncrypted,

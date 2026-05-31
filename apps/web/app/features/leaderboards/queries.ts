@@ -1,4 +1,4 @@
-import { dedupedDailyUsageCte } from '../usage/deduped-daily-usage'
+import { dedupedDailyUsageCte, tokensWithoutCacheReadSql } from '../usage/deduped-daily-usage'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
 
 export type LeaderboardEntry = {
@@ -47,7 +47,7 @@ export async function listLeaderboard(
           profiles.slug as slug,
           profiles.display_name as displayName,
           COALESCE(SUM(deduped_daily_usage.total_tokens), 0) as totalTokens,
-          COALESCE(SUM(deduped_daily_usage.input_tokens + deduped_daily_usage.output_tokens + deduped_daily_usage.cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql('deduped_daily_usage')}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(deduped_daily_usage.cost_usd), 0) as costUsd
         FROM profiles
         JOIN deduped_daily_usage ON deduped_daily_usage.user_id = profiles.user_id

@@ -93,10 +93,11 @@ async function processDueSubscription(input: {
 }): Promise<DeliveryStatus> {
   const claimed = await claimDueSubscription(input.env.DB, input.subscription, input.now)
   if (!claimed) return 'skipped'
+  const subscription = { ...input.subscription, lockedAt: input.now.toISOString() }
 
   const result = await deliverSubscription({
     env: input.env,
-    subscription: input.subscription,
+    subscription,
     kind: 'daily',
     now: input.now,
     fetcher: input.fetcher

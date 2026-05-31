@@ -225,7 +225,14 @@ function DeviceRevokeForm(props: { device: UserDevice }) {
     <form method="post">
       <input type="hidden" name="action" value="revoke" />
       <input type="hidden" name="deviceId" value={props.device.id} />
-      <Button class="w-full sm:w-auto" type="submit" variant="destructive" size="sm" disabled={props.device.activeTokenCount <= 0}>
+      <Button
+        class="w-full sm:w-auto"
+        type="submit"
+        variant="destructive"
+        size="sm"
+        disabled={props.device.activeTokenCount <= 0}
+        data-confirm="确认停用这个设备的上传 token？"
+      >
         停用
       </Button>
     </form>

@@ -3,6 +3,7 @@ import {
   dedupedDailyUsageCte,
   normalizeDeviceFilter,
   optionalDedupedDailyUsageWith,
+  tokensWithoutCacheReadSql,
   usageTableForDeviceFilter
 } from './deduped-daily-usage'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
@@ -129,10 +130,10 @@ export async function getUsageSummary(
         )
         SELECT
           COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as todayTokens,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.input_tokens + deduped_daily_usage.output_tokens + deduped_daily_usage.cache_creation_tokens ELSE 0 END), 0) as todayTokensWithoutCacheRead,
+          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN ${tokensWithoutCacheReadSql('deduped_daily_usage')} ELSE 0 END), 0) as todayTokensWithoutCacheRead,
           COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
           COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as monthTokens,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.input_tokens + deduped_daily_usage.output_tokens + deduped_daily_usage.cache_creation_tokens ELSE 0 END), 0) as monthTokensWithoutCacheRead,
+          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN ${tokensWithoutCacheReadSql('deduped_daily_usage')} ELSE 0 END), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as monthCostUsd,
           device_stats.lastSyncedAt as lastSyncedAt,
           COALESCE(device_stats.deviceCount, 0) as deviceCount
@@ -151,7 +152,7 @@ export async function getUsageSummary(
         SELECT
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead
         FROM deduped_daily_usage
         WHERE user_id = ?
           AND usage_date >= ?
@@ -202,7 +203,7 @@ export async function getDailyUsageTrend(
         SELECT
           usage_date as usageDate,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
         FROM deduped_daily_usage
         WHERE user_id = ?
@@ -257,7 +258,7 @@ export async function getUsageDetails(
           usage_date as usageDate,
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
         FROM ${usageTable}
@@ -304,7 +305,7 @@ export async function getUsageDetails(
           COALESCE(SUM(cache_creation_tokens), 0) as cacheCreationTokens,
           COALESCE(SUM(cache_read_tokens), 0) as cacheReadTokens,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
         FROM ${usageTable}
