@@ -24,6 +24,9 @@ describe('Wrangler deploy config', () => {
     expect(config).not.toContain('<your-tokenboard-domain>')
     expect(config).toContain('"BETTER_AUTH_URL": "http://localhost:8787"')
     expect(config).toContain('"database_id": "local-tokenboard-dev"')
+    expect(config).toContain('"binding": "ASSETS"')
+    expect(config).toContain('"run_worker_first"')
+    expect(config).toContain('"run_worker_first": true')
     expect(config).not.toMatch(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/i)
     expect(config).not.toMatch(/"pattern":\s*"[a-z0-9.-]+\.[a-z]{2,}"/i)
     expect(config).not.toMatch(/"database_id":\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i)
@@ -47,6 +50,9 @@ describe('Wrangler deploy config', () => {
     expect(example).toContain('"routes"')
     expect(example).toContain('"triggers"')
     expect(example).toContain('"*/15 * * * *"')
+    expect(example).toContain('"binding": "ASSETS"')
+    expect(example).toContain('"run_worker_first"')
+    expect(example).toContain('"run_worker_first": true')
     expect(example).toContain('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"')
     expect(example).toContain('"database_id": "<your-d1-database-id>"')
     expect(example).not.toMatch(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/i)
@@ -226,6 +232,35 @@ describe('Wrangler deploy config', () => {
 
       expect(result.status).not.toBe(0)
       expect(result.stderr).toContain('triggers.crons')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('production config checker rejects production config without worker-first assets binding', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-no-worker-first-config-'))
+    const outputFile = join(tempDir, 'wrangler.production.no-worker-first.jsonc')
+
+    try {
+      const content = readPackageFile('wrangler.production.example.jsonc')
+        .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
+        .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
+        .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
+        .replace(/,\s*"run_worker_first":\s*true/, '')
+        .replace(/,\s*"binding":\s*"ASSETS"/, '')
+      writeFileSync(outputFile, content)
+
+      const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WRANGLER_CONFIG: outputFile
+        }
+      })
+
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain('assets.binding')
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }

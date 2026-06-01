@@ -25,6 +25,7 @@ validateProductionAuthUrl(readRequiredString(config.vars?.BETTER_AUTH_URL, 'vars
 validateProductionRoute(readRequiredString(firstRoute(config).pattern, 'routes[0].pattern'))
 validateProductionDatabaseId(readRequiredString(d1Database(config).database_id, 'd1_databases[DB].database_id'))
 validateRequiredCronTrigger(config)
+validateWorkerFirstAssetRoutes(config)
 
 function parseJsoncConfig(value) {
   try {
@@ -173,6 +174,12 @@ function validateProductionDatabaseId(value) {
 function validateRequiredCronTrigger(config) {
   if (!Array.isArray(config.triggers?.crons) || !config.triggers.crons.includes('*/15 * * * *')) {
     fail(`${CONFIG_FILE} triggers.crons must include */15 * * * * for scheduled webhook delivery.`)
+  }
+}
+
+function validateWorkerFirstAssetRoutes(config) {
+  if (config.assets?.binding !== 'ASSETS' || config.assets?.run_worker_first !== true) {
+    fail(`${CONFIG_FILE} assets.binding must be ASSETS and assets.run_worker_first must be true so dynamic JSON, SVG, CSV, and static asset fallback routes are served correctly.`)
   }
 }
 
