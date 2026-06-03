@@ -7,7 +7,8 @@ export type PublicUsageRoute = {
   format: 'json' | 'svg'
 }
 
-const PUBLIC_CARD_CACHE_CONTROL = 'public, max-age=300'
+export const PUBLIC_API_CLIENT_CACHE_CONTROL = 'public, max-age=0, must-revalidate'
+export const PUBLIC_API_WORKER_CACHE_CONTROL = 'public, max-age=300'
 
 export function parsePublicUsagePath(pathname: string) {
   const match = pathname.match(/^\/api\/public\/([^/]+)$/)
@@ -46,7 +47,7 @@ export async function createPublicUsageResponse(input: {
       status: 200,
       headers: {
         'content-type': 'image/svg+xml; charset=utf-8',
-        'cache-control': PUBLIC_CARD_CACHE_CONTROL
+        'cache-control': PUBLIC_API_CLIENT_CACHE_CONTROL
       }
     })
   }
@@ -54,7 +55,7 @@ export async function createPublicUsageResponse(input: {
   const data = await getPublicUsageJson(input.db, input.route.slug, input.now ?? new Date())
   return Response.json(data, {
     status: 200,
-    headers: { 'cache-control': PUBLIC_CARD_CACHE_CONTROL }
+    headers: { 'cache-control': PUBLIC_API_CLIENT_CACHE_CONTROL }
   })
 }
 

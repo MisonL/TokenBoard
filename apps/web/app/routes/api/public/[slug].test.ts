@@ -49,7 +49,7 @@ describe('public usage route', () => {
     ) as Response
 
     expect(response.headers.get('content-type')).toBe('image/svg+xml; charset=utf-8')
-    expect(response.headers.get('cache-control')).toBe('public, max-age=300')
+    expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate')
     expect(await response.text()).toBe('<svg />')
     expect(mockedGetPublicUsageCard).toHaveBeenCalledWith(
       {},

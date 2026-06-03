@@ -80,12 +80,21 @@ describe('public card service', () => {
     })
     expect(JSON.stringify(result)).not.toContain('internal-user-id')
     expect(bindings[0]).toEqual(['eve'])
-    expect(bindings[1]).toEqual(['2026-04-29', '2026-04-29', '2026-04-29', '2026-04-01', '2026-04-01', '2026-04-01', 'internal-user-id'])
+    expect(bindings[1]).toEqual([
+      'internal-user-id',
+      '2026-04-29',
+      '2026-04-01',
+      'internal-user-id',
+      'internal-user-id'
+    ])
     for (const sql of sqlStatements.slice(1)) {
-      expect(sql).toContain('deduped_daily_usage')
-      expect(sql).toContain("device_id <> 'legacy'")
-      expect(sql).toContain('NOT EXISTS')
+      expect(sql).toContain('effective_daily_usage_summary')
+      expect(sql).toContain('fallback_daily_usage_summary')
     }
+    expect(sqlStatements[1]).toContain('user_usage_totals')
+    expect(sqlStatements[1]).toContain('month_usage AS')
+    expect(sqlStatements[1]).toContain('effective_daily_usage_summary.usage_date >= params.month_start')
+    expect(sqlStatements[1]).not.toContain('CASE WHEN daily_usage_summary.usage_date')
   })
 
   test('renders a GitHub card with total and monthly token statistics', async () => {
@@ -186,5 +195,53 @@ describe('public card service', () => {
       code: 'NOT_FOUND',
       status: 404
     })
+  })
+
+  test('uses the public profile timezone for today and monthly public totals', async () => {
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async first() {
+                if (sql.includes('FROM profiles')) {
+                  return {
+                    userId: 'user_1',
+                    slug: 'eve',
+                    displayName: 'Eve',
+                    timezone: 'Asia/Shanghai',
+                    publicCardConfig: null,
+                    isPublic: 1
+                  }
+                }
+
+                return {
+                  totalTokens: 0,
+                  totalTokensWithoutCacheRead: 0,
+                  totalCostUsd: 0,
+                  todayTokens: 0,
+                  todayTokensWithoutCacheRead: 0,
+                  todayCostUsd: 0,
+                  monthTokens: 0,
+                  monthTokensWithoutCacheRead: 0,
+                  monthCostUsd: 0
+                }
+              },
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getPublicUsageJson(db, 'eve', new Date('2026-04-30T16:30:00.000Z'))
+
+    expect(bindings[1]).toEqual(['user_1', '2026-05-01', '2026-05-01', 'user_1', 'user_1'])
+    expect(bindings[2]).toEqual(['user_1', '2026-05-01', 'user_1', '2026-05-01'])
+    expect(bindings[3]).toEqual(['user_1', '2026-05-01', 'user_1', '2026-05-01'])
   })
 })

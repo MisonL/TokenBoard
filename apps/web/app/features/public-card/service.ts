@@ -1,9 +1,9 @@
-﻿import type { UsageSource } from '@tokenboard/usage-core'
+import type { UsageSource } from '@tokenboard/usage-core'
 import { ApiError } from '../../lib/errors'
-import { toIsoDate } from '../../lib/time'
 import { canShowPublicProfile } from '../settings/service'
-import { dedupedDailyUsageCte, tokensWithoutCacheReadSql } from '../usage/deduped-daily-usage'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
+import { localDateInTimezone } from '../notifications/time'
+import { effectiveDailyUsageSummaryWith } from '../usage/deduped-daily-usage'
 import { parsePublicCardConfig, type PublicCardConfig } from './config'
 import { renderUsageCardSvg } from './svg'
 
@@ -87,7 +87,7 @@ export async function getPublicUsageProfile(
     throw new ApiError('NOT_FOUND', 'Public profile not found', 404)
   }
 
-  const today = toIsoDate(now)
+  const today = localDateInTimezone(now, profile.timezone)
   const monthStart = `${today.slice(0, 8)}01`
   const totals = await getPublicTotals(db, profile.userId, today, monthStart)
   const sourceSplit = await getSourceSplit(db, profile.userId, monthStart)
@@ -121,6 +121,40 @@ export async function getPublicUsageProfile(
     publicCardConfig: parsePublicCardConfig(profile.publicCardConfig),
     sourceSplit,
     topModels
+  }
+}
+
+export async function assertPublicUsageVisible(db: D1Database, slug: string) {
+  const profile = await db
+    .prepare(
+      `
+        SELECT
+          profiles.user_id as userId,
+          profiles.is_public as isPublic,
+          profiles.updated_at as updatedAt,
+          user_usage_totals.updated_at as usageUpdatedAt
+        FROM profiles
+        LEFT JOIN user_usage_totals ON user_usage_totals.user_id = profiles.user_id
+        WHERE slug = ?
+        LIMIT 1
+      `
+    )
+    .bind(slug)
+    .first<{
+      userId: string
+      isPublic: number | boolean
+      updatedAt: string
+      usageUpdatedAt: string | null
+    }>()
+
+  if (!profile || !canShowPublicProfile(Boolean(profile.isPublic))) {
+    throw new ApiError('NOT_FOUND', 'Public profile not found', 404)
+  }
+
+  return {
+    userId: profile.userId,
+    updatedAt: profile.updatedAt,
+    usageUpdatedAt: profile.usageUpdatedAt ?? ''
   }
 }
 
@@ -211,22 +245,57 @@ async function getPublicTotals(db: D1Database, userId: string, today: string, mo
   return db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
+        ${effectiveDailyUsageSummaryWith({
+          dailyUsageFilter: 'daily_usage.user_id = ?',
+          summaryFilter: 'daily_usage_summary.user_id = ?'
+        })},
+        month_usage AS (
+          SELECT
+            effective_daily_usage_summary.*
+          FROM effective_daily_usage_summary
+          JOIN params ON params.user_id = effective_daily_usage_summary.user_id
+          WHERE effective_daily_usage_summary.usage_date >= params.month_start
+        ),
+        effective_totals AS (
+          SELECT
+            user_usage_totals.user_id,
+            user_usage_totals.total_tokens,
+            user_usage_totals.total_tokens_without_cache_read,
+            user_usage_totals.cost_usd
+          FROM user_usage_totals
+          JOIN params ON params.user_id = user_usage_totals.user_id
+          UNION ALL
+          SELECT
+            params.user_id,
+            COALESCE(SUM(effective_daily_usage_summary.total_tokens), 0),
+            COALESCE(SUM(effective_daily_usage_summary.total_tokens_without_cache_read), 0),
+            COALESCE(SUM(effective_daily_usage_summary.cost_usd), 0)
+          FROM params
+          LEFT JOIN effective_daily_usage_summary
+            ON effective_daily_usage_summary.user_id = params.user_id
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM user_usage_totals
+            WHERE user_usage_totals.user_id = params.user_id
+          )
+        )
         SELECT
-          COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
-          COALESCE(SUM(cost_usd), 0) as totalCostUsd,
-          COALESCE(SUM(CASE WHEN usage_date = ? THEN total_tokens ELSE 0 END), 0) as todayTokens,
-          COALESCE(SUM(CASE WHEN usage_date = ? THEN ${tokensWithoutCacheReadSql()} ELSE 0 END), 0) as todayTokensWithoutCacheRead,
-          COALESCE(SUM(CASE WHEN usage_date = ? THEN cost_usd ELSE 0 END), 0) as todayCostUsd,
-          COALESCE(SUM(CASE WHEN usage_date >= ? THEN total_tokens ELSE 0 END), 0) as monthTokens,
-          COALESCE(SUM(CASE WHEN usage_date >= ? THEN ${tokensWithoutCacheReadSql()} ELSE 0 END), 0) as monthTokensWithoutCacheRead,
-          COALESCE(SUM(CASE WHEN usage_date >= ? THEN cost_usd ELSE 0 END), 0) as monthCostUsd
-        FROM deduped_daily_usage
-        WHERE user_id = ?
+          COALESCE(MAX(effective_totals.total_tokens), 0) as totalTokens,
+          COALESCE(MAX(effective_totals.total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead,
+          COALESCE(MAX(effective_totals.cost_usd), 0) as totalCostUsd,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens ELSE 0 END), 0) as todayTokens,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens_without_cache_read ELSE 0 END), 0) as todayTokensWithoutCacheRead,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
+          COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
+          COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
+          COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd
+        FROM params
+        LEFT JOIN effective_totals ON effective_totals.user_id = params.user_id
+        LEFT JOIN month_usage ON month_usage.user_id = params.user_id
       `
     )
-    .bind(today, today, today, monthStart, monthStart, monthStart, userId)
+    .bind(userId, today, monthStart, userId, userId)
     .first<TotalsRow>()
 }
 
@@ -234,19 +303,20 @@ async function getSourceSplit(db: D1Database, userId: string, monthStart: string
   const rows = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH ${effectiveDailyUsageSummaryWith({
+          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ?',
+          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ?'
+        })}
         SELECT
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead
-        FROM deduped_daily_usage
-        WHERE user_id = ?
-          AND usage_date >= ?
+          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead
+        FROM effective_daily_usage_summary
         GROUP BY source
         ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
       `
     )
-    .bind(userId, monthStart)
+    .bind(userId, monthStart, userId, monthStart)
     .all<{ source: UsageSource; totalTokens: number; totalTokensWithoutCacheRead: number }>()
 
   return (rows.results ?? []).map((row) => ({
@@ -264,21 +334,22 @@ async function getTopModels(db: D1Database, userId: string, monthStart: string) 
   const rows = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH ${effectiveDailyUsageSummaryWith({
+          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ?',
+          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ?'
+        })}
         SELECT
           model,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
-        FROM deduped_daily_usage
-        WHERE user_id = ?
-          AND usage_date >= ?
+        FROM effective_daily_usage_summary
         GROUP BY model
         ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
         LIMIT 5
       `
     )
-    .bind(userId, monthStart)
+    .bind(userId, monthStart, userId, monthStart)
     .all<{ model: string; totalTokens: number; totalTokensWithoutCacheRead: number; costUsd: number }>()
 
   return (rows.results ?? []).map((row) => ({
