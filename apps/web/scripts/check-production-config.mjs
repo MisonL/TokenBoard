@@ -3,6 +3,8 @@ import { resolve } from 'node:path'
 
 const CONFIG_FILE = process.env.TOKENBOARD_WRANGLER_CONFIG?.trim() || 'wrangler.production.jsonc'
 const EXAMPLE_FILE = 'wrangler.production.example.jsonc'
+const DAILY_REPORT_HISTORY_DAYS_MAX = 31
+const WEBHOOK_LOG_RETENTION_DAYS_MAX = 365
 
 const configPath = resolve(CONFIG_FILE)
 
@@ -24,6 +26,18 @@ if (config.workers_dev !== false) {
 validateProductionAuthUrl(readRequiredString(config.vars?.BETTER_AUTH_URL, 'vars.BETTER_AUTH_URL'))
 validateProductionRoute(readRequiredString(firstRoute(config).pattern, 'routes[0].pattern'))
 validateProductionDatabaseId(readRequiredString(d1Database(config).database_id, 'd1_databases[DB].database_id'))
+validateOptionalIntegerString(
+  config.vars?.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS,
+  'vars.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS',
+  1,
+  DAILY_REPORT_HISTORY_DAYS_MAX
+)
+validateOptionalIntegerString(
+  config.vars?.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS,
+  'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS',
+  1,
+  WEBHOOK_LOG_RETENTION_DAYS_MAX
+)
 validateRequiredCronTrigger(config)
 validateWorkerFirstAssetRoutes(config)
 
@@ -108,7 +122,7 @@ function stripTrailingCommas(value) {
 
 function hasPlaceholderValue(value) {
   if (typeof value === 'string') {
-    return /<your-[^>]+>/.test(value) || value === '00000000-0000-0000-0000-000000000000'
+    return /<[^>]+>/.test(value) || value === '00000000-0000-0000-0000-000000000000'
   }
   if (Array.isArray(value)) return value.some(hasPlaceholderValue)
   if (value && typeof value === 'object') {
@@ -122,6 +136,17 @@ function readRequiredString(value, field) {
     fail(`${CONFIG_FILE} is missing ${field}.`)
   }
   return value.trim()
+}
+
+function validateOptionalIntegerString(value, field, min, max) {
+  if (value === undefined) return
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) {
+    fail(`${CONFIG_FILE} ${field} must be an integer from ${min} to ${max}.`)
+  }
+  const parsed = Number(value.trim())
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    fail(`${CONFIG_FILE} ${field} must be an integer from ${min} to ${max}.`)
+  }
 }
 
 function firstRoute(config) {

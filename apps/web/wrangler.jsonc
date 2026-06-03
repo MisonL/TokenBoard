@@ -17,7 +17,9 @@
     ]
   },
   "vars": {
-    "BETTER_AUTH_URL": "http://localhost:8787"
+    "BETTER_AUTH_URL": "http://localhost:8787",
+    "TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30",
+    "TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"
   },
   // "kv_namespaces": [
   //   {

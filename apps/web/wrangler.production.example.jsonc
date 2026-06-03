@@ -24,7 +24,9 @@
     }
   ],
   "vars": {
-    "BETTER_AUTH_URL": "https://<your-tokenboard-domain>"
+    "BETTER_AUTH_URL": "https://<your-tokenboard-domain>",
+    "TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>",
+    "TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"
   },
   "d1_databases": [
     {

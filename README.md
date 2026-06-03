@@ -59,15 +59,23 @@ derived cache-rate definition.
 ## Daily Webhook Reports
 
 Authenticated users can add webhook bots from `/settings/notifications`. Each subscription stores an
-encrypted webhook URL, optional signing secret, provider, local send time, timezone, and enabled state.
-The Worker cron trigger scans due subscriptions every 15 minutes and sends that day's token report.
+encrypted webhook URL, optional signing secret, provider, one or more local send times, selected
+weekdays, timezone, and enabled state. New subscriptions default to an 18:00 local send time. The
+Worker cron trigger scans due subscriptions every 15 minutes and sends that day's token report.
 
 Reports include total tokens, tokens without cache reads, cache rate, cost, sessions, source split,
 top models, and a dashboard link. Test sends are labeled as previews so they are not confused with
 scheduled daily reports. Delivery logs keep success, skipped, and failure records; failed daily
-reports retry up to three attempts before moving to the next scheduled day. Cron workers claim a
+reports retry up to three attempts before moving to the next scheduled slot. Cron workers claim a
 short delivery lock before sending, process at most 50 due subscriptions per tick, and the delivery
-log has a per-day success unique key to avoid duplicate daily pushes.
+log has a per-subscription, per-date, per-schedule-slot success unique key so multiple same-day
+pushes can run without duplicate sends for the same slot.
+
+TokenBoard also stores daily report history snapshots for recently generated scheduled reports.
+The default retention window is 30 days, and administrators can configure 1 to 31 days with
+`TOKENBOARD_DAILY_REPORT_HISTORY_DAYS`. Invalid values fail explicitly instead of falling back to a
+default. History snapshots store report totals, source split, top models, generated time, and
+dashboard link only; they do not store prompt, completion, file path, or raw conversation content.
 
 Before enabling webhook reports, configure a 32-byte base64 encryption key as a Worker secret:
 
@@ -186,6 +194,8 @@ Configure these GitHub repository variables in the same `Actions` page:
 
 - `TOKENBOARD_WORKER_ROUTE`: production custom domain host, for example `tokenboard.example.com`.
 - `BETTER_AUTH_URL`: canonical production origin, for example `https://tokenboard.example.com`.
+- `TOKENBOARD_DAILY_REPORT_HISTORY_DAYS`: scheduled report history retention, from `1` to `31`, defaults to `30`.
+- `TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS`: webhook delivery log retention, from `1` to `365`, defaults to `90`.
 
 GitHub Actions and clean Cloudflare Workers Builds generate an ignored `wrangler.production.ci.jsonc`
 from `wrangler.production.example.jsonc` and environment variables; tracked `wrangler.jsonc` stays
@@ -196,10 +206,11 @@ local-preview only.
 `apps/web/wrangler.production.jsonc`, fill the route, `BETTER_AUTH_URL`, and D1 `database_id`, and
 the deploy script will validate that file before building or deploying. If that ignored private file
 is not present, `pnpm run deploy` generates `wrangler.production.ci.jsonc` from `TOKENBOARD_WORKER_ROUTE`,
-`BETTER_AUTH_URL`, and `D1_DATABASE_ID`. The preflight requires `workers_dev: false`, a production
-route, an HTTPS auth origin, a D1 UUID, and the notification cron trigger, so the local `wrangler.jsonc`
-cannot pass production validation. Use `TOKENBOARD_WRANGLER_CONFIG=<path-to-private-config>` when
-deploying with a different private config file.
+`BETTER_AUTH_URL`, `D1_DATABASE_ID`, and the optional retention variables. The preflight requires
+`workers_dev: false`, a production route, an HTTPS auth origin, a D1 UUID, and the notification cron
+trigger, so the local `wrangler.jsonc` cannot pass production validation. Use
+`TOKENBOARD_WRANGLER_CONFIG=<path-to-private-config>` when deploying with a different private config
+file.
 
 The production Wrangler config also includes a `*/15 * * * *` cron trigger for webhook reports. Cron
 times are UTC; user-facing report times are evaluated against each subscription's configured timezone.

@@ -11,6 +11,18 @@ const outputFile = resolve(packageDir, process.argv[3] || 'wrangler.production.c
 const workerRoute = requireEnv('TOKENBOARD_WORKER_ROUTE')
 const betterAuthUrl = requireEnv('BETTER_AUTH_URL')
 const d1DatabaseId = requireEnv('D1_DATABASE_ID')
+const dailyReportHistoryDays = optionalIntegerEnv(
+  'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS',
+  '30',
+  1,
+  31
+)
+const webhookLogRetentionDays = optionalIntegerEnv(
+  'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS',
+  '90',
+  1,
+  365
+)
 
 validateWorkerRoute(workerRoute)
 validateBetterAuthUrl(betterAuthUrl)
@@ -36,8 +48,20 @@ content = replaceRequired(
   `"database_id": ${JSON.stringify(d1DatabaseId)}`,
   'database_id'
 )
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS"\s*:\s*"<tokenboard-daily-report-history-days>"/,
+  `"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": ${JSON.stringify(dailyReportHistoryDays)}`,
+  'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS'
+)
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS"\s*:\s*"<tokenboard-webhook-log-retention-days>"/,
+  `"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": ${JSON.stringify(webhookLogRetentionDays)}`,
+  'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS'
+)
 
-if (/<your-[^>]+>/.test(content)) {
+if (/<[^>]+>/.test(content)) {
   fail('Generated Wrangler config still contains placeholders.')
 }
 
@@ -48,6 +72,18 @@ function requireEnv(name) {
   const value = process.env[name]?.trim()
   if (!value) {
     fail(`${name} is required to generate the production Wrangler config.`)
+  }
+  return value
+}
+
+function optionalIntegerEnv(name, defaultValue, min, max) {
+  const value = process.env[name]?.trim() || defaultValue
+  if (!/^\d+$/.test(value)) {
+    fail(`${name} must be an integer from ${min} to ${max}.`)
+  }
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    fail(`${name} must be an integer from ${min} to ${max}.`)
   }
   return value
 }
