@@ -65,14 +65,17 @@ describe('getUsageSummary', () => {
       ]
     })
     expect(bindings[0]).toEqual(['seed-user', '2026-04-28', '2026-04-01'])
-    expect(bindings[1]).toEqual(['seed-user', '2026-04-01'])
-    expect(sqlStatements[0]).toContain('daily_usage')
+    expect(bindings[1]).toEqual(['seed-user', '2026-04-01', 'seed-user', '2026-04-01'])
+    expect(sqlStatements[0]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('month_usage AS')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= (SELECT month_start FROM params)')
+    expect(sqlStatements[0]).not.toContain('CASE WHEN daily_usage_summary.usage_date')
+    expect(sqlStatements[1]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('total_tokens_without_cache_read')
+    expect(sqlStatements[1]).toContain('total_tokens_without_cache_read')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
     expect(sqlStatements[1]).toContain('deduped_daily_usage')
-    expect(sqlStatements[0]).toContain(
-      'deduped_daily_usage.total_tokens - deduped_daily_usage.cache_read_tokens'
-    )
-    expect(sqlStatements[1]).toContain('total_tokens - cache_read_tokens')
     expect(sqlStatements[1]).toContain('ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC')
     expect(sqlStatements[0]).toContain('LEFT JOIN device_stats')
   })
@@ -114,9 +117,18 @@ describe('getDailyUsageTrend', () => {
       { usageDate: '2026-04-28', totalTokens: 0, totalTokensWithoutCacheRead: 0, cacheReadRate: 0, costUsd: 0 },
       { usageDate: '2026-04-29', totalTokens: 340, totalTokensWithoutCacheRead: 240, cacheReadRate: 100 / 340, costUsd: 0.34 }
     ])
-    expect(bindings[0]).toEqual(['user_1', '2026-04-27', '2026-04-29'])
+    expect(bindings[0]).toEqual([
+      'user_1',
+      '2026-04-27',
+      '2026-04-29',
+      'user_1',
+      '2026-04-27',
+      '2026-04-29'
+    ])
+    expect(sqlStatements[0]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('SUM(total_tokens_without_cache_read)')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
-    expect(sqlStatements[0]).toContain('SUM(total_tokens - cache_read_tokens)')
     expect(sqlStatements[0]).toContain('GROUP BY usage_date')
     expect(sqlStatements[0]).toContain('ORDER BY usage_date ASC')
   })

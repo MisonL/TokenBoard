@@ -1,5 +1,5 @@
-import { dedupedDailyUsageCte, tokensWithoutCacheReadSql } from '../usage/deduped-daily-usage'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
+import { effectiveDailyUsageSummaryWith } from '../usage/deduped-daily-usage'
 
 export type LeaderboardEntry = {
   rank: number
@@ -42,25 +42,32 @@ export async function listLeaderboard(
   const rows = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH ${effectiveDailyUsageSummaryWith({
+          dailyUsageFilter: 'daily_usage.usage_date >= ? AND daily_usage.usage_date < ?',
+          summaryFilter: 'daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date < ?'
+        })}
         SELECT
           profiles.slug as slug,
           profiles.display_name as displayName,
-          COALESCE(SUM(deduped_daily_usage.total_tokens), 0) as totalTokens,
-          COALESCE(SUM(${tokensWithoutCacheReadSql('deduped_daily_usage')}), 0) as totalTokensWithoutCacheRead,
-          COALESCE(SUM(deduped_daily_usage.cost_usd), 0) as costUsd
+          COALESCE(SUM(effective_daily_usage_summary.total_tokens), 0) as totalTokens,
+          COALESCE(SUM(effective_daily_usage_summary.total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(effective_daily_usage_summary.cost_usd), 0) as costUsd
         FROM profiles
-        JOIN deduped_daily_usage ON deduped_daily_usage.user_id = profiles.user_id
+        JOIN effective_daily_usage_summary ON effective_daily_usage_summary.user_id = profiles.user_id
         WHERE profiles.is_public = 1
           AND profiles.participates_in_leaderboards = 1
-          AND deduped_daily_usage.usage_date >= ?
-          AND deduped_daily_usage.usage_date < ?
         GROUP BY profiles.user_id, profiles.slug, profiles.display_name
         ${orderBy}
         LIMIT ?
       `
     )
-    .bind(input.startDate, input.endDateExclusive, input.limit ?? 50)
+    .bind(
+      input.startDate,
+      input.endDateExclusive,
+      input.startDate,
+      input.endDateExclusive,
+      input.limit ?? 50
+    )
     .all<Omit<LeaderboardEntry, 'rank'>>()
 
   return (rows.results ?? []).map((row, index) => ({

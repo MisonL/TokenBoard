@@ -67,8 +67,9 @@ describe('ingest service', () => {
 
     expect(result).toEqual({ upserted: 1 })
     expect(batches).toHaveLength(1)
-    expect(bound[0].sql).toContain('INSERT INTO daily_usage')
-    expect(bound[0].values.slice(0, 6)).toEqual([
+    expect(batches[0]).toHaveLength(3)
+    const usageUpsert = bound.find((entry) => entry.sql.includes('INSERT INTO daily_usage ('))
+    expect(usageUpsert?.values.slice(0, 6)).toEqual([
       'user_legacy',
       'legacy',
       'codex',
@@ -76,8 +77,8 @@ describe('ingest service', () => {
       'Asia/Shanghai',
       'gpt-5'
     ])
-    expect(bound[1].sql).toContain('UPDATE upload_tokens')
-    expect(bound[1].values).toEqual(['2026-05-22T09:00:00.000Z', 'hash:legacy-upload-token'])
+    const tokenUpdate = bound.find((entry) => entry.sql.includes('UPDATE upload_tokens'))
+    expect(tokenUpdate?.values).toEqual(['2026-05-22T09:00:00.000Z', 'hash:legacy-upload-token'])
     expect(bound.some((entry) => entry.sql.includes('UPDATE devices'))).toBe(false)
   })
 

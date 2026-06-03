@@ -56,13 +56,13 @@ describe('listLeaderboard', () => {
         costUsd: 2.5
       }
     ])
+    expect(sqlStatements[0]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= ? AND daily_usage.usage_date < ?')
+    expect(sqlStatements[0]).toContain('daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date < ?')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
-    expect(sqlStatements[0]).toContain('deduped_daily_usage.usage_date >= ?')
-    expect(sqlStatements[0]).toContain('deduped_daily_usage.usage_date < ?')
-    expect(sqlStatements[0]).toContain("device_id <> 'legacy'")
-    expect(sqlStatements[0]).toContain('NOT EXISTS')
     expect(sqlStatements[0]).toContain('ORDER BY totalTokens DESC, costUsd DESC')
-    expect(bindings[0]).toEqual(['2026-04-01', '2026-05-01', 20])
+    expect(bindings[0]).toEqual(['2026-04-01', '2026-05-01', '2026-04-01', '2026-05-01', 20])
   })
 
   test('lists monthly cost leaderboard ordered by cost first', async () => {
@@ -91,7 +91,7 @@ describe('listLeaderboard', () => {
     })
 
     expect(sqlStatements[0]).toContain('totalTokensWithoutCacheRead')
-    expect(sqlStatements[0]).toContain('deduped_daily_usage.total_tokens - deduped_daily_usage.cache_read_tokens')
+    expect(sqlStatements[0]).toContain('effective_daily_usage_summary.total_tokens_without_cache_read')
     expect(sqlStatements[0]).toContain('ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC, costUsd DESC')
   })
 })

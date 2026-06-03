@@ -1,6 +1,6 @@
 import type { UsageSource } from '@tokenboard/usage-core'
 import {
-  dedupedDailyUsageCte,
+  effectiveDailyUsageSummaryWith,
   normalizeDeviceFilter,
   optionalDedupedDailyUsageWith,
   tokensWithoutCacheReadSql,
@@ -118,8 +118,23 @@ export async function getUsageSummary(
   const summary = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte},
-        params(user_id, today, month_start) AS (SELECT ?, ?, ?),
+        WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
+        ${effectiveDailyUsageSummaryWith({
+          dailyUsageFilter: `
+            daily_usage.user_id = (SELECT user_id FROM params)
+            AND daily_usage.usage_date >= (SELECT month_start FROM params)
+          `,
+          summaryFilter: `
+            daily_usage_summary.user_id = (SELECT user_id FROM params)
+            AND daily_usage_summary.usage_date >= (SELECT month_start FROM params)
+          `
+        })},
+        month_usage AS (
+          SELECT
+            effective_daily_usage_summary.*
+          FROM effective_daily_usage_summary
+          JOIN params ON params.user_id = effective_daily_usage_summary.user_id
+        ),
         device_stats AS (
           SELECT
             devices.user_id,
@@ -129,16 +144,16 @@ export async function getUsageSummary(
           GROUP BY devices.user_id
         )
         SELECT
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as todayTokens,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN ${tokensWithoutCacheReadSql('deduped_daily_usage')} ELSE 0 END), 0) as todayTokensWithoutCacheRead,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as monthTokens,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN ${tokensWithoutCacheReadSql('deduped_daily_usage')} ELSE 0 END), 0) as monthTokensWithoutCacheRead,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as monthCostUsd,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens ELSE 0 END), 0) as todayTokens,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens_without_cache_read ELSE 0 END), 0) as todayTokensWithoutCacheRead,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
+          COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
+          COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
+          COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd,
           device_stats.lastSyncedAt as lastSyncedAt,
           COALESCE(device_stats.deviceCount, 0) as deviceCount
         FROM params
-        LEFT JOIN deduped_daily_usage ON deduped_daily_usage.user_id = params.user_id
+        LEFT JOIN month_usage ON month_usage.user_id = params.user_id
         LEFT JOIN device_stats ON device_stats.user_id = params.user_id
       `
     )
@@ -148,19 +163,20 @@ export async function getUsageSummary(
   const split = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH ${effectiveDailyUsageSummaryWith({
+          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ?',
+          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ?'
+        })}
         SELECT
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead
-        FROM deduped_daily_usage
-        WHERE user_id = ?
-          AND usage_date >= ?
+          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead
+        FROM effective_daily_usage_summary
         GROUP BY source
         ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
       `
     )
-    .bind(input.userId, input.monthStart)
+    .bind(input.userId, input.monthStart, input.userId, input.monthStart)
     .all<{ source: UsageSource; totalTokens: number; totalTokensWithoutCacheRead: number }>()
 
   return {
@@ -199,21 +215,28 @@ export async function getDailyUsageTrend(
   const rows = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH ${effectiveDailyUsageSummaryWith({
+          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ? AND daily_usage.usage_date <= ?',
+          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date <= ?'
+        })}
         SELECT
           usage_date as usageDate,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
-        FROM deduped_daily_usage
-        WHERE user_id = ?
-          AND usage_date >= ?
-          AND usage_date <= ?
+        FROM effective_daily_usage_summary
         GROUP BY usage_date
         ORDER BY usage_date ASC
       `
     )
-    .bind(input.userId, input.startDate, input.endDate)
+    .bind(
+      input.userId,
+      input.startDate,
+      input.endDate,
+      input.userId,
+      input.startDate,
+      input.endDate
+    )
     .all<DailyUsageTrendItem>()
 
   const byDate = new Map(

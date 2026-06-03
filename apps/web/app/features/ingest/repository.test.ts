@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest'
-import { findExistingSnapshotHashes, markIngestSynced, upsertUsageSnapshots, type IngestRecord } from './repository'
+import {
+  backfillUsageSummaryCache,
+  findExistingSnapshotHashes,
+  markIngestSynced,
+  upsertUsageSnapshots,
+  type IngestRecord
+} from './repository'
 
 function makeRecord(overrides: Partial<IngestRecord> = {}): IngestRecord {
   return {
@@ -60,12 +66,15 @@ describe('upsertUsageSnapshots', () => {
     )
     expect(runCount).toBe(0)
     expect(batches).toHaveLength(1)
-    expect(batches[0]).toHaveLength(2)
-    expect(bindings.map((values) => values[5]).sort()).toEqual([
+    expect(batches[0]).toHaveLength(5)
+    expect(sqlStatements.some((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toBe(true)
+    expect(sqlStatements.some((sql) => sql.includes('INSERT INTO user_usage_totals'))).toBe(true)
+    const upsertBindings = bindings.filter((values) => values.length === 15)
+    expect(upsertBindings.map((values) => values[5]).sort()).toEqual([
       'claude-opus-4-5',
       'claude-sonnet-4-5'
     ])
-    expect(bindings.find((values) => values[5] === 'claude-sonnet-4-5')).toEqual([
+    expect(upsertBindings.find((values) => values[5] === 'claude-sonnet-4-5')).toEqual([
       'seed-user',
       'dev_123',
       'claude-code',
@@ -84,7 +93,7 @@ describe('upsertUsageSnapshots', () => {
     ])
   })
 
-  test('splits large upserts into conservative D1 batches of 100 records', async () => {
+  test('keeps each ingest chunk inside one atomic D1 statement batch', async () => {
     const batches: unknown[][] = []
     const db = {
       prepare(sql: string) {
@@ -113,9 +122,94 @@ describe('upsertUsageSnapshots', () => {
     const result = await upsertUsageSnapshots(db, records)
 
     expect(result).toEqual({ upserted: 501 })
-    expect(batches).toHaveLength(6)
-    expect(batches.slice(0, 5).every((batch) => batch.length === 100)).toBe(true)
-    expect(batches[5]).toHaveLength(1)
+    expect(batches).toHaveLength(17)
+    expect(batches.every((batch) => batch.length <= 100)).toBe(true)
+    expect(batches.flat()).toHaveLength(1019)
+    expect(batches.slice(0, -1).every((batch) => batch.length === 61)).toBe(true)
+    expect(batches.at(-1)).toHaveLength(43)
+  })
+
+  test('throws when D1 reports a failed ingest batch statement', async () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            return { sql, values }
+          }
+        }
+      },
+      async batch(statements: unknown[]) {
+        return statements.map((_, index) => ({
+          success: index !== 1,
+          error: index === 1 ? 'constraint failed' : undefined
+        }))
+      }
+    } as unknown as D1Database
+
+    await expect(upsertUsageSnapshots(db, [makeRecord()])).rejects.toThrow(
+      'D1 batch statement 2 failed: constraint failed'
+    )
+  })
+
+  test('refreshes deduped summary rows once per changed logical usage key', async () => {
+    const bindings: unknown[][] = []
+    const sqlStatements: string[] = []
+    const batches: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return { sql, values }
+          }
+        }
+      },
+      async batch(statements: unknown[]) {
+        batches.push(statements)
+        return statements.map(() => ({ success: true }))
+      }
+    } as unknown as D1Database
+
+    await upsertUsageSnapshots(db, [
+      makeRecord({ deviceId: 'dev_1' }),
+      makeRecord({ deviceId: 'dev_2' }),
+      makeRecord({ usageDate: '2026-04-29' })
+    ])
+
+    const summaryBindings = bindings.filter((values) => values.length === 8)
+    const totalsBindings = bindings.filter((values) => values.length === 2)
+    expect(summaryBindings).toEqual([
+      [
+        'seed-user',
+        '2026-04-28',
+        'claude-code',
+        'claude-sonnet-4-5',
+        'seed-user',
+        '2026-04-28',
+        'claude-code',
+        'claude-sonnet-4-5'
+      ],
+      [
+        'seed-user',
+        '2026-04-29',
+        'claude-code',
+        'claude-sonnet-4-5',
+        'seed-user',
+        '2026-04-29',
+        'claude-code',
+        'claude-sonnet-4-5'
+      ]
+    ])
+    expect(totalsBindings).toEqual([['seed-user', 'seed-user']])
+    expect(sqlStatements.some((sql) => sql.includes('FROM daily_usage AS current_usage'))).toBe(true)
+    expect(
+      sqlStatements.some((sql) =>
+        sql.includes('COALESCE(SUM(total_tokens - cache_read_tokens), 0)')
+      )
+    ).toBe(true)
+    expect(batches).toHaveLength(1)
+    expect(batches[0]).toHaveLength(6)
   })
 
   test('marks the upload token and device as synced after ingest', async () => {
@@ -153,6 +247,141 @@ describe('upsertUsageSnapshots', () => {
       '2026-04-28T08:00:00.000Z',
       'dev_123'
     ])
+  })
+})
+
+describe('backfillUsageSummaryCache', () => {
+  test('refreshes summary keys with a bounded cursor before totals', async () => {
+    const bindings: unknown[][] = []
+    const sqlStatements: string[] = []
+    const batches: unknown[][] = []
+    const runValues: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              sql,
+              values,
+              async first() {
+                return null
+              },
+              async all() {
+                if (!sql.includes('FROM daily_usage') || sql.includes('daily_usage_summary')) {
+                  return { results: [] }
+                }
+                return {
+                  results: [
+                    {
+                      userId: 'user_1',
+                      usageDate: '2026-04-28',
+                      source: 'codex',
+                      model: 'gpt-5'
+                    },
+                    {
+                      userId: 'user_1',
+                      usageDate: '2026-04-29',
+                      source: 'claude-code',
+                      model: 'claude-sonnet-4-5'
+                    },
+                    {
+                      userId: 'user_2',
+                      usageDate: '2026-04-30',
+                      source: 'codex',
+                      model: 'gpt-5'
+                    }
+                  ]
+                }
+              },
+              async run() {
+                runValues.push(values)
+                return { success: true }
+              }
+            }
+          }
+        }
+      },
+      async batch(statements: unknown[]) {
+        batches.push(statements)
+        return statements.map(() => ({ success: true }))
+      }
+    } as unknown as D1Database
+
+    const result = await backfillUsageSummaryCache({ db, limit: 2 })
+
+    expect(result).toEqual({ backfilled: 2, totalsRefreshed: 0 })
+    expect(sqlStatements[0]).toContain('FROM usage_summary_backfill_state')
+    expect(sqlStatements[1]).toContain('FROM daily_usage')
+    expect(sqlStatements[1]).toContain('GROUP BY user_id, usage_date, source, model')
+    expect(sqlStatements[1]).toContain('ORDER BY user_id ASC, usage_date ASC, source ASC, model ASC')
+    expect(sqlStatements[1]).not.toContain('aggregate_usage AS')
+    expect(bindings[1].at(-1)).toBe(3)
+    expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toHaveLength(2)
+    expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO user_usage_totals'))).toHaveLength(0)
+    expect(runValues.at(-1)).toEqual([
+      'initial',
+      'summaries',
+      'user_1',
+      '2026-04-29',
+      'claude-code',
+      'claude-sonnet-4-5',
+      null
+    ])
+    expect(batches).toHaveLength(1)
+    expect(batches[0]).toHaveLength(2)
+  })
+
+  test('refreshes totals from summaries after summary backfill completes', async () => {
+    const bindings: unknown[][] = []
+    const sqlStatements: string[] = []
+    const batches: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              sql,
+              values,
+              async first() {
+                return {
+                  phase: 'totals',
+                  cursorUserId: null,
+                  cursorUsageDate: null,
+                  cursorSource: null,
+                  cursorModel: null,
+                  completedAt: null
+                }
+              },
+              async all() {
+                return { results: [{ userId: 'user_1' }, { userId: 'user_2' }] }
+              },
+              async run() {
+                return { success: true }
+              }
+            }
+          }
+        }
+      },
+      async batch(statements: unknown[]) {
+        batches.push(statements)
+        return statements.map(() => ({ success: true }))
+      }
+    } as unknown as D1Database
+
+    const result = await backfillUsageSummaryCache({ db, limit: 50 })
+
+    expect(result).toEqual({ backfilled: 0, totalsRefreshed: 2 })
+    expect(sqlStatements[1]).toContain('FROM daily_usage_summary')
+    expect(sqlStatements.join('\n')).not.toContain('aggregate_totals AS')
+    expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toHaveLength(0)
+    expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO user_usage_totals'))).toHaveLength(2)
+    expect(bindings.some((values) => values.length === 2 && values.every((value) => value === 'user_1'))).toBe(true)
+    expect(batches).toHaveLength(1)
+    expect(batches[0]).toHaveLength(2)
   })
 })
 
@@ -216,5 +445,39 @@ describe('findExistingSnapshotHashes', () => {
       '2026-04-29',
       'claude-sonnet-4-5'
     ])
+  })
+
+  test('keeps existing hash queries under the D1 bound parameter limit', async () => {
+    const bindings: unknown[][] = []
+    const db = {
+      prepare() {
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const keys = Array.from({ length: 65 }, (_, index) => ({
+      source: 'codex' as const,
+      usageDate: `2026-04-${String((index % 30) + 1).padStart(2, '0')}`,
+      model: `gpt-5-${index}`
+    }))
+
+    await findExistingSnapshotHashes(db, {
+      userId: 'seed-user',
+      deviceId: 'dev_123',
+      keys
+    })
+
+    expect(bindings).toHaveLength(3)
+    expect(bindings.slice(0, 2).every((values) => values.length === 98)).toBe(true)
+    expect(bindings[2]).toHaveLength(5)
   })
 })
