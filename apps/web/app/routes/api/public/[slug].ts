@@ -4,6 +4,7 @@ import {
   parsePublicUsageSegment,
   publicApiErrorResponse
 } from '../../../features/public-card/http'
+import { usageSummaryStrictMode } from '../../../features/usage/deduped-daily-usage'
 
 export const GET = createRoute(async (c) => {
   try {
@@ -13,7 +14,8 @@ export const GET = createRoute(async (c) => {
       db: c.env.DB,
       route,
       configuredOrigin: c.env.BETTER_AUTH_URL,
-      requestOrigin: new URL(c.req.url).origin
+      requestOrigin: new URL(c.req.url).origin,
+      summaryStrict: usageSummaryStrictMode(c.env)
     })
   } catch (error) {
     return publicApiErrorResponse(error)

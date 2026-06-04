@@ -50,15 +50,17 @@ describe('public card service', () => {
                   todayCostUsd: 0.2,
                   monthTokens: 500,
                   monthTokensWithoutCacheRead: 380,
-                  monthCostUsd: 1.5
+                  monthCostUsd: 1.5,
+                  sourceSplit: JSON.stringify([
+                    { source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240 }
+                  ]),
+                  topModels: JSON.stringify([
+                    { model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, costUsd: 1.5 }
+                  ])
                 }
               },
               async all() {
-                if (sql.includes('GROUP BY source')) {
-                  return { results: [{ source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240 }] }
-                }
-
-                return { results: [{ model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, costUsd: 1.5 }] }
+                throw new Error('Public JSON should use one metrics query')
               }
             }
           }
@@ -87,19 +89,23 @@ describe('public card service', () => {
       'internal-user-id',
       'internal-user-id'
     ])
-    for (const sql of sqlStatements.slice(1)) {
-      expect(sql).toContain('effective_daily_usage_summary')
-      expect(sql).toContain('fallback_daily_usage_summary')
-    }
+    expect(bindings).toHaveLength(2)
+    expect(sqlStatements).toHaveLength(2)
+    expect(sqlStatements[1]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[1]).toContain('fallback_daily_usage_summary')
     expect(sqlStatements[1]).toContain('user_usage_totals')
     expect(sqlStatements[1]).toContain('month_usage AS')
+    expect(sqlStatements[1]).toContain('source_usage AS')
+    expect(sqlStatements[1]).toContain('model_usage AS')
     expect(sqlStatements[1]).toContain('effective_daily_usage_summary.usage_date >= params.month_start')
     expect(sqlStatements[1]).not.toContain('CASE WHEN daily_usage_summary.usage_date')
   })
 
   test('renders a GitHub card with total and monthly token statistics', async () => {
+    const sqlStatements: string[] = []
     const db = {
       prepare(sql: string) {
+        sqlStatements.push(sql)
         return {
           bind() {
             return {
@@ -140,7 +146,7 @@ describe('public card service', () => {
                 }
               },
               async all() {
-                return { results: [] }
+                throw new Error('SVG public card should not query breakdown rows')
               }
             }
           }
@@ -167,6 +173,9 @@ describe('public card service', () => {
     expect(svg).toContain('card-logo-lime')
     expect(svg).toContain('M130 118H282V164H229V382H181V164H130V118Z')
     expect(svg).toContain('M120 390H392')
+    expect(sqlStatements).toHaveLength(2)
+    expect(sqlStatements.join('\n')).not.toContain('GROUP BY source')
+    expect(sqlStatements.join('\n')).not.toContain('GROUP BY model')
   })
 
   test('rejects a private profile', async () => {
@@ -230,7 +239,7 @@ describe('public card service', () => {
                 }
               },
               async all() {
-                return { results: [] }
+                throw new Error('Public card should not query breakdown rows')
               }
             }
           }
@@ -241,7 +250,6 @@ describe('public card service', () => {
     await getPublicUsageJson(db, 'eve', new Date('2026-04-30T16:30:00.000Z'))
 
     expect(bindings[1]).toEqual(['user_1', '2026-05-01', '2026-05-01', 'user_1', 'user_1'])
-    expect(bindings[2]).toEqual(['user_1', '2026-05-01', 'user_1', '2026-05-01'])
-    expect(bindings[3]).toEqual(['user_1', '2026-05-01', 'user_1', '2026-05-01'])
+    expect(bindings).toHaveLength(2)
   })
 })

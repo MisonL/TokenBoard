@@ -58,13 +58,34 @@ type TotalsRow = {
   monthTokens: number | null
   monthTokensWithoutCacheRead: number | null
   monthCostUsd: number | null
+  sourceSplit: unknown
+  topModels: unknown
 }
+
+type PublicUsageProfileCore = Omit<PublicUsageProfile, 'sourceSplit' | 'topModels'>
 
 export async function getPublicUsageProfile(
   db: D1Database,
   slug: string,
-  now = new Date()
+  now = new Date(),
+  summaryStrict = false
 ): Promise<PublicUsageProfile> {
+  const core = await getPublicUsageProfileCore(db, slug, now, summaryStrict)
+
+  return {
+    ...core,
+    sourceSplit: core.sourceSplit,
+    topModels: core.topModels
+  }
+}
+
+async function getPublicUsageProfileCore(
+  db: D1Database,
+  slug: string,
+  now: Date,
+  summaryStrict: boolean,
+  includeBreakdown = true
+): Promise<PublicUsageProfileCore & Pick<PublicUsageProfile, 'sourceSplit' | 'topModels'> & { userId: string }> {
   const profile = await db
     .prepare(
       `
@@ -89,11 +110,17 @@ export async function getPublicUsageProfile(
 
   const today = localDateInTimezone(now, profile.timezone)
   const monthStart = `${today.slice(0, 8)}01`
-  const totals = await getPublicTotals(db, profile.userId, today, monthStart)
-  const sourceSplit = await getSourceSplit(db, profile.userId, monthStart)
-  const topModels = await getTopModels(db, profile.userId, monthStart)
+  const totals = await getPublicTotals({
+    db,
+    userId: profile.userId,
+    today,
+    monthStart,
+    summaryStrict,
+    includeBreakdown
+  })
 
   return {
+    userId: profile.userId,
     slug: profile.slug,
     displayName: profile.displayName,
     timezone: profile.timezone,
@@ -119,8 +146,8 @@ export async function getPublicUsageProfile(
     }),
     monthCostUsd: Number(totals?.monthCostUsd ?? 0),
     publicCardConfig: parsePublicCardConfig(profile.publicCardConfig),
-    sourceSplit,
-    topModels
+    sourceSplit: parseSourceSplit(totals?.sourceSplit),
+    topModels: parseTopModels(totals?.topModels)
   }
 }
 
@@ -132,7 +159,12 @@ export async function assertPublicUsageVisible(db: D1Database, slug: string) {
           profiles.user_id as userId,
           profiles.is_public as isPublic,
           profiles.updated_at as updatedAt,
-          user_usage_totals.updated_at as usageUpdatedAt
+          user_usage_totals.updated_at as usageUpdatedAt,
+          (
+            SELECT MAX(daily_usage_summary.updated_at)
+            FROM daily_usage_summary
+            WHERE daily_usage_summary.user_id = profiles.user_id
+          ) as summaryUpdatedAt
         FROM profiles
         LEFT JOIN user_usage_totals ON user_usage_totals.user_id = profiles.user_id
         WHERE slug = ?
@@ -145,6 +177,7 @@ export async function assertPublicUsageVisible(db: D1Database, slug: string) {
       isPublic: number | boolean
       updatedAt: string
       usageUpdatedAt: string | null
+      summaryUpdatedAt: string | null
     }>()
 
   if (!profile || !canShowPublicProfile(Boolean(profile.isPublic))) {
@@ -154,12 +187,13 @@ export async function assertPublicUsageVisible(db: D1Database, slug: string) {
   return {
     userId: profile.userId,
     updatedAt: profile.updatedAt,
-    usageUpdatedAt: profile.usageUpdatedAt ?? ''
+    usageUpdatedAt: profile.usageUpdatedAt ?? '',
+    summaryUpdatedAt: profile.summaryUpdatedAt ?? ''
   }
 }
 
-export async function getPublicUsageJson(db: D1Database, slug: string, now = new Date()) {
-  const profile = await getPublicUsageProfile(db, slug, now)
+export async function getPublicUsageJson(db: D1Database, slug: string, now = new Date(), summaryStrict = false) {
+  const profile = await getPublicUsageProfile(db, slug, now, summaryStrict)
   return {
     slug: profile.slug,
     displayName: profile.displayName,
@@ -191,9 +225,10 @@ export async function getPublicUsageCard(
   db: D1Database,
   slug: string,
   now = new Date(),
-  publicUrl = 'TokenBoard'
+  publicUrl = 'TokenBoard',
+  summaryStrict = false
 ) {
-  const profile = await getPublicUsageProfile(db, slug, now)
+  const profile = await getPublicUsageProfileCore(db, slug, now, summaryStrict, false)
   return renderUsageCardSvg({
     displayName: profile.displayName,
     publicUrl,
@@ -241,14 +276,22 @@ export function getPublicRouteSlug(
   )
 }
 
-async function getPublicTotals(db: D1Database, userId: string, today: string, monthStart: string) {
-  return db
+async function getPublicTotals(input: {
+  db: D1Database
+  userId: string
+  today: string
+  monthStart: string
+  summaryStrict: boolean
+  includeBreakdown: boolean
+}) {
+  return input.db
     .prepare(
       `
         WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
         ${effectiveDailyUsageSummaryWith({
           dailyUsageFilter: 'daily_usage.user_id = ?',
-          summaryFilter: 'daily_usage_summary.user_id = ?'
+          summaryFilter: 'daily_usage_summary.user_id = ?',
+          summaryStrict: input.summaryStrict
         })},
         month_usage AS (
           SELECT
@@ -256,7 +299,9 @@ async function getPublicTotals(db: D1Database, userId: string, today: string, mo
           FROM effective_daily_usage_summary
           JOIN params ON params.user_id = effective_daily_usage_summary.user_id
           WHERE effective_daily_usage_summary.usage_date >= params.month_start
-        ),
+        )
+        ${publicBreakdownCtes(input.includeBreakdown)}
+        ,
         effective_totals AS (
           SELECT
             user_usage_totals.user_id,
@@ -265,6 +310,12 @@ async function getPublicTotals(db: D1Database, userId: string, today: string, mo
             user_usage_totals.cost_usd
           FROM user_usage_totals
           JOIN params ON params.user_id = user_usage_totals.user_id
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM effective_daily_usage_summary
+            WHERE effective_daily_usage_summary.user_id = params.user_id
+              AND effective_daily_usage_summary.updated_at > user_usage_totals.updated_at
+          )
           UNION ALL
           SELECT
             params.user_id,
@@ -278,6 +329,12 @@ async function getPublicTotals(db: D1Database, userId: string, today: string, mo
             SELECT 1
             FROM user_usage_totals
             WHERE user_usage_totals.user_id = params.user_id
+              AND NOT EXISTS (
+                SELECT 1
+                FROM effective_daily_usage_summary
+                WHERE effective_daily_usage_summary.user_id = params.user_id
+                  AND effective_daily_usage_summary.updated_at > user_usage_totals.updated_at
+              )
           )
         )
         SELECT
@@ -290,76 +347,149 @@ async function getPublicTotals(db: D1Database, userId: string, today: string, mo
           COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
           COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd
+          ${publicBreakdownSelect(input.includeBreakdown)}
         FROM params
         LEFT JOIN effective_totals ON effective_totals.user_id = params.user_id
         LEFT JOIN month_usage ON month_usage.user_id = params.user_id
       `
     )
-    .bind(userId, today, monthStart, userId, userId)
+    .bind(input.userId, input.today, input.monthStart, ...publicUserBindings(input.summaryStrict, input.userId))
     .first<TotalsRow>()
 }
 
-async function getSourceSplit(db: D1Database, userId: string, monthStart: string) {
-  const rows = await db
-    .prepare(
-      `
-        WITH ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ?',
-          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ?'
-        })}
-        SELECT
-          source,
-          COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead
-        FROM effective_daily_usage_summary
-        GROUP BY source
-        ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
-      `
-    )
-    .bind(userId, monthStart, userId, monthStart)
-    .all<{ source: UsageSource; totalTokens: number; totalTokensWithoutCacheRead: number }>()
-
-  return (rows.results ?? []).map((row) => ({
-    source: row.source,
-    totalTokens: Number(row.totalTokens),
-    totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
-    cacheReadRate: cacheReadRateFromTotals({
-      totalTokens: Number(row.totalTokens),
-      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
-    })
-  }))
+function publicBreakdownCtes(includeBreakdown: boolean) {
+  if (!includeBreakdown) return ''
+  return `,
+        source_usage AS (
+          SELECT
+            source,
+            COALESCE(SUM(total_tokens), 0) as total_tokens,
+            COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read
+          FROM month_usage
+          GROUP BY source
+        ),
+        model_usage AS (
+          SELECT
+            model,
+            COALESCE(SUM(total_tokens), 0) as total_tokens,
+            COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read,
+            COALESCE(SUM(cost_usd), 0) as cost_usd
+          FROM month_usage
+          GROUP BY model
+        )`
 }
 
-async function getTopModels(db: D1Database, userId: string, monthStart: string) {
-  const rows = await db
-    .prepare(
-      `
-        WITH ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ?',
-          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ?'
-        })}
-        SELECT
-          model,
-          COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead,
-          COALESCE(SUM(cost_usd), 0) as costUsd
-        FROM effective_daily_usage_summary
-        GROUP BY model
-        ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
-        LIMIT 5
-      `
-    )
-    .bind(userId, monthStart, userId, monthStart)
-    .all<{ model: string; totalTokens: number; totalTokensWithoutCacheRead: number; costUsd: number }>()
+function publicBreakdownSelect(includeBreakdown: boolean) {
+  if (!includeBreakdown) return `,
+          '[]' as sourceSplit,
+          '[]' as topModels`
+  return `,
+          (
+            SELECT COALESCE(json_group_array(json_object(
+              'source', ordered_sources.source,
+              'totalTokens', ordered_sources.total_tokens,
+              'totalTokensWithoutCacheRead', ordered_sources.total_tokens_without_cache_read
+            )), '[]')
+            FROM (
+              SELECT
+                source,
+                total_tokens,
+                total_tokens_without_cache_read
+              FROM source_usage
+              ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
+            ) AS ordered_sources
+          ) as sourceSplit,
+          (
+            SELECT COALESCE(json_group_array(json_object(
+              'model', ordered_models.model,
+              'totalTokens', ordered_models.total_tokens,
+              'totalTokensWithoutCacheRead', ordered_models.total_tokens_without_cache_read,
+              'costUsd', ordered_models.cost_usd
+            )), '[]')
+            FROM (
+              SELECT
+                model,
+                total_tokens,
+                total_tokens_without_cache_read,
+                cost_usd
+              FROM model_usage
+              ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
+              LIMIT 5
+            ) AS ordered_models
+          ) as topModels`
+}
 
-  return (rows.results ?? []).map((row) => ({
-    model: row.model,
-    totalTokens: Number(row.totalTokens),
-    totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
-    cacheReadRate: cacheReadRateFromTotals({
-      totalTokens: Number(row.totalTokens),
-      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
-    }),
-    costUsd: Number(row.costUsd)
-  }))
+function parseSourceSplit(value: unknown) {
+  return parseJsonRows(value, 'sourceSplit').map((row) => {
+    const source = readString(row, 'sourceSplit.source')
+    const totalTokens = readNumber(row, 'sourceSplit.totalTokens')
+    const totalTokensWithoutCacheRead = readNumber(row, 'sourceSplit.totalTokensWithoutCacheRead')
+    return {
+      source: source as UsageSource,
+      totalTokens,
+      totalTokensWithoutCacheRead,
+      cacheReadRate: cacheReadRateFromTotals({
+        totalTokens,
+        totalTokensWithoutCacheRead
+      })
+    }
+  })
+}
+
+function parseTopModels(value: unknown) {
+  return parseJsonRows(value, 'topModels').map((row) => {
+    const totalTokens = readNumber(row, 'topModels.totalTokens')
+    const totalTokensWithoutCacheRead = readNumber(row, 'topModels.totalTokensWithoutCacheRead')
+    return {
+      model: readString(row, 'topModels.model'),
+      totalTokens,
+      totalTokensWithoutCacheRead,
+      cacheReadRate: cacheReadRateFromTotals({
+        totalTokens,
+        totalTokensWithoutCacheRead
+      }),
+      costUsd: readNumber(row, 'topModels.costUsd')
+    }
+  })
+}
+
+function parseJsonRows(value: unknown, column: string) {
+  if (!value) return []
+  let parsed = value
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value)
+    } catch {
+      throw new Error(`Invalid public usage ${column}`)
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Invalid public usage ${column}`)
+  }
+  return parsed.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`Invalid public usage ${column}`)
+    }
+    return item as Record<string, unknown>
+  })
+}
+
+function readString(row: Record<string, unknown>, column: string) {
+  const value = row[column.slice(column.lastIndexOf('.') + 1)]
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid public usage ${column}`)
+  }
+  return value
+}
+
+function readNumber(row: Record<string, unknown>, column: string) {
+  const value = Number(row[column.slice(column.lastIndexOf('.') + 1)] ?? 0)
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid public usage ${column}`)
+  }
+  return value
+}
+
+function publicUserBindings(summaryStrict: boolean, userId: string) {
+  return summaryStrict ? [userId] : [userId, userId]
 }

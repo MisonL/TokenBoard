@@ -71,7 +71,7 @@ describe('worker server', () => {
     expect(secondResponse.headers.get('x-cache-test')).toBe('hit')
     expect(secondResponse.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate')
     expect(await secondResponse.text()).toContain('<svg')
-    expect(env.DB.prepare).toHaveBeenCalledTimes(6)
+    expect(env.DB.prepare).toHaveBeenCalledTimes(4)
     expect(cache.put).toHaveBeenCalledOnce()
   })
 
@@ -147,7 +147,7 @@ describe('worker server', () => {
     expect(secondResponse.status).toBe(200)
     expect(secondResponse.headers.get('x-cache-test')).toBeNull()
     expect(await secondResponse.text()).toContain('<svg')
-    expect(env.DB.prepare).toHaveBeenCalledTimes(10)
+    expect(env.DB.prepare).toHaveBeenCalledTimes(6)
     expect(cache.put).toHaveBeenCalledTimes(2)
   })
 
@@ -187,6 +187,59 @@ describe('worker server', () => {
     )
     await Promise.all(ctx.waitUntilPromises)
     env.usageUpdatedAt = '2026-04-29T01:05:00.000Z'
+    const secondResponse = await worker.fetch(
+      workerRequest('https://tokenboard.example/api/public/eve.svg'),
+      env,
+      createExecutionContext()
+    )
+
+    expect(firstResponse.status).toBe(200)
+    expect(secondResponse.status).toBe(200)
+    expect(secondResponse.headers.get('x-cache-test')).toBeNull()
+    expect(await secondResponse.text()).toContain('<svg')
+    expect(cache.put).toHaveBeenCalledTimes(2)
+  })
+
+  test('does not reuse cached public responses after summary-only usage changes', async () => {
+    const cache = createCache()
+    globalThis.caches = { default: cache } as unknown as CacheStorage
+    const env = createEnv({
+      publicProfile: true,
+      usageUpdatedAt: '2026-04-29T01:00:00.000Z',
+      summaryUpdatedAt: '2026-04-29T01:00:00.000Z'
+    })
+    const ctx = createExecutionContext()
+
+    const firstResponse = await worker.fetch(
+      workerRequest('https://tokenboard.example/api/public/eve.svg'),
+      env,
+      ctx
+    )
+    await Promise.all(ctx.waitUntilPromises)
+    env.summaryUpdatedAt = '2026-04-29T01:05:00.000Z'
+    const secondResponse = await worker.fetch(
+      workerRequest('https://tokenboard.example/api/public/eve.svg'),
+      env,
+      createExecutionContext()
+    )
+
+    expect(firstResponse.status).toBe(200)
+    expect(secondResponse.status).toBe(200)
+    expect(secondResponse.headers.get('x-cache-test')).toBeNull()
+    expect(await secondResponse.text()).toContain('<svg')
+    expect(cache.put).toHaveBeenCalledTimes(2)
+  })
+
+  test('does not reuse cached public responses after summary strict mode changes', async () => {
+    const cache = createCache()
+    globalThis.caches = { default: cache } as unknown as CacheStorage
+    const env = createEnv({ publicProfile: true })
+    const ctx = createExecutionContext()
+    const request = workerRequest('https://tokenboard.example/api/public/eve.svg')
+
+    const firstResponse = await worker.fetch(request, env, ctx)
+    await Promise.all(ctx.waitUntilPromises)
+    env.TOKENBOARD_USAGE_SUMMARY_STRICT = 'true'
     const secondResponse = await worker.fetch(
       workerRequest('https://tokenboard.example/api/public/eve.svg'),
       env,
@@ -407,7 +460,9 @@ function createEnv(
     profileUserId?: string
     profileUpdatedAt?: string
     usageUpdatedAt?: string
+    summaryUpdatedAt?: string
     usageSummaryBackfillLimit?: string
+    usageSummaryStrict?: string
   } = {}
 ) {
   const boundValues: unknown[][] = []
@@ -423,7 +478,9 @@ function createEnv(
     profileUserId: options.profileUserId ?? 'user_1',
     profileUpdatedAt: options.profileUpdatedAt ?? '2026-04-29T00:00:00.000Z',
     usageUpdatedAt: options.usageUpdatedAt ?? '2026-04-29T00:00:00.000Z',
+    summaryUpdatedAt: options.summaryUpdatedAt ?? '2026-04-29T00:00:00.000Z',
     TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: options.usageSummaryBackfillLimit,
+    TOKENBOARD_USAGE_SUMMARY_STRICT: options.usageSummaryStrict,
     dueSubscription: options.dueSubscription
   }
   return Object.assign(env, {
@@ -438,6 +495,7 @@ function createDb(
     profileUserId?: string
     profileUpdatedAt?: string
     usageUpdatedAt?: string
+    summaryUpdatedAt?: string
   } = {},
   boundValues: unknown[][] = [],
   sqlStatements: string[] = []
@@ -459,7 +517,8 @@ function createDb(
                 publicCardConfig: null,
                 isPublic: 1,
                 updatedAt: options.profileUpdatedAt ?? '2026-04-29T00:00:00.000Z',
-                usageUpdatedAt: options.usageUpdatedAt ?? '2026-04-29T00:00:00.000Z'
+                usageUpdatedAt: options.usageUpdatedAt ?? '2026-04-29T00:00:00.000Z',
+                summaryUpdatedAt: options.summaryUpdatedAt ?? '2026-04-29T00:00:00.000Z'
               }
             }
 

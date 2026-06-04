@@ -66,8 +66,9 @@ describe('ingest service', () => {
     const result = await ingestSnapshots(db, legacyUser, [makeSnapshot()], '2026-05-22T09:00:00.000Z')
 
     expect(result).toEqual({ upserted: 1 })
-    expect(batches).toHaveLength(1)
-    expect(batches[0]).toHaveLength(3)
+    expect(batches).toHaveLength(2)
+    expect(batches[0]).toHaveLength(1)
+    expect(batches[1]).toHaveLength(2)
     const usageUpsert = bound.find((entry) => entry.sql.includes('INSERT INTO daily_usage ('))
     expect(usageUpsert?.values.slice(0, 6)).toEqual([
       'user_legacy',

@@ -36,13 +36,14 @@ export async function createPublicUsageResponse(input: {
   configuredOrigin?: string
   requestOrigin: string
   now?: Date
+  summaryStrict?: boolean
 }) {
   if (input.route.format === 'svg') {
     const origin = getCanonicalPublicOrigin({
       configuredOrigin: input.configuredOrigin,
       requestOrigin: input.requestOrigin
     })
-    const svg = await getPublicUsageCard(input.db, input.route.slug, input.now ?? new Date(), origin)
+    const svg = await getPublicUsageCard(input.db, input.route.slug, input.now ?? new Date(), origin, input.summaryStrict)
     return new Response(svg, {
       status: 200,
       headers: {
@@ -52,7 +53,7 @@ export async function createPublicUsageResponse(input: {
     })
   }
 
-  const data = await getPublicUsageJson(input.db, input.route.slug, input.now ?? new Date())
+  const data = await getPublicUsageJson(input.db, input.route.slug, input.now ?? new Date(), input.summaryStrict)
   return Response.json(data, {
     status: 200,
     headers: { 'cache-control': PUBLIC_API_CLIENT_CACHE_CONTROL }

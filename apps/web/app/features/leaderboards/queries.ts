@@ -17,6 +17,7 @@ export type LeaderboardQuery = {
   startDate: string
   endDateExclusive: string
   limit?: number
+  summaryStrict?: boolean
 }
 
 export async function listDailyLeaderboard(
@@ -44,7 +45,8 @@ export async function listLeaderboard(
       `
         WITH ${effectiveDailyUsageSummaryWith({
           dailyUsageFilter: 'daily_usage.usage_date >= ? AND daily_usage.usage_date < ?',
-          summaryFilter: 'daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date < ?'
+          summaryFilter: 'daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date < ?',
+          summaryStrict: input.summaryStrict
         })}
         SELECT
           profiles.slug as slug,
@@ -61,13 +63,7 @@ export async function listLeaderboard(
         LIMIT ?
       `
     )
-    .bind(
-      input.startDate,
-      input.endDateExclusive,
-      input.startDate,
-      input.endDateExclusive,
-      input.limit ?? 50
-    )
+    .bind(...leaderboardBindings(input))
     .all<Omit<LeaderboardEntry, 'rank'>>()
 
   return (rows.results ?? []).map((row, index) => ({
@@ -82,6 +78,12 @@ export async function listLeaderboard(
     }),
     costUsd: Number(row.costUsd)
   }))
+}
+
+function leaderboardBindings(input: LeaderboardQuery) {
+  return input.summaryStrict
+    ? [input.startDate, input.endDateExclusive, input.limit ?? 50]
+    : [input.startDate, input.endDateExclusive, input.startDate, input.endDateExclusive, input.limit ?? 50]
 }
 
 function leaderboardOrderBy(metric: LeaderboardQuery['metric']) {

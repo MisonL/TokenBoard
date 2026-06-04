@@ -8,7 +8,7 @@ export const GET = createRoute(async (c) => {
   try {
     const period = leaderboardPeriodSchema.catch('daily').parse(c.req.query('period'))
     const metric = leaderboardMetricSchema.catch('tokens').parse(c.req.query('metric'))
-    const entries = await getLeaderboard(c.env.DB, { period, metric })
+    const entries = await getLeaderboard(c.env.DB, { period, metric }, new Date(), c.env)
 
     return c.html(<LeaderboardPanel entries={entries} period={period} metric={metric} />)
   } catch (error) {

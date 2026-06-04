@@ -12,6 +12,7 @@ export type UsageSummaryInput = {
   userId: string
   today: string
   monthStart: string
+  summaryStrict?: boolean
 }
 
 export type UsageSummary = {
@@ -37,6 +38,7 @@ export type DailyUsageTrendInput = {
   userId: string
   startDate: string
   endDate: string
+  summaryStrict?: boolean
 }
 
 export type DailyUsageTrendItem = {
@@ -109,6 +111,7 @@ type SummaryRow = {
   monthCostUsd: number | null
   lastSyncedAt: string | null
   deviceCount: number | null
+  sourceSplit: unknown
 }
 
 export async function getUsageSummary(
@@ -127,13 +130,22 @@ export async function getUsageSummary(
           summaryFilter: `
             daily_usage_summary.user_id = (SELECT user_id FROM params)
             AND daily_usage_summary.usage_date >= (SELECT month_start FROM params)
-          `
+          `,
+          summaryStrict: input.summaryStrict
         })},
         month_usage AS (
           SELECT
             effective_daily_usage_summary.*
           FROM effective_daily_usage_summary
           JOIN params ON params.user_id = effective_daily_usage_summary.user_id
+        ),
+        source_usage AS (
+          SELECT
+            source,
+            COALESCE(SUM(total_tokens), 0) as total_tokens,
+            COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read
+          FROM month_usage
+          GROUP BY source
         ),
         device_stats AS (
           SELECT
@@ -151,7 +163,22 @@ export async function getUsageSummary(
           COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd,
           device_stats.lastSyncedAt as lastSyncedAt,
-          COALESCE(device_stats.deviceCount, 0) as deviceCount
+          COALESCE(device_stats.deviceCount, 0) as deviceCount,
+          (
+            SELECT COALESCE(json_group_array(json_object(
+              'source', ordered_sources.source,
+              'totalTokens', ordered_sources.total_tokens,
+              'totalTokensWithoutCacheRead', ordered_sources.total_tokens_without_cache_read
+            )), '[]')
+            FROM (
+              SELECT
+                source,
+                total_tokens,
+                total_tokens_without_cache_read
+              FROM source_usage
+              ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
+            ) AS ordered_sources
+          ) as sourceSplit
         FROM params
         LEFT JOIN month_usage ON month_usage.user_id = params.user_id
         LEFT JOIN device_stats ON device_stats.user_id = params.user_id
@@ -159,25 +186,7 @@ export async function getUsageSummary(
     )
     .bind(input.userId, input.today, input.monthStart)
     .first<SummaryRow>()
-
-  const split = await db
-    .prepare(
-      `
-        WITH ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ?',
-          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ?'
-        })}
-        SELECT
-          source,
-          COALESCE(SUM(total_tokens), 0) as totalTokens,
-          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead
-        FROM effective_daily_usage_summary
-        GROUP BY source
-        ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC
-      `
-    )
-    .bind(input.userId, input.monthStart, input.userId, input.monthStart)
-    .all<{ source: UsageSource; totalTokens: number; totalTokensWithoutCacheRead: number }>()
+  const sourceSplit = parseSummarySourceSplit(summary?.sourceSplit)
 
   return {
     todayTokens: Number(summary?.todayTokens ?? 0),
@@ -196,7 +205,7 @@ export async function getUsageSummary(
     monthCostUsd: Number(summary?.monthCostUsd ?? 0),
     lastSyncedAt: summary?.lastSyncedAt ?? null,
     deviceCount: Number(summary?.deviceCount ?? 0),
-    sourceSplit: (split.results ?? []).map((row) => ({
+    sourceSplit: sourceSplit.map((row) => ({
       source: row.source,
       totalTokens: Number(row.totalTokens),
       totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
@@ -208,6 +217,26 @@ export async function getUsageSummary(
   }
 }
 
+function parseSummarySourceSplit(value: unknown) {
+  if (!value) return []
+  const parsed = typeof value === 'string' ? JSON.parse(value) : value
+  if (!Array.isArray(parsed)) {
+    throw new Error('Invalid dashboard summary sourceSplit')
+  }
+  return parsed.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('Invalid dashboard summary sourceSplit item')
+    }
+    const row = item as Record<string, unknown>
+    if (typeof row.source !== 'string') throw new Error('Invalid dashboard summary sourceSplit source')
+    return {
+      source: row.source as UsageSource,
+      totalTokens: Number(row.totalTokens ?? 0),
+      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead ?? 0)
+    }
+  })
+}
+
 export async function getDailyUsageTrend(
   db: D1Database,
   input: DailyUsageTrendInput
@@ -217,7 +246,8 @@ export async function getDailyUsageTrend(
       `
         WITH ${effectiveDailyUsageSummaryWith({
           dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ? AND daily_usage.usage_date <= ?',
-          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date <= ?'
+          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date <= ?',
+          summaryStrict: input.summaryStrict
         })}
         SELECT
           usage_date as usageDate,
@@ -229,14 +259,7 @@ export async function getDailyUsageTrend(
         ORDER BY usage_date ASC
       `
     )
-    .bind(
-      input.userId,
-      input.startDate,
-      input.endDate,
-      input.userId,
-      input.startDate,
-      input.endDate
-    )
+    .bind(...summaryRangeBindings(input.summaryStrict, input.userId, input.startDate, input.endDate))
     .all<DailyUsageTrendItem>()
 
   const byDate = new Map(
@@ -272,7 +295,9 @@ export async function getUsageDetails(
 ): Promise<UsageDetails> {
   const deviceId = normalizeDeviceFilter(input.deviceId)
   const usageTable = usageTableForDeviceFilter(deviceId)
-  const usageWith = optionalDedupedDailyUsageWith(deviceId)
+  const dedupedUsageFilter = usageDetailsDedupedFilter(deviceId)
+  const usageWith = optionalDedupedDailyUsageWith(deviceId, dedupedUsageFilter)
+  const bindings = usageDetailsBindings(input, deviceId)
   const dailySourceRows = await db
     .prepare(
       `
@@ -295,17 +320,7 @@ export async function getUsageDetails(
         ORDER BY usage_date ASC, source ASC
       `
     )
-    .bind(
-      input.userId,
-      input.startDate,
-      input.endDate,
-      input.source,
-      input.source,
-      deviceId,
-      deviceId,
-      input.modelQuery ?? '',
-      input.modelQuery ?? ''
-    )
+    .bind(...bindings)
     .all<{
       usageDate: string
       source: UsageSource
@@ -342,17 +357,7 @@ export async function getUsageDetails(
         ORDER BY usage_date DESC, totalTokens DESC, model ASC
       `
     )
-    .bind(
-      input.userId,
-      input.startDate,
-      input.endDate,
-      input.source,
-      input.source,
-      deviceId,
-      deviceId,
-      input.modelQuery ?? '',
-      input.modelQuery ?? ''
-    )
+    .bind(...bindings)
     .all<UsageDetailsModelRow>()
 
   const modelRows = (modelRowsResult.results ?? []).map((row) => ({
@@ -405,6 +410,42 @@ export async function getUsageDetails(
     dailyRows,
     modelRows
   }
+}
+
+function usageDetailsDedupedFilter(deviceId: string) {
+  if (deviceId !== 'all') return undefined
+  return `
+    daily_usage.user_id = ?
+    AND daily_usage.usage_date >= ?
+    AND daily_usage.usage_date <= ?
+    AND (? = 'all' OR daily_usage.source = ?)
+    AND (? = '' OR lower(daily_usage.model) LIKE '%' || lower(?) || '%')
+  `
+}
+
+function usageDetailsBindings(input: UsageDetailsInput, deviceId: string) {
+  const outer = [
+    input.userId,
+    input.startDate,
+    input.endDate,
+    input.source,
+    input.source,
+    deviceId,
+    deviceId,
+    input.modelQuery ?? '',
+    input.modelQuery ?? ''
+  ]
+  if (deviceId !== 'all') return outer
+  return [
+    input.userId,
+    input.startDate,
+    input.endDate,
+    input.source,
+    input.source,
+    input.modelQuery ?? '',
+    input.modelQuery ?? '',
+    ...outer
+  ]
 }
 
 function buildDailyDetails(
@@ -478,4 +519,15 @@ function eachIsoDate(startDate: string, endDate: string) {
 
 function roundMetric(value: number) {
   return Math.round(value * 10000) / 10000
+}
+
+function summaryRangeBindings(
+  summaryStrict: boolean | undefined,
+  userId: string,
+  startDate: string,
+  endDate: string
+) {
+  return summaryStrict
+    ? [userId, startDate, endDate]
+    : [userId, startDate, endDate, userId, startDate, endDate]
 }

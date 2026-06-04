@@ -7,7 +7,7 @@ import { getDashboardSummary } from '../../features/usage/service'
 
 export default createRoute(async (c) => {
   const user = await requireUser(c)
-  const summary = await getDashboardSummary(c.env.DB, user.id)
+  const summary = await getDashboardSummary(c.env.DB, user.id, new Date(), c.env)
   const displayName = await getProfileDisplayName(c.env.DB, user.id, user.name || user.email)
 
   return c.render(

@@ -10,6 +10,7 @@ import {
   PUBLIC_API_WORKER_CACHE_CONTROL
 } from './features/public-card/http'
 import { assertPublicUsageVisible } from './features/public-card/service'
+import { usageSummaryStrictMode } from './features/usage/deduped-daily-usage'
 import type { Bindings } from './lib/db'
 
 const app = createApp()
@@ -41,9 +42,10 @@ async function handlePublicApiRequest(request: Request, env: Bindings, ctx: Exec
     const route = parsePublicUsagePath(url.pathname)
     if (!route) return null
 
+    const summaryStrict = usageSummaryStrictMode(env)
     const cache = publicApiCache()
     const cacheKey = cache
-      ? await publicApiCacheKey(url, route, await assertPublicUsageVisible(env.DB, route.slug))
+      ? await publicApiCacheKey(url, route, await assertPublicUsageVisible(env.DB, route.slug), summaryStrict)
       : null
     if (cache && cacheKey) {
       const cached = await cache.match(cacheKey)
@@ -54,7 +56,8 @@ async function handlePublicApiRequest(request: Request, env: Bindings, ctx: Exec
       db: env.DB,
       route,
       configuredOrigin: env.BETTER_AUTH_URL,
-      requestOrigin: url.origin
+      requestOrigin: url.origin,
+      summaryStrict
     })
     if (cache && cacheKey && response.ok) {
       ctx.waitUntil(cache.put(cacheKey, publicApiWorkerCacheResponse(response)))
@@ -68,12 +71,15 @@ async function handlePublicApiRequest(request: Request, env: Bindings, ctx: Exec
 async function publicApiCacheKey(
   url: URL,
   route: { slug: string; format: 'json' | 'svg' },
-  subject: { userId: string; updatedAt: string; usageUpdatedAt: string }
+  subject: { userId: string; updatedAt: string; usageUpdatedAt: string; summaryUpdatedAt: string },
+  summaryStrict: boolean
 ) {
   const cacheUrl = new URL(`${url.origin}/api/public/${encodeURIComponent(route.slug)}.${route.format}`)
   cacheUrl.searchParams.set(
     '__tokenboard_public_subject',
-    await sha256Hex(`${subject.userId}:${subject.updatedAt}:${subject.usageUpdatedAt}`)
+    await sha256Hex(
+      `${subject.userId}:${subject.updatedAt}:${subject.usageUpdatedAt}:${subject.summaryUpdatedAt}:${summaryStrict ? 'strict' : 'fallback'}`
+    )
   )
   return new Request(cacheUrl.toString())
 }

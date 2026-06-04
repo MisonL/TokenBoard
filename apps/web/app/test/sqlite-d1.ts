@@ -17,8 +17,9 @@ export function createSqliteD1(dbPath: string): D1Database {
               return { results: runPreparedSql(dbPath, sql, values) as T[] }
             },
             run: async () => {
-              runPreparedSql(dbPath, sql, values)
-              return { success: true, meta: {} }
+              const rows = runPreparedSql(dbPath, `${sql}; SELECT changes() AS changes`, values)
+              const changes = Number(rows.at(-1)?.changes ?? 0)
+              return { success: true, meta: { changes } }
             }
           }
         }

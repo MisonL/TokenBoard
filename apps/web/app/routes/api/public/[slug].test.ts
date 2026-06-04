@@ -36,8 +36,8 @@ describe('public usage route', () => {
     expect(extensionlessResponse.headers.get('content-type')).toContain('application/json')
     expect(await jsonResponse.json()).toEqual({ slug: 'eve-tokenboard' })
     expect(await extensionlessResponse.json()).toEqual({ slug: 'eve-tokenboard' })
-    expect(mockedGetPublicUsageJson).toHaveBeenNthCalledWith(1, {}, 'eve-tokenboard', expect.any(Date))
-    expect(mockedGetPublicUsageJson).toHaveBeenNthCalledWith(2, {}, 'eve-tokenboard', expect.any(Date))
+    expect(mockedGetPublicUsageJson).toHaveBeenNthCalledWith(1, {}, 'eve-tokenboard', expect.any(Date), false)
+    expect(mockedGetPublicUsageJson).toHaveBeenNthCalledWith(2, {}, 'eve-tokenboard', expect.any(Date), false)
   })
 
   test('serves SVG for .svg public URLs', async () => {
@@ -55,7 +55,8 @@ describe('public usage route', () => {
       {},
       'eve-tokenboard',
       expect.any(Date),
-      'https://tokenboard.example'
+      'https://tokenboard.example',
+      false
     )
   })
 

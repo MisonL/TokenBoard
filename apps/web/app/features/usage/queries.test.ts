@@ -13,28 +13,23 @@ describe('getUsageSummary', () => {
             bindings.push(values)
             return {
               async first() {
-                if (sql.includes('COUNT(*) as deviceCount')) {
-                  return {
-                    todayTokens: 300,
-                    todayTokensWithoutCacheRead: 220,
-                    todayCostUsd: 0.42,
-                    monthTokens: 1200,
-                    monthTokensWithoutCacheRead: 900,
-                    monthCostUsd: 1.7,
-                    lastSyncedAt: '2026-04-28T08:00:00.000Z',
-                    deviceCount: 2
-                  }
-                }
-
-                return null
-              },
-              async all() {
                 return {
-                  results: [
+                  todayTokens: 300,
+                  todayTokensWithoutCacheRead: 220,
+                  todayCostUsd: 0.42,
+                  monthTokens: 1200,
+                  monthTokensWithoutCacheRead: 900,
+                  monthCostUsd: 1.7,
+                  lastSyncedAt: '2026-04-28T08:00:00.000Z',
+                  deviceCount: 2,
+                  sourceSplit: JSON.stringify([
                     { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 650 },
                     { source: 'codex', totalTokens: 400, totalTokensWithoutCacheRead: 250 }
-                  ]
+                  ])
                 }
+              },
+              async all() {
+                throw new Error('getUsageSummary should use one D1 query')
               }
             }
           }
@@ -65,19 +60,49 @@ describe('getUsageSummary', () => {
       ]
     })
     expect(bindings[0]).toEqual(['seed-user', '2026-04-28', '2026-04-01'])
-    expect(bindings[1]).toEqual(['seed-user', '2026-04-01', 'seed-user', '2026-04-01'])
+    expect(bindings).toHaveLength(1)
+    expect(sqlStatements).toHaveLength(1)
     expect(sqlStatements[0]).toContain('effective_daily_usage_summary')
     expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
     expect(sqlStatements[0]).toContain('month_usage AS')
     expect(sqlStatements[0]).toContain('daily_usage.usage_date >= (SELECT month_start FROM params)')
     expect(sqlStatements[0]).not.toContain('CASE WHEN daily_usage_summary.usage_date')
-    expect(sqlStatements[1]).toContain('effective_daily_usage_summary')
     expect(sqlStatements[0]).toContain('total_tokens_without_cache_read')
-    expect(sqlStatements[1]).toContain('total_tokens_without_cache_read')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
-    expect(sqlStatements[1]).toContain('deduped_daily_usage')
-    expect(sqlStatements[1]).toContain('ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC')
+    expect(sqlStatements[0]).toContain('ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC')
     expect(sqlStatements[0]).toContain('LEFT JOIN device_stats')
+  })
+
+  test('can read dashboard totals in summary strict mode without raw usage fallback', async () => {
+    const sqlStatements: string[] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind() {
+            return {
+              async first() {
+                return null
+              },
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getUsageSummary(db, {
+      userId: 'seed-user',
+      today: '2026-04-28',
+      monthStart: '2026-04-01',
+      summaryStrict: true
+    })
+
+    expect(sqlStatements.join('\n')).toContain('FROM daily_usage_summary')
+    expect(sqlStatements.join('\n')).not.toContain('fallback_daily_usage_summary')
+    expect(sqlStatements.join('\n')).not.toMatch(/FROM daily_usage(?!_summary)/)
   })
 })
 
@@ -386,10 +411,92 @@ describe('getUsageDetails', () => {
     expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
     expect(sqlStatements[0]).toContain("device_id <> 'legacy'")
     expect(sqlStatements[0]).toContain('NOT EXISTS')
+    expect(sqlStatements[0]).toContain('daily_usage.user_id = ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date <= ?')
     expect(bindings).toEqual([
-      ['user_1', '2026-04-27', '2026-04-29', 'all', 'all', 'all', 'all', '', ''],
-      ['user_1', '2026-04-27', '2026-04-29', 'all', 'all', 'all', 'all', '', '']
+      [
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        '',
+        '',
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        'all',
+        'all',
+        '',
+        ''
+      ],
+      [
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        '',
+        '',
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        'all',
+        'all',
+        '',
+        ''
+      ]
     ])
+  })
+
+  test('pushes all-device detail filters into the deduped CTE', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getUsageDetails(db, {
+      userId: 'user_1',
+      source: 'codex',
+      startDate: '2026-04-27',
+      endDate: '2026-04-29',
+      deviceId: 'all',
+      modelQuery: 'gpt'
+    })
+
+    expect(sqlStatements[0]).toContain('daily_usage.user_id = ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date <= ?')
+    expect(sqlStatements[0]).toContain("(? = 'all' OR daily_usage.source = ?)")
+    expect(sqlStatements[0]).toContain("(? = '' OR lower(daily_usage.model) LIKE '%' || lower(?) || '%')")
+    expect(bindings[0]?.slice(0, 7)).toEqual([
+      'user_1',
+      '2026-04-27',
+      '2026-04-29',
+      'codex',
+      'codex',
+      'gpt',
+      'gpt'
+    ])
+    expect(bindings[1]?.slice(0, 7)).toEqual(bindings[0]?.slice(0, 7))
   })
 
   test('dedupes legacy rows when device filter is omitted', async () => {
@@ -451,8 +558,8 @@ describe('getUsageDetails', () => {
 
     expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
     expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
-    expect(bindings[0]?.slice(5, 7)).toEqual(['all', 'all'])
-    expect(bindings[1]?.slice(5, 7)).toEqual(['all', 'all'])
+    expect(bindings[0]?.slice(12, 14)).toEqual(['all', 'all'])
+    expect(bindings[1]?.slice(12, 14)).toEqual(['all', 'all'])
   })
 
   test('normalizes invalid direct device filters to all devices', async () => {
@@ -484,7 +591,7 @@ describe('getUsageDetails', () => {
 
     expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
     expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
-    expect(bindings[0]?.slice(5, 7)).toEqual(['all', 'all'])
-    expect(bindings[1]?.slice(5, 7)).toEqual(['all', 'all'])
+    expect(bindings[0]?.slice(12, 14)).toEqual(['all', 'all'])
+    expect(bindings[1]?.slice(12, 14)).toEqual(['all', 'all'])
   })
 })

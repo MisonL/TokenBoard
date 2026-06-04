@@ -10,7 +10,7 @@ export default createRoute(async (c) => {
   const user = await getOptionalUser(c)
   const period = leaderboardPeriodSchema.catch('daily').parse(c.req.query('period'))
   const metric = leaderboardMetricSchema.catch('tokens').parse(c.req.query('metric'))
-  const entries = await getLeaderboard(c.env.DB, { period, metric })
+  const entries = await getLeaderboard(c.env.DB, { period, metric }, new Date(), c.env)
 
   return c.render(
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
