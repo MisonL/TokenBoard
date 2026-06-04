@@ -24,7 +24,10 @@ describe('Wrangler deploy config', () => {
     expect(config).not.toContain('<your-tokenboard-domain>')
     expect(config).toContain('"BETTER_AUTH_URL": "http://localhost:8787"')
     expect(config).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
+    expect(config).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"')
+    expect(config).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
     expect(config).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
+    expect(config).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "5"')
     expect(config).toContain('"database_id": "local-tokenboard-dev"')
     expect(config).toContain('"binding": "ASSETS"')
     expect(config).toContain('"run_worker_first"')
@@ -57,7 +60,10 @@ describe('Wrangler deploy config', () => {
     expect(example).toContain('"run_worker_first": true')
     expect(example).toContain('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"')
     expect(example).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"')
+    expect(example).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "<tokenboard-usage-summary-backfill-limit>"')
+    expect(example).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>"')
     expect(example).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"')
+    expect(example).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "<tokenboard-webhook-cron-batch-size>"')
     expect(example).toContain('"database_id": "<your-d1-database-id>"')
     expect(example).not.toMatch(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/i)
     expect(example).not.toMatch(/"pattern":\s*"[a-z0-9.-]+\.[a-z]{2,}"/i)
@@ -71,7 +77,10 @@ describe('Wrangler deploy config', () => {
     expect(workflow).toContain('TOKENBOARD_WORKER_ROUTE: ${{ vars.TOKENBOARD_WORKER_ROUTE }}')
     expect(workflow).toContain('BETTER_AUTH_URL: ${{ vars.BETTER_AUTH_URL }}')
     expect(workflow).toContain('TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: ${{ vars.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS }}')
+    expect(workflow).toContain('TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: ${{ vars.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT }}')
+    expect(workflow).toContain('TOKENBOARD_USAGE_SUMMARY_STRICT: ${{ vars.TOKENBOARD_USAGE_SUMMARY_STRICT }}')
     expect(workflow).toContain('TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: ${{ vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS }}')
+    expect(workflow).toContain('TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE: ${{ vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE }}')
     expect(workflow).toContain('D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}')
     expect(workflow).toContain('node scripts/write-production-config.mjs')
     expect(workflow).toContain('node scripts/check-production-config.mjs')
@@ -221,12 +230,18 @@ describe('Wrangler deploy config', () => {
       expect(generated).toContain('"pattern": "tokenboard.example.com"')
       expect(generated).toContain('"BETTER_AUTH_URL": "https://tokenboard.example.com"')
       expect(generated).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
+      expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"')
+      expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
       expect(generated).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
+      expect(generated).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "5"')
       expect(generated).toContain('"database_id": "11111111-1111-4111-8111-111111111111"')
       expect(generated).not.toContain('<your-tokenboard-domain>')
       expect(generated).not.toContain('<your-d1-database-id>')
       expect(generated).not.toContain('<tokenboard-daily-report-history-days>')
+      expect(generated).not.toContain('<tokenboard-usage-summary-backfill-limit>')
+      expect(generated).not.toContain('<tokenboard-usage-summary-strict>')
       expect(generated).not.toContain('<tokenboard-webhook-log-retention-days>')
+      expect(generated).not.toContain('<tokenboard-webhook-cron-batch-size>')
 
       const checkResult = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
         cwd: packageDir,
@@ -242,7 +257,7 @@ describe('Wrangler deploy config', () => {
     }
   })
 
-  test('production config generator honors CI retention variables', () => {
+  test('production config generator honors CI resource control variables', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-wrangler-'))
     const outputFile = join(tempDir, 'wrangler.production.ci.jsonc')
 
@@ -258,7 +273,10 @@ describe('Wrangler deploy config', () => {
             TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
             BETTER_AUTH_URL: 'https://tokenboard.example.com',
             TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '14',
+            TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: '25',
+            TOKENBOARD_USAGE_SUMMARY_STRICT: 'true',
             TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: '120',
+            TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE: '4',
             D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
           }
         }
@@ -268,42 +286,57 @@ describe('Wrangler deploy config', () => {
 
       const generated = readFileSync(outputFile, 'utf8')
       expect(generated).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "14"')
+      expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "25"')
+      expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "true"')
       expect(generated).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "120"')
+      expect(generated).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "4"')
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
   })
 
-  test('production config generator rejects invalid retention variables', () => {
+  test('production config generator rejects invalid resource control variables', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-wrangler-'))
-    const outputFile = join(tempDir, 'wrangler.production.ci.jsonc')
 
     try {
-      const result = spawnSync(
-        process.execPath,
-        [resolve(packageDir, 'scripts/write-production-config.mjs'), 'wrangler.production.example.jsonc', outputFile],
-        {
-          cwd: packageDir,
-          encoding: 'utf8',
-          env: {
-            ...process.env,
-            TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
-            BETTER_AUTH_URL: 'https://tokenboard.example.com',
-            TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '0',
-            TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: '90',
-            D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
+      for (const [name, value, message] of [
+        ['TOKENBOARD_DAILY_REPORT_HISTORY_DAYS', '0', 'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31'],
+        ['TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT', '501', 'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'],
+        ['TOKENBOARD_USAGE_SUMMARY_STRICT', 'yes', 'TOKENBOARD_USAGE_SUMMARY_STRICT must be true, false, 1, or 0'],
+        ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
+        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5']
+      ]) {
+        const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
+        const result = spawnSync(
+          process.execPath,
+          [resolve(packageDir, 'scripts/write-production-config.mjs'), 'wrangler.production.example.jsonc', outputFile],
+          {
+            cwd: packageDir,
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
+              BETTER_AUTH_URL: 'https://tokenboard.example.com',
+              TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '30',
+              TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: '50',
+              TOKENBOARD_USAGE_SUMMARY_STRICT: 'false',
+              TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: '90',
+              TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE: '5',
+              D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111',
+              [name]: value
+            }
           }
-        }
-      )
+        )
 
-      expect(result.status).toBe(1)
-      expect(result.stderr).toContain('TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31')
+        expect(result.status).toBe(1)
+        expect(result.stderr).toContain(message)
+      }
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
   })
 
-  test('production config checker rejects unreplaced retention placeholders', () => {
+  test('production config checker rejects unreplaced resource control placeholders', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-retention-placeholder-config-'))
     const outputFile = join(tempDir, 'wrangler.production.retention-placeholder.jsonc')
 
@@ -330,22 +363,20 @@ describe('Wrangler deploy config', () => {
     }
   })
 
-  test('production config checker rejects invalid retention variables', () => {
+  test('production config checker rejects invalid resource control variables', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-bad-retention-config-'))
 
     try {
       for (const [name, value, message] of [
         ['TOKENBOARD_DAILY_REPORT_HISTORY_DAYS', 'abc', 'vars.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31'],
-        ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365']
+        ['TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT', '501', 'vars.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'],
+        ['TOKENBOARD_USAGE_SUMMARY_STRICT', 'yes', 'vars.TOKENBOARD_USAGE_SUMMARY_STRICT must be true, false, 1, or 0'],
+        ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
+        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
-        const content = readPackageFile('wrangler.production.example.jsonc')
-          .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
-          .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
-          .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
-          .replace('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"', '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
-          .replace(`"${name}": "${name === 'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS' ? '30' : '90'}"`, `"${name}": "${value}"`)
-          .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
+        const content = filledProductionExample()
+          .replace(`"${name}": "${resourceControlDefault(name)}"`, `"${name}": "${value}"`)
         writeFileSync(outputFile, content)
 
         const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
@@ -388,7 +419,10 @@ describe('Wrangler deploy config', () => {
           TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
           BETTER_AUTH_URL: 'https://tokenboard.example.com',
           TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '7',
+          TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: '20',
+          TOKENBOARD_USAGE_SUMMARY_STRICT: '1',
           TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: '45',
+          TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE: '3',
           D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
         }
       })
@@ -399,7 +433,10 @@ describe('Wrangler deploy config', () => {
       expect(generated).toContain('"pattern": "tokenboard.example.com"')
       expect(generated).toContain('"BETTER_AUTH_URL": "https://tokenboard.example.com"')
       expect(generated).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "7"')
+      expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "20"')
+      expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "true"')
       expect(generated).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "45"')
+      expect(generated).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "3"')
       expect(generated).toContain('"database_id": "11111111-1111-4111-8111-111111111111"')
       expect(result.stderr).toBe('')
     } finally {
@@ -447,12 +484,7 @@ describe('Wrangler deploy config', () => {
     const outputFile = join(tempDir, 'wrangler.production.no-cron.jsonc')
 
     try {
-      const content = readPackageFile('wrangler.production.example.jsonc')
-        .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
-        .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
-        .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
-        .replace('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"', '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
-        .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
+      const content = filledProductionExample()
         .replace(/\s+"triggers":\s*\{\s*"crons":\s*\[\s*"\*\/15 \* \* \* \*"\s*\]\s*\},/, '')
       writeFileSync(outputFile, content)
 
@@ -477,12 +509,7 @@ describe('Wrangler deploy config', () => {
     const outputFile = join(tempDir, 'wrangler.production.no-worker-first.jsonc')
 
     try {
-      const content = readPackageFile('wrangler.production.example.jsonc')
-        .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
-        .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
-        .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
-        .replace('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"', '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
-        .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
+      const content = filledProductionExample()
         .replace(/,\s*"run_worker_first":\s*true/, '')
         .replace(/,\s*"binding":\s*"ASSETS"/, '')
       writeFileSync(outputFile, content)
@@ -539,12 +566,8 @@ describe('Wrangler deploy config', () => {
         'tokenboard.example.com#hash'
       ]) {
         const outputFile = join(tempDir, `wrangler.${badRoute.replace(/[^a-z0-9]/gi, '-')}.jsonc`)
-        const content = readPackageFile('wrangler.production.example.jsonc')
-          .replace('"pattern": "<your-tokenboard-domain>"', `"pattern": "${badRoute}"`)
-          .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
-          .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
-          .replace('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"', '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
-          .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
+        const content = filledProductionExample()
+          .replace('"pattern": "tokenboard.example.com"', `"pattern": "${badRoute}"`)
         writeFileSync(outputFile, content)
 
         const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
@@ -569,13 +592,8 @@ describe('Wrangler deploy config', () => {
     const outputFile = join(tempDir, 'wrangler.production.commented.jsonc')
 
     try {
-      const content = readPackageFile('wrangler.production.example.jsonc')
+      const content = filledProductionExample()
         .replace('{', '{\n  // "workers_dev": true,\n  // "pattern": "localhost",\n  // "database_id": "00000000-0000-0000-0000-000000000000",')
-        .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
-        .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
-        .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
-        .replace('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"', '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
-        .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
       writeFileSync(outputFile, content)
 
       const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
@@ -600,4 +618,25 @@ function readPackageFile(relativePath: string): string {
 
 function readRepoFile(relativePath: string): string {
   return readFileSync(resolve(packageDir, '..', '..', relativePath), 'utf8')
+}
+
+function filledProductionExample() {
+  return readPackageFile('wrangler.production.example.jsonc')
+    .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
+    .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
+    .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
+    .replace('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "<tokenboard-usage-summary-backfill-limit>"', '"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"')
+    .replace('"TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>"', '"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
+    .replace('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"', '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
+    .replace('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "<tokenboard-webhook-cron-batch-size>"', '"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "5"')
+    .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
+}
+
+function resourceControlDefault(name: string) {
+  if (name === 'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS') return '30'
+  if (name === 'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT') return '50'
+  if (name === 'TOKENBOARD_USAGE_SUMMARY_STRICT') return 'false'
+  if (name === 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS') return '90'
+  if (name === 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE') return '5'
+  throw new Error(`Unknown resource control variable ${name}`)
 }

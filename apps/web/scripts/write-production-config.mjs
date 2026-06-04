@@ -17,11 +17,27 @@ const dailyReportHistoryDays = optionalIntegerEnv(
   1,
   31
 )
+const usageSummaryBackfillLimit = optionalIntegerEnv(
+  'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT',
+  '50',
+  1,
+  500
+)
+const usageSummaryStrict = optionalBooleanEnv(
+  'TOKENBOARD_USAGE_SUMMARY_STRICT',
+  'false'
+)
 const webhookLogRetentionDays = optionalIntegerEnv(
   'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS',
   '90',
   1,
   365
+)
+const webhookCronBatchSize = optionalIntegerEnv(
+  'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE',
+  '5',
+  1,
+  5
 )
 
 validateWorkerRoute(workerRoute)
@@ -56,9 +72,27 @@ content = replaceRequired(
 )
 content = replaceRequired(
   content,
+  /"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT"\s*:\s*"<tokenboard-usage-summary-backfill-limit>"/,
+  `"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": ${JSON.stringify(usageSummaryBackfillLimit)}`,
+  'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT'
+)
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_USAGE_SUMMARY_STRICT"\s*:\s*"<tokenboard-usage-summary-strict>"/,
+  `"TOKENBOARD_USAGE_SUMMARY_STRICT": ${JSON.stringify(usageSummaryStrict)}`,
+  'TOKENBOARD_USAGE_SUMMARY_STRICT'
+)
+content = replaceRequired(
+  content,
   /"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS"\s*:\s*"<tokenboard-webhook-log-retention-days>"/,
   `"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": ${JSON.stringify(webhookLogRetentionDays)}`,
   'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS'
+)
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE"\s*:\s*"<tokenboard-webhook-cron-batch-size>"/,
+  `"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": ${JSON.stringify(webhookCronBatchSize)}`,
+  'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE'
 )
 
 if (/<[^>]+>/.test(content)) {
@@ -86,6 +120,13 @@ function optionalIntegerEnv(name, defaultValue, min, max) {
     fail(`${name} must be an integer from ${min} to ${max}.`)
   }
   return value
+}
+
+function optionalBooleanEnv(name, defaultValue) {
+  const value = (process.env[name]?.trim() || defaultValue).toLowerCase()
+  if (value === 'true' || value === '1') return 'true'
+  if (value === 'false' || value === '0') return 'false'
+  fail(`${name} must be true, false, 1, or 0.`)
 }
 
 function replaceRequired(content, pattern, replacement, label) {

@@ -1,35 +1,38 @@
 # TokenBoard
 
-TokenBoard collects local AI token usage from Claude Code and Codex, uploads normalized daily
-aggregates to Cloudflare Workers + D1, and shows usage stats on a hosted dashboard.
+TokenBoard is a hosted AI token usage dashboard for Claude Code and Codex. A local collector
+normalizes daily usage snapshots, uploads them to a Cloudflare Workers + D1 backend, and the web app
+serves private dashboards, leaderboards, public JSON, README SVG cards, and scheduled reports.
 
-## Features
+TokenBoard never uploads prompts, completions, raw conversation logs, local paths, or plaintext upload
+tokens.
 
-- Claude Code and Codex usage collection through a local collector.
-- Daily dashboard, details, CSV export, public JSON, README SVG cards, and leaderboards.
-- Total-token, no-cache-read token, and cache-rate views across dashboard, exports, public APIs, cards, rankings, and notifications.
-- Scheduled daily token reports to WeCom, DingTalk, and Feishu webhook bots.
-- Device-aware upload tokens with compatibility for legacy tokens.
-- Lightweight notifier hooks for near-real-time sync after Codex or Claude Code sessions.
-- Private by default: prompts, completions, raw logs, local paths, and upload tokens are not uploaded.
+## Highlights
 
-## Install Collector
+- Claude Code and Codex collection through a local Node.js collector.
+- Dashboard totals, detail drill-down, CSV export, public JSON, README SVG cards, and leaderboards.
+- Total tokens, tokens without cache reads, and cache-read rate across every reporting surface.
+- Device-aware upload tokens with legacy collector compatibility.
+- Daily webhook reports for WeCom, DingTalk, Feishu, and Lark.
+- D1 summary caches and bounded cron backfills tuned for Cloudflare free-tier limits.
 
-Open the deployed site and visit:
+## Quick Start
+
+Open the deployed app and visit:
 
 ```txt
 https://<your-tokenboard-domain>/settings/install
 ```
 
 Generate an install prompt, paste it into Codex or Claude Code, and let the agent run setup. The
-setup script pairs the device, writes `~/.tokenboard/config.json`, installs the collector schedule
-and notifier hooks, then runs the initial sync unless `--skip-initial-sync` is used.
+setup flow pairs the device, writes `~/.tokenboard/config.json`, installs scheduled sync and notifier
+hooks, then runs the initial sync unless `--skip-initial-sync` is used.
 
-The install form detects the browser's IANA timezone with
-`Intl.DateTimeFormat().resolvedOptions().timeZone` and passes it through `--timezone`. `UTC` is used
-only when no valid browser timezone is available.
+The install form passes the browser's IANA timezone from
+`Intl.DateTimeFormat().resolvedOptions().timeZone`; `UTC` is used only when the browser cannot provide
+a valid timezone.
 
-## Public Profile And README Card
+## Public Sharing
 
 Profiles are private by default. Enable public JSON/SVG and leaderboard participation from
 `/settings/profile`.
@@ -39,104 +42,66 @@ GET /api/public/:slug.json
 GET /api/public/:slug.svg
 ```
 
-README snippet:
+README card:
 
 ```md
 [![TokenBoard](https://<your-tokenboard-domain>/api/public/<slug>.svg)](https://<your-tokenboard-domain>)
 ```
 
-The card editor supports Chinese/English labels, light/dark themes, layout variants, glow controls,
-custom title/subtitle, public URL visibility, metric ordering, hidden metrics, live private preview,
-and reset to defaults. Invalid stored card config falls back to the default card instead of breaking
-the settings page.
-
-Public JSON includes total token counts, `tokensWithoutCacheRead`, and `cacheReadRate`.
-`tokensWithoutCacheRead` is `total_tokens - cache_read_tokens`; `cacheReadRate`
-is `(total_tokens - tokensWithoutCacheRead) / total_tokens`, or `0` when total is zero. Dashboard
-source splits, details, CSV export, README SVG cards, leaderboards, and notifications use the same
-derived cache-rate definition.
+The card editor supports localized labels, light/dark themes, layout variants, custom title/subtitle,
+metric ordering, hidden metrics, live private preview, and reset-to-defaults. Invalid stored card
+config falls back to a default card instead of breaking the settings page.
 
 ## Daily Webhook Reports
 
 Authenticated users can add webhook bots from `/settings/notifications`. Each subscription stores an
-encrypted webhook URL, optional signing secret, provider, one or more local send times, selected
-weekdays, timezone, and enabled state. New subscriptions default to an 18:00 local send time. The
-Worker cron trigger scans due subscriptions every 15 minutes and sends that day's token report.
+encrypted webhook URL, optional signing secret, provider, timezone, selected weekdays, and up to four
+local send times. New subscriptions default to `18:00` local time.
 
-Reports include total tokens, tokens without cache reads, cache rate, cost, sessions, source split,
-top models, and a dashboard link. Test sends are labeled as previews so they are not confused with
-scheduled daily reports. Delivery logs keep success, skipped, and failure records; failed daily
-reports retry up to three attempts before moving to the next scheduled slot. Cron workers claim a
-short delivery lock before sending, process at most 50 due subscriptions per tick, and the delivery
-log has a per-subscription, per-date, per-schedule-slot success unique key so multiple same-day
-pushes can run without duplicate sends for the same slot.
-
-TokenBoard also stores daily report history snapshots for recently generated scheduled reports.
-The default retention window is 30 days, and administrators can configure 1 to 31 days with
-`TOKENBOARD_DAILY_REPORT_HISTORY_DAYS`. Invalid values fail explicitly instead of falling back to a
-default. History snapshots store report totals, source split, top models, generated time, and
-dashboard link only; they do not store prompt, completion, file path, or raw conversation content.
-
-Before enabling webhook reports, configure a 32-byte base64 encryption key as a Worker secret:
+Before enabling reports, configure a 32-byte base64 encryption key as a Worker secret:
 
 ```bash
 openssl rand -base64 32
 pnpm --filter @tokenboard/web exec wrangler secret put WEBHOOK_ENCRYPTION_KEY
 ```
 
-Also configure the production auth secrets required by Better Auth and GitHub OAuth, such as
-`BETTER_AUTH_SECRET`, `GITHUB_CLIENT_ID`, and `GITHUB_CLIENT_SECRET`, using `wrangler secret put`
-or the Cloudflare dashboard before first deploy.
+Supported webhook hosts:
 
-Create a group bot in WeCom, DingTalk, or Feishu/Lark, copy its webhook URL into TokenBoard, and
-copy the bot signing secret into `signing secret` when that platform's security mode requires one.
+| Provider | Host |
+| --- | --- |
+| WeCom | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?...` |
+| DingTalk | `https://oapi.dingtalk.com/robot/send?...` |
+| Feishu | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
+| Lark | `https://open.larksuite.com/open-apis/bot/v2/hook/...` |
 
-Supported webhook hosts are restricted to official bot endpoints:
+Reports include totals, tokens without cache reads, cache rate, cost, sessions, source split, top
+models, and a dashboard link. Test sends are labeled as previews. Scheduled sends are deduped by
+subscription, report date, and schedule slot; failures retry up to three attempts before moving to the
+next slot.
 
-- WeCom: `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?...`
-- DingTalk: `https://oapi.dingtalk.com/robot/send?...`
-- Feishu/Lark: `https://open.feishu.cn/open-apis/bot/v2/hook/...` or `https://open.larksuite.com/open-apis/bot/v2/hook/...`
-
-Provider notes:
-
-- WeCom uses the official `markdown` payload shape and requires the `key` query token.
-- DingTalk uses the official `markdown` payload shape and requires the `access_token` query token.
-  If the bot enables signing, paste the `SEC...` secret into `signing secret`; TokenBoard appends
-  `timestamp` and `sign` to the webhook URL.
-- Feishu and Lark use the official `interactive` card payload with `schema: "2.0"`. If signing is
-  enabled, paste the bot secret into `signing secret`; TokenBoard includes `timestamp` and `sign` in
-  the request body.
-- Provider responses are checked for both HTTP failures and business error codes such as `errcode`,
-  `code`, `StatusCode`, and `statusCode`.
-- Keep daily reports concise. WeCom markdown is limited to 4096 bytes, Feishu/Lark requests are
-  limited to 20 KB, and DingTalk custom bots are rate-limited per bot.
+Daily report history stores only aggregate snapshots and dashboard links. Retention defaults to 30
+days and can be configured with `TOKENBOARD_DAILY_REPORT_HISTORY_DAYS`.
 
 ## Collector Behavior
 
-Sync entry points:
-
-- Scheduled/manual sync: uses a 7-day local-time lookback by default.
-- Explicit backfill: pass `--since all`.
-- Large Codex histories: set `TOKENBOARD_CODEX_BATCH_SIZE=200`.
-- Upgrade before sync: enabled by default for scheduled/manual sync; disable with
-  `--skip-upgrade`, `TOKENBOARD_SKIP_UPGRADE=1`, or `TOKENBOARD_AUTO_UPGRADE=0`.
+- Scheduled/manual sync uses a 7-day local-time lookback by default.
+- Explicit backfill uses `--since all`.
+- New collectors upload at most 30 snapshots per request to reduce D1 write pressure.
+- The server still accepts legacy 500-snapshot batches and chunks database writes internally.
+- `POST /api/v1/ingest/check` lets newer collectors skip unchanged snapshots.
+- Upload tokens without `device_id` are stored under the `legacy` device id.
+- Aggregate views dedupe overlapping legacy and paired-device rows; concrete device filters read raw
+  rows for that device.
 
 Notifier hooks:
 
-- Codex: `~/.codex/config.toml` `notify` calls `~/.tokenboard/bin/notify.cjs`.
-- Claude Code: `~/.claude/settings.json` `hooks.SessionEnd` calls the same notifier.
-- Foreground hooks only append `~/.tokenboard/notify.signal` and start background `notify.mjs`.
-- Hook syncs set `TOKENBOARD_HOOK_MODE=1`, skip auto-upgrade, use `sync.lock`, and coalesce bursts
-  with a 5-minute cooldown plus trailing run.
-- Hook cursors live in `codex-cursor.json` and `claude-code-cursor.json`.
+| Source | Hook |
+| --- | --- |
+| Codex | `~/.codex/config.toml` `notify` |
+| Claude Code | `~/.claude/settings.json` `hooks.SessionEnd` |
 
-Compatibility:
-
-- `POST /api/v1/ingest` is the stable upload endpoint.
-- `POST /api/v1/ingest/check` lets newer collectors skip unchanged snapshots.
-- Upload tokens without `device_id` are stored under the `legacy` device id.
-- Aggregate views dedupe overlapping `legacy` and paired-device rows; concrete device filters read
-  that device's raw rows.
+Hooks append `~/.tokenboard/notify.signal`, start background `notify.mjs`, use `sync.lock`, skip
+auto-upgrade, and coalesce bursts with a 5-minute cooldown plus a trailing run.
 
 Logs:
 
@@ -158,93 +123,83 @@ pnpm typecheck
 pnpm build
 ```
 
-Deploy manually:
+Useful collector commands:
+
+```bash
+node skills/tokenboard/scripts/status.mjs
+node skills/tokenboard/scripts/sync.mjs --mode sync --source all --package-manager pnpm
+node skills/tokenboard/scripts/uninstall.mjs
+node skills/tokenboard/scripts/uninstall.mjs --remove-config
+node skills/tokenboard/scripts/uninstall.mjs --all
+```
+
+Package manager overrides:
+
+| Variable | Values |
+| --- | --- |
+| `TOKENBOARD_PACKAGE_MANAGER` | `pnpm`, `bun`, `npm` |
+| `TOKENBOARD_CCUSAGE_BIN` | custom `ccusage` path |
+| `TOKENBOARD_FORCE_PACKAGE_RUNNER` | `1` to force package-runner execution |
+
+## Production Deploy
+
+Manual deploy:
 
 ```bash
 pnpm run deploy
 ```
 
-`pnpm run deploy` validates the production config, builds the Worker, applies pending remote D1
-migrations, and deploys.
-
-For Cloudflare Workers Builds, set the production deploy command to the same script so migrations
-run in the deploy path:
+The deploy script validates the production Wrangler config, builds the Worker, applies pending remote
+D1 migrations, and deploys. For Cloudflare Workers Builds, use the same command:
 
 ```bash
 pnpm --filter @tokenboard/web run deploy
 ```
 
-If the Workers Build root directory is `apps/web`, use:
+If the Workers Build root directory is `apps/web`, use `pnpm run deploy`.
 
-```bash
-pnpm run deploy
-```
+Required production secrets:
 
-Production `master` pushes also run GitHub Actions checks, apply D1 migrations, and deploy the
-Worker with the same generated production config.
-Configure these GitHub repository secrets under `Settings` -> `Secrets and variables` -> `Actions`:
+| Secret | Purpose |
+| --- | --- |
+| `BETTER_AUTH_SECRET` | Better Auth session signing |
+| `GITHUB_CLIENT_ID` | GitHub OAuth app client id |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret |
+| `WEBHOOK_ENCRYPTION_KEY` | 32-byte base64 webhook URL encryption key |
 
-- `CLOUDFLARE_ACCOUNT_ID`: Cloudflare dashboard account ID, or `wrangler whoami`.
-- `CLOUDFLARE_API_TOKEN`: Cloudflare `My Profile` -> `API Tokens` token with D1 edit access for
-  the target account.
-- `D1_DATABASE_ID`: Cloudflare D1 database UUID from `Workers & Pages` -> `D1 SQL Database`, or
-  `pnpm --filter @tokenboard/web exec wrangler d1 list`.
+GitHub Actions secrets:
 
-Configure these GitHub repository variables in the same `Actions` page:
+| Secret | Purpose |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account id |
+| `CLOUDFLARE_API_TOKEN` | API token with D1 edit and Worker deploy access |
+| `D1_DATABASE_ID` | Production D1 database UUID |
 
-- `TOKENBOARD_WORKER_ROUTE`: production custom domain host, for example `tokenboard.example.com`.
-- `BETTER_AUTH_URL`: canonical production origin, for example `https://tokenboard.example.com`.
-- `TOKENBOARD_DAILY_REPORT_HISTORY_DAYS`: scheduled report history retention, from `1` to `31`, defaults to `30`.
-- `TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS`: webhook delivery log retention, from `1` to `365`, defaults to `90`.
+GitHub Actions variables:
 
-GitHub Actions and clean Cloudflare Workers Builds generate an ignored `wrangler.production.ci.jsonc`
-from `wrangler.production.example.jsonc` and environment variables; tracked `wrangler.jsonc` stays
-local-preview only.
+| Variable | Default | Notes |
+| --- | ---: | --- |
+| `TOKENBOARD_WORKER_ROUTE` | required | production custom domain host |
+| `BETTER_AUTH_URL` | required | canonical `https://...` origin |
+| `TOKENBOARD_DAILY_REPORT_HISTORY_DAYS` | `30` | `1` to `31` |
+| `TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS` | `90` | `1` to `365` |
+| `TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE` | `5` | `1` to `5` due subscriptions per tick |
+| `TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT` | `50` | `1` to `500` summary keys per cron tick |
+| `TOKENBOARD_USAGE_SUMMARY_STRICT` | `false` | set `true` only after summary backfill completes |
 
-`pnpm run deploy` validates the selected production Wrangler config before building or deploying. Copy
-`apps/web/wrangler.production.example.jsonc` to the ignored local
-`apps/web/wrangler.production.jsonc`, fill the route, `BETTER_AUTH_URL`, and D1 `database_id`, and
-the deploy script will validate that file before building or deploying. If that ignored private file
-is not present, `pnpm run deploy` generates `wrangler.production.ci.jsonc` from `TOKENBOARD_WORKER_ROUTE`,
-`BETTER_AUTH_URL`, `D1_DATABASE_ID`, and the optional retention variables. The preflight requires
-`workers_dev: false`, a production route, an HTTPS auth origin, a D1 UUID, and the notification cron
-trigger, so the local `wrangler.jsonc` cannot pass production validation. Use
-`TOKENBOARD_WRANGLER_CONFIG=<path-to-private-config>` when deploying with a different private config
-file.
+`wrangler.production.example.jsonc` is the production template. GitHub Actions and clean Workers
+Builds generate the ignored `apps/web/wrangler.production.ci.jsonc` from environment variables. For
+manual deploys, copy the template to the ignored `apps/web/wrangler.production.jsonc`, fill the route,
+auth origin, and D1 database id, then run `pnpm run deploy`.
 
-The production Wrangler config also includes a `*/15 * * * *` cron trigger for webhook reports. Cron
-times are UTC; user-facing report times are evaluated against each subscription's configured timezone.
+Production config validation requires:
 
-## Package Managers
+- `workers_dev: false`
+- an HTTPS `BETTER_AUTH_URL`
+- a production route
+- a D1 UUID
+- the `*/15 * * * *` notification cron trigger
+- numeric retention, cron batch, and summary backfill values
 
-Collector scripts default to pnpm and can use bun or npm:
-
-```bash
-node skills/tokenboard/scripts/install-collector.mjs --package-manager pnpm
-node skills/tokenboard/scripts/sync.mjs --mode sync --source all --package-manager pnpm
-```
-
-Environment overrides:
-
-- `TOKENBOARD_PACKAGE_MANAGER=pnpm|bun|npm`
-- `TOKENBOARD_CCUSAGE_BIN=/path/to/ccusage`
-- `TOKENBOARD_FORCE_PACKAGE_RUNNER=1`
-
-## Operations
-
-```bash
-# Inspect config, schedule, and hooks
-node skills/tokenboard/scripts/status.mjs
-
-# Remove only the schedule
-node skills/tokenboard/scripts/uninstall.mjs
-
-# Remove config and notifier hooks, keep checkout
-node skills/tokenboard/scripts/uninstall.mjs --remove-config
-
-# Remove schedule, hooks, checkout, and config directory
-node skills/tokenboard/scripts/uninstall.mjs --all
-
-# Install hooks later or reinstall hooks only
-node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/install-hook.mjs --source all
-```
+Cron times are UTC. User-facing report times are evaluated against each subscription's configured
+timezone.

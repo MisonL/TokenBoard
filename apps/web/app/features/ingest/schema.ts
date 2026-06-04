@@ -1,10 +1,11 @@
 import { z } from 'zod'
 import { usageSnapshotSchema, usageSourceSchema } from '@tokenboard/usage-core'
 
-const maxLegacySnapshotBatchSize = 5000
+export const maxIngestSnapshotBatchSize = 500
+export const maxSnapshotCheckBatchSize = maxIngestSnapshotBatchSize
 
 export const ingestRequestSchema = z.object({
-  snapshots: z.array(usageSnapshotSchema).min(0).max(maxLegacySnapshotBatchSize)
+  snapshots: z.array(usageSnapshotSchema).min(0).max(maxIngestSnapshotBatchSize)
 })
 
 export const snapshotCheckRequestSchema = z.object({
@@ -17,7 +18,7 @@ export const snapshotCheckRequestSchema = z.object({
       })
     )
     .min(1)
-    .max(500)
+    .max(maxSnapshotCheckBatchSize)
 })
 
 export type IngestRequest = z.infer<typeof ingestRequestSchema>

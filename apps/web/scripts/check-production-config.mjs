@@ -4,7 +4,9 @@ import { resolve } from 'node:path'
 const CONFIG_FILE = process.env.TOKENBOARD_WRANGLER_CONFIG?.trim() || 'wrangler.production.jsonc'
 const EXAMPLE_FILE = 'wrangler.production.example.jsonc'
 const DAILY_REPORT_HISTORY_DAYS_MAX = 31
+const USAGE_SUMMARY_BACKFILL_LIMIT_MAX = 500
 const WEBHOOK_LOG_RETENTION_DAYS_MAX = 365
+const WEBHOOK_CRON_BATCH_SIZE_MAX = 5
 
 const configPath = resolve(CONFIG_FILE)
 
@@ -33,10 +35,26 @@ validateOptionalIntegerString(
   DAILY_REPORT_HISTORY_DAYS_MAX
 )
 validateOptionalIntegerString(
+  config.vars?.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT,
+  'vars.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT',
+  1,
+  USAGE_SUMMARY_BACKFILL_LIMIT_MAX
+)
+validateOptionalBooleanString(
+  config.vars?.TOKENBOARD_USAGE_SUMMARY_STRICT,
+  'vars.TOKENBOARD_USAGE_SUMMARY_STRICT'
+)
+validateOptionalIntegerString(
   config.vars?.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS,
   'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS',
   1,
   WEBHOOK_LOG_RETENTION_DAYS_MAX
+)
+validateOptionalIntegerString(
+  config.vars?.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE,
+  'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE',
+  1,
+  WEBHOOK_CRON_BATCH_SIZE_MAX
 )
 validateRequiredCronTrigger(config)
 validateWorkerFirstAssetRoutes(config)
@@ -146,6 +164,17 @@ function validateOptionalIntegerString(value, field, min, max) {
   const parsed = Number(value.trim())
   if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
     fail(`${CONFIG_FILE} ${field} must be an integer from ${min} to ${max}.`)
+  }
+}
+
+function validateOptionalBooleanString(value, field) {
+  if (value === undefined) return
+  if (typeof value !== 'string') {
+    fail(`${CONFIG_FILE} ${field} must be true, false, 1, or 0.`)
+  }
+  const normalized = value.trim().toLowerCase()
+  if (!['true', 'false', '1', '0'].includes(normalized)) {
+    fail(`${CONFIG_FILE} ${field} must be true, false, 1, or 0.`)
   }
 }
 
