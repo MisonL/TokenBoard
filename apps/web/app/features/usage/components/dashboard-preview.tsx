@@ -2,6 +2,7 @@ import { Badge } from '../../../components/ui/badge'
 import { LinkButton } from '../../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { formatUsd } from '../../../lib/money'
+import { formatPercentRate } from '../../../lib/usage-metrics'
 import type { DashboardSummary } from '../service'
 
 export function DashboardPreview(props: { summary: DashboardSummary; userName?: string }) {
@@ -9,9 +10,17 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
     (total, item) => total + item.totalTokens,
     0
   )
+  const totalSourceTokensWithoutCacheRead = props.summary.sourceSplit.reduce(
+    (total, item) => total + item.totalTokensWithoutCacheRead,
+    0
+  )
   const trendMaxTokens = Math.max(...props.summary.dailyTrend.map((item) => item.totalTokens), 0)
   const trendTotalTokens = props.summary.dailyTrend.reduce(
     (total, item) => total + item.totalTokens,
+    0
+  )
+  const trendTotalTokensWithoutCacheRead = props.summary.dailyTrend.reduce(
+    (total, item) => total + item.totalTokensWithoutCacheRead,
     0
   )
 
@@ -21,24 +30,28 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
         <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
             <Badge>控制台</Badge>
-            <h1 class="mt-3 text-4xl font-black tracking-tight md:text-5xl">
+            <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl md:text-5xl">
               {props.userName ? `${props.userName} 的 token 面板` : 'AI token 使用面板'}
             </h1>
             <p class="mt-3 text-sm text-[var(--app-muted)]">
-              最近同步：{props.summary.lastSyncedAt ?? '尚未同步'} / <a class="font-bold text-[var(--app-text)] underline decoration-lime-300/50 underline-offset-4 hover:text-lime-200" href="/settings/devices">设备数：{props.summary.deviceCount}</a>
+              最近同步：{props.summary.lastSyncedAt ?? '尚未同步'} / <a class="app-accent-link font-bold text-[var(--app-text)] underline decoration-lime-300/50 underline-offset-4" href="/settings/devices">设备数：{props.summary.deviceCount}</a>
             </p>
           </div>
-          <div class="flex flex-wrap gap-3">
-            <LinkButton variant="secondary" href="/dashboard/details">查看详情</LinkButton>
-            <LinkButton href="/settings/install">连接设备</LinkButton>
+          <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard/details">查看详情</LinkButton>
+            <LinkButton class="w-full sm:w-auto" href="/settings/install">连接设备</LinkButton>
           </div>
         </div>
       </header>
 
-      <div class="grid gap-3 md:grid-cols-4">
+      <div class="grid gap-3 md:grid-cols-4 xl:grid-cols-8">
         <Metric label="今日 tokens" value={formatInteger(props.summary.todayTokens)} tone="lime" />
+        <Metric label="今日不含缓存读" value={formatInteger(props.summary.todayTokensWithoutCacheRead)} />
+        <Metric label="今日缓存率" value={formatPercentRate(props.summary.todayCacheReadRate)} />
         <Metric label="今日费用" value={formatUsd(props.summary.todayCostUsd)} />
         <Metric label="本月 tokens" value={formatInteger(props.summary.monthTokens)} />
+        <Metric label="本月不含缓存读" value={formatInteger(props.summary.monthTokensWithoutCacheRead)} />
+        <Metric label="本月缓存率" value={formatPercentRate(props.summary.monthCacheReadRate)} />
         <Metric label="本月费用" value={formatUsd(props.summary.monthCostUsd)} />
       </div>
 
@@ -48,19 +61,28 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
             <div>
               <CardTitle>30 天趋势</CardTitle>
               <CardDescription>
-                最近 30 天共 {formatInteger(trendTotalTokens)} tokens。
+                最近 30 天共 {formatInteger(trendTotalTokens)} tokens，不含缓存读 {formatInteger(trendTotalTokensWithoutCacheRead)}。
               </CardDescription>
             </div>
-            <Badge variant="outline">tokens</Badge>
+            <div class="flex flex-wrap justify-end gap-2">
+              <Badge variant="outline">total</Badge>
+              <Badge>不含缓存读</Badge>
+            </div>
           </CardHeader>
           <CardContent>
             <div class="flex h-44 items-end gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
               {props.summary.dailyTrend.map((item) => (
-                <div class="group relative flex h-full flex-1 items-end">
+                <div
+                  class="group relative flex h-full flex-1 items-end justify-center gap-px"
+                  title={`${item.usageDate}: ${formatInteger(item.totalTokens)} total / ${formatInteger(item.totalTokensWithoutCacheRead)} 不含缓存读`}
+                >
                   <div
-                    class={`w-full rounded-t transition ${item.totalTokens > 0 ? 'bg-lime-300/80 group-hover:bg-lime-200' : 'bg-[var(--app-border)]'}`}
+                    class={`w-1/2 rounded-t transition ${item.totalTokens > 0 ? 'bg-[var(--app-border)] group-hover:bg-[var(--app-muted)]' : 'bg-[var(--app-border)]'}`}
                     style={`height:${trendBarHeight(item.totalTokens, trendMaxTokens)}%`}
-                    title={`${item.usageDate}: ${formatInteger(item.totalTokens)} tokens`}
+                  />
+                  <div
+                    class={`w-1/2 rounded-t transition ${item.totalTokensWithoutCacheRead > 0 ? 'bg-lime-300/90 group-hover:bg-lime-200' : 'bg-[var(--app-border)]'}`}
+                    style={`height:${trendBarHeight(item.totalTokensWithoutCacheRead, trendMaxTokens)}%`}
                   />
                 </div>
               ))}
@@ -75,6 +97,7 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
         <Card>
           <CardHeader>
             <CardTitle>来源占比</CardTitle>
+            <CardDescription>按本月不含缓存读 token 计算，同时保留 total token 对照。</CardDescription>
           </CardHeader>
           <CardContent class="space-y-4 text-sm text-[var(--app-muted)]">
             {props.summary.sourceSplit.length > 0 ? (
@@ -83,11 +106,18 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
                   <div class="flex items-center justify-between gap-4">
                     <span>{formatSource(item.source)}</span>
                     <span class="font-bold text-[var(--app-text)]">
-                      {formatPercent(item.totalTokens, totalSourceTokens)}
+                      {formatPercent(item.totalTokensWithoutCacheRead, totalSourceTokensWithoutCacheRead)}
                     </span>
                   </div>
+                  <p class="mt-1 text-xs">
+                    {formatInteger(item.totalTokensWithoutCacheRead)} 不含缓存读 / {formatInteger(item.totalTokens)} total / 缓存率 {formatPercentRate(item.cacheReadRate)}
+                  </p>
                   <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--app-border)]">
-                    <div class="h-full rounded-full bg-lime-300" style={`width:${formatPercent(item.totalTokens, totalSourceTokens)}`} />
+                    <div
+                      class="h-full rounded-full bg-lime-300"
+                      style={`width:${formatPercent(item.totalTokensWithoutCacheRead, totalSourceTokensWithoutCacheRead)}`}
+                      title={`Total 占比：${formatPercent(item.totalTokens, totalSourceTokens)}`}
+                    />
                   </div>
                 </div>
               ))
@@ -123,7 +153,7 @@ function Metric(props: { label: string; value: string; tone?: 'lime' }) {
   return (
     <div class={`rounded-lg border p-4 ${props.tone === 'lime' ? 'border-lime-300/40 bg-lime-300 text-stone-950' : 'border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-text)]'}`}>
       <p class={`text-sm ${props.tone === 'lime' ? 'text-stone-700' : 'text-[var(--app-muted)]'}`}>{props.label}</p>
-      <p class="mt-3 text-3xl font-black tracking-tight">{props.value}</p>
+      <p class="mt-3 text-2xl font-black tracking-tight sm:text-3xl">{props.value}</p>
     </div>
   )
 }

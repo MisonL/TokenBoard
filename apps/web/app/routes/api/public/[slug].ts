@@ -1,37 +1,23 @@
 import { createRoute } from 'honox/factory'
 import {
-  getPublicUsageCard,
-  getPublicUsageJson,
-  normalizePublicSlug
-} from '../../../features/public-card/service'
-import { getCanonicalPublicOrigin } from '../../../features/settings/service'
-import { ApiError } from '../../../lib/errors'
-import { jsonError } from '../../../lib/http'
+  createPublicUsageResponse,
+  parsePublicUsageSegment,
+  publicApiErrorResponse
+} from '../../../features/public-card/http'
+import { usageSummaryStrictMode } from '../../../features/usage/deduped-daily-usage'
 
 export const GET = createRoute(async (c) => {
   try {
-    const slug = c.req.param('slug') ?? ''
-    const origin = getCanonicalPublicOrigin({
+    const params = c.req.param() as Record<string, string | undefined>
+    const route = parsePublicUsageSegment(params.slug ?? '')
+    return await createPublicUsageResponse({
+      db: c.env.DB,
+      route,
       configuredOrigin: c.env.BETTER_AUTH_URL,
-      requestOrigin: new URL(c.req.url).origin
+      requestOrigin: new URL(c.req.url).origin,
+      summaryStrict: usageSummaryStrictMode(c.env)
     })
-    if (slug.endsWith('.json')) {
-      const data = await getPublicUsageJson(c.env.DB, normalizePublicSlug(slug, 'json'))
-      return c.json(data, 200, {
-        'cache-control': 'public, max-age=300'
-      })
-    }
-
-    if (slug.endsWith('.svg')) {
-      const svg = await getPublicUsageCard(c.env.DB, normalizePublicSlug(slug, 'svg'), new Date(), origin)
-      return c.body(svg, 200, {
-        'content-type': 'image/svg+xml; charset=utf-8',
-        'cache-control': 'public, max-age=300'
-      })
-    }
-
-    throw new ApiError('NOT_FOUND', 'Public endpoint not found', 404)
   } catch (error) {
-    return jsonError(c, error)
+    return publicApiErrorResponse(error)
   }
 })

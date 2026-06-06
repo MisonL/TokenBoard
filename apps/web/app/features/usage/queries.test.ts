@@ -13,26 +13,23 @@ describe('getUsageSummary', () => {
             bindings.push(values)
             return {
               async first() {
-                if (sql.includes('COUNT(*) as deviceCount')) {
-                  return {
-                    todayTokens: 300,
-                    todayCostUsd: 0.42,
-                    monthTokens: 1200,
-                    monthCostUsd: 1.7,
-                    lastSyncedAt: '2026-04-28T08:00:00.000Z',
-                    deviceCount: 2
-                  }
+                return {
+                  todayTokens: 300,
+                  todayTokensWithoutCacheRead: 220,
+                  todayCostUsd: 0.42,
+                  monthTokens: 1200,
+                  monthTokensWithoutCacheRead: 900,
+                  monthCostUsd: 1.7,
+                  lastSyncedAt: '2026-04-28T08:00:00.000Z',
+                  deviceCount: 2,
+                  sourceSplit: JSON.stringify([
+                    { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 650 },
+                    { source: 'codex', totalTokens: 400, totalTokensWithoutCacheRead: 250 }
+                  ])
                 }
-
-                return null
               },
               async all() {
-                return {
-                  results: [
-                    { source: 'claude-code', totalTokens: 800 },
-                    { source: 'codex', totalTokens: 400 }
-                  ]
-                }
+                throw new Error('getUsageSummary should use one D1 query')
               }
             }
           }
@@ -48,22 +45,64 @@ describe('getUsageSummary', () => {
 
     expect(summary).toEqual({
       todayTokens: 300,
+      todayTokensWithoutCacheRead: 220,
+      todayCacheReadRate: 80 / 300,
       todayCostUsd: 0.42,
       monthTokens: 1200,
+      monthTokensWithoutCacheRead: 900,
+      monthCacheReadRate: 300 / 1200,
       monthCostUsd: 1.7,
       lastSyncedAt: '2026-04-28T08:00:00.000Z',
       deviceCount: 2,
       sourceSplit: [
-        { source: 'claude-code', totalTokens: 800 },
-        { source: 'codex', totalTokens: 400 }
+        { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 650, cacheReadRate: 150 / 800 },
+        { source: 'codex', totalTokens: 400, totalTokensWithoutCacheRead: 250, cacheReadRate: 150 / 400 }
       ]
     })
     expect(bindings[0]).toEqual(['seed-user', '2026-04-28', '2026-04-01'])
-    expect(bindings[1]).toEqual(['seed-user', '2026-04-01'])
-    expect(sqlStatements[0]).toContain('daily_usage')
+    expect(bindings).toHaveLength(1)
+    expect(sqlStatements).toHaveLength(1)
+    expect(sqlStatements[0]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('month_usage AS')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= (SELECT month_start FROM params)')
+    expect(sqlStatements[0]).not.toContain('CASE WHEN daily_usage_summary.usage_date')
+    expect(sqlStatements[0]).toContain('total_tokens_without_cache_read')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
-    expect(sqlStatements[1]).toContain('deduped_daily_usage')
+    expect(sqlStatements[0]).toContain('ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC')
     expect(sqlStatements[0]).toContain('LEFT JOIN device_stats')
+  })
+
+  test('can read dashboard totals in summary strict mode without raw usage fallback', async () => {
+    const sqlStatements: string[] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind() {
+            return {
+              async first() {
+                return null
+              },
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getUsageSummary(db, {
+      userId: 'seed-user',
+      today: '2026-04-28',
+      monthStart: '2026-04-01',
+      summaryStrict: true
+    })
+
+    expect(sqlStatements.join('\n')).toContain('FROM daily_usage_summary')
+    expect(sqlStatements.join('\n')).not.toContain('fallback_daily_usage_summary')
+    expect(sqlStatements.join('\n')).not.toMatch(/FROM daily_usage(?!_summary)/)
   })
 })
 
@@ -81,8 +120,8 @@ describe('getDailyUsageTrend', () => {
               async all() {
                 return {
                   results: [
-                    { usageDate: '2026-04-27', totalTokens: 120, costUsd: 0.12 },
-                    { usageDate: '2026-04-29', totalTokens: 340, costUsd: 0.34 }
+                    { usageDate: '2026-04-27', totalTokens: 120, totalTokensWithoutCacheRead: 100, costUsd: 0.12 },
+                    { usageDate: '2026-04-29', totalTokens: 340, totalTokensWithoutCacheRead: 240, costUsd: 0.34 }
                   ]
                 }
               }
@@ -99,11 +138,21 @@ describe('getDailyUsageTrend', () => {
     })
 
     expect(trend).toEqual([
-      { usageDate: '2026-04-27', totalTokens: 120, costUsd: 0.12 },
-      { usageDate: '2026-04-28', totalTokens: 0, costUsd: 0 },
-      { usageDate: '2026-04-29', totalTokens: 340, costUsd: 0.34 }
+      { usageDate: '2026-04-27', totalTokens: 120, totalTokensWithoutCacheRead: 100, cacheReadRate: 20 / 120, costUsd: 0.12 },
+      { usageDate: '2026-04-28', totalTokens: 0, totalTokensWithoutCacheRead: 0, cacheReadRate: 0, costUsd: 0 },
+      { usageDate: '2026-04-29', totalTokens: 340, totalTokensWithoutCacheRead: 240, cacheReadRate: 100 / 340, costUsd: 0.34 }
     ])
-    expect(bindings[0]).toEqual(['user_1', '2026-04-27', '2026-04-29'])
+    expect(bindings[0]).toEqual([
+      'user_1',
+      '2026-04-27',
+      '2026-04-29',
+      'user_1',
+      '2026-04-27',
+      '2026-04-29'
+    ])
+    expect(sqlStatements[0]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
+    expect(sqlStatements[0]).toContain('SUM(total_tokens_without_cache_read)')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
     expect(sqlStatements[0]).toContain('GROUP BY usage_date')
     expect(sqlStatements[0]).toContain('ORDER BY usage_date ASC')
@@ -132,8 +181,9 @@ describe('getUsageDetails', () => {
                         inputTokens: 100,
                         outputTokens: 80,
                         cacheCreationTokens: 60,
-                        cacheReadTokens: 100,
+                        cacheReadTokens: 60,
                         totalTokens: 340,
+                        totalTokensWithoutCacheRead: 240,
                         costUsd: 0.34,
                         sessionCount: 3
                       }
@@ -147,6 +197,7 @@ describe('getUsageDetails', () => {
                       usageDate: '2026-04-27',
                       source: 'claude-code',
                       totalTokens: 120,
+                      totalTokensWithoutCacheRead: 100,
                       costUsd: 0.12,
                       sessionCount: 2
                     },
@@ -154,6 +205,7 @@ describe('getUsageDetails', () => {
                       usageDate: '2026-04-29',
                       source: 'claude-code',
                       totalTokens: 340,
+                      totalTokensWithoutCacheRead: 240,
                       costUsd: 0.34,
                       sessionCount: 3
                     }
@@ -177,6 +229,8 @@ describe('getUsageDetails', () => {
 
     expect(details.summary).toEqual({
       totalTokens: 460,
+      totalTokensWithoutCacheRead: 340,
+      cacheReadRate: 120 / 460,
       costUsd: 0.46,
       sessionCount: 5,
       activeDays: 2
@@ -185,14 +239,18 @@ describe('getUsageDetails', () => {
       {
         usageDate: '2026-04-27',
         totalTokens: 120,
+        totalTokensWithoutCacheRead: 100,
+        cacheReadRate: 20 / 120,
         costUsd: 0.12,
         sessionCount: 2,
-        sourceSplit: [{ source: 'claude-code', totalTokens: 120 }],
+        sourceSplit: [{ source: 'claude-code', totalTokens: 120, totalTokensWithoutCacheRead: 100, cacheReadRate: 20 / 120 }],
         modelRows: []
       },
       {
         usageDate: '2026-04-28',
         totalTokens: 0,
+        totalTokensWithoutCacheRead: 0,
+        cacheReadRate: 0,
         costUsd: 0,
         sessionCount: 0,
         sourceSplit: [],
@@ -201,9 +259,11 @@ describe('getUsageDetails', () => {
       {
         usageDate: '2026-04-29',
         totalTokens: 340,
+        totalTokensWithoutCacheRead: 240,
+        cacheReadRate: 100 / 340,
         costUsd: 0.34,
         sessionCount: 3,
-        sourceSplit: [{ source: 'claude-code', totalTokens: 340 }],
+        sourceSplit: [{ source: 'claude-code', totalTokens: 340, totalTokensWithoutCacheRead: 240, cacheReadRate: 100 / 340 }],
         modelRows: [
           {
             usageDate: '2026-04-29',
@@ -212,8 +272,10 @@ describe('getUsageDetails', () => {
             inputTokens: 100,
             outputTokens: 80,
             cacheCreationTokens: 60,
-            cacheReadTokens: 100,
+            cacheReadTokens: 60,
             totalTokens: 340,
+            totalTokensWithoutCacheRead: 240,
+            cacheReadRate: 100 / 340,
             costUsd: 0.34,
             sessionCount: 3
           }
@@ -228,8 +290,10 @@ describe('getUsageDetails', () => {
         inputTokens: 100,
         outputTokens: 80,
         cacheCreationTokens: 60,
-        cacheReadTokens: 100,
+        cacheReadTokens: 60,
         totalTokens: 340,
+        totalTokensWithoutCacheRead: 240,
+        cacheReadRate: 100 / 340,
         costUsd: 0.34,
         sessionCount: 3
       }
@@ -259,9 +323,11 @@ describe('getUsageDetails', () => {
       ]
     ])
     expect(sqlStatements[0]).toContain('GROUP BY usage_date, source')
+    expect(sqlStatements[0]).toContain('SUM(total_tokens - cache_read_tokens)')
     expect(sqlStatements[0]).toContain('device_id')
     expect(sqlStatements[0]).toContain('lower(model)')
     expect(sqlStatements[1]).toContain('GROUP BY usage_date, source, model')
+    expect(sqlStatements[1]).toContain('SUM(total_tokens - cache_read_tokens)')
     expect(sqlStatements[1]).toContain('device_id')
     expect(sqlStatements[1]).toContain('lower(model)')
     expect(sqlStatements[0]).not.toContain('deduped_daily_usage')
@@ -295,6 +361,7 @@ describe('getUsageDetails', () => {
                         cacheCreationTokens: 0,
                         cacheReadTokens: 0,
                         totalTokens,
+                        totalTokensWithoutCacheRead: totalTokens,
                         costUsd,
                         sessionCount: 1
                       }
@@ -308,6 +375,7 @@ describe('getUsageDetails', () => {
                       usageDate: '2026-04-29',
                       source: 'codex',
                       totalTokens,
+                      totalTokensWithoutCacheRead: totalTokens,
                       costUsd,
                       sessionCount: 1
                     }
@@ -330,6 +398,8 @@ describe('getUsageDetails', () => {
 
     expect(details.summary).toEqual({
       totalTokens: 100,
+      totalTokensWithoutCacheRead: 100,
+      cacheReadRate: 0,
       costUsd: 1,
       sessionCount: 1,
       activeDays: 1
@@ -341,10 +411,92 @@ describe('getUsageDetails', () => {
     expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
     expect(sqlStatements[0]).toContain("device_id <> 'legacy'")
     expect(sqlStatements[0]).toContain('NOT EXISTS')
+    expect(sqlStatements[0]).toContain('daily_usage.user_id = ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date <= ?')
     expect(bindings).toEqual([
-      ['user_1', '2026-04-27', '2026-04-29', 'all', 'all', 'all', 'all', '', ''],
-      ['user_1', '2026-04-27', '2026-04-29', 'all', 'all', 'all', 'all', '', '']
+      [
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        '',
+        '',
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        'all',
+        'all',
+        '',
+        ''
+      ],
+      [
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        '',
+        '',
+        'user_1',
+        '2026-04-27',
+        '2026-04-29',
+        'all',
+        'all',
+        'all',
+        'all',
+        '',
+        ''
+      ]
     ])
+  })
+
+  test('pushes all-device detail filters into the deduped CTE', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getUsageDetails(db, {
+      userId: 'user_1',
+      source: 'codex',
+      startDate: '2026-04-27',
+      endDate: '2026-04-29',
+      deviceId: 'all',
+      modelQuery: 'gpt'
+    })
+
+    expect(sqlStatements[0]).toContain('daily_usage.user_id = ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date >= ?')
+    expect(sqlStatements[0]).toContain('daily_usage.usage_date <= ?')
+    expect(sqlStatements[0]).toContain("(? = 'all' OR daily_usage.source = ?)")
+    expect(sqlStatements[0]).toContain("(? = '' OR lower(daily_usage.model) LIKE '%' || lower(?) || '%')")
+    expect(bindings[0]?.slice(0, 7)).toEqual([
+      'user_1',
+      '2026-04-27',
+      '2026-04-29',
+      'codex',
+      'codex',
+      'gpt',
+      'gpt'
+    ])
+    expect(bindings[1]?.slice(0, 7)).toEqual(bindings[0]?.slice(0, 7))
   })
 
   test('dedupes legacy rows when device filter is omitted', async () => {
@@ -406,8 +558,8 @@ describe('getUsageDetails', () => {
 
     expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
     expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
-    expect(bindings[0]?.slice(5, 7)).toEqual(['all', 'all'])
-    expect(bindings[1]?.slice(5, 7)).toEqual(['all', 'all'])
+    expect(bindings[0]?.slice(12, 14)).toEqual(['all', 'all'])
+    expect(bindings[1]?.slice(12, 14)).toEqual(['all', 'all'])
   })
 
   test('normalizes invalid direct device filters to all devices', async () => {
@@ -439,7 +591,7 @@ describe('getUsageDetails', () => {
 
     expect(sqlStatements[0]).toContain('FROM deduped_daily_usage')
     expect(sqlStatements[1]).toContain('FROM deduped_daily_usage')
-    expect(bindings[0]?.slice(5, 7)).toEqual(['all', 'all'])
-    expect(bindings[1]?.slice(5, 7)).toEqual(['all', 'all'])
+    expect(bindings[0]?.slice(12, 14)).toEqual(['all', 'all'])
+    expect(bindings[1]?.slice(12, 14)).toEqual(['all', 'all'])
   })
 })

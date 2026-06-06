@@ -1,27 +1,40 @@
 import type { UsageSource } from '@tokenboard/usage-core'
 import {
-  dedupedDailyUsageCte,
+  dailyUsageScopeSql,
+  effectiveDailyUsageSummaryWith,
   normalizeDeviceFilter,
   optionalDedupedDailyUsageWith,
+  tokensWithoutCacheReadSql,
+  usageSummaryScopeSql,
+  usageSummaryParam,
+  usageSummaryValue,
   usageTableForDeviceFilter
 } from './deduped-daily-usage'
+import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
 
 export type UsageSummaryInput = {
   userId: string
   today: string
   monthStart: string
+  summaryStrict?: boolean
 }
 
 export type UsageSummary = {
   todayTokens: number
+  todayTokensWithoutCacheRead: number
+  todayCacheReadRate: number
   todayCostUsd: number
   monthTokens: number
+  monthTokensWithoutCacheRead: number
+  monthCacheReadRate: number
   monthCostUsd: number
   lastSyncedAt: string | null
   deviceCount: number
   sourceSplit: Array<{
     source: UsageSource
     totalTokens: number
+    totalTokensWithoutCacheRead: number
+    cacheReadRate: number
   }>
 }
 
@@ -29,11 +42,14 @@ export type DailyUsageTrendInput = {
   userId: string
   startDate: string
   endDate: string
+  summaryStrict?: boolean
 }
 
 export type DailyUsageTrendItem = {
   usageDate: string
   totalTokens: number
+  totalTokensWithoutCacheRead: number
+  cacheReadRate: number
   costUsd: number
 }
 
@@ -49,11 +65,15 @@ export type UsageDetailsInput = {
 export type UsageDetailsDailyRow = {
   usageDate: string
   totalTokens: number
+  totalTokensWithoutCacheRead: number
+  cacheReadRate: number
   costUsd: number
   sessionCount: number
   sourceSplit: Array<{
     source: UsageSource
     totalTokens: number
+    totalTokensWithoutCacheRead: number
+    cacheReadRate: number
   }>
   modelRows: UsageDetailsModelRow[]
 }
@@ -67,6 +87,8 @@ export type UsageDetailsModelRow = {
   cacheCreationTokens: number
   cacheReadTokens: number
   totalTokens: number
+  totalTokensWithoutCacheRead: number
+  cacheReadRate: number
   costUsd: number
   sessionCount: number
 }
@@ -74,6 +96,8 @@ export type UsageDetailsModelRow = {
 export type UsageDetails = {
   summary: {
     totalTokens: number
+    totalTokensWithoutCacheRead: number
+    cacheReadRate: number
     costUsd: number
     sessionCount: number
     activeDays: number
@@ -84,11 +108,14 @@ export type UsageDetails = {
 
 type SummaryRow = {
   todayTokens: number | null
+  todayTokensWithoutCacheRead: number | null
   todayCostUsd: number | null
   monthTokens: number | null
+  monthTokensWithoutCacheRead: number | null
   monthCostUsd: number | null
   lastSyncedAt: string | null
   deviceCount: number | null
+  sourceSplit: unknown
 }
 
 export async function getUsageSummary(
@@ -98,8 +125,28 @@ export async function getUsageSummary(
   const summary = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte},
-        params(user_id, today, month_start) AS (SELECT ?, ?, ?),
+        WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
+        ${effectiveDailyUsageSummaryWith({
+          filter: usageSummaryScopeSql({
+            userId: usageSummaryParam('userId'),
+            usageDateGte: usageSummaryParam('monthStart')
+          }),
+          summaryStrict: input.summaryStrict
+        })},
+        month_usage AS (
+          SELECT
+            effective_daily_usage_summary.*
+          FROM effective_daily_usage_summary
+          JOIN params ON params.user_id = effective_daily_usage_summary.user_id
+        ),
+        source_usage AS (
+          SELECT
+            source,
+            COALESCE(SUM(total_tokens), 0) as total_tokens,
+            COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read
+          FROM month_usage
+          GROUP BY source
+        ),
         device_stats AS (
           SELECT
             devices.user_id,
@@ -109,47 +156,85 @@ export async function getUsageSummary(
           GROUP BY devices.user_id
         )
         SELECT
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as todayTokens,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date = params.today THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.total_tokens ELSE 0 END), 0) as monthTokens,
-          COALESCE(SUM(CASE WHEN deduped_daily_usage.usage_date >= params.month_start THEN deduped_daily_usage.cost_usd ELSE 0 END), 0) as monthCostUsd,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens ELSE 0 END), 0) as todayTokens,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens_without_cache_read ELSE 0 END), 0) as todayTokensWithoutCacheRead,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
+          COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
+          COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
+          COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd,
           device_stats.lastSyncedAt as lastSyncedAt,
-          COALESCE(device_stats.deviceCount, 0) as deviceCount
+          COALESCE(device_stats.deviceCount, 0) as deviceCount,
+          (
+            SELECT COALESCE(json_group_array(json_object(
+              'source', ordered_sources.source,
+              'totalTokens', ordered_sources.total_tokens,
+              'totalTokensWithoutCacheRead', ordered_sources.total_tokens_without_cache_read
+            )), '[]')
+            FROM (
+              SELECT
+                source,
+                total_tokens,
+                total_tokens_without_cache_read
+              FROM source_usage
+              ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
+            ) AS ordered_sources
+          ) as sourceSplit
         FROM params
-        LEFT JOIN deduped_daily_usage ON deduped_daily_usage.user_id = params.user_id
+        LEFT JOIN month_usage ON month_usage.user_id = params.user_id
         LEFT JOIN device_stats ON device_stats.user_id = params.user_id
       `
     )
     .bind(input.userId, input.today, input.monthStart)
     .first<SummaryRow>()
-
-  const split = await db
-    .prepare(
-      `
-        WITH ${dedupedDailyUsageCte}
-        SELECT source, COALESCE(SUM(total_tokens), 0) as totalTokens
-        FROM deduped_daily_usage
-        WHERE user_id = ?
-          AND usage_date >= ?
-        GROUP BY source
-        ORDER BY totalTokens DESC
-      `
-    )
-    .bind(input.userId, input.monthStart)
-    .all<{ source: UsageSource; totalTokens: number }>()
+  const sourceSplit = parseSummarySourceSplit(summary?.sourceSplit)
 
   return {
     todayTokens: Number(summary?.todayTokens ?? 0),
+    todayTokensWithoutCacheRead: Number(summary?.todayTokensWithoutCacheRead ?? 0),
+    todayCacheReadRate: cacheReadRateFromTotals({
+      totalTokens: Number(summary?.todayTokens ?? 0),
+      totalTokensWithoutCacheRead: Number(summary?.todayTokensWithoutCacheRead ?? 0)
+    }),
     todayCostUsd: Number(summary?.todayCostUsd ?? 0),
     monthTokens: Number(summary?.monthTokens ?? 0),
+    monthTokensWithoutCacheRead: Number(summary?.monthTokensWithoutCacheRead ?? 0),
+    monthCacheReadRate: cacheReadRateFromTotals({
+      totalTokens: Number(summary?.monthTokens ?? 0),
+      totalTokensWithoutCacheRead: Number(summary?.monthTokensWithoutCacheRead ?? 0)
+    }),
     monthCostUsd: Number(summary?.monthCostUsd ?? 0),
     lastSyncedAt: summary?.lastSyncedAt ?? null,
     deviceCount: Number(summary?.deviceCount ?? 0),
-    sourceSplit: (split.results ?? []).map((row) => ({
+    sourceSplit: sourceSplit.map((row) => ({
       source: row.source,
-      totalTokens: Number(row.totalTokens)
+      totalTokens: Number(row.totalTokens),
+      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
+      cacheReadRate: cacheReadRateFromTotals({
+        totalTokens: Number(row.totalTokens),
+        totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
+      })
     }))
   }
+}
+
+function parseSummarySourceSplit(value: unknown) {
+  if (!value) return []
+  const parsed = typeof value === 'string' ? JSON.parse(value) : value
+  if (!Array.isArray(parsed)) {
+    throw new Error('Invalid dashboard summary sourceSplit')
+  }
+  return parsed.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('Invalid dashboard summary sourceSplit item')
+    }
+    const row = item as Record<string, unknown>
+    if (typeof row.source !== 'string') throw new Error('Invalid dashboard summary sourceSplit source')
+    return {
+      source: row.source as UsageSource,
+      totalTokens: Number(row.totalTokens ?? 0),
+      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead ?? 0)
+    }
+  })
 }
 
 export async function getDailyUsageTrend(
@@ -159,20 +244,25 @@ export async function getDailyUsageTrend(
   const rows = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH ${effectiveDailyUsageSummaryWith({
+          filter: usageSummaryScopeSql({
+            userId: usageSummaryValue.bind(),
+            usageDateGte: usageSummaryValue.bind(),
+            usageDateLte: usageSummaryValue.bind()
+          }),
+          summaryStrict: input.summaryStrict
+        })}
         SELECT
           usage_date as usageDate,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
+          COALESCE(SUM(total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd
-        FROM deduped_daily_usage
-        WHERE user_id = ?
-          AND usage_date >= ?
-          AND usage_date <= ?
+        FROM effective_daily_usage_summary
         GROUP BY usage_date
         ORDER BY usage_date ASC
       `
     )
-    .bind(input.userId, input.startDate, input.endDate)
+    .bind(...summaryRangeBindings(input.summaryStrict, input.userId, input.startDate, input.endDate))
     .all<DailyUsageTrendItem>()
 
   const byDate = new Map(
@@ -181,13 +271,24 @@ export async function getDailyUsageTrend(
       {
         usageDate: row.usageDate,
         totalTokens: Number(row.totalTokens),
+        totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
+        cacheReadRate: cacheReadRateFromTotals({
+          totalTokens: Number(row.totalTokens),
+          totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
+        }),
         costUsd: Number(row.costUsd)
       }
     ])
   )
 
   return eachIsoDate(input.startDate, input.endDate).map(
-    (usageDate) => byDate.get(usageDate) ?? { usageDate, totalTokens: 0, costUsd: 0 }
+    (usageDate) => byDate.get(usageDate) ?? {
+      usageDate,
+      totalTokens: 0,
+      totalTokensWithoutCacheRead: 0,
+      cacheReadRate: 0,
+      costUsd: 0
+    }
   )
 }
 
@@ -197,7 +298,9 @@ export async function getUsageDetails(
 ): Promise<UsageDetails> {
   const deviceId = normalizeDeviceFilter(input.deviceId)
   const usageTable = usageTableForDeviceFilter(deviceId)
-  const usageWith = optionalDedupedDailyUsageWith(deviceId)
+  const dedupedUsageFilter = usageDetailsDedupedFilter(deviceId)
+  const usageWith = optionalDedupedDailyUsageWith(deviceId, dedupedUsageFilter)
+  const bindings = usageDetailsBindings(input, deviceId)
   const dailySourceRows = await db
     .prepare(
       `
@@ -206,6 +309,7 @@ export async function getUsageDetails(
           usage_date as usageDate,
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
         FROM ${usageTable}
@@ -219,21 +323,12 @@ export async function getUsageDetails(
         ORDER BY usage_date ASC, source ASC
       `
     )
-    .bind(
-      input.userId,
-      input.startDate,
-      input.endDate,
-      input.source,
-      input.source,
-      deviceId,
-      deviceId,
-      input.modelQuery ?? '',
-      input.modelQuery ?? ''
-    )
+    .bind(...bindings)
     .all<{
       usageDate: string
       source: UsageSource
       totalTokens: number
+      totalTokensWithoutCacheRead: number
       costUsd: number
       sessionCount: number
     }>()
@@ -251,6 +346,7 @@ export async function getUsageDetails(
           COALESCE(SUM(cache_creation_tokens), 0) as cacheCreationTokens,
           COALESCE(SUM(cache_read_tokens), 0) as cacheReadTokens,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
+          COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
           COALESCE(SUM(cost_usd), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
         FROM ${usageTable}
@@ -264,17 +360,7 @@ export async function getUsageDetails(
         ORDER BY usage_date DESC, totalTokens DESC, model ASC
       `
     )
-    .bind(
-      input.userId,
-      input.startDate,
-      input.endDate,
-      input.source,
-      input.source,
-      deviceId,
-      deviceId,
-      input.modelQuery ?? '',
-      input.modelQuery ?? ''
-    )
+    .bind(...bindings)
     .all<UsageDetailsModelRow>()
 
   const modelRows = (modelRowsResult.results ?? []).map((row) => ({
@@ -286,6 +372,11 @@ export async function getUsageDetails(
     cacheCreationTokens: Number(row.cacheCreationTokens),
     cacheReadTokens: Number(row.cacheReadTokens),
     totalTokens: Number(row.totalTokens),
+    totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
+    cacheReadRate: cacheReadRateFromTotals({
+      totalTokens: Number(row.totalTokens),
+      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
+    }),
     costUsd: Number(row.costUsd),
     sessionCount: Number(row.sessionCount)
   }))
@@ -296,6 +387,11 @@ export async function getUsageDetails(
       usageDate: row.usageDate,
       source: row.source,
       totalTokens: Number(row.totalTokens),
+      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
+      cacheReadRate: cacheReadRateFromTotals({
+        totalTokens: Number(row.totalTokens),
+        totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
+      }),
       costUsd: Number(row.costUsd),
       sessionCount: Number(row.sessionCount)
     })),
@@ -305,6 +401,11 @@ export async function getUsageDetails(
   return {
     summary: {
       totalTokens: dailyRows.reduce((total, row) => total + row.totalTokens, 0),
+      totalTokensWithoutCacheRead: dailyRows.reduce((total, row) => total + row.totalTokensWithoutCacheRead, 0),
+      cacheReadRate: cacheReadRateFromTotals({
+        totalTokens: dailyRows.reduce((total, row) => total + row.totalTokens, 0),
+        totalTokensWithoutCacheRead: dailyRows.reduce((total, row) => total + row.totalTokensWithoutCacheRead, 0)
+      }),
       costUsd: roundMetric(dailyRows.reduce((total, row) => total + row.costUsd, 0)),
       sessionCount: dailyRows.reduce((total, row) => total + row.sessionCount, 0),
       activeDays: dailyRows.filter((row) => row.totalTokens > 0).length
@@ -314,6 +415,48 @@ export async function getUsageDetails(
   }
 }
 
+function usageDetailsDedupedFilter(deviceId: string) {
+  if (deviceId !== 'all') return undefined
+  return dailyUsageScopeSql({
+    userId: usageSummaryValue.bind(),
+    usageDateGte: usageSummaryValue.bind(),
+    usageDateLte: usageSummaryValue.bind(),
+    optionalSource: {
+      selector: usageSummaryValue.bind(),
+      value: usageSummaryValue.bind()
+    },
+    modelQuery: {
+      selector: usageSummaryValue.bind(),
+      value: usageSummaryValue.bind()
+    }
+  })
+}
+
+function usageDetailsBindings(input: UsageDetailsInput, deviceId: string) {
+  const outer = [
+    input.userId,
+    input.startDate,
+    input.endDate,
+    input.source,
+    input.source,
+    deviceId,
+    deviceId,
+    input.modelQuery ?? '',
+    input.modelQuery ?? ''
+  ]
+  if (deviceId !== 'all') return outer
+  return [
+    input.userId,
+    input.startDate,
+    input.endDate,
+    input.source,
+    input.source,
+    input.modelQuery ?? '',
+    input.modelQuery ?? '',
+    ...outer
+  ]
+}
+
 function buildDailyDetails(
   startDate: string,
   endDate: string,
@@ -321,6 +464,8 @@ function buildDailyDetails(
     usageDate: string
     source: UsageSource
     totalTokens: number
+    totalTokensWithoutCacheRead: number
+    cacheReadRate: number
     costUsd: number
     sessionCount: number
   }>,
@@ -332,6 +477,8 @@ function buildDailyDetails(
     byDate.set(usageDate, {
       usageDate,
       totalTokens: 0,
+      totalTokensWithoutCacheRead: 0,
+      cacheReadRate: 0,
       costUsd: 0,
       sessionCount: 0,
       sourceSplit: [],
@@ -344,11 +491,18 @@ function buildDailyDetails(
     if (!daily) continue
 
     daily.totalTokens += row.totalTokens
+    daily.totalTokensWithoutCacheRead += row.totalTokensWithoutCacheRead
+    daily.cacheReadRate = cacheReadRateFromTotals({
+      totalTokens: daily.totalTokens,
+      totalTokensWithoutCacheRead: daily.totalTokensWithoutCacheRead
+    })
     daily.costUsd = roundMetric(daily.costUsd + row.costUsd)
     daily.sessionCount += row.sessionCount
     daily.sourceSplit.push({
       source: row.source,
-      totalTokens: row.totalTokens
+      totalTokens: row.totalTokens,
+      totalTokensWithoutCacheRead: row.totalTokensWithoutCacheRead,
+      cacheReadRate: row.cacheReadRate
     })
   }
 
@@ -374,4 +528,15 @@ function eachIsoDate(startDate: string, endDate: string) {
 
 function roundMetric(value: number) {
   return Math.round(value * 10000) / 10000
+}
+
+function summaryRangeBindings(
+  summaryStrict: boolean | undefined,
+  userId: string,
+  startDate: string,
+  endDate: string
+) {
+  return summaryStrict
+    ? [userId, startDate, endDate]
+    : [userId, startDate, endDate, userId, startDate, endDate]
 }

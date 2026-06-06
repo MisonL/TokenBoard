@@ -90,7 +90,7 @@ function CustomSelectOptionButton(props: {
       data-label={props.label}
     >
       <span>{props.label}</span>
-      <LucideIcon icon={Check} class={props.selected ? 'text-lime-300' : 'text-transparent'} size={16} />
+      <LucideIcon icon={Check} class={props.selected ? 'app-accent-text' : 'text-transparent'} size={16} />
     </button>
   )
 }

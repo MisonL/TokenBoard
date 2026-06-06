@@ -3,7 +3,7 @@ import { uploadSnapshots } from './upload'
 import { unchangedSnapshot } from './upload-test-helpers'
 
 describe('uploadSnapshots batches', () => {
-  test('splits large uploads into 500-item batches', async () => {
+  test('splits large uploads into free-tier sized batches', async () => {
     const snapshots = largeSnapshotSet()
     const requests: Array<{ url: string; body: unknown }> = []
     const result = await uploadSnapshots(
@@ -17,11 +17,13 @@ describe('uploadSnapshots batches', () => {
     )
 
     expect(result).toEqual({ upserted: 501, skipped: 0 })
-    expect(requests).toHaveLength(4)
-    expect(requests[0]).toEqual(checkRequest(snapshots.slice(0, 500)))
-    expect(requests[1]).toEqual(uploadRequest(snapshots.slice(0, 500)))
-    expect(requests[2]).toEqual(checkRequest(snapshots.slice(500)))
-    expect(requests[3]).toEqual(uploadRequest(snapshots.slice(500)))
+    expect(requests).toHaveLength(34)
+    for (let index = 0; index < requests.length; index += 2) {
+      const offset = (index / 2) * 30
+      const batch = snapshots.slice(offset, offset + 30)
+      expect(requests[index]).toEqual(checkRequest(batch))
+      expect(requests[index + 1]).toEqual(uploadRequest(batch))
+    }
   })
 })
 

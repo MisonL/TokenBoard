@@ -26,6 +26,8 @@ describe('UsageDetailsPanel', () => {
         details={{
           summary: {
             totalTokens: 123456,
+            totalTokensWithoutCacheRead: 120000,
+            cacheReadRate: 3456 / 123456,
             costUsd: 42.31,
             sessionCount: 12,
             activeDays: 3
@@ -34,9 +36,11 @@ describe('UsageDetailsPanel', () => {
             {
               usageDate: '2026-05-25',
               totalTokens: 123456,
+              totalTokensWithoutCacheRead: 120000,
+              cacheReadRate: 3456 / 123456,
               costUsd: 42.31,
               sessionCount: 12,
-              sourceSplit: [{ source: 'codex', totalTokens: 123456 }],
+              sourceSplit: [{ source: 'codex', totalTokens: 123456, totalTokensWithoutCacheRead: 120000, cacheReadRate: 3456 / 123456 }],
               modelRows: []
             }
           ],
@@ -55,6 +59,9 @@ describe('UsageDetailsPanel', () => {
     expect(html).toContain('data-custom-select-menu="true"')
     expect(html).toContain('name="source"')
     expect(html).toContain('name="device"')
+    expect(html).toContain('w-full sm:mt-7')
+    expect(html).toContain('text-xs font-bold uppercase tracking-wide text-[var(--app-muted)] md:hidden')
+    expect(html).toContain('缓存率 3%')
   })
 
   test('renders empty source split text with readable muted contrast', async () => {
@@ -71,6 +78,8 @@ describe('UsageDetailsPanel', () => {
         details={{
           summary: {
             totalTokens: 0,
+            totalTokensWithoutCacheRead: 0,
+            cacheReadRate: 0,
             costUsd: 0,
             sessionCount: 0,
             activeDays: 0
@@ -79,6 +88,8 @@ describe('UsageDetailsPanel', () => {
             {
               usageDate: '2026-05-25',
               totalTokens: 0,
+              totalTokensWithoutCacheRead: 0,
+              cacheReadRate: 0,
               costUsd: 0,
               sessionCount: 0,
               sourceSplit: [],

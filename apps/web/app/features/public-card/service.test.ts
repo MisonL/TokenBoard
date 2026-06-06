@@ -43,19 +43,24 @@ describe('public card service', () => {
 
                 return {
                   totalTokens: 1200,
+                  totalTokensWithoutCacheRead: 900,
                   totalCostUsd: 3.75,
                   todayTokens: 100,
+                  todayTokensWithoutCacheRead: 70,
                   todayCostUsd: 0.2,
                   monthTokens: 500,
-                  monthCostUsd: 1.5
+                  monthTokensWithoutCacheRead: 380,
+                  monthCostUsd: 1.5,
+                  sourceSplit: JSON.stringify([
+                    { source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240 }
+                  ]),
+                  topModels: JSON.stringify([
+                    { model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, costUsd: 1.5 }
+                  ])
                 }
               },
               async all() {
-                if (sql.includes('GROUP BY source')) {
-                  return { results: [{ source: 'codex', totalTokens: 300 }] }
-                }
-
-                return { results: [{ model: 'gpt-5.4', totalTokens: 500, costUsd: 1.5 }] }
+                throw new Error('Public JSON should use one metrics query')
               }
             }
           }
@@ -69,25 +74,36 @@ describe('public card service', () => {
       slug: 'eve',
       displayName: 'Eve',
       timezone: 'Asia/Hong_Kong',
-      total: { tokens: 1200, costUsd: 3.75 },
-      today: { tokens: 100, costUsd: 0.2 },
-      month: { tokens: 500, costUsd: 1.5 },
-      sourceSplit: [{ source: 'codex', totalTokens: 300 }],
-      topModels: [{ model: 'gpt-5.4', totalTokens: 500, costUsd: 1.5 }]
+      today: { tokens: 100, tokensWithoutCacheRead: 70, cacheReadRate: 0.3, costUsd: 0.2 },
+      total: { tokens: 1200, tokensWithoutCacheRead: 900, cacheReadRate: 0.25, costUsd: 3.75 },
+      month: { tokens: 500, tokensWithoutCacheRead: 380, cacheReadRate: 0.24, costUsd: 1.5 },
+      sourceSplit: [{ source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240, cacheReadRate: 0.2 }],
+      topModels: [{ model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, cacheReadRate: 0.18, costUsd: 1.5 }]
     })
     expect(JSON.stringify(result)).not.toContain('internal-user-id')
     expect(bindings[0]).toEqual(['eve'])
-    expect(bindings[1]).toEqual(['2026-04-29', '2026-04-29', '2026-04-01', '2026-04-01', 'internal-user-id'])
-    for (const sql of sqlStatements.slice(1)) {
-      expect(sql).toContain('deduped_daily_usage')
-      expect(sql).toContain("device_id <> 'legacy'")
-      expect(sql).toContain('NOT EXISTS')
-    }
+    expect(bindings[1]).toEqual([
+      'internal-user-id',
+      '2026-04-29',
+      '2026-04-01'
+    ])
+    expect(bindings).toHaveLength(2)
+    expect(sqlStatements).toHaveLength(2)
+    expect(sqlStatements[1]).toContain('effective_daily_usage_summary')
+    expect(sqlStatements[1]).toContain('fallback_daily_usage_summary')
+    expect(sqlStatements[1]).toContain('user_usage_totals')
+    expect(sqlStatements[1]).toContain('month_usage AS')
+    expect(sqlStatements[1]).toContain('source_usage AS')
+    expect(sqlStatements[1]).toContain('model_usage AS')
+    expect(sqlStatements[1]).toContain('effective_daily_usage_summary.usage_date >= params.month_start')
+    expect(sqlStatements[1]).not.toContain('CASE WHEN daily_usage_summary.usage_date')
   })
 
   test('renders a GitHub card with total and monthly token statistics', async () => {
+    const sqlStatements: string[] = []
     const db = {
       prepare(sql: string) {
+        sqlStatements.push(sql)
         return {
           bind() {
             return {
@@ -117,15 +133,18 @@ describe('public card service', () => {
 
                 return {
                   totalTokens: 1234567,
+                  totalTokensWithoutCacheRead: 345678,
                   totalCostUsd: 42.5,
                   todayTokens: 100,
+                  todayTokensWithoutCacheRead: 70,
                   todayCostUsd: 0.2,
                   monthTokens: 89012,
+                  monthTokensWithoutCacheRead: 45678,
                   monthCostUsd: 6.78
                 }
               },
               async all() {
-                return { results: [] }
+                throw new Error('SVG public card should not query breakdown rows')
               }
             }
           }
@@ -152,6 +171,9 @@ describe('public card service', () => {
     expect(svg).toContain('card-logo-lime')
     expect(svg).toContain('M130 118H282V164H229V382H181V164H130V118Z')
     expect(svg).toContain('M120 390H392')
+    expect(sqlStatements).toHaveLength(2)
+    expect(sqlStatements.join('\n')).not.toContain('GROUP BY source')
+    expect(sqlStatements.join('\n')).not.toContain('GROUP BY model')
   })
 
   test('rejects a private profile', async () => {
@@ -180,5 +202,52 @@ describe('public card service', () => {
       code: 'NOT_FOUND',
       status: 404
     })
+  })
+
+  test('uses the public profile timezone for today and monthly public totals', async () => {
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async first() {
+                if (sql.includes('FROM profiles')) {
+                  return {
+                    userId: 'user_1',
+                    slug: 'eve',
+                    displayName: 'Eve',
+                    timezone: 'Asia/Shanghai',
+                    publicCardConfig: null,
+                    isPublic: 1
+                  }
+                }
+
+                return {
+                  totalTokens: 0,
+                  totalTokensWithoutCacheRead: 0,
+                  totalCostUsd: 0,
+                  todayTokens: 0,
+                  todayTokensWithoutCacheRead: 0,
+                  todayCostUsd: 0,
+                  monthTokens: 0,
+                  monthTokensWithoutCacheRead: 0,
+                  monthCostUsd: 0
+                }
+              },
+              async all() {
+                throw new Error('Public card should not query breakdown rows')
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await getPublicUsageJson(db, 'eve', new Date('2026-04-30T16:30:00.000Z'))
+
+    expect(bindings[1]).toEqual(['user_1', '2026-05-01', '2026-05-01'])
+    expect(bindings).toHaveLength(2)
   })
 })

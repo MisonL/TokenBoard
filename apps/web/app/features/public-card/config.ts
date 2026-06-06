@@ -6,12 +6,20 @@ export const publicCardLayouts = ['balanced', 'compact', 'wide'] as const
 export const publicCardGlowPositions = ['top-right', 'top-left', 'center'] as const
 export const publicCardMetrics = [
   'totalTokens',
+  'totalTokensWithoutCacheRead',
+  'totalCacheReadRate',
   'totalCost',
   'monthTokens',
+  'monthTokensWithoutCacheRead',
+  'monthCacheReadRate',
   'monthCost',
   'todayTokens',
+  'todayTokensWithoutCacheRead',
+  'todayCacheReadRate',
   'todayCost'
 ] as const
+
+export const publicCardMetricSlotCount = 6
 
 export type PublicCardMetric = (typeof publicCardMetrics)[number]
 
@@ -67,7 +75,7 @@ export const publicCardConfigSchema = z.object({
     position: z.enum(publicCardGlowPositions).default(defaultPublicCardConfig.glow.position)
   }).default(defaultPublicCardConfig.glow),
   metrics: z.array(publicCardMetricSchema)
-    .max(6)
+    .transform((metrics) => metrics.slice(0, publicCardMetricSlotCount))
     .default([...defaultPublicCardConfig.metrics])
     .transform((metrics) => uniqueMetrics(metrics))
 }).default(defaultPublicCardConfig)
@@ -75,7 +83,8 @@ export const publicCardConfigSchema = z.object({
 export function parsePublicCardConfig(value: unknown): PublicCardConfig {
   if (value === null || value === undefined || value === '') return publicCardConfigSchema.parse(undefined)
   const parsed = typeof value === 'string' ? parseJson(value) : value
-  return publicCardConfigSchema.parse(parsed)
+  const result = publicCardConfigSchema.safeParse(parsed)
+  return result.success ? result.data : publicCardConfigSchema.parse(undefined)
 }
 
 export function stringifyPublicCardConfig(config: PublicCardConfig) {
@@ -102,11 +111,12 @@ export function parsePublicCardConfigForm(form: Record<string, unknown>): Public
 }
 
 function readMetricOrder(form: Record<string, unknown>) {
-  const hasMetricSlots = publicCardMetrics.some((_, index) =>
+  const slotIndexes = Array.from({ length: publicCardMetricSlotCount }, (_, index) => index)
+  const hasMetricSlots = slotIndexes.some((index) =>
     Object.prototype.hasOwnProperty.call(form, `cardMetric${index + 1}`)
   )
-  const slotMetrics = publicCardMetrics
-    .map((_, index) => String(form[`cardMetric${index + 1}`] || '').trim())
+  const slotMetrics = slotIndexes
+    .map((index) => String(form[`cardMetric${index + 1}`] || '').trim())
     .filter(Boolean)
 
   if (hasMetricSlots) return slotMetrics.filter(isPublicCardMetric)

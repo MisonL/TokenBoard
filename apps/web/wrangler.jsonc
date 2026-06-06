@@ -7,17 +7,22 @@
     "nodejs_compat"
   ],
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true
   },
-  "workers_dev": false,
-  "routes": [
-    {
-      "pattern": "tokenboard.chaosyn.com",
-      "custom_domain": true
-    }
-  ],
+  "triggers": {
+    "crons": [
+      "*/15 * * * *"
+    ]
+  },
   "vars": {
-    "BETTER_AUTH_URL": "https://tokenboard.chaosyn.com"
+    "BETTER_AUTH_URL": "http://localhost:8787",
+    "TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30",
+    "TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50",
+    "TOKENBOARD_USAGE_SUMMARY_STRICT": "false",
+    "TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90",
+    "TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "5"
   },
   // "kv_namespaces": [
   //   {
@@ -35,7 +40,7 @@
     {
       "binding": "DB",
       "database_name": "tokenboard",
-      "database_id": "4af5cf99-10d9-4114-b707-f82e75f89746",
+      "database_id": "local-tokenboard-dev",
       "migrations_dir": "db/migrations"
     }
   ],

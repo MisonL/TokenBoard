@@ -7,6 +7,7 @@ import {
   publicCardGlowPositions,
   publicCardLanguages,
   publicCardLayouts,
+  publicCardMetricSlotCount,
   publicCardMetrics,
   publicCardThemes,
   type PublicCardConfig,
@@ -16,10 +17,16 @@ import { renderUsageCardSvg, type UsageCardInput } from '../svg'
 
 const metricLabels: Record<PublicCardMetric, string> = {
   totalTokens: '总 token',
+  totalTokensWithoutCacheRead: '总量不含缓存读',
+  totalCacheReadRate: '总缓存率',
   totalCost: '总费用',
   monthTokens: '本月 token',
+  monthTokensWithoutCacheRead: '本月不含缓存读',
+  monthCacheReadRate: '本月缓存率',
   monthCost: '本月费用',
   todayTokens: '今日 token',
+  todayTokensWithoutCacheRead: '今日不含缓存读',
+  todayCacheReadRate: '今日缓存率',
   todayCost: '今日费用'
 }
 
@@ -140,19 +147,19 @@ export function PublicCardConfigEditor(props: {
       <div>
         <p class="mb-2 text-sm font-bold text-[var(--app-muted)]">指标顺序</p>
         <div class="grid gap-2 sm:grid-cols-2">
-          {publicCardMetrics.map((_, index) => (
+          {Array.from({ length: publicCardMetricSlotCount }, (_, index) => (
             <MetricSlot index={index} value={props.config.metrics[index] ?? ''} />
           ))}
         </div>
       </div>
 
-      <div class="flex flex-wrap gap-3 pt-1">
-        <Button type="submit">保存设置</Button>
-        <Button type="submit" variant="secondary" name="cardAction" value="reset">
+      <div class="flex flex-col gap-3 pt-1 sm:flex-row sm:flex-wrap">
+        <Button class="w-full sm:w-auto" type="submit">保存设置</Button>
+        <Button class="w-full sm:w-auto" type="submit" variant="secondary" name="cardAction" value="reset">
           <LucideIcon icon={RotateCcw} size={16} />
           还原默认卡片
         </Button>
-        <LinkButton variant="secondary" href="/dashboard">返回控制台</LinkButton>
+        <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard">返回控制台</LinkButton>
       </div>
     </div>
   )

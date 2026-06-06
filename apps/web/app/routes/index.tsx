@@ -7,34 +7,34 @@ export default createRoute(async (c) => {
   if (user) return c.redirect('/dashboard')
 
   return c.render(
-    <main class="min-h-screen overflow-hidden bg-[var(--app-bg)] px-5 py-6 text-[var(--app-text)]">
+    <main class="min-h-screen overflow-hidden bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>TokenBoard</title>
       <AppNav isAuthenticated={false} />
-      <section class="relative mx-auto grid min-h-[calc(100vh-7rem)] max-w-7xl items-center gap-10 py-10 lg:grid-cols-[1fr_0.9fr]">
+      <section class="relative mx-auto grid min-h-[calc(100vh-7rem)] max-w-7xl items-center gap-8 py-8 sm:gap-10 sm:py-10 lg:grid-cols-[1fr_0.9fr]">
         <div class="absolute left-8 top-8 h-24 w-24 rounded-full bg-lime-300 blur-3xl" />
         <div class="relative z-10">
           <p class="text-sm font-black uppercase tracking-[0.45em] text-[var(--app-muted)]">TokenBoard</p>
-          <h1 class="mt-8 max-w-4xl text-5xl font-black leading-[0.95] tracking-tight md:text-8xl">
+          <h1 class="mt-8 max-w-4xl text-4xl font-black leading-[0.95] tracking-tight sm:text-5xl md:text-8xl">
             为分享而生的 AI 用量面板。
           </h1>
           <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--app-muted)]">
             连接本机 Claude Code 与 Codex 采集器，只上传聚合后的 token 指标，并由你决定哪些视图可以公开。
           </p>
-          <div class="mt-8 flex flex-wrap gap-3">
-            <a class="rounded-xl bg-lime-300 px-5 py-3 text-sm font-black text-stone-950 transition hover:bg-lime-200" href="/auth/sign-in">使用 GitHub 登录</a>
-            <a class="rounded-xl border border-[var(--app-border)] px-5 py-3 text-sm font-bold text-[var(--app-text)] transition hover:border-lime-300" href="/leaderboards">查看排行榜</a>
+          <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            <a class="inline-flex min-h-11 items-center justify-center rounded-xl bg-lime-300 px-5 py-3 text-sm font-black text-stone-950 transition hover:bg-lime-200" href="/auth/sign-in">使用 GitHub 登录</a>
+            <a class="inline-flex min-h-11 items-center justify-center rounded-xl border border-[var(--app-border)] px-5 py-3 text-sm font-bold text-[var(--app-text)] transition hover:border-lime-300" href="/leaderboards">查看排行榜</a>
           </div>
         </div>
         <div class="relative z-10 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-5 text-[var(--app-text)] shadow-2xl shadow-black/15">
           <div class="grid gap-3 sm:grid-cols-2">
             <Metric label="今日 tokens" value="128,420" />
+            <Metric label="不含缓存读" value="97,850" />
             <Metric label="本月费用" value="$42.31" />
             <Metric label="主要模型" value="gpt-5.4" />
-            <Metric label="连续同步" value="18 天" />
           </div>
           <div class="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
             <div class="mb-4 flex items-center justify-between text-sm">
-              <span class="font-bold text-lime-300">来源占比</span>
+              <span class="app-accent-text font-bold">来源占比</span>
               <span class="text-[var(--app-muted)]">最近 30 天</span>
             </div>
             <div class="h-4 overflow-hidden rounded-full bg-[var(--app-border)]">

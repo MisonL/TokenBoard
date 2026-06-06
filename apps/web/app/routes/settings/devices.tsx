@@ -57,14 +57,14 @@ export const POST = createRoute(async (c) => {
   }
 })
 
-function DevicesPage(props: {
+export function DevicesPage(props: {
   devices: UserDevice[]
   email: string
   saved: boolean
   revoked: boolean
 }) {
   return (
-    <main class="min-h-screen bg-[var(--app-bg)] px-5 py-6 text-[var(--app-text)]">
+    <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>设备管理 - TokenBoard</title>
       <AppNav active="devices" email={props.email} />
 
@@ -82,13 +82,13 @@ function DevicesHeader() {
     <header class="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5 shadow-xl shadow-black/10">
       <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p class="text-sm font-black uppercase tracking-[0.24em] text-lime-300">Devices</p>
-          <h1 class="mt-3 text-4xl font-black tracking-tight">设备管理</h1>
+          <p class="app-accent-text text-sm font-black uppercase tracking-[0.24em]">Devices</p>
+          <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">设备管理</h1>
           <p class="mt-2 text-sm text-[var(--app-muted)]">
             查看采集器设备、同步状态，并停用不再使用的上传 token。
           </p>
         </div>
-        <LinkButton href="/settings/install">连接新设备</LinkButton>
+        <LinkButton class="w-full md:w-auto" href="/settings/install">连接新设备</LinkButton>
       </div>
     </header>
   )
@@ -98,10 +98,10 @@ function DevicePageFlash(props: { saved: boolean; revoked: boolean }) {
   return (
     <>
       {props.saved ? (
-        <p class="rounded-md border border-lime-300/30 bg-lime-300/10 p-3 text-sm text-lime-100">设备名称已更新。</p>
+        <p class="app-flash-success p-3 text-sm">设备名称已更新。</p>
       ) : null}
       {props.revoked ? (
-        <p class="rounded-md border border-lime-300/30 bg-lime-300/10 p-3 text-sm text-lime-100">设备 token 已停用。</p>
+        <p class="app-flash-success p-3 text-sm">设备 token 已停用。</p>
       ) : null}
     </>
   )
@@ -123,15 +123,54 @@ function DevicesCard(props: { devices: UserDevice[] }) {
 
 function DevicesTable(props: { devices: UserDevice[] }) {
   return (
-    <div class="overflow-x-auto">
-      <Table class="min-w-[900px]">
-        <DevicesTableHeader />
-        <TableBody>
-          {props.devices.map((device) => (
-            <DeviceRow device={device} />
-          ))}
-        </TableBody>
-      </Table>
+    <>
+      <div class="grid gap-3 md:hidden" data-devices-mobile-list="true">
+        {props.devices.map((device) => (
+          <DeviceCard device={device} />
+        ))}
+      </div>
+      <div class="hidden overflow-x-auto md:block" data-devices-desktop-table="true">
+        <Table class="min-w-[900px]">
+          <DevicesTableHeader />
+          <TableBody>
+            {props.devices.map((device) => (
+              <DeviceRow device={device} />
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </>
+  )
+}
+
+function DeviceCard(props: { device: UserDevice }) {
+  return (
+    <article class="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-xs font-bold uppercase tracking-wide text-[var(--app-muted)]">设备</p>
+          <h2 class="mt-1 truncate text-base font-black text-[var(--app-text)]">{props.device.name}</h2>
+          <p class="mt-1 text-sm text-[var(--app-muted)]">{props.device.platform}</p>
+        </div>
+        <DeviceStatus device={props.device} />
+      </div>
+      <dl class="mt-4 grid gap-3 text-sm">
+        <DeviceMeta label="最近同步" value={props.device.lastSyncedAt ?? '从未同步'} />
+        <DeviceMeta label="创建时间" value={props.device.createdAt} />
+      </dl>
+      <div class="mt-4 grid gap-3">
+        <DeviceRenameForm device={props.device} />
+        <DeviceRevokeForm device={props.device} />
+      </div>
+    </article>
+  )
+}
+
+function DeviceMeta(props: { label: string; value: string }) {
+  return (
+    <div>
+      <dt class="text-xs font-bold uppercase tracking-wide text-[var(--app-muted)]">{props.label}</dt>
+      <dd class="mt-1 break-all font-bold text-[var(--app-text)]">{props.value}</dd>
     </div>
   )
 }
@@ -172,11 +211,11 @@ function DeviceRow(props: { device: UserDevice }) {
 
 function DeviceRenameForm(props: { device: UserDevice }) {
   return (
-    <form method="post" class="flex items-center gap-2">
+    <form method="post" class="flex flex-col gap-2 sm:flex-row sm:items-center">
       <input type="hidden" name="action" value="rename" />
       <input type="hidden" name="deviceId" value={props.device.id} />
       <Input class="mt-0 h-10 py-2" name="name" value={props.device.name} required minLength={1} />
-      <Button type="submit" variant="secondary" size="sm">保存</Button>
+      <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm">保存</Button>
     </form>
   )
 }
@@ -186,7 +225,14 @@ function DeviceRevokeForm(props: { device: UserDevice }) {
     <form method="post">
       <input type="hidden" name="action" value="revoke" />
       <input type="hidden" name="deviceId" value={props.device.id} />
-      <Button type="submit" variant="destructive" size="sm" disabled={props.device.activeTokenCount <= 0}>
+      <Button
+        class="w-full sm:w-auto"
+        type="submit"
+        variant="destructive"
+        size="sm"
+        disabled={props.device.activeTokenCount <= 0}
+        data-confirm="确认停用这个设备的上传 token？"
+      >
         停用
       </Button>
     </form>
@@ -216,11 +262,11 @@ function DeviceStatus(props: { device: UserDevice }) {
 
 function StatusPill(props: { tone: 'ok' | 'warning' | 'muted'; children: string }) {
   const classes = {
-    ok: 'border-lime-300/40 bg-lime-300/10 text-lime-100',
-    warning: 'border-amber-300/40 bg-amber-300/10 text-amber-100',
-    muted: 'border-[var(--app-border)] bg-[var(--app-bg-soft)] text-[var(--app-muted)]'
+    ok: 'app-status-pill app-status-pill-ok',
+    warning: 'app-status-pill app-status-pill-warning',
+    muted: 'app-status-pill app-status-pill-muted'
   }
-  return <span class={`inline-flex rounded-full border px-2 py-1 text-xs font-bold ${classes[props.tone]}`}>{props.children}</span>
+  return <span class={classes[props.tone]}>{props.children}</span>
 }
 
 function isStaleSync(lastSyncedAt: string) {

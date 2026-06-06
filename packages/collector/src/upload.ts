@@ -8,7 +8,7 @@ import type { CollectorConfig } from './config'
 
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>
 
-const snapshotBatchSize = 500
+const snapshotBatchSize = 30
 const transientFetchAttempts = 3
 
 export type ExistingSnapshotHash = UsageSnapshotKey & {

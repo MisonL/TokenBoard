@@ -1,19 +1,26 @@
 import { getDailyUsageTrend, getUsageSummary, type DailyUsageTrendItem, type UsageDetails, type UsageSummary } from './queries'
 import { toIsoDate } from '../../lib/time'
 import { usageSourceSchema } from './schema'
-import { normalizeDeviceFilter } from './deduped-daily-usage'
+import { normalizeDeviceFilter, usageSummaryStrictMode } from './deduped-daily-usage'
+import type { Bindings } from '../../lib/db'
 
 export type DashboardSummary = UsageSummary & {
   dailyTrend: DailyUsageTrendItem[]
 }
 
-export async function getDashboardSummary(db: D1Database, userId: string, now = new Date()) {
+export async function getDashboardSummary(
+  db: D1Database,
+  userId: string,
+  now = new Date(),
+  env: Pick<Bindings, 'TOKENBOARD_USAGE_SUMMARY_STRICT'> = {}
+) {
   const today = toIsoDate(now)
   const monthStart = `${today.slice(0, 8)}01`
   const trendStart = toIsoDate(addUtcDays(now, -29))
+  const summaryStrict = usageSummaryStrictMode(env)
   const [summary, dailyTrend] = await Promise.all([
-    getUsageSummary(db, { userId, today, monthStart }),
-    getDailyUsageTrend(db, { userId, startDate: trendStart, endDate: today })
+    getUsageSummary(db, { userId, today, monthStart, summaryStrict }),
+    getDailyUsageTrend(db, { userId, startDate: trendStart, endDate: today, summaryStrict })
   ])
   return {
     ...summary,
@@ -70,6 +77,8 @@ export function usageDetailsToCsv(details: UsageDetails) {
     'output_tokens',
     'cache_creation_tokens',
     'cache_read_tokens',
+    'cache_read_rate',
+    'total_tokens_without_cache_read',
     'total_tokens',
     'cost_usd',
     'session_count'
@@ -83,6 +92,8 @@ export function usageDetailsToCsv(details: UsageDetails) {
     row.outputTokens,
     row.cacheCreationTokens,
     row.cacheReadTokens,
+    row.cacheReadRate,
+    row.totalTokensWithoutCacheRead,
     row.totalTokens,
     row.costUsd,
     row.sessionCount

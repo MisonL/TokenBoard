@@ -1,5 +1,7 @@
 import { listDailyLeaderboard, listLeaderboard } from './queries'
 import { leaderboardMetricSchema, leaderboardPeriodSchema } from './schema'
+import { usageSummaryStrictMode } from '../usage/deduped-daily-usage'
+import type { Bindings } from '../../lib/db'
 
 export type LeaderboardOptions = {
   period?: unknown
@@ -13,7 +15,8 @@ export async function getDailyLeaderboard(db: D1Database, today = new Date()) {
 export async function getLeaderboard(
   db: D1Database,
   options: LeaderboardOptions = {},
-  now = new Date()
+  now = new Date(),
+  env: Pick<Bindings, 'TOKENBOARD_USAGE_SUMMARY_STRICT'> = {}
 ) {
   const period = leaderboardPeriodSchema.catch('daily').parse(options.period)
   const metric = leaderboardMetricSchema.catch('tokens').parse(options.metric)
@@ -28,7 +31,8 @@ export async function getLeaderboard(
     metric,
     startDate: range.startDate,
     endDateExclusive: range.endDateExclusive,
-    limit: 50
+    limit: 50,
+    summaryStrict: usageSummaryStrictMode(env)
   })
 }
 

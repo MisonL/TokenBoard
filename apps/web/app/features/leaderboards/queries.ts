@@ -1,19 +1,27 @@
-import { dedupedDailyUsageCte } from '../usage/deduped-daily-usage'
+import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
+import {
+  effectiveDailyUsageSummaryWith,
+  usageSummaryScopeSql,
+  usageSummaryValue
+} from '../usage/deduped-daily-usage'
 
 export type LeaderboardEntry = {
   rank: number
   slug: string
   displayName: string
   totalTokens: number
+  totalTokensWithoutCacheRead: number
+  cacheReadRate: number
   costUsd: number
 }
 
 export type LeaderboardQuery = {
   period: 'daily' | 'monthly'
-  metric: 'tokens' | 'cost'
+  metric: 'tokens' | 'tokens-without-cache-read' | 'cost'
   startDate: string
   endDateExclusive: string
   limit?: number
+  summaryStrict?: boolean
 }
 
 export async function listDailyLeaderboard(
@@ -34,32 +42,34 @@ export async function listLeaderboard(
   db: D1Database,
   input: LeaderboardQuery
 ): Promise<LeaderboardEntry[]> {
-  const orderBy =
-    input.metric === 'cost'
-      ? 'ORDER BY costUsd DESC, totalTokens DESC'
-      : 'ORDER BY totalTokens DESC, costUsd DESC'
+  const orderBy = leaderboardOrderBy(input.metric)
 
   const rows = await db
     .prepare(
       `
-        WITH ${dedupedDailyUsageCte}
+        WITH ${effectiveDailyUsageSummaryWith({
+          filter: usageSummaryScopeSql({
+            usageDateGte: usageSummaryValue.bind(),
+            usageDateLt: usageSummaryValue.bind()
+          }),
+          summaryStrict: input.summaryStrict
+        })}
         SELECT
           profiles.slug as slug,
           profiles.display_name as displayName,
-          COALESCE(SUM(deduped_daily_usage.total_tokens), 0) as totalTokens,
-          COALESCE(SUM(deduped_daily_usage.cost_usd), 0) as costUsd
+          COALESCE(SUM(effective_daily_usage_summary.total_tokens), 0) as totalTokens,
+          COALESCE(SUM(effective_daily_usage_summary.total_tokens_without_cache_read), 0) as totalTokensWithoutCacheRead,
+          COALESCE(SUM(effective_daily_usage_summary.cost_usd), 0) as costUsd
         FROM profiles
-        JOIN deduped_daily_usage ON deduped_daily_usage.user_id = profiles.user_id
+        JOIN effective_daily_usage_summary ON effective_daily_usage_summary.user_id = profiles.user_id
         WHERE profiles.is_public = 1
           AND profiles.participates_in_leaderboards = 1
-          AND deduped_daily_usage.usage_date >= ?
-          AND deduped_daily_usage.usage_date < ?
         GROUP BY profiles.user_id, profiles.slug, profiles.display_name
         ${orderBy}
         LIMIT ?
       `
     )
-    .bind(input.startDate, input.endDateExclusive, input.limit ?? 50)
+    .bind(...leaderboardBindings(input))
     .all<Omit<LeaderboardEntry, 'rank'>>()
 
   return (rows.results ?? []).map((row, index) => ({
@@ -67,8 +77,27 @@ export async function listLeaderboard(
     slug: row.slug,
     displayName: row.displayName,
     totalTokens: Number(row.totalTokens),
+    totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead),
+    cacheReadRate: cacheReadRateFromTotals({
+      totalTokens: Number(row.totalTokens),
+      totalTokensWithoutCacheRead: Number(row.totalTokensWithoutCacheRead)
+    }),
     costUsd: Number(row.costUsd)
   }))
+}
+
+function leaderboardBindings(input: LeaderboardQuery) {
+  return input.summaryStrict
+    ? [input.startDate, input.endDateExclusive, input.limit ?? 50]
+    : [input.startDate, input.endDateExclusive, input.startDate, input.endDateExclusive, input.limit ?? 50]
+}
+
+function leaderboardOrderBy(metric: LeaderboardQuery['metric']) {
+  if (metric === 'cost') return 'ORDER BY costUsd DESC, totalTokens DESC'
+  if (metric === 'tokens-without-cache-read') {
+    return 'ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC, costUsd DESC'
+  }
+  return 'ORDER BY totalTokens DESC, costUsd DESC'
 }
 
 function nextIsoDate(date: string) {

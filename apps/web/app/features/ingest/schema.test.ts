@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'vitest'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
-import { ingestRequestSchema, snapshotCheckRequestSchema } from './schema'
+import {
+  ingestRequestSchema,
+  snapshotCheckRequestSchema
+} from './schema'
+
+const legacyCollectorBatchSize = 500
 
 const baseSnapshot: UsageSnapshot = {
   source: 'codex',
@@ -22,8 +27,19 @@ describe('ingest schemas', () => {
     expect(ingestRequestSchema.parse({ snapshots: [] })).toEqual({ snapshots: [] })
   })
 
-  test('accepts large legacy snapshot batches from old collectors', () => {
-    const snapshots = Array.from({ length: 501 }, (_, index) => ({
+  test('rejects cache reads that exceed provider total tokens', () => {
+    expect(() =>
+      ingestRequestSchema.parse({
+        snapshots: [{
+          ...baseSnapshot,
+          cacheReadTokens: baseSnapshot.totalTokens + 1
+        }]
+      })
+    ).toThrow('cacheReadTokens must not exceed totalTokens')
+  })
+
+  test('accepts legacy collector snapshot batches', () => {
+    const snapshots = Array.from({ length: legacyCollectorBatchSize }, (_, index) => ({
       ...baseSnapshot,
       model: `gpt-5-${index}`
     }))
@@ -31,8 +47,8 @@ describe('ingest schemas', () => {
     expect(ingestRequestSchema.parse({ snapshots })).toEqual({ snapshots })
   })
 
-  test('rejects unbounded legacy snapshot batches', () => {
-    const snapshots = Array.from({ length: 5001 }, (_, index) => ({
+  test('rejects snapshot batches that exceed legacy collector compatibility', () => {
+    const snapshots = Array.from({ length: legacyCollectorBatchSize + 1 }, (_, index) => ({
       ...baseSnapshot,
       model: `gpt-5-${index}`
     }))
@@ -60,5 +76,25 @@ describe('ingest schemas', () => {
         }
       ]
     })
+  })
+
+  test('caps snapshot hash checks to the upload batch size', () => {
+    const keys = Array.from({ length: legacyCollectorBatchSize + 1 }, (_, index) => ({
+      source: 'codex',
+      usageDate: '2026-05-09',
+      model: `gpt-5-${index}`
+    }))
+
+    expect(() => snapshotCheckRequestSchema.parse({ keys })).toThrow()
+  })
+
+  test('accepts legacy collector snapshot hash checks', () => {
+    const keys = Array.from({ length: legacyCollectorBatchSize }, (_, index) => ({
+      source: 'codex',
+      usageDate: '2026-05-09',
+      model: `gpt-5-${index}`
+    }))
+
+    expect(snapshotCheckRequestSchema.parse({ keys })).toEqual({ keys })
   })
 })

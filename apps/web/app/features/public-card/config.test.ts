@@ -25,6 +25,34 @@ describe('public card config', () => {
     })
   })
 
+  test('truncates stored metric lists to rendered slots', () => {
+    expect(parsePublicCardConfig(JSON.stringify({
+      metrics: [
+        'totalTokens',
+        'totalCost',
+        'monthTokens',
+        'monthCost',
+        'todayTokens',
+        'todayCost',
+        'totalTokensWithoutCacheRead'
+      ]
+    })).metrics).toEqual([
+      'totalTokens',
+      'totalCost',
+      'monthTokens',
+      'monthCost',
+      'todayTokens',
+      'todayCost'
+    ])
+  })
+
+  test('uses default config for invalid stored values', () => {
+    expect(parsePublicCardConfig(JSON.stringify({
+      language: 'de',
+      metrics: ['totalTokens', 'legacyMetric']
+    }))).toEqual(defaultPublicCardConfig)
+  })
+
   test('parses form slots as metric enablement and order', () => {
     expect(parsePublicCardConfigForm({
       cardLanguage: 'en',
@@ -78,5 +106,21 @@ describe('public card config', () => {
     }))).toMatchObject({
       metrics: ['totalTokens', 'todayCost']
     })
+  })
+
+  test('keeps card metric slots separate from available metric choices', () => {
+    expect(parsePublicCardConfigForm({
+      cardMetric1: 'totalTokensWithoutCacheRead',
+      cardMetric6: 'todayTokensWithoutCacheRead',
+      cardMetric7: 'monthTokensWithoutCacheRead'
+    })?.metrics).toEqual(['totalTokensWithoutCacheRead', 'todayTokensWithoutCacheRead'])
+  })
+
+  test('accepts cache read rate card metrics', () => {
+    expect(parsePublicCardConfigForm({
+      cardMetric1: 'totalCacheReadRate',
+      cardMetric2: 'monthCacheReadRate',
+      cardMetric3: 'todayCacheReadRate'
+    })?.metrics).toEqual(['totalCacheReadRate', 'monthCacheReadRate', 'todayCacheReadRate'])
   })
 })

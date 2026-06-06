@@ -33,7 +33,7 @@ export const POST = createRoute(async (c) => {
 
 export function ProfilePage(props: { profile: ProfileSettings; saved: boolean; email: string }) {
   return (
-    <main class="min-h-screen bg-[var(--app-bg)] px-5 py-6 text-[var(--app-text)]">
+    <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>公开资料 - TokenBoard</title>
       <AppNav active="profile" email={props.email} />
 
@@ -53,12 +53,12 @@ function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean }
   return (
     <Card class="min-w-0 self-start">
       <CardHeader>
-        <CardTitle class="text-3xl">公开资料设置</CardTitle>
+        <CardTitle class="text-2xl sm:text-3xl">公开资料设置</CardTitle>
         <CardDescription>默认保持私有；只有开启公开后，JSON 和 SVG 才会返回真实统计。</CardDescription>
       </CardHeader>
       <CardContent>
         {props.saved ? (
-          <p class="mb-4 rounded-md border border-lime-300/30 bg-lime-300/10 p-3 text-sm text-lime-100">设置已保存。</p>
+          <p class="app-flash-success mb-4 p-3 text-sm">设置已保存。</p>
         ) : null}
         <ProfileSettingsFields profile={props.profile} />
       </CardContent>
@@ -91,9 +91,9 @@ function ProfileSettingsFields(props: { profile: ProfileSettings }) {
       <ProfileCheckbox name="participatesInLeaderboards" checked={props.profile.participatesInLeaderboards} title="参与排行榜">
         开启后会自动公开资料，排行榜才会统计你的数据。
       </ProfileCheckbox>
-      <div class="flex flex-wrap gap-3 pt-2">
-        <Button type="submit">保存设置</Button>
-        <LinkButton variant="secondary" href="/dashboard">返回控制台</LinkButton>
+      <div class="flex flex-col gap-3 pt-2 sm:flex-row sm:flex-wrap">
+        <Button class="w-full sm:w-auto" type="submit">保存设置</Button>
+        <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard">返回控制台</LinkButton>
       </div>
     </div>
   )
@@ -144,10 +144,13 @@ function PublicLinksCard(props: { profile: ProfileSettings }) {
             displayName: props.profile.displayName,
             publicUrl: props.profile.isPublic ? props.profile.publicSvgUrl : 'Private preview',
             totalTokens: 1234567,
+            totalTokensWithoutCacheRead: 345678,
             totalCostUsd: 42.5,
             monthTokens: 89012,
+            monthTokensWithoutCacheRead: 45678,
             monthCostUsd: 6.78,
             todayTokens: 1200,
+            todayTokensWithoutCacheRead: 860,
             todayCostUsd: 0.2
           }}
         />
