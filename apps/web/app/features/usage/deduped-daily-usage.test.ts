@@ -1,27 +1,42 @@
 import { describe, expect, test } from 'vitest'
-import { effectiveDailyUsageSummaryWith, usageSummaryStrictMode } from './deduped-daily-usage'
+import {
+  effectiveDailyUsageSummaryWith,
+  usageSummaryScopeSql,
+  usageSummaryStrictMode,
+  usageSummaryValue
+} from './deduped-daily-usage'
 
 describe('effectiveDailyUsageSummaryWith', () => {
-  test('pushes fallback raw usage filters into the deduped CTE', () => {
+  test('pushes structured fallback filters into both usage sources', () => {
     const sql = effectiveDailyUsageSummaryWith({
-      dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ?',
-      summaryFilter: 'daily_usage_summary.user_id = ?'
+      filter: usageSummaryScopeSql({
+        userId: usageSummaryValue.bind(),
+        usageDateGte: usageSummaryValue.bind()
+      })
     })
 
     expect(sql).toContain('deduped_daily_usage AS')
     expect(sql).toContain('AND (daily_usage.user_id = ? AND daily_usage.usage_date >= ?)')
-    expect(sql).toContain('WHERE daily_usage_summary.user_id = ?')
+    expect(sql).toContain('WHERE daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ?')
   })
 
   test('strict mode reads only the summary cache', () => {
     const sql = effectiveDailyUsageSummaryWith({
-      summaryFilter: 'daily_usage_summary.user_id = ?',
+      filter: usageSummaryScopeSql({
+        userId: usageSummaryValue.bind()
+      }),
       summaryStrict: true
     })
 
     expect(sql).toContain('FROM daily_usage_summary')
     expect(sql).not.toContain('deduped_daily_usage')
     expect(sql).not.toContain('fallback_daily_usage_summary')
+  })
+
+  test('rejects legacy raw SQL filter input', () => {
+    expect(() => effectiveDailyUsageSummaryWith({
+      dailyUsageFilter: 'daily_usage.user_id = ?'
+    } as never)).toThrow('Usage summary filters must be built with usageSummaryScopeSql')
   })
 })
 

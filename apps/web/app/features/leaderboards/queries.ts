@@ -1,5 +1,9 @@
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
-import { effectiveDailyUsageSummaryWith } from '../usage/deduped-daily-usage'
+import {
+  effectiveDailyUsageSummaryWith,
+  usageSummaryScopeSql,
+  usageSummaryValue
+} from '../usage/deduped-daily-usage'
 
 export type LeaderboardEntry = {
   rank: number
@@ -44,8 +48,10 @@ export async function listLeaderboard(
     .prepare(
       `
         WITH ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: 'daily_usage.usage_date >= ? AND daily_usage.usage_date < ?',
-          summaryFilter: 'daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date < ?',
+          filter: usageSummaryScopeSql({
+            usageDateGte: usageSummaryValue.bind(),
+            usageDateLt: usageSummaryValue.bind()
+          }),
           summaryStrict: input.summaryStrict
         })}
         SELECT

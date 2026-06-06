@@ -97,8 +97,22 @@ export function incrementCounts(
 }
 
 export function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message.slice(0, 500)
-  return String(error).slice(0, 500)
+  return rawErrorMessage(error).slice(0, 500)
+}
+
+export function safeWebhookErrorMessage(error: unknown) {
+  return redactWebhookSecrets(rawErrorMessage(error)).slice(0, 500)
+}
+
+function rawErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+function redactWebhookSecrets(value: string) {
+  return value
+    .replace(/([?&](?:key|access_token|sign)=)[^&#\s"'<>]+/gi, '$1[redacted]')
+    .replace(/(\/open-apis\/bot\/v2\/hook\/)[^/?#\s"'<>]+/gi, '$1[redacted]')
 }
 
 function addMinutes(date: Date, minutes: number) {

@@ -199,6 +199,67 @@ describe('notification service', () => {
     expect(bindings.flat()).toContain('Webhook returned 500: provider failed')
   })
 
+  test('redacts webhook secrets before persisting delivery failures', async () => {
+    const secret = testEncryptionKey
+    const encryptedUrl = await encryptSecret('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcdef', secret)
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async first() {
+                if (sql.includes('FROM webhook_subscriptions')) return dueSubscriptionRow(encryptedUrl)
+                if (sql.includes('sessionCount')) return reportTotalsRow()
+                return null
+              },
+              async all() {
+                return { results: [] }
+              },
+              async run() {
+                return { meta: { changes: 1 } }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const result = await sendWebhookTest({
+      env: {
+        DB: db,
+        WEBHOOK_ENCRYPTION_KEY: secret,
+        BETTER_AUTH_URL: 'https://tokenboard.example.com',
+        TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '7'
+      },
+      userId: 'user_1',
+      subscriptionId: 'sub_1',
+      now: new Date('2026-04-29T01:31:00.000Z'),
+      fetcher: async () => new Response(
+        [
+          'provider failed',
+          'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcdef',
+          'https://oapi.dingtalk.com/robot/send?access_token=dingtalk-secret&sign=dingtalk-signature',
+          'https://open.feishu.cn/open-apis/bot/v2/hook/feishu-secret'
+        ].join(' '),
+        { status: 500 }
+      )
+    })
+    const persisted = bindings.flat().map(String).join('\n')
+
+    expect(result).toEqual({ status: 'failure' })
+    expect(persisted).toContain('Webhook returned 500: provider failed')
+    expect(persisted).toContain('key=[redacted]')
+    expect(persisted).toContain('access_token=[redacted]')
+    expect(persisted).toContain('sign=[redacted]')
+    expect(persisted).toContain('/open-apis/bot/v2/hook/[redacted]')
+    expect(persisted).not.toContain('abcdef')
+    expect(persisted).not.toContain('dingtalk-secret')
+    expect(persisted).not.toContain('dingtalk-signature')
+    expect(persisted).not.toContain('feishu-secret')
+  })
+
   test('sends due daily report once and schedules the next local run', async () => {
     const secret = testEncryptionKey
     const encryptedUrl = await encryptSecret('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcdef', secret)

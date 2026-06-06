@@ -33,6 +33,7 @@ import {
   LocalDeliveryStateError,
   markSkippedOrThrow,
   reportDateForDelivery,
+  safeWebhookErrorMessage,
   scheduleSlotForDelivery,
   shouldSkipAlreadyDelivered,
   type DeliveryKind,
@@ -172,7 +173,7 @@ async function deliverSubscription(input: DeliverSubscriptionInput) {
       reportDate,
       scheduleSlot,
       attempt,
-      error: errorMessage(error),
+      error: safeWebhookErrorMessage(error),
       httpStatus: deliveryHttpStatus(error),
       durationMs: Date.now() - startedAt,
       now: input.now

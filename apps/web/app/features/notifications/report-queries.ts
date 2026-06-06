@@ -1,5 +1,9 @@
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
-import { effectiveDailyUsageSummaryWith } from '../usage/deduped-daily-usage'
+import {
+  effectiveDailyUsageSummaryWith,
+  usageSummaryScopeSql,
+  usageSummaryValue
+} from '../usage/deduped-daily-usage'
 import type { DailyTokenReport } from './adapters'
 
 type ReportTotalsRow = {
@@ -77,8 +81,10 @@ function readReportTotals(input: {
     .prepare(
       `
         WITH ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date = ?',
-          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date = ?',
+          filter: usageSummaryScopeSql({
+            userId: usageSummaryValue.bind(),
+            usageDate: usageSummaryValue.bind()
+          }),
           summaryStrict: input.summaryStrict
         })},
         aggregate_usage AS (

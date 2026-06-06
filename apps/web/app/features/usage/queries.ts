@@ -1,9 +1,13 @@
 import type { UsageSource } from '@tokenboard/usage-core'
 import {
+  dailyUsageScopeSql,
   effectiveDailyUsageSummaryWith,
   normalizeDeviceFilter,
   optionalDedupedDailyUsageWith,
   tokensWithoutCacheReadSql,
+  usageSummaryScopeSql,
+  usageSummaryParam,
+  usageSummaryValue,
   usageTableForDeviceFilter
 } from './deduped-daily-usage'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
@@ -123,14 +127,10 @@ export async function getUsageSummary(
       `
         WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
         ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: `
-            daily_usage.user_id = (SELECT user_id FROM params)
-            AND daily_usage.usage_date >= (SELECT month_start FROM params)
-          `,
-          summaryFilter: `
-            daily_usage_summary.user_id = (SELECT user_id FROM params)
-            AND daily_usage_summary.usage_date >= (SELECT month_start FROM params)
-          `,
+          filter: usageSummaryScopeSql({
+            userId: usageSummaryParam('userId'),
+            usageDateGte: usageSummaryParam('monthStart')
+          }),
           summaryStrict: input.summaryStrict
         })},
         month_usage AS (
@@ -245,8 +245,11 @@ export async function getDailyUsageTrend(
     .prepare(
       `
         WITH ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: 'daily_usage.user_id = ? AND daily_usage.usage_date >= ? AND daily_usage.usage_date <= ?',
-          summaryFilter: 'daily_usage_summary.user_id = ? AND daily_usage_summary.usage_date >= ? AND daily_usage_summary.usage_date <= ?',
+          filter: usageSummaryScopeSql({
+            userId: usageSummaryValue.bind(),
+            usageDateGte: usageSummaryValue.bind(),
+            usageDateLte: usageSummaryValue.bind()
+          }),
           summaryStrict: input.summaryStrict
         })}
         SELECT
@@ -414,13 +417,19 @@ export async function getUsageDetails(
 
 function usageDetailsDedupedFilter(deviceId: string) {
   if (deviceId !== 'all') return undefined
-  return `
-    daily_usage.user_id = ?
-    AND daily_usage.usage_date >= ?
-    AND daily_usage.usage_date <= ?
-    AND (? = 'all' OR daily_usage.source = ?)
-    AND (? = '' OR lower(daily_usage.model) LIKE '%' || lower(?) || '%')
-  `
+  return dailyUsageScopeSql({
+    userId: usageSummaryValue.bind(),
+    usageDateGte: usageSummaryValue.bind(),
+    usageDateLte: usageSummaryValue.bind(),
+    optionalSource: {
+      selector: usageSummaryValue.bind(),
+      value: usageSummaryValue.bind()
+    },
+    modelQuery: {
+      selector: usageSummaryValue.bind(),
+      value: usageSummaryValue.bind()
+    }
+  })
 }
 
 function usageDetailsBindings(input: UsageDetailsInput, deviceId: string) {

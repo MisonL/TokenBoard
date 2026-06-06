@@ -3,7 +3,11 @@ import { ApiError } from '../../lib/errors'
 import { canShowPublicProfile } from '../settings/service'
 import { cacheReadRateFromTotals } from '../../lib/usage-metrics'
 import { localDateInTimezone } from '../notifications/time'
-import { effectiveDailyUsageSummaryWith } from '../usage/deduped-daily-usage'
+import {
+  effectiveDailyUsageSummaryWith,
+  usageSummaryScopeSql,
+  usageSummaryValue
+} from '../usage/deduped-daily-usage'
 import { parsePublicCardConfig, type PublicCardConfig } from './config'
 import { renderUsageCardSvg } from './svg'
 
@@ -289,8 +293,9 @@ async function getPublicTotals(input: {
       `
         WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
         ${effectiveDailyUsageSummaryWith({
-          dailyUsageFilter: 'daily_usage.user_id = ?',
-          summaryFilter: 'daily_usage_summary.user_id = ?',
+          filter: usageSummaryScopeSql({
+            userId: usageSummaryValue.bind()
+          }),
           summaryStrict: input.summaryStrict
         })},
         month_usage AS (
