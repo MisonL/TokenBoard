@@ -93,6 +93,26 @@ describe('NotificationsPage', () => {
     expect(html).not.toContain('测试预览通知已发送')
   })
 
+  test('shows form validation feedback inside the notifications page', async () => {
+    const html = await renderToString(
+      <NotificationsPage
+        email="user@example.com"
+        timezone="UTC"
+        reportHistory={[]}
+        dailyReportShareEnabled={true}
+        reportHistoryRetentionDays={30}
+        saved={false}
+        tested={false}
+        testFailed={false}
+        formErrorMessage="Webhook URL host or path is not supported for this provider"
+        encryptionConfigured={true}
+        subscriptions={[]}
+      />
+    )
+
+    expect(html).toContain('Webhook URL host or path is not supported for this provider')
+  })
+
   test('renders daily report history snapshots', async () => {
     const html = await renderToString(
       <NotificationsPage

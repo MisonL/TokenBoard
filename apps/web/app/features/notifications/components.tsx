@@ -23,6 +23,7 @@ export function NotificationsPage(props: {
   saved: boolean
   tested: boolean
   testFailed: boolean
+  formErrorMessage?: string
   encryptionConfigured: boolean
 }) {
   return (
@@ -36,6 +37,7 @@ export function NotificationsPage(props: {
           saved={props.saved}
           tested={props.tested}
           testFailed={props.testFailed}
+          formErrorMessage={props.formErrorMessage}
           encryptionConfigured={props.encryptionConfigured}
         />
         <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.75fr)]">
@@ -68,6 +70,7 @@ function NotificationFlash(props: {
   saved: boolean
   tested: boolean
   testFailed: boolean
+  formErrorMessage?: string
   encryptionConfigured: boolean
 }) {
   return (
@@ -80,6 +83,7 @@ function NotificationFlash(props: {
       {props.saved ? <p class="app-flash-success p-3 text-sm">通知设置已保存。</p> : null}
       {props.tested ? <p class="app-flash-success p-3 text-sm">测试预览通知已发送，内容使用当前配置和今日统计。</p> : null}
       {props.testFailed ? <p class="app-flash-error p-3 text-sm">测试预览通知发送失败，请检查 webhook 配置和最近错误。</p> : null}
+      {props.formErrorMessage ? <p class="app-flash-error p-3 text-sm">{props.formErrorMessage}</p> : null}
     </>
   )
 }

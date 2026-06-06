@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { requireUser } from '../../features/auth/middleware'
 import {
+  createWebhookSubscription,
   revokeDailyReportShare,
   sendWebhookTest,
+  parseWebhookCreateForm,
   updateDailyReportShareSettings
 } from '../../features/notifications/service'
-import { POST } from './notifications'
+import { ApiError } from '../../lib/errors'
+import { POST, notificationFormErrorMessage } from './notifications'
 
 vi.mock('../../features/auth/middleware', () => ({
   requireUser: vi.fn()
@@ -37,6 +40,8 @@ vi.mock('../../features/notifications/service', async (importOriginal) => {
 })
 
 const mockedRequireUser = vi.mocked(requireUser)
+const mockedCreateWebhookSubscription = vi.mocked(createWebhookSubscription)
+const mockedParseWebhookCreateForm = vi.mocked(parseWebhookCreateForm)
 const mockedRevokeDailyReportShare = vi.mocked(revokeDailyReportShare)
 const mockedSendWebhookTest = vi.mocked(sendWebhookTest)
 const mockedUpdateDailyReportShareSettings = vi.mocked(updateDailyReportShareSettings)
@@ -44,6 +49,8 @@ const mockedUpdateDailyReportShareSettings = vi.mocked(updateDailyReportShareSet
 describe('notifications POST route', () => {
   beforeEach(() => {
     mockedRequireUser.mockReset()
+    mockedCreateWebhookSubscription.mockReset()
+    mockedParseWebhookCreateForm.mockReset()
     mockedRevokeDailyReportShare.mockReset()
     mockedSendWebhookTest.mockReset()
     mockedUpdateDailyReportShareSettings.mockReset()
@@ -112,14 +119,36 @@ describe('notifications POST route', () => {
 
     const response = await POST[0](context as never, async () => undefined) as Response
 
-    expect(response.status).toBe(400)
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: 'BAD_REQUEST',
-        message: 'Invalid daily report id'
-      }
-    })
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/settings/notifications?error=invalid-daily-report-id')
     expect(mockedRevokeDailyReportShare).not.toHaveBeenCalled()
+  })
+
+  test('redirects unsupported webhook URL form errors back to the notifications page', async () => {
+    const context = postContext({ action: 'create' })
+    mockedRequireUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedParseWebhookCreateForm.mockReturnValue({ provider: 'wecom' } as never)
+    mockedCreateWebhookSubscription.mockRejectedValue(
+      new ApiError('BAD_REQUEST', 'Webhook URL host or path is not supported for this provider', 400) as never
+    )
+
+    const response = await POST[0](context as never, async () => undefined) as Response
+
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/settings/notifications?error=webhook-url-not-supported')
+    expect(mockedCreateWebhookSubscription).toHaveBeenCalledWith({
+      env: context.env,
+      userId: 'user_1',
+      form: { provider: 'wecom' }
+    })
+  })
+
+  test('maps notification form error codes to page feedback copy', () => {
+    expect(notificationFormErrorMessage('webhook-url-not-supported')).toBe(
+      'Webhook URL host or path is not supported for this provider'
+    )
+    expect(notificationFormErrorMessage('invalid-daily-report-id')).toBe('Invalid daily report id')
+    expect(notificationFormErrorMessage('unknown')).toBeUndefined()
   })
 })
 

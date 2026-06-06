@@ -1,4 +1,5 @@
 import { createRoute } from 'honox/factory'
+import { ZodError } from 'zod'
 import { requireUser } from '../../features/auth/middleware'
 import { NotificationsPage } from '../../features/notifications/components'
 import {
@@ -24,6 +25,7 @@ import {
   updateWebhookSubscription
 } from '../../features/notifications/service'
 import { getCanonicalPublicOrigin, getProfileSettings } from '../../features/settings/service'
+import { ApiError } from '../../lib/errors'
 import { jsonError } from '../../lib/http'
 
 export { NotificationsPage }
@@ -60,6 +62,7 @@ export const GET = createRoute(async (c) => {
       saved={c.req.query('saved') === '1'}
       tested={c.req.query('tested') === '1'}
       testFailed={c.req.query('testFailed') === '1'}
+      formErrorMessage={notificationFormErrorMessage(c.req.query('error'))}
       encryptionConfigured={hasValidEncryptionKey(c.env)}
     />
   )
@@ -143,6 +146,47 @@ export const POST = createRoute(async (c) => {
 
     return c.redirect('/settings/notifications', 303)
   } catch (error) {
+    const formErrorCode = notificationFormErrorCode(error)
+    if (formErrorCode) {
+      return c.redirect(`/settings/notifications?error=${formErrorCode}`, 303)
+    }
     return jsonError(c, error)
   }
 })
+
+const notificationFormErrorMessages = {
+  'invalid-daily-report-id': 'Invalid daily report id',
+  'invalid-request': 'Invalid request',
+  'invalid-schedule-time': 'Invalid schedule time',
+  'invalid-schedule-weekday': 'Invalid schedule weekday',
+  'invalid-timezone': 'Invalid timezone',
+  'invalid-webhook-name': 'Invalid webhook name',
+  'webhook-url-must-use-https': 'Webhook URL must use HTTPS',
+  'webhook-url-not-supported': 'Webhook URL host or path is not supported for this provider'
+} as const
+
+const notificationBadRequestErrorCodes = {
+  'Invalid daily report id': 'invalid-daily-report-id',
+  'Invalid request': 'invalid-request',
+  'Invalid schedule time': 'invalid-schedule-time',
+  'Invalid schedule weekday': 'invalid-schedule-weekday',
+  'Invalid timezone': 'invalid-timezone',
+  'Invalid webhook name': 'invalid-webhook-name',
+  'Webhook URL must use HTTPS': 'webhook-url-must-use-https',
+  'Webhook URL host or path is not supported for this provider': 'webhook-url-not-supported'
+} as const
+
+export function notificationFormErrorMessage(code: string | undefined) {
+  if (!code) return undefined
+  return notificationFormErrorMessages[code as keyof typeof notificationFormErrorMessages]
+}
+
+function notificationFormErrorCode(error: unknown) {
+  if (error instanceof ZodError) return 'invalid-request'
+  if (!(error instanceof ApiError) || error.code !== 'BAD_REQUEST' || error.status !== 400) {
+    return null
+  }
+  return notificationBadRequestErrorCodes[
+    error.message as keyof typeof notificationBadRequestErrorCodes
+  ] ?? 'invalid-request'
+}
