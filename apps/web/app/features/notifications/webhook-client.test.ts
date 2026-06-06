@@ -83,6 +83,29 @@ describe('webhook client', () => {
     })).rejects.toThrow('Webhook returned application code 310000: sign not match')
   })
 
+  test('bounds failed provider response text in webhook errors', async () => {
+    const encryptedUrl = await encryptSecret('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test', testEncryptionKey)
+    const tailMarker = 'tail-marker'
+    const response = new Response(`${'x'.repeat(10_000)}${tailMarker}`, { status: 500 })
+
+    let error: Error | null = null
+    try {
+      await sendWebhookRequest({
+        env: { DB: {} as D1Database, WEBHOOK_ENCRYPTION_KEY: testEncryptionKey },
+        subscription: subscriptionRow(encryptedUrl, 'wecom'),
+        report: dailyReport(),
+        now: new Date('2026-04-29T01:30:00.000Z'),
+        fetcher: async () => response
+      })
+    } catch (caught) {
+      if (caught instanceof Error) error = caught
+    }
+
+    if (!error) throw new Error('Expected webhook request to fail')
+    expect(error.message).toMatch(/^Webhook returned 500: x+\.\.\.\[truncated\]$/)
+    expect(error.message).not.toContain(tailMarker)
+  })
+
   test('rejects decrypted webhook URLs outside the selected provider allowlist before fetch', async () => {
     const encryptedUrl = await encryptSecret('https://example.com/webhook', testEncryptionKey)
     let called = false

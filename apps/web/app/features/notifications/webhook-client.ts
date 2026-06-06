@@ -7,6 +7,8 @@ import type { DueWebhookSubscription } from './queries'
 
 type Fetcher = typeof fetch
 const webhookRequestTimeoutMs = 10_000
+const webhookResponseTextMaxBytes = 4096
+const webhookResponseTextTruncatedSuffix = '...[truncated]'
 
 export async function sendWebhookRequest(input: {
   env: WebhookEnv
@@ -99,10 +101,49 @@ function firstString(...values: Array<unknown>) {
 
 async function safeResponseText(response: Response) {
   try {
-    return await response.text()
+    return await readBoundedResponseText(response)
   } catch (_) {
     return ''
   }
+}
+
+async function readBoundedResponseText(response: Response) {
+  if (!response.body) return ''
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  let bytesRead = 0
+  let truncated = false
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const remaining = webhookResponseTextMaxBytes - bytesRead
+      if (value.byteLength > remaining) {
+        text += decoder.decode(value.slice(0, remaining), { stream: true })
+        bytesRead += remaining
+        truncated = true
+        await reader.cancel()
+        break
+      }
+
+      text += decoder.decode(value, { stream: true })
+      bytesRead += value.byteLength
+      if (bytesRead === webhookResponseTextMaxBytes) {
+        truncated = true
+        await reader.cancel()
+        break
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  text += decoder.decode()
+  return truncated ? `${text}${webhookResponseTextTruncatedSuffix}` : text
 }
 
 class WebhookHttpError extends Error {

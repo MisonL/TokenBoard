@@ -85,9 +85,7 @@ describe('public card service', () => {
     expect(bindings[1]).toEqual([
       'internal-user-id',
       '2026-04-29',
-      '2026-04-01',
-      'internal-user-id',
-      'internal-user-id'
+      '2026-04-01'
     ])
     expect(bindings).toHaveLength(2)
     expect(sqlStatements).toHaveLength(2)
@@ -249,7 +247,7 @@ describe('public card service', () => {
 
     await getPublicUsageJson(db, 'eve', new Date('2026-04-30T16:30:00.000Z'))
 
-    expect(bindings[1]).toEqual(['user_1', '2026-05-01', '2026-05-01', 'user_1', 'user_1'])
+    expect(bindings[1]).toEqual(['user_1', '2026-05-01', '2026-05-01'])
     expect(bindings).toHaveLength(2)
   })
 })

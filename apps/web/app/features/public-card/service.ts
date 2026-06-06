@@ -6,7 +6,7 @@ import { localDateInTimezone } from '../notifications/time'
 import {
   effectiveDailyUsageSummaryWith,
   usageSummaryScopeSql,
-  usageSummaryValue
+  usageSummaryParam
 } from '../usage/deduped-daily-usage'
 import { parsePublicCardConfig, type PublicCardConfig } from './config'
 import { renderUsageCardSvg } from './svg'
@@ -294,7 +294,7 @@ async function getPublicTotals(input: {
         WITH params(user_id, today, month_start) AS (SELECT ?, ?, ?),
         ${effectiveDailyUsageSummaryWith({
           filter: usageSummaryScopeSql({
-            userId: usageSummaryValue.bind()
+            userId: usageSummaryParam('userId')
           }),
           summaryStrict: input.summaryStrict
         })},
@@ -358,7 +358,7 @@ async function getPublicTotals(input: {
         LEFT JOIN month_usage ON month_usage.user_id = params.user_id
       `
     )
-    .bind(input.userId, input.today, input.monthStart, ...publicUserBindings(input.summaryStrict, input.userId))
+    .bind(input.userId, input.today, input.monthStart)
     .first<TotalsRow>()
 }
 
@@ -493,8 +493,4 @@ function readNumber(row: Record<string, unknown>, column: string) {
     throw new Error(`Invalid public usage ${column}`)
   }
   return value
-}
-
-function publicUserBindings(summaryStrict: boolean, userId: string) {
-  return summaryStrict ? [userId] : [userId, userId]
 }
