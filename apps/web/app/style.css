@@ -15,7 +15,7 @@
 }
 
 .theme-light {
-  color-scheme: light;
+  color-scheme: only light;
   --app-bg: #f4f0e8;
   --app-bg-soft: #ede6d8;
   --app-panel: rgba(255, 255, 255, 0.82);
