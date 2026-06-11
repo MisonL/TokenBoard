@@ -25,7 +25,7 @@ export default createRoute(async (c) => {
             <a class="inline-flex min-h-11 items-center justify-center rounded-xl border border-[var(--app-border)] px-5 py-3 text-sm font-bold text-[var(--app-text)] transition hover:border-lime-300" href="/leaderboards">查看排行榜</a>
           </div>
         </div>
-        <div class="relative z-10 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-5 text-[var(--app-text)] shadow-2xl shadow-black/15">
+        <div class="app-surface-floating relative z-10 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-5 text-[var(--app-text)]">
           <div class="grid gap-3 sm:grid-cols-2">
             <Metric label="今日 tokens" value="128,420" />
             <Metric label="不含缓存读" value="97,850" />

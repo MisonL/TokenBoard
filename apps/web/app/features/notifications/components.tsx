@@ -56,7 +56,7 @@ export function NotificationsPage(props: {
 
 function NotificationsHeader() {
   return (
-    <header class="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5 shadow-xl shadow-black/10">
+    <header class="app-surface-raised rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5">
       <p class="app-accent-text text-sm font-black uppercase tracking-[0.24em]">Notifications</p>
       <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">通知 Webhook</h1>
       <p class="mt-2 text-sm text-[var(--app-muted)]">

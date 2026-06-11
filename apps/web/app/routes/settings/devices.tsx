@@ -79,7 +79,7 @@ export function DevicesPage(props: {
 
 function DevicesHeader() {
   return (
-    <header class="rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5 shadow-xl shadow-black/10">
+    <header class="app-surface-raised rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5">
       <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <p class="app-accent-text text-sm font-black uppercase tracking-[0.24em]">Devices</p>

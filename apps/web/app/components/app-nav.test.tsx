@@ -10,13 +10,17 @@ describe('AppNav', () => {
     expect(html).toContain('alt="TokenBoard"')
   })
 
-  test('keeps authenticated mobile navigation in a horizontal scroll rail', async () => {
+  test('keeps mobile navigation scrollable and lets wider narrow viewports wrap', async () => {
     const html = await renderToString(<AppNav active="dashboard" email="user@example.com" />)
 
     expect(html).toContain('data-app-nav-scroll="true"')
     expect(html).toContain('overflow-x-auto')
-    expect(html).toContain('xl:overflow-visible')
+    expect(html).toContain('sm:overflow-visible')
     expect(html).toContain('min-w-max')
+    expect(html).toContain('sm:min-w-0 sm:flex-wrap')
+    expect(html).toContain('flex min-w-0 items-center justify-between')
+    expect(html).toContain('group flex min-w-0 items-center gap-3')
+    expect(html).toContain('block truncate text-base')
   })
 
   test('supports compact dashboard navigation density', async () => {

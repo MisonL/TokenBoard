@@ -18,14 +18,14 @@ export function AppNav(props: AppNavProps) {
 
   return (
     <nav class={cn(
-      'mx-auto flex max-w-6xl flex-col gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-3 text-[var(--app-text)] shadow-xl shadow-black/10 backdrop-blur sm:px-4 xl:flex-row xl:items-center xl:justify-between',
+      'app-surface-raised mx-auto flex max-w-6xl flex-col gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-3 text-[var(--app-text)] backdrop-blur sm:px-4 xl:flex-row xl:items-center xl:justify-between',
       props.compact ? 'mb-3 xl:py-2' : 'mb-6'
     )}>
-      <div class="flex items-center justify-between gap-3">
-        <a class="group flex items-center gap-3" href={isAuthenticated ? '/dashboard' : '/'}>
+      <div class="flex min-w-0 items-center justify-between gap-3">
+        <a class="group flex min-w-0 items-center gap-3" href={isAuthenticated ? '/dashboard' : '/'}>
           <img
             class={cn(
-              'rounded-xl shadow-lg shadow-lime-950/20 transition group-hover:rotate-3',
+              'app-logo-elevation shrink-0 rounded-xl transition group-hover:rotate-3',
               props.compact ? 'h-9 w-9' : 'h-10 w-10'
             )}
             src="/logo.svg"
@@ -33,19 +33,19 @@ export function AppNav(props: AppNavProps) {
             width="40"
             height="40"
           />
-          <span>
-            <span class="block text-base font-black tracking-tight text-[var(--app-text)]">TokenBoard</span>
-            <span class="block text-xs text-[var(--app-muted)]">AI token 使用统计</span>
+          <span class="min-w-0">
+            <span class="block truncate text-base font-black tracking-tight text-[var(--app-text)]">TokenBoard</span>
+            <span class="block truncate text-xs text-[var(--app-muted)]">AI token 使用统计</span>
           </span>
         </a>
-        <div class="flex items-center gap-2 xl:hidden">
+        <div class="flex shrink-0 items-center gap-2 xl:hidden">
           <ThemeToggle />
           <RepositoryLink />
         </div>
       </div>
 
-      <div class="app-scrollbar-none -mx-3 overflow-x-auto px-3 xl:mx-0 xl:overflow-visible xl:px-0" data-app-nav-scroll="true">
-        <div class="flex min-w-max items-center gap-2 text-sm xl:min-w-0">
+      <div class="app-scrollbar-none -mx-3 overflow-x-auto px-3 sm:mx-0 sm:overflow-visible sm:px-0" data-app-nav-scroll="true">
+        <div class="flex min-w-max items-center gap-2 text-sm sm:min-w-0 sm:flex-wrap">
           {isAuthenticated ? <NavLink compact={props.compact} href="/dashboard" active={props.active === 'dashboard'}>控制台</NavLink> : null}
           {isAuthenticated ? <NavLink compact={props.compact} href="/dashboard/details" active={props.active === 'details'}>详情</NavLink> : null}
           <NavLink compact={props.compact} href="/leaderboards" active={props.active === 'leaderboards'}>排行榜</NavLink>
