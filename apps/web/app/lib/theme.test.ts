@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 import {
   getThemeToggleTargetLabel,
+  initialColorScheme,
   isTheme,
+  mobileNightModeOptOutMeta,
   themeChromeColors,
   themeColorSchemes,
   themeKey
@@ -19,6 +22,18 @@ describe('theme helpers', () => {
   test('marks the light theme as only light to avoid mobile auto-darkening', () => {
     expect(themeColorSchemes.dark).toBe('dark')
     expect(themeColorSchemes.light).toBe('only light')
+    expect(initialColorScheme).toBe('dark')
+    expect(mobileNightModeOptOutMeta).toEqual({
+      name: 'nightmode',
+      content: 'disable'
+    })
+  })
+
+  test('opts light theme out of WebKit forced dark color rewriting', () => {
+    const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8')
+
+    expect(css).toContain('-webkit-force-dark: none;')
+    expect(css).toContain('.theme-light *,')
   })
 
   test('validates theme names and toggle labels', () => {

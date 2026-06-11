@@ -21,6 +21,7 @@
 
 .theme-light {
   color-scheme: only light;
+  -webkit-force-dark: none;
   --app-bg: #f4f0e8;
   --app-bg-soft: #ede6d8;
   --app-panel: rgba(255, 255, 255, 0.82);
@@ -36,6 +37,12 @@
   --app-shadow-subtle: 0 16px 36px rgba(68, 64, 60, 0.11), 0 1px 8px rgba(68, 64, 60, 0.06);
   --app-shadow-floating: 0 28px 64px rgba(68, 64, 60, 0.18), 0 8px 18px rgba(68, 64, 60, 0.1);
   --app-shadow-logo: 0 16px 30px rgba(68, 64, 60, 0.18), 0 4px 10px rgba(54, 83, 20, 0.16);
+}
+
+.theme-light *,
+.theme-light::before,
+.theme-light::after {
+  -webkit-force-dark: none;
 }
 
 html,
