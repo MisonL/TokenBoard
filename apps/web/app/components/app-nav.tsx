@@ -44,15 +44,15 @@ export function AppNav(props: AppNavProps) {
         </div>
       </div>
 
-      <div class="app-scrollbar-none -mx-3 overflow-x-auto px-3 sm:mx-0 sm:overflow-visible sm:px-0" data-app-nav-scroll="true">
-        <div class="flex min-w-max items-center gap-2 text-sm sm:min-w-0 sm:flex-wrap">
+      <div class="-mx-1 px-1" data-app-nav-scroll="true">
+        <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm">
           {isAuthenticated ? <NavLink compact={props.compact} href="/dashboard" active={props.active === 'dashboard'}>控制台</NavLink> : null}
           {isAuthenticated ? <NavLink compact={props.compact} href="/dashboard/details" active={props.active === 'details'}>详情</NavLink> : null}
           <NavLink compact={props.compact} href="/leaderboards" active={props.active === 'leaderboards'}>排行榜</NavLink>
-          {isAuthenticated ? <NavLink compact={props.compact} href="/settings/install" active={props.active === 'install'}>安装采集器</NavLink> : null}
+          {isAuthenticated ? <NavLink compact={props.compact} href="/settings/install" active={props.active === 'install'} shortLabel="安装">安装采集器</NavLink> : null}
           {isAuthenticated ? <NavLink compact={props.compact} href="/settings/devices" active={props.active === 'devices'}>设备</NavLink> : null}
           {isAuthenticated ? <NavLink compact={props.compact} href="/settings/notifications" active={props.active === 'notifications'}>通知</NavLink> : null}
-          {isAuthenticated ? <NavLink compact={props.compact} href="/settings/profile" active={props.active === 'profile'}>公开资料</NavLink> : null}
+          {isAuthenticated ? <NavLink compact={props.compact} href="/settings/profile" active={props.active === 'profile'} shortLabel="资料">公开资料</NavLink> : null}
           {isAuthenticated ? null : <NavLink compact={props.compact} href="/auth/sign-in">登录</NavLink>}
           {isAuthenticated ? (
             <form class="xl:hidden" method="post" action="/auth/sign-out">
@@ -76,17 +76,22 @@ export function AppNav(props: AppNavProps) {
   )
 }
 
-function NavLink(props: { href: string; active?: boolean; compact?: boolean; children: string }) {
+function NavLink(props: { href: string; active?: boolean; compact?: boolean; shortLabel?: string; children: string }) {
   return (
     <a
       class={cn(
-        'rounded-xl font-bold text-[var(--app-muted)] transition hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]',
-        props.compact ? 'px-3 py-2' : 'px-4 py-3',
+        'shrink-0 rounded-xl font-bold text-[var(--app-muted)] transition hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]',
+        props.compact ? 'px-3 py-2' : 'px-3 py-2 sm:px-4 sm:py-3',
         props.active && 'bg-lime-300 text-stone-950 shadow-sm shadow-lime-950/10 hover:bg-lime-300 hover:text-stone-950'
       )}
       href={props.href}
     >
-      {props.children}
+      {props.shortLabel ? (
+        <>
+          <span class="sm:hidden">{props.shortLabel}</span>
+          <span class="hidden sm:inline">{props.children}</span>
+        </>
+      ) : props.children}
     </a>
   )
 }
