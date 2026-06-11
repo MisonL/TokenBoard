@@ -18,7 +18,7 @@ export function UsageDetailsPanel(props: { details: UsageDetails; filters: Usage
   const selectedDevice = props.devices.find((device) => device.id === props.filters.deviceId)
 
   return (
-    <section class="mx-auto flex max-w-6xl flex-col gap-5">
+    <section class="mx-auto flex max-w-7xl flex-col gap-5">
       <UsageDetailsHeader filters={props.filters} devices={props.devices} selectedDevice={selectedDevice} />
 
       <UsageMetricGrid columns={3}>
@@ -41,7 +41,7 @@ function UsageDetailsHeader(props: { filters: UsageDetailsFilters; devices: User
       <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <Badge>详情</Badge>
-          <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">每日用量详情</h1>
+          <h1 class="mt-3 whitespace-nowrap text-3xl font-black tracking-tight sm:text-4xl">每日用量详情</h1>
           <p class="mt-2 text-sm text-[var(--app-muted)]">
             {usageDetailsSubtitle(props.filters, props.selectedDevice)}
           </p>

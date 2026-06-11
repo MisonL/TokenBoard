@@ -49,6 +49,8 @@ describe('UsageDetailsPanel', () => {
       />
     )
 
+    expect(html).toContain('max-w-7xl')
+    expect(html).toContain('whitespace-nowrap text-3xl')
     expect(html).toContain('xl:flex-row')
     expect(html).toContain('xl:min-w-[900px]')
     expect(html).not.toContain('lg:min-w-[900px]')
