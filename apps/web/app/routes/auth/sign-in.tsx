@@ -68,7 +68,7 @@ function AuthScreen(props: { hasError: boolean }) {
 
 function Panel(props: { icon: typeof ShieldCheck; label: string; value: string }) {
   return (
-    <div class="rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
+    <div class="app-surface-subtle rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
       <LucideIcon icon={props.icon} class="app-accent-text" />
       <p class="mt-3 text-xs uppercase tracking-wide text-[var(--app-muted)]">{props.label}</p>
       <p class="mt-2 text-lg font-bold text-[var(--app-text)]">{props.value}</p>

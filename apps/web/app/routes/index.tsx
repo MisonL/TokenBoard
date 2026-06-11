@@ -32,7 +32,7 @@ export default createRoute(async (c) => {
             <Metric label="本月费用" value="$42.31" />
             <Metric label="主要模型" value="gpt-5.4" />
           </div>
-          <div class="mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
+          <div class="app-surface-subtle mt-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
             <div class="mb-4 flex items-center justify-between text-sm">
               <span class="app-accent-text font-bold">来源占比</span>
               <span class="text-[var(--app-muted)]">最近 30 天</span>
@@ -53,7 +53,7 @@ export default createRoute(async (c) => {
 
 function Metric(props: { label: string; value: string }) {
   return (
-    <div class="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
+    <div class="app-surface-subtle rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
       <p class="text-xs uppercase tracking-wide text-[var(--app-muted)]">{props.label}</p>
       <p class="mt-3 text-2xl font-black text-[var(--app-text)]">{props.value}</p>
     </div>

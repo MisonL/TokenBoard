@@ -65,6 +65,8 @@ describe('UsageDetailsPanel', () => {
     expect(html).toContain('text-xs font-bold uppercase tracking-wide text-[var(--app-muted)] md:hidden')
     expect(html).toContain('缓存率 3%')
     expect(html).toContain('data-usage-metric-grid="true"')
+    expect(html).toContain('data-usage-metric-card="true"')
+    expect(html).toContain('app-surface-subtle group rounded-xl')
     expect(html).toContain('xl:grid-cols-3')
     expect(html).not.toContain('xl:grid-cols-6')
     expect(html).toContain('[overflow-wrap:anywhere]')

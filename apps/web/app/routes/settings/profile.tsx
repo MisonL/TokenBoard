@@ -120,7 +120,7 @@ function ProfileCheckbox(props: {
   children: string
 }) {
   return (
-    <label class="flex items-start gap-3 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-3 text-sm text-[var(--app-muted)]">
+    <label class="app-surface-subtle flex items-start gap-3 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-3 text-sm text-[var(--app-muted)]">
       <input class="mt-1" type="checkbox" name={props.name} checked={props.checked} />
       <span>
         <strong class="block text-[var(--app-text)]">{props.title}</strong>
@@ -167,7 +167,7 @@ function CopyBlock(props: { label: string; value: string; targetId: string }) {
   return (
     <div>
       <p class="mb-2 text-sm font-bold text-[var(--app-muted)]">{props.label}</p>
-      <div class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)]">
+      <div class="app-surface-subtle grid min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)]">
         <pre id={props.targetId} class="min-h-12 overflow-x-auto whitespace-pre-wrap break-all p-3 text-sm leading-6 text-[var(--app-text)]">{props.value}</pre>
         <button
           type="button"

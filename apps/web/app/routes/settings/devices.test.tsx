@@ -24,6 +24,7 @@ describe('DevicesPage layout', () => {
 
     expect(html).toContain('data-devices-mobile-list="true"')
     expect(html).toContain('data-devices-desktop-table="true"')
+    expect(html).toContain('app-surface-raised rounded-xl')
     expect(html).toContain('md:hidden')
     expect(html).toContain('hidden overflow-x-auto md:block')
     expect(html).toContain('MacBook Pro With A Long Local Collector Name')

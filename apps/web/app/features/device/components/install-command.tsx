@@ -95,7 +95,7 @@ function InstallPromptSection(props: { prompt: string; expiresAt?: string; visib
         <h2 class="text-base font-black">粘贴到 Codex 或 Claude Code</h2>
         <p class="text-sm text-[var(--app-muted)]">过期时间：{props.expiresAt}</p>
       </div>
-      <div class="mt-4 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] text-sm leading-6 text-[var(--app-text)]">
+      <div class="app-surface-subtle mt-4 overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] text-sm leading-6 text-[var(--app-text)]">
         <CopyBlockHeader title="安装提示词" targetId="install-prompt-text" label="复制安装提示词" />
         <pre id="install-prompt-text" class="overflow-x-auto p-4">
           {props.prompt}
@@ -167,7 +167,7 @@ function CopyableCommandBlock(props: {
 }) {
   return (
     <div class="min-w-0">
-      <div class="overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] text-sm leading-6 text-[var(--app-text)]">
+      <div class="app-surface-subtle overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] text-sm leading-6 text-[var(--app-text)]">
         <CopyBlockHeader title={props.title} targetId={props.targetId} label={props.copyLabel} />
         <pre id={props.targetId} class="overflow-x-auto p-4">{props.command}</pre>
       </div>

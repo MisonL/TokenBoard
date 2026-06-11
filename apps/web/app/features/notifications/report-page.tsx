@@ -89,7 +89,7 @@ function ReportList(props: {
         {props.items.length > 0 ? (
           <ul class="space-y-3">
             {props.items.map((item) => (
-              <li class="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
+              <li class="app-surface-subtle rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
                 <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <span class="break-words text-lg font-black">{item.name}</span>
                   <span class="font-black tabular-nums">{item.value}</span>
@@ -99,7 +99,7 @@ function ReportList(props: {
             ))}
           </ul>
         ) : (
-          <p class="rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-muted)]">
+          <p class="app-surface-subtle rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-muted)]">
             暂无数据
           </p>
         )}

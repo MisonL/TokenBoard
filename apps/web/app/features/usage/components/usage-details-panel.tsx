@@ -94,7 +94,7 @@ function DailySummaryHeader() {
 
 function DailySummaryRow(props: { row: UsageDetails['dailyRows'][number] }) {
   return (
-    <details class="group rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)]">
+    <details class="app-surface-subtle group rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)]">
       <DailySummaryRowHeader row={props.row} />
       <DailyModelRows rows={props.row.modelRows} />
     </details>
@@ -169,7 +169,7 @@ function DailyModelRows(props: { rows: UsageDetails['dailyRows'][number]['modelR
           </Table>
         </div>
       ) : (
-        <p class="rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-muted)]">
+        <p class="app-surface-subtle rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-muted)]">
           当前日期没有匹配的模型明细。
         </p>
       )}

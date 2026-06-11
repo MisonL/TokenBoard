@@ -34,6 +34,8 @@ describe('InstallCommand', () => {
     expect(html).toContain('aria-label="复制 macOS / Linux / Git Bash 卸载命令"')
     expect(html).toContain('aria-label="复制 Windows PowerShell 卸载命令"')
     expect(html).toContain('flex min-h-12 items-center justify-between')
+    expect(html).toContain('app-surface-subtle mt-4 overflow-hidden')
+    expect(html).toContain('app-surface-subtle overflow-hidden rounded-xl')
     expect(html).toContain('border-b border-[var(--app-border)]')
     expect(html).not.toContain('absolute right-3 top-3')
     expect(html).not.toContain('pr-16 pt-14')

@@ -145,7 +145,7 @@ function DevicesTable(props: { devices: UserDevice[] }) {
 
 function DeviceCard(props: { device: UserDevice }) {
   return (
-    <article class="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
+    <article class="app-surface-raised rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <p class="text-xs font-bold uppercase tracking-wide text-[var(--app-muted)]">设备</p>
@@ -248,7 +248,7 @@ function DeviceRevokeForm(props: { device: UserDevice }) {
 
 function DevicesEmptyState() {
   return (
-    <div class="rounded-xl border border-dashed border-[var(--app-border)] p-6 text-sm text-[var(--app-muted)]">
+    <div class="app-surface-subtle rounded-xl border border-dashed border-[var(--app-border)] p-6 text-sm text-[var(--app-muted)]">
       还没有连接设备。
     </div>
   )

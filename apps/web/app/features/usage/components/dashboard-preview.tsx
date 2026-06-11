@@ -27,7 +27,7 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
 
   return (
     <section class="mx-auto flex max-w-6xl flex-col gap-3">
-      <header class="relative overflow-hidden rounded-2xl border border-lime-200/20 bg-[radial-gradient(circle_at_85%_10%,rgba(190,242,100,.24),transparent_28%),linear-gradient(135deg,var(--app-panel-strong),var(--app-bg-soft))] p-4 sm:p-5">
+      <header class="app-surface-raised relative overflow-hidden rounded-2xl border border-lime-200/20 bg-[radial-gradient(circle_at_85%_10%,rgba(190,242,100,.24),transparent_28%),linear-gradient(135deg,var(--app-panel-strong),var(--app-bg-soft))] p-4 sm:p-5">
         <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
             <Badge class="min-h-8 px-3 py-1">控制台</Badge>
@@ -72,7 +72,7 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
           </CardHeader>
           <CardContent class="p-4 pt-0 lg:p-3 lg:pt-0 xl:p-4 xl:pt-0">
             <div
-              class="flex h-36 items-end gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-3 sm:h-40 lg:h-32 2xl:h-36"
+              class="app-surface-subtle flex h-36 items-end gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-3 sm:h-40 lg:h-32 2xl:h-36"
               data-dashboard-trend-chart="true"
             >
               {props.summary.dailyTrend.map((item) => (
@@ -133,7 +133,7 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
                 </div>
               ))
             ) : (
-              <p class="rounded-md border border-dashed border-[var(--app-border)] p-4">还没有上传使用数据。</p>
+              <p class="app-surface-subtle rounded-md border border-dashed border-[var(--app-border)] p-4">还没有上传使用数据。</p>
             )}
           </CardContent>
         </Card>
