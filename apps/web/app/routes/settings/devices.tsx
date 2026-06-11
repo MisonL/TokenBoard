@@ -214,7 +214,14 @@ function DeviceRenameForm(props: { device: UserDevice }) {
     <form method="post" class="flex flex-col gap-2 sm:flex-row sm:items-center">
       <input type="hidden" name="action" value="rename" />
       <input type="hidden" name="deviceId" value={props.device.id} />
-      <Input class="mt-0 h-10 py-2" name="name" value={props.device.name} required minLength={1} />
+      <Input
+        class="mt-0 h-10 py-2"
+        name="name"
+        value={props.device.name}
+        autocomplete="off"
+        required
+        minLength={1}
+      />
       <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm">保存</Button>
     </form>
   )

@@ -27,6 +27,7 @@ describe('InstallCommand', () => {
     expect(html).toContain('data-timezone-input="true"')
     expect(html).toContain('data-timezone-default="Asia/Shanghai"')
     expect(html).toContain('data-timezone-autofill="always"')
+    expect(html).toContain('autocomplete="off"')
     expect(html).toContain('aria-label="复制安装提示词"')
     expect(html).toContain('aria-label="复制 macOS / Linux / Git Bash hook 安装命令"')
     expect(html).toContain('aria-label="复制 Windows PowerShell hook 安装命令"')

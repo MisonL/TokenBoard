@@ -46,7 +46,7 @@ function DateFilter(props: { label: string; name: string; value: string }) {
   return (
     <label class="text-sm font-bold text-[var(--app-muted)]">
       {props.label}
-      <input class={filterControlClass()} name={props.name} type="date" value={props.value} />
+      <input class={filterControlClass()} name={props.name} type="date" value={props.value} autocomplete="off" />
     </label>
   )
 }
@@ -55,7 +55,13 @@ function ModelFilter(props: { value: string }) {
   return (
     <label class="text-sm font-bold text-[var(--app-muted)]">
       模型
-      <input class={filterControlClass('placeholder:text-[var(--app-subtle)]')} name="model" placeholder="sonnet" value={props.value} />
+      <input
+        class={filterControlClass('placeholder:text-[var(--app-subtle)]')}
+        name="model"
+        placeholder="sonnet"
+        value={props.value}
+        autocomplete="off"
+      />
     </label>
   )
 }

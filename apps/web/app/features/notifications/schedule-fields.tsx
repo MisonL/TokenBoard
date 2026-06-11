@@ -27,6 +27,7 @@ export function ScheduleTimeFields(props: {
             name="scheduleTimesLocal[]"
             type="time"
             value={time}
+            autocomplete="off"
             required={index === 0}
             disabled={props.disabled}
           />

@@ -74,7 +74,7 @@ function ProfileSettingsFields(props: { profile: ProfileSettings }) {
     <div class="space-y-4">
       <Label>
         显示名称
-        <Input name="displayName" value={props.profile.displayName} required />
+        <Input name="displayName" value={props.profile.displayName} autocomplete="name" required />
       </Label>
       <ProfileSlugInput profile={props.profile} />
       <Label>
@@ -82,6 +82,7 @@ function ProfileSettingsFields(props: { profile: ProfileSettings }) {
         <Input
           name="timezone"
           value={props.profile.timezone}
+          autocomplete="off"
           required
           data-timezone-input="true"
           data-timezone-default={props.profile.timezone}
@@ -106,7 +107,7 @@ function ProfileSlugInput(props: { profile: ProfileSettings }) {
   return (
     <Label>
       公开 slug
-      <Input name="slug" value={props.profile.slug} required />
+      <Input name="slug" value={props.profile.slug} autocomplete="off" required />
       <span class="mt-1 block text-xs text-[var(--app-muted)]">只能使用小写字母、数字和连字符，长度 3-32。</span>
     </Label>
   )

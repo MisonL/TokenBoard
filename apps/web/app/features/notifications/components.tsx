@@ -137,11 +137,11 @@ function SubscriptionForm(props: { subscription: WebhookSubscriptionSummary }) {
       <input type="hidden" name="subscriptionId" value={props.subscription.id} />
       <Label>
         名称
-        <Input name="name" value={props.subscription.name} required />
+        <Input name="name" value={props.subscription.name} autocomplete="off" required />
       </Label>
       <Label>
         时区
-        <Input name="timezone" value={props.subscription.timezone} required />
+        <Input name="timezone" value={props.subscription.timezone} autocomplete="off" required />
       </Label>
       <ScheduleTimeFields scheduleTimesLocal={props.subscription.scheduleTimesLocal} />
       <ScheduleWeekdayFields scheduleWeekdays={props.subscription.scheduleWeekdays} />
@@ -237,12 +237,12 @@ function CreateSubscriptionForm(props: { timezone: string; disabled: boolean }) 
       <input type="hidden" name="action" value="create" />
       <Label>
         名称
-        <Input name="name" placeholder="每日日报" required disabled={props.disabled} />
+        <Input name="name" placeholder="每日日报" autocomplete="off" required disabled={props.disabled} />
       </Label>
       <ProviderSelect />
       <Label>
         Webhook URL
-        <Input name="webhookUrl" type="url" placeholder="https://..." required disabled={props.disabled} />
+        <Input name="webhookUrl" type="url" placeholder="https://..." autocomplete="off" required disabled={props.disabled} />
       </Label>
       <Label>
         加签 secret (钉钉、飞书 / Lark 启用加签时填写)
@@ -250,7 +250,7 @@ function CreateSubscriptionForm(props: { timezone: string; disabled: boolean }) 
       </Label>
       <Label>
         时区
-        <Input name="timezone" value={props.timezone} required disabled={props.disabled} />
+        <Input name="timezone" value={props.timezone} autocomplete="off" required disabled={props.disabled} />
       </Label>
       <ScheduleTimeFields scheduleTimesLocal={['18:00']} disabled={props.disabled} />
       <ScheduleWeekdayFields scheduleWeekdays={defaultScheduleWeekdayValues()} disabled={props.disabled} />

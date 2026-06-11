@@ -28,5 +28,7 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('hidden overflow-x-auto md:block')
     expect(html).toContain('MacBook Pro With A Long Local Collector Name')
     expect(html).toContain('w-full sm:w-auto')
+    expect(html).toContain('name="name"')
+    expect(html).toContain('autocomplete="off"')
   })
 })

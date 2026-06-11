@@ -70,6 +70,7 @@ function InstallTimezoneForm(props: { timezone: string }) {
           class="min-h-11 rounded-xl border border-[var(--app-border)] bg-[var(--app-input)] px-4 py-3 text-[var(--app-text)] outline-none transition focus:border-lime-300 focus:ring-2 focus:ring-lime-300/20"
           name="timezone"
           value={props.timezone}
+          autocomplete="off"
           data-timezone-input="true"
           data-timezone-default={props.timezone}
           data-timezone-autofill="always"

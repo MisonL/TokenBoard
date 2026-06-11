@@ -51,6 +51,9 @@ describe('NotificationsPage', () => {
     expect(html).toContain('周一、周三、周五')
     expect(html).toContain('name="scheduleTimesLocal[]"')
     expect(html).toContain('name="scheduleWeekdays[]"')
+    expect(html).toContain('name="name"')
+    expect(html).toContain('name="timezone"')
+    expect(html).toContain('autocomplete="off"')
   })
 
   test('shows encryption configuration warning', async () => {
