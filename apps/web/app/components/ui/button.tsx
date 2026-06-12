@@ -33,6 +33,7 @@ type ButtonProps = VariantProps<typeof buttonVariants> & {
   value?: string
   disabled?: boolean
   'data-confirm'?: string
+  'data-submitting-label'?: string
   children?: Child
 }
 

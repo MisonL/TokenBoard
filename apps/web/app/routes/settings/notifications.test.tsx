@@ -56,6 +56,11 @@ describe('NotificationsPage', () => {
     expect(html).toContain('name="name"')
     expect(html).toContain('name="timezone"')
     expect(html).toContain('autocomplete="off"')
+    expect(html).toContain('data-submit-feedback="true"')
+    expect(html).toContain('data-submitting-label="正在保存..."')
+    expect(html).toContain('data-submitting-label="正在发送..."')
+    expect(html).toContain('data-submitting-label="正在停用..."')
+    expect(html).toContain('data-submitting-label="正在删除..."')
   })
 
   test('shows encryption configuration warning', async () => {
@@ -76,6 +81,7 @@ describe('NotificationsPage', () => {
 
     expect(html).toContain('WEBHOOK_ENCRYPTION_KEY')
     expect(html).toContain('disabled')
+    expect(html).toContain('data-submitting-label="正在保存 Webhook..."')
   })
 
   test('shows failed test send feedback separately from success feedback', async () => {
