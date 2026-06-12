@@ -122,6 +122,7 @@ function initSubmitFeedback() {
     form.querySelectorAll<HTMLButtonElement>('button[type="submit"], button:not([type])').forEach((button) => {
       button.disabled = true
       if (button === submitter) {
+        button.dataset.submitting = 'true'
         button.dataset.originalLabel = button.textContent?.trim() || ''
         button.textContent = button.dataset.submittingLabel || '处理中...'
       }

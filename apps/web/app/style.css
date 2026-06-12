@@ -138,10 +138,70 @@ input[type='file'] {
 
 button {
   transform-origin: center;
+  transition:
+    transform 120ms ease,
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease,
+    filter 160ms ease;
+}
+
+button:hover:not(:disabled):not([aria-disabled='true']) {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
 }
 
 button:active {
-  transform: scale(0.96);
+  transform: translateY(1px) scale(0.96);
+  filter: brightness(0.98);
+}
+
+button[data-submitting='true'] {
+  position: relative;
+  cursor: progress;
+  transform: translateY(1px) scale(0.98);
+  box-shadow: 0 0 0 4px rgba(190, 242, 100, 0.16), 0 12px 24px rgba(0, 0, 0, 0.22);
+  filter: saturate(1.08);
+}
+
+button[data-submitting='true']:disabled {
+  cursor: progress;
+  opacity: 0.86;
+}
+
+button[data-submitting='true']::before {
+  width: 0.95em;
+  height: 0.95em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  content: '';
+  display: inline-block;
+  flex: 0 0 auto;
+  animation: app-button-spin 700ms linear infinite;
+}
+
+.theme-light button[data-submitting='true'] {
+  box-shadow: 0 0 0 4px rgba(132, 204, 22, 0.22), 0 12px 24px rgba(68, 64, 60, 0.14);
+}
+
+@keyframes app-button-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  button[data-copy-target],
+  button[data-submitting='true'] {
+    transition: none;
+  }
+
+  button[data-submitting='true']::before {
+    animation: none;
+  }
 }
 
 button[data-copy-target] {
