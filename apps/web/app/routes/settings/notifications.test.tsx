@@ -186,6 +186,7 @@ describe('NotificationsPage', () => {
     expect(html).toContain('$1.23')
     expect(html).toContain('gpt-5')
     expect(html).toContain('href="/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"')
+    expect(html).toContain('inline-flex min-h-11 items-center rounded-lg')
     expect(html).toContain('name="reportId" value="drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"')
     expect(html).toContain('value="revoke-report-share"')
     expect(html).toContain('data-submitting-label="正在撤销..."')

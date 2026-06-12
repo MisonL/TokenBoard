@@ -86,7 +86,7 @@ function DailyReportHistoryRow(props: { item: DailyReportHistoryItem }) {
       <TableCell class="rounded-r-xl text-xs text-[var(--app-muted)]">
         <div>{props.item.generatedAt}</div>
         <a
-          class="mt-2 inline-flex min-h-8 items-center rounded-lg border border-[var(--app-border)] px-3 py-1 font-bold text-[var(--app-text)] transition hover:border-lime-300"
+          class="mt-2 inline-flex min-h-11 items-center rounded-lg border border-[var(--app-border)] px-3 py-2 font-bold text-[var(--app-text)] transition hover:border-lime-300"
           href={props.item.reportUrl}
         >
           查看
@@ -108,7 +108,7 @@ function ReportShareAction(props: { item: DailyReportHistoryItem }) {
       <input type="hidden" name="action" value="revoke-report-share" />
       <input type="hidden" name="reportId" value={props.item.id} />
       <button
-        class="app-danger-action inline-flex min-h-8 items-center rounded-lg border px-3 py-1 font-bold transition"
+        class="app-danger-action inline-flex min-h-11 items-center rounded-lg border px-3 py-2 font-bold transition"
         type="submit"
         data-confirm="确认撤销这条日报的未登录访问？"
         data-submitting-label="正在撤销..."
