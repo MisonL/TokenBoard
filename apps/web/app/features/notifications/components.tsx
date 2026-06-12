@@ -215,6 +215,7 @@ function SubscriptionAction(props: { action: string; children: string; confirm?:
       value={props.action}
       data-confirm={props.confirm}
       data-submitting-label={props.submittingLabel || '处理中...'}
+      data-submitting-tone={props.variant}
     >
       {props.children}
     </button>

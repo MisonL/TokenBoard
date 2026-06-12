@@ -61,6 +61,7 @@ describe('NotificationsPage', () => {
     expect(html).toContain('data-submitting-label="正在发送..."')
     expect(html).toContain('data-submitting-label="正在停用..."')
     expect(html).toContain('data-submitting-label="正在删除..."')
+    expect(html).toContain('data-submitting-tone="danger"')
   })
 
   test('shows encryption configuration warning', async () => {
