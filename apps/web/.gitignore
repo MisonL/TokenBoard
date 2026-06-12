@@ -21,6 +21,9 @@ node_modules/
 .env.production
 .dev.vars
 
+# local wrangler config
+wrangler.local.jsonc
+
 # logs
 logs/
 *.log
