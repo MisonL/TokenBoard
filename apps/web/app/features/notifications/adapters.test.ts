@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { buildWebhookPayload, formatDailyReport, type DailyTokenReport } from './adapters'
+import { buildWebhookPayload, formatDailyReport, formatWeComDailyReport, type DailyTokenReport } from './adapters'
 
 const report: DailyTokenReport = {
   displayName: 'Example',
@@ -48,9 +48,34 @@ describe('notification adapters', () => {
     expect(payload.body).toMatchObject({
       msgtype: 'markdown',
       markdown: {
-        content: expect.stringContaining('Example token 日报 2026-04-29')
+        content: expect.stringContaining('## Example token 日报')
       }
     })
+    const content = (payload.body as { markdown: { content: string } }).markdown.content
+    expect(content).toContain('<font color="info">1,200 token</font>')
+    expect(content).toContain('<font color="warning">$1.23</font>')
+    expect(content).toContain('**主要来源**')
+    expect(content).toContain('**Codex**：620 token')
+    expect(content).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(4096)
+    expect(content).not.toContain('Example 在 2026-04-29 共消耗')
+  })
+
+  test('limits WeCom markdown payloads to the official byte budget', () => {
+    const text = formatWeComDailyReport({
+      ...report,
+      displayName: '<Example>'.repeat(200),
+      topModels: [{
+        model: 'gpt-5'.repeat(1000),
+        totalTokens: 1000,
+        totalTokensWithoutCacheRead: 900,
+        costUsd: 1
+      }]
+    })
+
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(4096)
+    expect(text).toContain('内容已截断')
+    expect(text).not.toContain('<Example>')
   })
 
   test('builds DingTalk signed markdown payload', async () => {

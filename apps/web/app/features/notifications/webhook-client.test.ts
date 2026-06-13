@@ -33,7 +33,8 @@ describe('webhook client', () => {
     expect(response.status).toBe(200)
     expect(fetchCalls).toHaveLength(1)
     expect(fetchCalls[0].url).toBe('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test')
-    expect(fetchCalls[0].body).toContain('Example token 日报 2026-04-29')
+    expect(fetchCalls[0].body).toContain('## Example token 日报')
+    expect(fetchCalls[0].body).toContain('2026-04-29 / Asia/Shanghai')
   })
 
   test('rejects Feishu business failures returned with HTTP 200', async () => {
