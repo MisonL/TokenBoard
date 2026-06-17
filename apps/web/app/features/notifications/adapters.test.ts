@@ -180,7 +180,7 @@ describe('notification adapters', () => {
         header: {
           title: {
             tag: 'plain_text',
-            content: 'Example token 日报 2026-04-29'
+            content: 'TokenBoard：Example token 日报 2026-04-29'
           }
         },
         body: {
@@ -194,5 +194,34 @@ describe('notification adapters', () => {
       }
     })
     expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
+  })
+
+  test('limits Feishu interactive card markdown payloads under the webhook body budget', async () => {
+    const payload = await buildWebhookPayload({
+      provider: 'feishu',
+      webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/test',
+      report: {
+        ...report,
+        displayName: 'Example'.repeat(1000),
+        topModels: [{
+          model: 'gpt-5'.repeat(5000),
+          totalTokens: 1000,
+          totalTokensWithoutCacheRead: 900,
+          costUsd: 1
+        }]
+      },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+    const content = (payload.body as {
+      card: { body: { elements: Array<{ content: string }> } }
+    }).card.body.elements[0].content
+    const title = (payload.body as {
+      card: { header: { title: { content: string } } }
+    }).card.header.title.content
+
+    expect(content).toContain('内容已截断')
+    expect(title).toContain('...')
+    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(14 * 1024)
+    expect(new TextEncoder().encode(JSON.stringify(payload.body)).byteLength).toBeLessThanOrEqual(20 * 1024)
   })
 })

@@ -8,6 +8,9 @@ const wecomTruncatedSuffix = '\n\n<font color="comment">内容已截断，请打
 const dingtalkActionCardMaxBytes = 20_000
 const dingtalkListLimit = 5
 const dingtalkTruncatedSuffix = '\n\n内容已截断，请打开 TokenBoard 查看更多统计。'
+const feishuTitleMaxBytes = 512
+const feishuMarkdownMaxBytes = 14 * 1024
+const feishuTruncatedSuffix = '\n\n内容已截断，请打开 TokenBoard 查看更多统计。'
 
 export type DailyTokenReport = {
   displayName: string
@@ -73,6 +76,8 @@ export async function buildWebhookPayload(input: {
 
   if (input.provider === 'feishu') {
     const signature = await feishuSignature(input.signingSecret, input.now)
+    const feishuTitle = truncateUtf8(`TokenBoard：${title}`, feishuTitleMaxBytes, '...')
+    const feishuText = truncateUtf8(text, feishuMarkdownMaxBytes, feishuTruncatedSuffix)
     return {
       url: input.webhookUrl,
       body: {
@@ -83,14 +88,14 @@ export async function buildWebhookPayload(input: {
           header: {
             title: {
               tag: 'plain_text',
-              content: title
+              content: feishuTitle
             }
           },
           body: {
             elements: [
               {
                 tag: 'markdown',
-                content: text
+                content: feishuText
               }
             ]
           }
