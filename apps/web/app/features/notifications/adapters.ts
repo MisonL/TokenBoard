@@ -6,8 +6,9 @@ const wecomMarkdownMaxBytes = 4096
 const wecomListLimit = 3
 const wecomTruncatedSuffix = '\n\n<font color="comment">内容已截断，请打开 TokenBoard 查看更多统计。</font>'
 const dingtalkActionCardMaxBytes = 20_000
-const dingtalkListLimit = 5
+const dingtalkListLimit = 3
 const dingtalkTruncatedSuffix = '\n\n内容已截断，请打开 TokenBoard 查看更多统计。'
+const dingtalkLinkSeparator = '\n\n'
 const feishuTitleMaxBytes = 512
 const feishuMarkdownMaxBytes = 14 * 1024
 const feishuTruncatedSuffix = '\n\n内容已截断，请打开 TokenBoard 查看更多统计。'
@@ -51,16 +52,13 @@ export async function buildWebhookPayload(input: {
   report: DailyTokenReport
   now: Date
 }) {
-  const title = reportTitle(input.report)
-
   if (input.provider === 'dingtalk') {
-    const dingtalkTitle = dingtalkReportTitle(input.report)
     return {
       url: await signedDingTalkUrl(input.webhookUrl, input.signingSecret, input.now),
       body: {
         msgtype: 'actionCard',
         actionCard: {
-          title: dingtalkTitle,
+          title: dingtalkReportTitle(input.report),
           text: formatDingTalkDailyReport(input.report),
           btnOrientation: '0',
           singleTitle: input.report.reportUrl ? '打开日报详情' : '查看排行榜',
@@ -70,14 +68,10 @@ export async function buildWebhookPayload(input: {
     } satisfies WebhookPayload
   }
 
-  const text = input.provider === 'wecom'
-    ? formatWeComDailyReport(input.report)
-    : formatDailyReport(input.report)
-
   if (input.provider === 'feishu') {
     const signature = await feishuSignature(input.signingSecret, input.now)
-    const feishuTitle = truncateUtf8(`TokenBoard：${title}`, feishuTitleMaxBytes, '...')
-    const feishuText = truncateUtf8(text, feishuMarkdownMaxBytes, feishuTruncatedSuffix)
+    const feishuTitle = truncateUtf8(`TokenBoard：${reportTitleWithoutDate(input.report)}`, feishuTitleMaxBytes, '...')
+    const feishuText = truncateUtf8(formatFeishuDailyReport(input.report), feishuMarkdownMaxBytes, feishuTruncatedSuffix)
     return {
       url: input.webhookUrl,
       body: {
@@ -96,6 +90,20 @@ export async function buildWebhookPayload(input: {
               {
                 tag: 'markdown',
                 content: feishuText
+              },
+              {
+                tag: 'button',
+                text: {
+                  tag: 'plain_text',
+                  content: input.report.reportUrl ? '打开日报详情' : '查看排行榜'
+                },
+                type: 'primary',
+                behaviors: [
+                  {
+                    type: 'open_url',
+                    default_url: input.report.reportUrl ?? input.report.dashboardUrl
+                  }
+                ]
               }
             ]
           }
@@ -104,6 +112,7 @@ export async function buildWebhookPayload(input: {
     } satisfies WebhookPayload
   }
 
+  const text = formatWeComDailyReport(input.report)
   return {
     url: input.webhookUrl,
     body: {
@@ -140,29 +149,45 @@ export function formatWeComDailyReport(report: DailyTokenReport) {
 }
 
 export function formatDingTalkDailyReport(report: DailyTokenReport) {
-  const lines = [
-    `# ${escapeDingTalkMarkdownText(dingtalkReportTitle(report))}`,
+  const link = dingtalkReportLink(report)
+  const bodyLines = [
+    `## ${escapeDingTalkMarkdownText(dingtalkReportTitle(report))}`,
+    `日期：${escapeDingTalkMarkdownText(report.reportDate)} / ${escapeDingTalkMarkdownText(report.timezone)}`,
     '',
-    `> ${escapeDingTalkMarkdownText(report.reportDate)} / ${escapeDingTalkMarkdownText(report.timezone)}`,
+    `**总消耗**：${formatInteger(report.totalTokens)} token  `,
+    `**去缓存读**：${formatInteger(report.totalTokensWithoutCacheRead)} token  `,
+    `**缓存率**：${formatReportCacheRate(report)}  `,
+    `**费用**：${formatUsd(report.costUsd)} / 会话：${formatInteger(report.sessionCount)}`,
     '',
-    `**总消耗**：${formatInteger(report.totalTokens)} token`,
-    '',
-    `**不含缓存读**：${formatInteger(report.totalTokensWithoutCacheRead)} token`,
-    '',
-    `**缓存率**：${formatReportCacheRate(report)}`,
-    '',
-    `**预估费用**：${formatUsd(report.costUsd)}`,
-    '',
-    `**会话数**：${formatInteger(report.sessionCount)}`,
-    '',
-    '## 主要来源',
+    '**主要来源**',
     ...formatDingTalkSourceSplit(report),
     '',
-    '## 主要模型',
+    '**主要模型**',
     ...formatDingTalkTopModels(report)
   ]
+  const linkBudget = new TextEncoder().encode(`${dingtalkLinkSeparator}${link}`).byteLength
+  const bodyMaxBytes = Math.max(0, dingtalkActionCardMaxBytes - linkBudget)
+  const body = truncateUtf8(bodyLines.join('\n'), bodyMaxBytes, dingtalkTruncatedSuffix)
 
-  return truncateUtf8(lines.join('\n'), dingtalkActionCardMaxBytes, dingtalkTruncatedSuffix)
+  return `${body}${dingtalkLinkSeparator}${link}`
+}
+
+function formatFeishuDailyReport(report: DailyTokenReport) {
+  const lines = [
+    `> ${report.reportDate} / ${report.timezone}`,
+    `> **总消耗**：${formatInteger(report.totalTokens)} token`,
+    `> **去缓存读**：${formatInteger(report.totalTokensWithoutCacheRead)} token`,
+    `> **缓存率**：${formatReportCacheRate(report)}`,
+    `> **费用**：${formatUsd(report.costUsd)} / 会话：${formatInteger(report.sessionCount)}`,
+    '',
+    '**主要来源**',
+    ...formatFeishuSourceSplit(report),
+    '',
+    '**主要模型**',
+    ...formatFeishuTopModels(report),
+  ]
+
+  return lines.join('\n')
 }
 
 export function formatDailyReport(report: DailyTokenReport) {
@@ -196,12 +221,19 @@ function reportTitle(report: DailyTokenReport) {
 }
 
 function dingtalkReportTitle(report: DailyTokenReport) {
-  return `TokenBoard：${reportTitle(report)}`
+  return `TokenBoard：${reportTitleWithoutDate(report)}`
 }
 
 function formatWeComTitle(report: DailyTokenReport) {
   const label = report.previewLabel ? `${report.previewLabel}：` : ''
   return `${escapeWeComMarkdownText(label)}${escapeWeComMarkdownText(report.displayName)} token 日报`
+}
+
+function reportTitleWithoutDate(report: DailyTokenReport) {
+  const title = `${report.displayName} token 日报`
+  return report.previewLabel
+    ? `${report.previewLabel}：${title}`
+    : title
 }
 
 function formatWeComSourceSplit(report: DailyTokenReport) {
@@ -236,20 +268,53 @@ function appendDingTalkHiddenCount(items: string[], total: number) {
     : items
 }
 
+function dingtalkReportLink(report: DailyTokenReport) {
+  return report.reportUrl
+    ? `[打开日报详情](${report.reportUrl})`
+    : `[查看排行榜](${report.dashboardUrl})`
+}
+
 function formatDingTalkSourceSplit(report: DailyTokenReport) {
   if (report.sourceSplit.length === 0) return ['暂无数据']
-  const items = report.sourceSplit.slice(0, dingtalkListLimit).map((item) => (
-    `- **${escapeDingTalkMarkdownText(formatSource(item.source))}**：${formatInteger(item.totalTokensWithoutCacheRead)} token；含缓存读 ${formatInteger(item.totalTokens)}；缓存率 ${formatReportCacheRate(item)}`
-  ))
+  const items = report.sourceSplit.slice(0, dingtalkListLimit).flatMap((item) => [
+    `- **${escapeDingTalkMarkdownText(formatSource(item.source))}**：${formatInteger(item.totalTokensWithoutCacheRead)} token`,
+    `  - 含缓存读 ${formatInteger(item.totalTokens)} token / 缓存率 ${formatReportCacheRate(item)}`
+  ])
   return appendDingTalkHiddenCount(items, report.sourceSplit.length)
 }
 
 function formatDingTalkTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
-  const items = report.topModels.slice(0, dingtalkListLimit).map((item) => (
-    `- **${escapeDingTalkMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token；缓存率 ${formatReportCacheRate(item)}；${formatUsd(item.costUsd)}`
-  ))
+  const items = report.topModels.slice(0, dingtalkListLimit).flatMap((item) => [
+    `- **${escapeDingTalkMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatUsd(item.costUsd)}`,
+    `  - 缓存率 ${formatReportCacheRate(item)}`
+  ])
   return appendDingTalkHiddenCount(items, report.topModels.length)
+}
+
+function formatFeishuSourceSplit(report: DailyTokenReport) {
+  if (report.sourceSplit.length === 0) return ['暂无数据']
+  const items = report.sourceSplit.slice(0, wecomListLimit).flatMap((item) => [
+    `- **${formatSource(item.source)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token`,
+    `  - 含缓存读 ${formatInteger(item.totalTokens)} token / 缓存率 ${formatReportCacheRate(item)}`
+  ])
+  return appendFeishuHiddenCount(items, report.sourceSplit.length)
+}
+
+function formatFeishuTopModels(report: DailyTokenReport) {
+  if (report.topModels.length === 0) return ['暂无数据']
+  const items = report.topModels.slice(0, wecomListLimit).flatMap((item) => [
+    `- **${item.model}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatUsd(item.costUsd)}`,
+    `  - 缓存率 ${formatReportCacheRate(item)}`
+  ])
+  return appendFeishuHiddenCount(items, report.topModels.length)
+}
+
+function appendFeishuHiddenCount(items: string[], total: number) {
+  const hidden = total - wecomListLimit
+  return hidden > 0
+    ? [...items, `其余 ${hidden} 项请打开 TokenBoard 查看。`]
+    : items
 }
 
 function formatSourceSplit(report: DailyTokenReport) {

@@ -106,14 +106,17 @@ describe('notification adapters', () => {
       }]
     })
 
-    expect(text).toContain('# TokenBoard：&lt;Example&gt; token 日报 2026\\-04\\-29')
+    expect(text).toContain('## TokenBoard：&lt;Example&gt; token 日报')
+    expect(text).toContain('日期：2026\\-04\\-29 / Asia/Shanghai')
     expect(text).toContain('**总消耗**：1,200 token')
-    expect(text).toContain('**预估费用**：$1.23')
-    expect(text).toContain('## 主要来源')
+    expect(text).toContain('**去缓存读**：900 token')
+    expect(text).toContain('**费用**：$1.23 / 会话：4')
+    expect(text).toContain('**主要来源**')
     expect(text).toContain('**Codex**：620 token')
-    expect(text).toContain('**gpt\\-5\\[preview\\]**：620 token')
+    expect(text).toContain('  - 含缓存读 800 token / 缓存率 23%')
+    expect(text).toContain('**gpt\\-5\\[preview\\]**：620 token / $0.80')
     expect(text).not.toContain('<font')
-    expect(text).not.toContain('[打开日报详情]')
+    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
     expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
   })
 
@@ -132,14 +135,15 @@ describe('notification adapters', () => {
     expect(payload.body).toMatchObject({
       msgtype: 'actionCard',
       actionCard: {
-        title: 'TokenBoard：Example token 日报 2026-04-29',
-        text: expect.stringContaining('**总消耗**：1,200 token'),
+        title: 'TokenBoard：Example token 日报',
+        text: expect.stringContaining('## TokenBoard：Example token 日报'),
         btnOrientation: '0',
         singleTitle: '打开日报详情',
         singleURL: 'https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       }
     })
     const text = (payload.body as { actionCard: { text: string } }).actionCard.text
+    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
     expect(text).not.toContain('<font')
   })
 
@@ -154,11 +158,33 @@ describe('notification adapters', () => {
     expect(payload.body).toMatchObject({
       msgtype: 'actionCard',
       actionCard: {
-        title: 'TokenBoard：Example token 日报 2026-04-29',
+        title: 'TokenBoard：Example token 日报',
+        text: expect.stringContaining('[查看排行榜](https://tokenboard.example.com/leaderboards)'),
         singleTitle: '查看排行榜',
         singleURL: 'https://tokenboard.example.com/leaderboards'
       }
     })
+  })
+
+  test('keeps DingTalk report links outside truncated markdown text', () => {
+    const text = formatDingTalkDailyReport({
+      ...report,
+      displayName: 'Example'.repeat(1000),
+      topModels: [{
+        model: 'gpt-5'.repeat(5000),
+        totalTokens: 1000,
+        totalTokensWithoutCacheRead: 900,
+        costUsd: 1
+      }]
+    })
+
+    expect(text).toContain('TokenBoard')
+    expect(text).toContain('内容已截断')
+    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(text.trimEnd().endsWith(
+      '[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)'
+    )).toBe(true)
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
   })
 
   test('builds Feishu signed card payload', async () => {
@@ -180,19 +206,37 @@ describe('notification adapters', () => {
         header: {
           title: {
             tag: 'plain_text',
-            content: 'TokenBoard：Example token 日报 2026-04-29'
+            content: 'TokenBoard：Example token 日报'
           }
         },
         body: {
           elements: [
             {
               tag: 'markdown',
-              content: expect.stringContaining('Example token 日报 2026-04-29')
+              content: expect.stringContaining('> 2026-04-29 / Asia/Shanghai')
+            },
+            {
+              tag: 'button',
+              text: {
+                tag: 'plain_text',
+                content: '打开日报详情'
+              },
+              type: 'primary',
+              behaviors: [
+                {
+                  type: 'open_url',
+                  default_url: 'https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+                }
+              ]
             }
           ]
         }
       }
     })
+    const content = (payload.body as {
+      card: { body: { elements: Array<{ tag: string, content?: string }> } }
+    }).card.body.elements[0].content
+    expect(content).not.toContain('[打开日报详情]')
     expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
   })
 
