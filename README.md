@@ -74,6 +74,14 @@ Supported webhook hosts:
 | Feishu | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 | Lark | `https://open.larksuite.com/open-apis/bot/v2/hook/...` |
 
+Provider payload behavior:
+
+| Provider | Message shape | CTA behavior |
+| --- | --- | --- |
+| WeCom | Markdown capped to the WeCom webhook byte budget. | Inline report link, or leaderboard link when report sharing is unavailable. |
+| DingTalk | Signed `actionCard` when a signing secret is configured; the message keeps the `TokenBoard` keyword for keyword-protected robots. | `singleTitle` / `singleURL` button plus a preserved inline fallback link outside truncated text. |
+| Feishu / Lark | Interactive Card 2.0 with optional signed webhook body. | Card button uses `open_url` behavior, with report detail as the preferred target and leaderboard fallback. |
+
 Reports include totals, tokens without cache reads, cache rate, cost, sessions, source split, top
 models, and a link to that report's aggregate snapshot page when daily report sharing is enabled.
 Test sends are labeled as previews. Scheduled sends are deduped by subscription, report date, and
@@ -85,6 +93,10 @@ their own unexpired private or revoked snapshots while signed in. Anonymous `/re
 reads require the global sharing switch, an unrevoked report link, and a report date inside the
 configured retention window. Retention defaults to 30 days and can be configured with
 `TOKENBOARD_DAILY_REPORT_HISTORY_DAYS`.
+
+Shared report pages reuse the same usage metric cards as the private dashboard and detail pages. The
+four headline metrics keep the raised card surface, compact number formatting, and responsive
+four-column, two-column, then single-column layout.
 
 ## Collector Behavior
 
