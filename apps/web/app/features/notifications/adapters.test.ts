@@ -120,6 +120,29 @@ describe('notification adapters', () => {
     expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
   })
 
+  test('keeps DingTalk item hiding counts based on visible list rows', () => {
+    const text = formatDingTalkDailyReport({
+      ...report,
+      sourceSplit: [
+        ...report.sourceSplit,
+        { source: 'cursor', totalTokens: 300, totalTokensWithoutCacheRead: 200 },
+        { source: 'aider', totalTokens: 200, totalTokensWithoutCacheRead: 100 },
+        { source: 'custom', totalTokens: 100, totalTokensWithoutCacheRead: 50 }
+      ],
+      topModels: [
+        ...report.topModels,
+        { model: 'deepseek-v4-flash', totalTokens: 700, totalTokensWithoutCacheRead: 500, costUsd: 0.3 },
+        { model: 'claude-sonnet', totalTokens: 600, totalTokensWithoutCacheRead: 400, costUsd: 0.2 },
+        { model: 'qwen', totalTokens: 500, totalTokensWithoutCacheRead: 300, costUsd: 0.1 }
+      ]
+    })
+
+    expect(text).toContain('- 其余 2 项请打开 TokenBoard 查看。')
+    expect(text).toContain('- 其余 1 项请打开 TokenBoard 查看。')
+    expect(text).not.toContain('custom')
+    expect(text).not.toContain('qwen')
+  })
+
   test('builds DingTalk signed action card payload', async () => {
     const payload = await buildWebhookPayload({
       provider: 'dingtalk',
@@ -145,6 +168,27 @@ describe('notification adapters', () => {
     const text = (payload.body as { actionCard: { text: string } }).actionCard.text
     expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
     expect(text).not.toContain('<font')
+  })
+
+  test('keeps the DingTalk TokenBoard keyword and fallback link when report sharing is disabled', async () => {
+    const text = formatDingTalkDailyReport({ ...report, reportUrl: undefined })
+    const payload = await buildWebhookPayload({
+      provider: 'dingtalk',
+      webhookUrl: 'https://oapi.dingtalk.com/robot/send?access_token=test',
+      report: { ...report, reportUrl: undefined },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+
+    expect(text).toContain('TokenBoard')
+    expect(text).toContain('[查看排行榜](https://tokenboard.example.com/leaderboards)')
+    expect(payload.body).toMatchObject({
+      msgtype: 'actionCard',
+      actionCard: {
+        title: 'TokenBoard：Example token 日报',
+        singleTitle: '查看排行榜',
+        singleURL: 'https://tokenboard.example.com/leaderboards'
+      }
+    })
   })
 
   test('uses the public leaderboards button for DingTalk when no shared report URL exists', async () => {
@@ -237,6 +281,55 @@ describe('notification adapters', () => {
       card: { body: { elements: Array<{ tag: string, content?: string }> } }
     }).card.body.elements[0].content
     expect(content).not.toContain('[打开日报详情]')
+    expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
+  })
+
+  test('uses the public leaderboards button for Feishu when no shared report URL exists', async () => {
+    const payload = await buildWebhookPayload({
+      provider: 'feishu',
+      webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/test',
+      report: { ...report, reportUrl: undefined },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+
+    expect(payload.body).toMatchObject({
+      msg_type: 'interactive',
+      card: {
+        schema: '2.0',
+        header: {
+          title: {
+            content: 'TokenBoard：Example token 日报'
+          }
+        },
+        body: {
+          elements: [
+            {
+              tag: 'markdown',
+              content: expect.stringContaining('> 2026-04-29 / Asia/Shanghai')
+            },
+            {
+              tag: 'button',
+              text: {
+                tag: 'plain_text',
+                content: '查看排行榜'
+              },
+              type: 'primary',
+              behaviors: [
+                {
+                  type: 'open_url',
+                  default_url: 'https://tokenboard.example.com/leaderboards'
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+    const content = (payload.body as {
+      card: { body: { elements: Array<{ tag: string, content?: string }> } }
+    }).card.body.elements[0].content
+    expect(content).toContain('**主要来源**')
+    expect(content).not.toContain('[查看排行榜]')
     expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
   })
 
