@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest'
-import { buildWebhookPayload, formatDailyReport, formatWeComDailyReport, type DailyTokenReport } from './adapters'
+import {
+  buildWebhookPayload,
+  formatDailyReport,
+  formatDingTalkDailyReport,
+  formatWeComDailyReport,
+  type DailyTokenReport
+} from './adapters'
 
 const report: DailyTokenReport = {
   displayName: 'Example',
@@ -88,7 +94,30 @@ describe('notification adapters', () => {
     expect(text).not.toContain('<Example>')
   })
 
-  test('builds DingTalk signed markdown payload', async () => {
+  test('formats DingTalk daily report with supported markdown only', () => {
+    const text = formatDingTalkDailyReport({
+      ...report,
+      displayName: '<Example>',
+      topModels: [{
+        model: 'gpt-5[preview]',
+        totalTokens: 800,
+        totalTokensWithoutCacheRead: 620,
+        costUsd: 0.8
+      }]
+    })
+
+    expect(text).toContain('# TokenBoard：&lt;Example&gt; token 日报 2026\\-04\\-29')
+    expect(text).toContain('**总消耗**：1,200 token')
+    expect(text).toContain('**预估费用**：$1.23')
+    expect(text).toContain('## 主要来源')
+    expect(text).toContain('**Codex**：620 token')
+    expect(text).toContain('**gpt\\-5\\[preview\\]**：620 token')
+    expect(text).not.toContain('<font')
+    expect(text).not.toContain('[打开日报详情]')
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
+  })
+
+  test('builds DingTalk signed action card payload', async () => {
     const payload = await buildWebhookPayload({
       provider: 'dingtalk',
       webhookUrl: 'https://oapi.dingtalk.com/robot/send?access_token=test',
@@ -101,9 +130,33 @@ describe('notification adapters', () => {
     expect(url.searchParams.get('timestamp')).toBe('1777424400000')
     expect(url.searchParams.get('sign')).toBe('271FYrVJTyHSiWISNOt9wkeJS60pGSCXu8bJqFB+Gqw=')
     expect(payload.body).toMatchObject({
-      msgtype: 'markdown',
-      markdown: {
-        title: 'Example token 日报 2026-04-29'
+      msgtype: 'actionCard',
+      actionCard: {
+        title: 'TokenBoard：Example token 日报 2026-04-29',
+        text: expect.stringContaining('**总消耗**：1,200 token'),
+        btnOrientation: '0',
+        singleTitle: '打开日报详情',
+        singleURL: 'https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      }
+    })
+    const text = (payload.body as { actionCard: { text: string } }).actionCard.text
+    expect(text).not.toContain('<font')
+  })
+
+  test('uses the public leaderboards button for DingTalk when no shared report URL exists', async () => {
+    const payload = await buildWebhookPayload({
+      provider: 'dingtalk',
+      webhookUrl: 'https://oapi.dingtalk.com/robot/send?access_token=test',
+      report: { ...report, reportUrl: undefined },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+
+    expect(payload.body).toMatchObject({
+      msgtype: 'actionCard',
+      actionCard: {
+        title: 'TokenBoard：Example token 日报 2026-04-29',
+        singleTitle: '查看排行榜',
+        singleURL: 'https://tokenboard.example.com/leaderboards'
       }
     })
   })

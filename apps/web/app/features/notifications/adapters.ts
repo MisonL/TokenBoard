@@ -5,6 +5,9 @@ import type { WebhookProvider } from './schema'
 const wecomMarkdownMaxBytes = 4096
 const wecomListLimit = 3
 const wecomTruncatedSuffix = '\n\n<font color="comment">内容已截断，请打开 TokenBoard 查看更多统计。</font>'
+const dingtalkActionCardMaxBytes = 20_000
+const dingtalkListLimit = 5
+const dingtalkTruncatedSuffix = '\n\n内容已截断，请打开 TokenBoard 查看更多统计。'
 
 export type DailyTokenReport = {
   displayName: string
@@ -45,23 +48,28 @@ export async function buildWebhookPayload(input: {
   report: DailyTokenReport
   now: Date
 }) {
-  const text = input.provider === 'wecom'
-    ? formatWeComDailyReport(input.report)
-    : formatDailyReport(input.report)
   const title = reportTitle(input.report)
 
   if (input.provider === 'dingtalk') {
+    const dingtalkTitle = dingtalkReportTitle(input.report)
     return {
       url: await signedDingTalkUrl(input.webhookUrl, input.signingSecret, input.now),
       body: {
-        msgtype: 'markdown',
-        markdown: {
-          title,
-          text
+        msgtype: 'actionCard',
+        actionCard: {
+          title: dingtalkTitle,
+          text: formatDingTalkDailyReport(input.report),
+          btnOrientation: '0',
+          singleTitle: input.report.reportUrl ? '打开日报详情' : '查看排行榜',
+          singleURL: input.report.reportUrl ?? input.report.dashboardUrl
         }
       }
     } satisfies WebhookPayload
   }
+
+  const text = input.provider === 'wecom'
+    ? formatWeComDailyReport(input.report)
+    : formatDailyReport(input.report)
 
   if (input.provider === 'feishu') {
     const signature = await feishuSignature(input.signingSecret, input.now)
@@ -126,6 +134,32 @@ export function formatWeComDailyReport(report: DailyTokenReport) {
   return truncateUtf8(lines.join('\n'), wecomMarkdownMaxBytes, wecomTruncatedSuffix)
 }
 
+export function formatDingTalkDailyReport(report: DailyTokenReport) {
+  const lines = [
+    `# ${escapeDingTalkMarkdownText(dingtalkReportTitle(report))}`,
+    '',
+    `> ${escapeDingTalkMarkdownText(report.reportDate)} / ${escapeDingTalkMarkdownText(report.timezone)}`,
+    '',
+    `**总消耗**：${formatInteger(report.totalTokens)} token`,
+    '',
+    `**不含缓存读**：${formatInteger(report.totalTokensWithoutCacheRead)} token`,
+    '',
+    `**缓存率**：${formatReportCacheRate(report)}`,
+    '',
+    `**预估费用**：${formatUsd(report.costUsd)}`,
+    '',
+    `**会话数**：${formatInteger(report.sessionCount)}`,
+    '',
+    '## 主要来源',
+    ...formatDingTalkSourceSplit(report),
+    '',
+    '## 主要模型',
+    ...formatDingTalkTopModels(report)
+  ]
+
+  return truncateUtf8(lines.join('\n'), dingtalkActionCardMaxBytes, dingtalkTruncatedSuffix)
+}
+
 export function formatDailyReport(report: DailyTokenReport) {
   const lines = [
     `## ${reportTitle(report)}`,
@@ -156,6 +190,10 @@ function reportTitle(report: DailyTokenReport) {
     : title
 }
 
+function dingtalkReportTitle(report: DailyTokenReport) {
+  return `TokenBoard：${reportTitle(report)}`
+}
+
 function formatWeComTitle(report: DailyTokenReport) {
   const label = report.previewLabel ? `${report.previewLabel}：` : ''
   return `${escapeWeComMarkdownText(label)}${escapeWeComMarkdownText(report.displayName)} token 日报`
@@ -184,6 +222,29 @@ function appendHiddenCount(items: string[], total: number) {
   return hidden > 0
     ? [...items, `<font color="comment">其余 ${hidden} 项请打开 TokenBoard 查看。</font>`]
     : items
+}
+
+function appendDingTalkHiddenCount(items: string[], total: number) {
+  const hidden = total - dingtalkListLimit
+  return hidden > 0
+    ? [...items, `- 其余 ${hidden} 项请打开 TokenBoard 查看。`]
+    : items
+}
+
+function formatDingTalkSourceSplit(report: DailyTokenReport) {
+  if (report.sourceSplit.length === 0) return ['暂无数据']
+  const items = report.sourceSplit.slice(0, dingtalkListLimit).map((item) => (
+    `- **${escapeDingTalkMarkdownText(formatSource(item.source))}**：${formatInteger(item.totalTokensWithoutCacheRead)} token；含缓存读 ${formatInteger(item.totalTokens)}；缓存率 ${formatReportCacheRate(item)}`
+  ))
+  return appendDingTalkHiddenCount(items, report.sourceSplit.length)
+}
+
+function formatDingTalkTopModels(report: DailyTokenReport) {
+  if (report.topModels.length === 0) return ['暂无数据']
+  const items = report.topModels.slice(0, dingtalkListLimit).map((item) => (
+    `- **${escapeDingTalkMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token；缓存率 ${formatReportCacheRate(item)}；${formatUsd(item.costUsd)}`
+  ))
+  return appendDingTalkHiddenCount(items, report.topModels.length)
 }
 
 function formatSourceSplit(report: DailyTokenReport) {
@@ -224,6 +285,15 @@ function escapeWeComMarkdownText(value: string) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\r?\n/g, ' ')
+}
+
+function escapeDingTalkMarkdownText(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r?\n/g, ' ')
+    .replace(/([\\`*_{}\[\]()#+\-.!|])/g, '\\$1')
 }
 
 function truncateUtf8(value: string, maxBytes: number, suffix: string) {
