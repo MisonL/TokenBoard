@@ -7,6 +7,8 @@ export type PackageRunner = {
   runPackageArgs(packageName: string, binaryName: string, packageArgs: string[]): string[]
 }
 
+export const ccusagePackageSpecifier = 'ccusage@20.0.14'
+
 export function resolvePackageRunner(
   packageManager = process.env.TOKENBOARD_PACKAGE_MANAGER,
   platform = process.platform,

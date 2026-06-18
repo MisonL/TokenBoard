@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runJsonCommand, type CommandRunner } from '../command'
 import { normalizeCcusageDailyJson } from '../normalize-ccusage'
-import { resolvePackageRunner, type PackageRunner } from '../package-runner'
+import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
 import {
   assertHookReconciliationSnapshots,
   collectHookIncremental,
@@ -102,7 +102,7 @@ async function collectClaudeCcusageRange(input: {
 }) {
   const json = await input.runner(
     input.packageRunner.command,
-    input.packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['claude', 'daily', '--json', '--breakdown', ...input.rangeArgs]),
+    input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', ['claude', 'daily', '--json', '--breakdown', ...input.rangeArgs]),
     packageCommandOptions({
       env: input.env,
       stderr: input.options.stderr
@@ -110,7 +110,7 @@ async function collectClaudeCcusageRange(input: {
   )
   const sessions = await input.runner(
     input.packageRunner.command,
-    input.packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['claude', 'session', '--json', ...input.rangeArgs]),
+    input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', ['claude', 'session', '--json', ...input.rangeArgs]),
     packageCommandOptions({
       env: input.env,
       stderr: input.options.stderr

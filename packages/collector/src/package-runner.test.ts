@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { resolvePackageRunner } from './package-runner'
+import { ccusagePackageSpecifier, resolvePackageRunner } from './package-runner'
 
 describe('resolvePackageRunner', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
+  })
+
+  test('pins package runner ccusage to the adapted version', () => {
+    expect(ccusagePackageSpecifier).toBe('ccusage@20.0.14')
+    expect(ccusagePackageSpecifier).not.toBe('ccusage@latest')
   })
 
   test('uses npx by default', () => {
@@ -12,8 +17,8 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner()
 
     expect(runner.command).toBe(platformCommand('npx'))
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json'])).toEqual([
-      'ccusage@latest',
+    expect(runner.runPackageArgs('ccusage@20.0.14', 'ccusage', ['daily', '--json'])).toEqual([
+      'ccusage@20.0.14',
       'daily',
       '--json'
     ])
@@ -34,8 +39,8 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('bun')
 
     expect(runner.command).toBe('/opt/bin/bunx')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'session', '--json'])).toEqual([
-      'ccusage@latest',
+    expect(runner.runPackageArgs('ccusage@20.0.14', 'ccusage', ['codex', 'session', '--json'])).toEqual([
+      'ccusage@20.0.14',
       'codex',
       'session',
       '--json'
@@ -48,11 +53,11 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('npm')
 
     expect(runner.command).toBe('/opt/bin/npm')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs('ccusage@20.0.14', 'ccusage', ['daily', '--json'])).toEqual([
       'exec',
       '--yes',
       '--package',
-      'ccusage@latest',
+      'ccusage@20.0.14',
       '--',
       'ccusage',
       'daily',
@@ -66,9 +71,9 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('pnpm')
 
     expect(runner.command).toBe('/opt/bin/pnpm')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs('ccusage@20.0.14', 'ccusage', ['daily', '--json'])).toEqual([
       'dlx',
-      'ccusage@latest',
+      'ccusage@20.0.14',
       'daily',
       '--json'
     ])
@@ -79,7 +84,7 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('pnpm', process.platform, () => true)
 
     expect(runner.command).toBe('/opt/bin/ccusage')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs('ccusage@20.0.14', 'ccusage', ['codex', 'daily', '--json'])).toEqual([
       'codex',
       'daily',
       '--json'
@@ -98,9 +103,9 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('pnpm', process.platform, () => false)
 
     expect(runner.command).toBe(platformCommand('pnpm'))
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs('ccusage@20.0.14', 'ccusage', ['codex', 'daily', '--json'])).toEqual([
       'dlx',
-      'ccusage@latest',
+      'ccusage@20.0.14',
       'codex',
       'daily',
       '--json'

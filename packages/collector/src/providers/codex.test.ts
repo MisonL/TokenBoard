@@ -53,11 +53,11 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@latest', 'codex', 'daily', '--json']
+        args: ['ccusage@20.0.14', 'codex', 'daily', '--json']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@latest', 'codex', 'session', '--json']
+        args: ['ccusage@20.0.14', 'codex', 'session', '--json']
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -96,11 +96,11 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@latest', 'codex', 'daily', '--json', '--since', '20260501']
+        args: ['ccusage@20.0.14', 'codex', 'daily', '--json', '--since', '20260501']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@latest', 'codex', 'session', '--json', '--since', '20260501']
+        args: ['ccusage@20.0.14', 'codex', 'session', '--json', '--since', '20260501']
       }
     ])
   })

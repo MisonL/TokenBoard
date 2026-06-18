@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runJsonCommand, type CommandRunner } from '../command'
 import { normalizeCcusageDailyJson } from '../normalize-ccusage'
-import { resolvePackageRunner, type PackageRunner } from '../package-runner'
+import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
 import { packageCommandOptions, readDailyTimeoutMs, readSessionTimeoutMs } from './codex-command-options'
 import { createCodexSessionScopeBatches, type CodexSessionScope } from './codex-session-scope'
 import { applyCodexSubagentUsageCorrections } from './codex-subagent-usage'
@@ -152,7 +152,7 @@ async function collectCodexCcusageRange(input: {
 }) {
   const json = await input.runner(
     input.packageRunner.command,
-    input.packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'daily', '--json', ...input.rangeArgs]),
+    input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', ['codex', 'daily', '--json', ...input.rangeArgs]),
     packageCommandOptions({
       env: input.env,
       timeoutMs: readDailyTimeoutMs(),
@@ -162,7 +162,7 @@ async function collectCodexCcusageRange(input: {
   const sessions = await collectSessionCounts({
     runner: input.runner,
     command: input.packageRunner.command,
-    args: input.packageRunner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'session', '--json', ...input.rangeArgs]),
+    args: input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', ['codex', 'session', '--json', ...input.rangeArgs]),
     options: packageCommandOptions({
       env: input.env,
       timeoutMs: readSessionTimeoutMs(),
