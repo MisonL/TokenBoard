@@ -84,7 +84,7 @@ importers:
         specifier: workspace:*
         version: link:../usage-core
       ccusage:
-        specifier: ^20.0.14
+        specifier: 20.0.14
         version: 20.0.14
     devDependencies:
       '@types/node':
