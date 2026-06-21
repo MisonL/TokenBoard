@@ -137,8 +137,8 @@ describe('hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@latest', 'codex', 'daily', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@latest', 'codex', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        ['ccusage@20.0.14', 'codex', 'daily', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.14', 'codex', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -241,8 +241,8 @@ describe('hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@latest', 'codex', 'daily', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@latest', 'codex', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        ['ccusage@20.0.14', 'codex', 'daily', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.14', 'codex', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({

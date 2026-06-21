@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@tokenboard/usage-core": "workspace:*",
-    "ccusage": "^20.0.3"
+    "ccusage": "20.0.14"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",

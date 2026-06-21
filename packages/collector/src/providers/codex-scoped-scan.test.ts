@@ -83,11 +83,11 @@ describe('collectCodexUsage scoped since scans', () => {
     expect(calls).toEqual([
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@latest', 'codex', 'daily', '--json', '--since', '20260509']
+        args: ['ccusage@20.0.14', 'codex', 'daily', '--json', '--since', '20260509']
       },
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@latest', 'codex', 'session', '--json', '--since', '20260509']
+        args: ['ccusage@20.0.14', 'codex', 'session', '--json', '--since', '20260509']
       }
     ])
   })
@@ -245,7 +245,7 @@ function twoBatchCodexCalls() {
 function codexCall(report: 'daily' | 'session') {
   return {
     command: platformCommand('npx'),
-    args: ['ccusage@latest', 'codex', report, '--json']
+    args: ['ccusage@20.0.14', 'codex', report, '--json']
   }
 }
 

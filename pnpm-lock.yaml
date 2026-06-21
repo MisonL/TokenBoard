@@ -84,8 +84,8 @@ importers:
         specifier: workspace:*
         version: link:../usage-core
       ccusage:
-        specifier: ^20.0.3
-        version: 20.0.5
+        specifier: 20.0.14
+        version: 20.0.14
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
@@ -236,33 +236,33 @@ packages:
   '@better-fetch/fetch@1.1.21':
     resolution: {integrity: sha512-/ImESw0sskqlVR94jB+5+Pxjf+xBwDZF/N5+y2/q4EqD7IARUTSpPfIo8uf39SYpCxyOCtbyYpUrZ3F/k0zT4A==}
 
-  '@ccusage/ccusage-darwin-arm64@20.0.5':
-    resolution: {integrity: sha512-SQ6Yae2KENixdY9d8RtnsFcETCvHUn2u3+HswK+4WqAE7JLj2hXmngjOWCNeJisLKCHFQSEwg54+B2GePue9FA==}
+  '@ccusage/ccusage-darwin-arm64@20.0.14':
+    resolution: {integrity: sha512-M8ZQzWmvLsI+eKbjQBJtw2YudUgFr4gAtXmNnb5nYam177vmajaxDWdItJr+I+Qx9QbxsKOxJslazT/WYkoFFQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@ccusage/ccusage-darwin-x64@20.0.5':
-    resolution: {integrity: sha512-Qu0y2bkwRVeZ8OOom80ekRzsTmOiwUjLuiSEuZBgNzKLdMxaNSPakVhpQoQua+6v8tcnGbMRaEOivK4RxxVJNg==}
+  '@ccusage/ccusage-darwin-x64@20.0.14':
+    resolution: {integrity: sha512-NORKtEWsw8n3WGTdK3LGmEbygwrUFEDYAOeXWYT5rKAU84IMMYO9BVKALsr5KWX5FpfGGhTk/QdbzSFIaAqzKw==}
     cpu: [x64]
     os: [darwin]
 
-  '@ccusage/ccusage-linux-arm64@20.0.5':
-    resolution: {integrity: sha512-gpTnF+v2a2TfeEMXDwG7YnuBwFyv8OixMcZExK19gNF+KCpgIkmVR5Qej7nV82YWG1RbdAPg6ZZPD7a43LpH3Q==}
+  '@ccusage/ccusage-linux-arm64@20.0.14':
+    resolution: {integrity: sha512-aShec3E1bFZTOl35B4KdX35kEzGZGkGO5eOnR03ih1mF88D9eEUFKWJ9pha1Liq8v/1gJvmHzgjuV7hLxrNDhw==}
     cpu: [arm64]
     os: [linux]
 
-  '@ccusage/ccusage-linux-x64@20.0.5':
-    resolution: {integrity: sha512-5FcK4Wy7cCmWf1ibDKJAWKGWrG+pHduSJWSxRtGGAV4Li1RPBJ67Ql2Abzqug7HBprEx9wEB9s/o/7ggxzJY/w==}
+  '@ccusage/ccusage-linux-x64@20.0.14':
+    resolution: {integrity: sha512-Q00no4oxct4/zQ4ob7t8uItsTSyrwFLti5NZ6kGhCxliN7LwMNqMVrTsUDy8Wsfiu1HEtyQQUclYRNAtLsn6Uw==}
     cpu: [x64]
     os: [linux]
 
-  '@ccusage/ccusage-win32-arm64@20.0.5':
-    resolution: {integrity: sha512-bGtrNVQ1oIfGeN1FdmNmu58hpehzPgTqsi8nivcLGnZgZrflfoDIUg1bC0tDQqBUIcIcKTAnvrJuTyn2pTARfg==}
+  '@ccusage/ccusage-win32-arm64@20.0.14':
+    resolution: {integrity: sha512-a7VPXWtzeQVo3qJl4Mprga8gBhWniQ0aPfw8FZWGRp9S7oDL18vgJOq2yF7c2NYYvTDW2prDaku6dawVNQGXeg==}
     cpu: [arm64]
     os: [win32]
 
-  '@ccusage/ccusage-win32-x64@20.0.5':
-    resolution: {integrity: sha512-ZZG19JAXaAd087QGZNK6XD/etnULbhK29KVZ01kh8Pr8rHJl2s1BHjSxg36YiPbcYXpSqeo3x1TfqybOheYSTQ==}
+  '@ccusage/ccusage-win32-x64@20.0.14':
+    resolution: {integrity: sha512-DXo5DrINH/Zwih+N7ra7jSpIo70heuzC+6k3CuB4QIacJj908uSX12Zp4JdnUwmFk7yGEwQBfVs+SmuOc+VP0w==}
     cpu: [x64]
     os: [win32]
 
@@ -1399,8 +1399,8 @@ packages:
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
 
-  ccusage@20.0.5:
-    resolution: {integrity: sha512-d95NMuk4MmmMcnOFvtLUGQx7bJvMOhE3Chdpfvv48+4v1URL7tVCWcn0F/FlaUXx5zv+Uw5/rNe40pSDihauKQ==}
+  ccusage@20.0.14:
+    resolution: {integrity: sha512-xAkGU9NZdhbxj11o6J9x/tqNXicLz29y9j3nTJEkPI76LW4i6IrsXXcD9ywqzbKRsq1NlJLEhnBRgaZAksS9WA==}
     hasBin: true
 
   chai@6.2.2:
@@ -2208,22 +2208,22 @@ snapshots:
 
   '@better-fetch/fetch@1.1.21': {}
 
-  '@ccusage/ccusage-darwin-arm64@20.0.5':
+  '@ccusage/ccusage-darwin-arm64@20.0.14':
     optional: true
 
-  '@ccusage/ccusage-darwin-x64@20.0.5':
+  '@ccusage/ccusage-darwin-x64@20.0.14':
     optional: true
 
-  '@ccusage/ccusage-linux-arm64@20.0.5':
+  '@ccusage/ccusage-linux-arm64@20.0.14':
     optional: true
 
-  '@ccusage/ccusage-linux-x64@20.0.5':
+  '@ccusage/ccusage-linux-x64@20.0.14':
     optional: true
 
-  '@ccusage/ccusage-win32-arm64@20.0.5':
+  '@ccusage/ccusage-win32-arm64@20.0.14':
     optional: true
 
-  '@ccusage/ccusage-win32-x64@20.0.5':
+  '@ccusage/ccusage-win32-x64@20.0.14':
     optional: true
 
   '@cloudflare/kv-asset-handler@0.5.0': {}
@@ -2996,14 +2996,14 @@ snapshots:
 
   buffer-from@1.1.2: {}
 
-  ccusage@20.0.5:
+  ccusage@20.0.14:
     optionalDependencies:
-      '@ccusage/ccusage-darwin-arm64': 20.0.5
-      '@ccusage/ccusage-darwin-x64': 20.0.5
-      '@ccusage/ccusage-linux-arm64': 20.0.5
-      '@ccusage/ccusage-linux-x64': 20.0.5
-      '@ccusage/ccusage-win32-arm64': 20.0.5
-      '@ccusage/ccusage-win32-x64': 20.0.5
+      '@ccusage/ccusage-darwin-arm64': 20.0.14
+      '@ccusage/ccusage-darwin-x64': 20.0.14
+      '@ccusage/ccusage-linux-arm64': 20.0.14
+      '@ccusage/ccusage-linux-x64': 20.0.14
+      '@ccusage/ccusage-win32-arm64': 20.0.14
+      '@ccusage/ccusage-win32-x64': 20.0.14
 
   chai@6.2.2: {}
 

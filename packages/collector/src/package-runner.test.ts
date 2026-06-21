@@ -1,9 +1,28 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
-import { resolvePackageRunner } from './package-runner'
+import { ccusagePackageSpecifier, resolvePackageRunner } from './package-runner'
+
+const expectedCcusagePackageSpecifier = 'ccusage@20.0.14'
+const packageJsonPath = join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json')
 
 describe('resolvePackageRunner', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
+  })
+
+  test('pins package runner ccusage to the adapted version', () => {
+    expect(ccusagePackageSpecifier).toBe(expectedCcusagePackageSpecifier)
+    expect(ccusagePackageSpecifier).not.toBe('ccusage@latest')
+  })
+
+  test('keeps package runner ccusage version aligned with package dependency', () => {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
+      dependencies?: Record<string, string>
+    }
+
+    expect(ccusagePackageSpecifier).toBe(`ccusage@${packageJson.dependencies?.ccusage}`)
   })
 
   test('uses npx by default', () => {
@@ -12,8 +31,8 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner()
 
     expect(runner.command).toBe(platformCommand('npx'))
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json'])).toEqual([
-      'ccusage@latest',
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['daily', '--json'])).toEqual([
+      expectedCcusagePackageSpecifier,
       'daily',
       '--json'
     ])
@@ -34,8 +53,8 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('bun')
 
     expect(runner.command).toBe('/opt/bin/bunx')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'session', '--json'])).toEqual([
-      'ccusage@latest',
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['codex', 'session', '--json'])).toEqual([
+      expectedCcusagePackageSpecifier,
       'codex',
       'session',
       '--json'
@@ -48,11 +67,11 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('npm')
 
     expect(runner.command).toBe('/opt/bin/npm')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['daily', '--json'])).toEqual([
       'exec',
       '--yes',
       '--package',
-      'ccusage@latest',
+      expectedCcusagePackageSpecifier,
       '--',
       'ccusage',
       'daily',
@@ -66,9 +85,9 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('pnpm')
 
     expect(runner.command).toBe('/opt/bin/pnpm')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['daily', '--json'])).toEqual([
       'dlx',
-      'ccusage@latest',
+      expectedCcusagePackageSpecifier,
       'daily',
       '--json'
     ])
@@ -79,7 +98,7 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('pnpm', process.platform, () => true)
 
     expect(runner.command).toBe('/opt/bin/ccusage')
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['codex', 'daily', '--json'])).toEqual([
       'codex',
       'daily',
       '--json'
@@ -98,9 +117,9 @@ describe('resolvePackageRunner', () => {
     const runner = resolvePackageRunner('pnpm', process.platform, () => false)
 
     expect(runner.command).toBe(platformCommand('pnpm'))
-    expect(runner.runPackageArgs('ccusage@latest', 'ccusage', ['codex', 'daily', '--json'])).toEqual([
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['codex', 'daily', '--json'])).toEqual([
       'dlx',
-      'ccusage@latest',
+      expectedCcusagePackageSpecifier,
       'codex',
       'daily',
       '--json'
