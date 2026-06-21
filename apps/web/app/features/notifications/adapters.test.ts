@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest'
-import { buildWebhookPayload, formatDailyReport, formatWeComDailyReport, type DailyTokenReport } from './adapters'
+import {
+  buildWebhookPayload,
+  formatDailyReport,
+  formatDingTalkDailyReport,
+  formatWeComDailyReport,
+  type DailyTokenReport
+} from './adapters'
 
 const report: DailyTokenReport = {
   displayName: 'Example',
@@ -88,7 +94,56 @@ describe('notification adapters', () => {
     expect(text).not.toContain('<Example>')
   })
 
-  test('builds DingTalk signed markdown payload', async () => {
+  test('formats DingTalk daily report with supported markdown only', () => {
+    const text = formatDingTalkDailyReport({
+      ...report,
+      displayName: '<Example>',
+      topModels: [{
+        model: 'gpt-5[preview]',
+        totalTokens: 800,
+        totalTokensWithoutCacheRead: 620,
+        costUsd: 0.8
+      }]
+    })
+
+    expect(text).toContain('## TokenBoard：&lt;Example&gt; token 日报')
+    expect(text).toContain('日期：2026\\-04\\-29 / Asia/Shanghai')
+    expect(text).toContain('**总消耗**：1,200 token')
+    expect(text).toContain('**去缓存读**：900 token')
+    expect(text).toContain('**费用**：$1.23 / 会话：4')
+    expect(text).toContain('**主要来源**')
+    expect(text).toContain('**Codex**：620 token')
+    expect(text).toContain('  - 含缓存读 800 token / 缓存率 23%')
+    expect(text).toContain('**gpt\\-5\\[preview\\]**：620 token / $0.80')
+    expect(text).not.toContain('<font')
+    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
+  })
+
+  test('keeps DingTalk item hiding counts based on visible list rows', () => {
+    const text = formatDingTalkDailyReport({
+      ...report,
+      sourceSplit: [
+        ...report.sourceSplit,
+        { source: 'cursor', totalTokens: 300, totalTokensWithoutCacheRead: 200 },
+        { source: 'aider', totalTokens: 200, totalTokensWithoutCacheRead: 100 },
+        { source: 'custom', totalTokens: 100, totalTokensWithoutCacheRead: 50 }
+      ],
+      topModels: [
+        ...report.topModels,
+        { model: 'deepseek-v4-flash', totalTokens: 700, totalTokensWithoutCacheRead: 500, costUsd: 0.3 },
+        { model: 'claude-sonnet', totalTokens: 600, totalTokensWithoutCacheRead: 400, costUsd: 0.2 },
+        { model: 'qwen', totalTokens: 500, totalTokensWithoutCacheRead: 300, costUsd: 0.1 }
+      ]
+    })
+
+    expect(text).toContain('- 其余 2 项请打开 TokenBoard 查看。')
+    expect(text).toContain('- 其余 1 项请打开 TokenBoard 查看。')
+    expect(text).not.toContain('custom')
+    expect(text).not.toContain('qwen')
+  })
+
+  test('builds DingTalk signed action card payload', async () => {
     const payload = await buildWebhookPayload({
       provider: 'dingtalk',
       webhookUrl: 'https://oapi.dingtalk.com/robot/send?access_token=test',
@@ -101,11 +156,79 @@ describe('notification adapters', () => {
     expect(url.searchParams.get('timestamp')).toBe('1777424400000')
     expect(url.searchParams.get('sign')).toBe('271FYrVJTyHSiWISNOt9wkeJS60pGSCXu8bJqFB+Gqw=')
     expect(payload.body).toMatchObject({
-      msgtype: 'markdown',
-      markdown: {
-        title: 'Example token 日报 2026-04-29'
+      msgtype: 'actionCard',
+      actionCard: {
+        title: 'TokenBoard：Example token 日报',
+        text: expect.stringContaining('## TokenBoard：Example token 日报'),
+        btnOrientation: '0',
+        singleTitle: '打开日报详情',
+        singleURL: 'https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
       }
     })
+    const text = (payload.body as { actionCard: { text: string } }).actionCard.text
+    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(text).not.toContain('<font')
+  })
+
+  test('keeps the DingTalk TokenBoard keyword and fallback link when report sharing is disabled', async () => {
+    const text = formatDingTalkDailyReport({ ...report, reportUrl: undefined })
+    const payload = await buildWebhookPayload({
+      provider: 'dingtalk',
+      webhookUrl: 'https://oapi.dingtalk.com/robot/send?access_token=test',
+      report: { ...report, reportUrl: undefined },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+
+    expect(text).toContain('TokenBoard')
+    expect(text).toContain('[查看排行榜](https://tokenboard.example.com/leaderboards)')
+    expect(payload.body).toMatchObject({
+      msgtype: 'actionCard',
+      actionCard: {
+        title: 'TokenBoard：Example token 日报',
+        singleTitle: '查看排行榜',
+        singleURL: 'https://tokenboard.example.com/leaderboards'
+      }
+    })
+  })
+
+  test('uses the public leaderboards button for DingTalk when no shared report URL exists', async () => {
+    const payload = await buildWebhookPayload({
+      provider: 'dingtalk',
+      webhookUrl: 'https://oapi.dingtalk.com/robot/send?access_token=test',
+      report: { ...report, reportUrl: undefined },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+
+    expect(payload.body).toMatchObject({
+      msgtype: 'actionCard',
+      actionCard: {
+        title: 'TokenBoard：Example token 日报',
+        text: expect.stringContaining('[查看排行榜](https://tokenboard.example.com/leaderboards)'),
+        singleTitle: '查看排行榜',
+        singleURL: 'https://tokenboard.example.com/leaderboards'
+      }
+    })
+  })
+
+  test('keeps DingTalk report links outside truncated markdown text', () => {
+    const text = formatDingTalkDailyReport({
+      ...report,
+      displayName: 'Example'.repeat(1000),
+      topModels: [{
+        model: 'gpt-5'.repeat(5000),
+        totalTokens: 1000,
+        totalTokensWithoutCacheRead: 900,
+        costUsd: 1
+      }]
+    })
+
+    expect(text).toContain('TokenBoard')
+    expect(text).toContain('内容已截断')
+    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(text.trimEnd().endsWith(
+      '[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)'
+    )).toBe(true)
+    expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
   })
 
   test('builds Feishu signed card payload', async () => {
@@ -127,19 +250,115 @@ describe('notification adapters', () => {
         header: {
           title: {
             tag: 'plain_text',
-            content: 'Example token 日报 2026-04-29'
+            content: 'TokenBoard：Example token 日报'
           }
         },
         body: {
           elements: [
             {
               tag: 'markdown',
-              content: expect.stringContaining('Example token 日报 2026-04-29')
+              content: expect.stringContaining('> 2026-04-29 / Asia/Shanghai')
+            },
+            {
+              tag: 'button',
+              text: {
+                tag: 'plain_text',
+                content: '打开日报详情'
+              },
+              type: 'primary',
+              behaviors: [
+                {
+                  type: 'open_url',
+                  default_url: 'https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+                }
+              ]
             }
           ]
         }
       }
     })
+    const content = (payload.body as {
+      card: { body: { elements: Array<{ tag: string, content?: string }> } }
+    }).card.body.elements[0].content
+    expect(content).not.toContain('[打开日报详情]')
     expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
+  })
+
+  test('uses the public leaderboards button for Feishu when no shared report URL exists', async () => {
+    const payload = await buildWebhookPayload({
+      provider: 'feishu',
+      webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/test',
+      report: { ...report, reportUrl: undefined },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+
+    expect(payload.body).toMatchObject({
+      msg_type: 'interactive',
+      card: {
+        schema: '2.0',
+        header: {
+          title: {
+            content: 'TokenBoard：Example token 日报'
+          }
+        },
+        body: {
+          elements: [
+            {
+              tag: 'markdown',
+              content: expect.stringContaining('> 2026-04-29 / Asia/Shanghai')
+            },
+            {
+              tag: 'button',
+              text: {
+                tag: 'plain_text',
+                content: '查看排行榜'
+              },
+              type: 'primary',
+              behaviors: [
+                {
+                  type: 'open_url',
+                  default_url: 'https://tokenboard.example.com/leaderboards'
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+    const content = (payload.body as {
+      card: { body: { elements: Array<{ tag: string, content?: string }> } }
+    }).card.body.elements[0].content
+    expect(content).toContain('**主要来源**')
+    expect(content).not.toContain('[查看排行榜]')
+    expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
+  })
+
+  test('limits Feishu interactive card markdown payloads under the webhook body budget', async () => {
+    const payload = await buildWebhookPayload({
+      provider: 'feishu',
+      webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/test',
+      report: {
+        ...report,
+        displayName: 'Example'.repeat(1000),
+        topModels: [{
+          model: 'gpt-5'.repeat(5000),
+          totalTokens: 1000,
+          totalTokensWithoutCacheRead: 900,
+          costUsd: 1
+        }]
+      },
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+    const content = (payload.body as {
+      card: { body: { elements: Array<{ content: string }> } }
+    }).card.body.elements[0].content
+    const title = (payload.body as {
+      card: { header: { title: { content: string } } }
+    }).card.header.title.content
+
+    expect(content).toContain('内容已截断')
+    expect(title).toContain('...')
+    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(14 * 1024)
+    expect(new TextEncoder().encode(JSON.stringify(payload.body)).byteLength).toBeLessThanOrEqual(20 * 1024)
   })
 })
