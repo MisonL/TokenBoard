@@ -1,4 +1,51 @@
-# TokenBoard Project Guidelines
+# Repository Guidelines
+
+本文件是 TokenBoard 仓库的 AI Agent 与贡献者执行指南。它同时记录项目架构约束、开发命令、测试口径和交付前检查要求。执行任务时以当前代码、测试结果、Git 记录和真实运行证据为准。
+
+## Contributor Quick Reference
+
+### 常用命令
+
+```bash
+pnpm install
+pnpm dev
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm preview
+pnpm deploy
+```
+
+- `pnpm dev`：启动 Web 开发服务，等价于 `pnpm --filter @tokenboard/web dev`。
+- `pnpm test`：运行 workspace 测试，包含 Web、collector、usage-core。
+- `pnpm typecheck`：运行所有包的 TypeScript 类型检查。
+- `pnpm build`：构建 Web Worker 客户端与服务端产物。
+- `pnpm preview`：通过 Wrangler 本地预览 Worker。
+- `pnpm deploy`：执行生产部署脚本，包含配置校验、构建、D1 migration 和 Worker 发布。
+
+### 目录速览
+
+- `apps/web/`：HonoX + Cloudflare Workers Web/API 应用。
+- `apps/web/app/features/`：按业务 feature 组织的服务、查询、schema、组件和测试。
+- `packages/collector/`：本地 Node.js collector，负责调用 `ccusage` 并上传 snapshot。
+- `packages/usage-core/`：跨端共享的 usage schema、normalize、hash 和工具函数。
+- `skills/tokenboard/`：Codex / Claude Code 安装、同步、hook、schedule 脚本。
+- `apps/web/app/components/ui/`：通用 UI 原语；业务组件不要放这里。
+
+### 提交与 PR
+
+- 提交信息优先使用历史风格：`fix(...)`、`test(...)`、`docs:`、`feat(...)`。
+- 每个 PR 必须说明改动范围、验证命令和风险边界。
+- UI/Webhook 改动需要附截图或真实 webhook 发送验证结果。
+- client/collector 改动需要覆盖 `pnpm -r test`、`pnpm -r typecheck`，并说明可复现的验证口径。
+
+### Agent 工作基线
+
+- 先读代码和配置，再改动；不要凭记忆推断当前状态。
+- 修改前说明将改哪些文件和原因。
+- 每次只处理一个原子任务，避免顺手改无关问题。
+- 禁止静默降级、mock 成功、吞错继续或为了测试硬编码路径。
+- 完成前必须运行最小充分验证，并用 `git diff` / `git status` 检查残留改动。
 
 ## 项目目标
 
@@ -377,3 +424,38 @@ skills/tokenboard/
 - 修改代码前先说明将修改的文件和意图。
 - 遇到读取错误或乱码文件时，使用 `jiemi.exe <文件路径>` 解密后再读取。
 - 不确定的外部 API、第三方库行为或 Cloudflare 平台限制，需要查官方资料后再下结论。
+
+## AI Agent Coding Practices
+
+### 证据优先
+
+- 回答“是否同步上游”“是否还有问题”“client 是否正常”前，必须重新执行相关检查命令。
+- 上游状态检查使用：
+
+```bash
+git fetch --all --prune
+git status --short --branch
+git rev-list --left-right --count master...upstream/master
+git rev-list --left-right --count master...origin/master
+```
+
+- 运行状态结论必须基于真实命令输出，例如 `node skills/tokenboard/scripts/status.mjs`、`ccusage --version`、`curl -I` 或调度器状态。
+
+### 验证闭环
+
+- Web/API 改动至少运行相关测试；跨 feature 改动运行 `pnpm test` 和 `pnpm typecheck`。
+- collector 或 skill 改动至少运行 `packages/collector`、`packages/usage-core` 和 `skills/tokenboard/scripts` 相关测试。
+- Cloudflare/D1/Better Auth/Webhook 行为不要只靠类型检查；需要 HTTP、浏览器或真实 webhook 验证。
+- 修复网络或服务问题时，同时验证进程状态、路由/DNS、真实请求和 TokenBoard 业务命令。
+
+### 配置与安全
+
+- 不要把用户提供的 webhook、token、OAuth secret、Cloudflare secret 写入源码或文档。
+- 调试时可以临时使用用户提供的密钥，但输出日志和总结时必须脱敏。
+- `WEBHOOK_ENCRYPTION_KEY` 必须作为 Worker secret 配置，不要提交本地生产配置文件。
+
+### Client 与兼容性注意事项
+
+- collector 依赖外部 usage 工具；升级相关依赖时必须同步更新 provider 测试、package-runner 测试和 `pnpm-lock.yaml`。
+- 判断 client 健康状态时，区分 client 代码问题、主机网络问题和用户未配置问题。
+- TokenBoard 定时同步日志默认位于用户配置目录下的 `logs/daily-sync.out.log` 和 `logs/daily-sync.err.log`。
