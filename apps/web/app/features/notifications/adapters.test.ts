@@ -42,6 +42,25 @@ describe('notification adapters', () => {
     expect(text).not.toContain('[查看排行榜](https://tokenboard.example.com/leaderboards)')
   })
 
+  test('labels Antigravity CLI cost as unavailable in daily reports', () => {
+    const text = formatDailyReport({
+      ...report,
+      costUsd: 0.8,
+      sourceSplit: [
+        ...report.sourceSplit,
+        { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
+      ],
+      topModels: [
+        ...report.topModels,
+        { model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300, totalTokensWithoutCacheRead: 260, costUsd: 0 }
+      ]
+    })
+
+    expect(text).toContain('Antigravity CLI (agy)：260 token')
+    expect(text).toContain('Antigravity CLI 费用不可用')
+    expect(text).toContain('预估费用 $0.80 (Antigravity CLI 费用不可用)')
+  })
+
   test('falls back to the public leaderboards when no shared report URL exists', () => {
     const text = formatDailyReport({ ...report, reportUrl: undefined })
     const wecomText = formatWeComDailyReport({ ...report, reportUrl: undefined })

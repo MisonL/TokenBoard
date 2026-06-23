@@ -47,7 +47,13 @@ to change Codex or Claude Code config during initial install. To install hooks l
 node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/install-hook.mjs --source all
 ```
 
-Use `--source codex` or `--source claude-code` for a single integration.
+Default `--source all` installs Codex and Claude Code hooks only. Use `--source codex` or `--source claude-code` for a single integration. Antigravity CLI is a separate explicit opt-in because it changes the visible agy status line command:
+
+```bash
+node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/install-hook.mjs --source antigravity-cli
+```
+
+Antigravity CLI collection uses `~/.gemini/antigravity-cli/settings.json` `statusLine.command`. The status line handler reads bounded stdin, writes sanitized local JSONL, and never uploads or starts sync from the foreground status line process. It must not persist prompt text, completion text, cwd, workspace, email, plan_tier, tool arguments, file paths, or raw conversation IDs. The JSONL still contains stable hashed conversation IDs, so treat `~/.tokenboard/antigravity-cli-statusline.jsonl` as a private local state file. Do not parse Antigravity `.db`, `.pb`, logs, `/credits`, or `/usage` as TokenBoard upload sources. Antigravity cost is unavailable in the first version; snapshots use `costUsd: 0` and UI/report output must label that cost as unavailable.
 
 The default schedule is `09:00,12:00,18:00,23:00`. When the user asks for custom times, require `HH:MM` 24-hour values and pass them through `--schedule-times`. The scheduler target is platform-specific:
 
@@ -63,7 +69,7 @@ Daily and manual sync default to a 7-day lookback window. Use `--since all` only
 
 Sync runs a lightweight upgrade first by default. It updates the local collector checkout and this installed skill from the configured TokenBoard repo, then continues with collection. Hook syncs do not run this upgrade path; they only enqueue and reconcile usage. If Git upgrade fails, the script falls back to the GitHub ZIP archive path. If upgrade still fails, treat it as a warning unless sync itself fails. For troubleshooting only, skip the upgrade with `--skip-upgrade`, `TOKENBOARD_SKIP_UPGRADE=1`, or `TOKENBOARD_AUTO_UPGRADE=0`.
 
-Do not run `upgrade.mjs` from notifier hooks. Hook-triggered syncs pass `--hook` to `sync.mjs`; this is the supported boundary that disables auto-upgrade during Codex or Claude Code session-end events.
+Do not run `upgrade.mjs` from notifier hooks. Hook-triggered syncs pass `--hook` to `sync.mjs`; this is the supported boundary that disables auto-upgrade during Codex or Claude Code session-end events. Antigravity CLI status line capture does not trigger hook sync; scheduled or manual sync reads the sanitized status line JSONL.
 
 Preview without upload:
 
@@ -87,6 +93,7 @@ node scripts/upgrade.mjs
 If a Codex session file disappears between scan and copy, the collector should warn on stderr and
 continue with the remaining session files. Treat non-ENOENT copy failures, provider command
 failures, or upload failures as real failures that need debugging.
+Missing Antigravity status line JSONL is optional in `--source all` syncs, but malformed Antigravity JSONL is a real failure that must be debugged instead of silently discarded.
 
 ## Status
 
@@ -96,9 +103,11 @@ Check local config and installed schedule metadata:
 node scripts/status.mjs
 ```
 
-The JSON output includes `packageManager`, `collectorDir`, `scheduleTimes`, and hook status.
+The JSON output includes `packageManager`, `collectorDir`, `scheduleTimes`, and hook status, including `antigravityCli`.
 
 Notifier hooks use `~/.tokenboard/bin/notify.cjs` and only enqueue a background sync signal. They must not run `ccusage`, scan files, or upload in the foreground hook process.
+
+Antigravity status line capture uses `skills/tokenboard/scripts/antigravity-statusline.mjs` and writes `~/.tokenboard/antigravity-cli-statusline.jsonl`. It must not use `~/.tokenboard/bin/notify.cjs`.
 
 Hook sync sets `TOKENBOARD_HOOK_MODE=1`. In that mode the collector uses local cursor files in
 `~/.tokenboard` to parse only new or changed Codex and Claude session JSONL files. Upload failures

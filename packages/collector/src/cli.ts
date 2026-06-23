@@ -3,13 +3,14 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import type { CollectorConfig } from './config'
+import { collectAntigravityCliUsage } from './providers/antigravity-cli'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
 import { uploadSnapshots } from './upload'
 
 type CliCommand = 'preview' | 'sync' | 'warm-hooks'
-type CliSource = 'claude-code' | 'codex' | 'all'
+type CliSource = 'claude-code' | 'codex' | 'antigravity-cli' | 'all'
 type ConcreteCliSource = Exclude<CliSource, 'all'>
 
 type CliEnv = Partial<Record<string, string>>
@@ -23,6 +24,7 @@ type CliDeps = {
   stderr: (line: string) => void
   collectClaudeCodeUsage: typeof collectClaudeCodeUsage
   collectCodexUsage: typeof collectCodexUsage
+  collectAntigravityCliUsage?: typeof collectAntigravityCliUsage
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
@@ -33,6 +35,7 @@ const defaultDeps: CliDeps = {
   stderr: (line) => console.error(line),
   collectClaudeCodeUsage,
   collectCodexUsage,
+  collectAntigravityCliUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
   warmHookCursorHighWater
@@ -95,7 +98,7 @@ export async function runCollectorCli(
 }
 
 function expandSources(source: CliSource): ConcreteCliSource[] {
-  return source === 'all' ? ['claude-code', 'codex'] : [source]
+  return source === 'all' ? ['claude-code', 'codex', 'antigravity-cli'] : [source]
 }
 
 async function warmHookCursors(
@@ -109,6 +112,7 @@ async function warmHookCursors(
   if (since !== 'all') return
   const stateDir = resolveStateDir(env)
   for (const source of collectedSources.filter((item) => item !== 'all')) {
+    if (source === 'antigravity-cli') continue
     const sessionsDir = source === 'codex'
       ? join(env.CODEX_HOME || join(homedir(), '.codex'), 'sessions')
       : join(env.CLAUDE_CONFIG_DIR || env.CLAUDE_HOME || join(homedir(), '.claude'), 'projects')
@@ -151,6 +155,11 @@ async function collectSnapshots(source: CliSource, timezone: string, deps: CliDe
     collectedSources.push(source)
   }
 
+  if (source === 'antigravity-cli') {
+    snapshots.push(...(await readAntigravityCollector(deps)({ timezone, stateDir: resolveStateDir(env) })))
+    collectedSources.push(source)
+  }
+
   return { snapshots, collectedSources, sourceFailures }
 }
 
@@ -161,7 +170,16 @@ async function collectAllSnapshots(timezone: string, deps: CliDeps, env: CliEnv 
   const failFast = env.TOKENBOARD_HOOK_MODE === '1'
   await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr }), snapshots, collectedSources, sourceFailures, deps, failFast)
   await collectOptionalSource('codex', () => deps.collectCodexUsage({ timezone, stderr: deps.stderr }), snapshots, collectedSources, sourceFailures, deps, failFast)
+  await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)({ timezone, stateDir: resolveStateDir(env) }), snapshots, collectedSources, sourceFailures, deps, failFast)
   return { snapshots, collectedSources, sourceFailures }
+}
+
+function readAntigravityCollector(deps: CliDeps) {
+  return deps.collectAntigravityCliUsage ?? noopAntigravityCollector
+}
+
+async function noopAntigravityCollector(): Promise<UsageSnapshot[]> {
+  return []
 }
 
 async function collectOptionalSource(
@@ -215,11 +233,11 @@ function readCommand(value: string | undefined): CliCommand {
     return value
   }
 
-  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|all]')
+  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|all]')
 }
 
 function readSource(value: string): CliSource {
-  if (value === 'claude-code' || value === 'codex' || value === 'all') {
+  if (value === 'claude-code' || value === 'codex' || value === 'antigravity-cli' || value === 'all') {
     return value
   }
 

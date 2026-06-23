@@ -2,10 +2,10 @@ import { AppNav } from '../../components/app-nav'
 import { Badge } from '../../components/ui/badge'
 import { LinkButton } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
-import { formatUsd } from '../../lib/money'
 import { formatPercentRate } from '../../lib/usage-metrics'
+import { formatCostWithAvailability, formatSource, hasUnavailableCostSource } from '../usage/source-format'
 import { UsageMetricCard, UsageMetricGrid } from '../usage/components/usage-metric-card'
-import { formatUsageMetricInteger, formatUsageMetricUsd } from '../usage/components/usage-metric-format'
+import { formatUsageMetricInteger, formatUsageMetricUsdWithAvailability } from '../usage/components/usage-metric-format'
 import type { DailyReportHistoryItem } from './report-history-item'
 
 export function SharedDailyReportPage(props: {
@@ -39,7 +39,10 @@ export function SharedDailyReportPage(props: {
           <UsageMetricCard label="Tokens" value={formatUsageMetricInteger(props.report.totalTokens)} tone="lime" />
           <UsageMetricCard label="不含缓存读" value={formatUsageMetricInteger(props.report.totalTokensWithoutCacheRead)} />
           <UsageMetricCard label="缓存率" value={formatPercentRate(props.report.cacheReadRate ?? 0)} />
-          <UsageMetricCard label="费用" value={formatUsageMetricUsd(props.report.costUsd)} />
+          <UsageMetricCard
+            label="费用"
+            value={formatUsageMetricUsdWithAvailability(props.report.costUsd, props.report.sourceSplit)}
+          />
         </UsageMetricGrid>
 
         <div class="grid gap-3 lg:grid-cols-2">
@@ -54,11 +57,11 @@ export function SharedDailyReportPage(props: {
           />
           <ReportList
             title="主要模型"
-            description="按不含缓存读 token 排序，费用为当前日报快照的估算值。"
+            description={`按不含缓存读 token 排序，费用为当前日报快照的估算值。${hasUnavailableCostSource(props.report.sourceSplit) ? 'Antigravity CLI 费用不可用。' : ''}`}
             items={props.report.topModels.map((item) => ({
               name: item.model,
               value: `${formatInteger(item.totalTokensWithoutCacheRead)} / ${formatInteger(item.totalTokens)} tokens`,
-              meta: `${formatUsd(item.costUsd)} / 缓存率 ${formatPercentRate(item.cacheReadRate ?? 0)}`
+              meta: `${formatCostWithAvailability(item.costUsd, props.report.sourceSplit)} / 缓存率 ${formatPercentRate(item.cacheReadRate ?? 0)}`
             }))}
           />
         </div>
@@ -122,12 +125,6 @@ function ReportList(props: {
 
 function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
-}
-
-function formatSource(source: string) {
-  if (source === 'claude-code') return 'Claude Code'
-  if (source === 'codex') return 'Codex'
-  return source
 }
 
 function scheduleSlotLabel(scheduleSlot: string) {

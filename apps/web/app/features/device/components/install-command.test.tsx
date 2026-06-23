@@ -127,11 +127,11 @@ describe('InstallCommand', () => {
     expect(commands.bash).toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
     expect(commands.bash).toContain('git -C "$repo" pull --ff-only')
     expect(commands.bash).toContain('skills/tokenboard/scripts/install-hook.mjs" --source all')
-    expect(commands.bash).toContain('# To install only one source, replace all with codex or claude-code.')
+    expect(commands.bash).toContain('# all installs Codex and Claude Code hooks. Use --source antigravity-cli to opt in to agy statusline capture.')
     expect(commands.bash).not.toContain('```')
     expect(commands.powerShell).toContain('git clone "https://github.com/evepupil/TokenBoard.git" $repo')
     expect(commands.powerShell).toContain('skills\\tokenboard\\scripts\\install-hook.mjs") --source all')
-    expect(commands.powerShell).toContain('# To install only one source, replace all with codex or claude-code.')
+    expect(commands.powerShell).toContain('# all installs Codex and Claude Code hooks. Use --source antigravity-cli to opt in to agy statusline capture.')
     expect(commands.powerShell).not.toContain('```')
   })
 

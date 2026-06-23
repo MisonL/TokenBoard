@@ -105,12 +105,12 @@ export function createInstallHookCommands(input: CommandInput = {}) {
   return {
     bash: [
       ...bootstrap.bash,
-      '# To install only one source, replace all with codex or claude-code.',
+      '# all installs Codex and Claude Code hooks. Use --source antigravity-cli to opt in to agy statusline capture.',
       'node "$repo/skills/tokenboard/scripts/install-hook.mjs" --source all'
     ].join('\n'),
     powerShell: [
       ...bootstrap.powerShell,
-      '# To install only one source, replace all with codex or claude-code.',
+      '# all installs Codex and Claude Code hooks. Use --source antigravity-cli to opt in to agy statusline capture.',
       'node (Join-Path $repo "skills\\tokenboard\\scripts\\install-hook.mjs") --source all'
     ].join('\n')
   }

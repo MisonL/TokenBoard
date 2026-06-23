@@ -31,6 +31,7 @@ describe('UsageDetailsFiltersForm', () => {
     expect(html).toContain('data-submitting-label="正在应用..."')
     expect(html).toContain('data-link-button="true"')
     expect(html).toContain('href="/dashboard/details.csv?')
+    expect(html).toContain('Antigravity CLI (agy)')
     expect(html).toContain('MacBook Pro')
   })
 })

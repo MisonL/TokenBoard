@@ -1,5 +1,5 @@
-import { formatUsd } from '../../lib/money'
 import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metrics'
+import { formatCostWithAvailability, formatSource, formatSourceCostNote } from '../usage/source-format'
 import type { WebhookProvider } from './schema'
 
 const wecomMarkdownMaxBytes = 4096
@@ -132,7 +132,7 @@ export function formatWeComDailyReport(report: DailyTokenReport) {
     `> 总消耗：<font color="info">${formatInteger(report.totalTokens)} token</font>`,
     `> 去缓存读：<font color="info">${formatInteger(report.totalTokensWithoutCacheRead)} token</font>`,
     `> 缓存率：<font color="comment">${formatReportCacheRate(report)}</font>`,
-    `> 费用：<font color="warning">${formatUsd(report.costUsd)}</font> / 会话：${formatInteger(report.sessionCount)}`,
+    `> 费用：<font color="warning">${escapeWeComMarkdownText(formatCostWithAvailability(report.costUsd, report.sourceSplit))}</font> / 会话：${formatInteger(report.sessionCount)}`,
     '',
     '**主要来源**',
     ...formatWeComSourceSplit(report),
@@ -157,7 +157,7 @@ export function formatDingTalkDailyReport(report: DailyTokenReport) {
     `**总消耗**：${formatInteger(report.totalTokens)} token  `,
     `**去缓存读**：${formatInteger(report.totalTokensWithoutCacheRead)} token  `,
     `**缓存率**：${formatReportCacheRate(report)}  `,
-    `**费用**：${formatUsd(report.costUsd)} / 会话：${formatInteger(report.sessionCount)}`,
+    `**费用**：${formatCostWithAvailability(report.costUsd, report.sourceSplit)} / 会话：${formatInteger(report.sessionCount)}`,
     '',
     '**主要来源**',
     ...formatDingTalkSourceSplit(report),
@@ -178,7 +178,7 @@ function formatFeishuDailyReport(report: DailyTokenReport) {
     `> **总消耗**：${formatInteger(report.totalTokens)} token`,
     `> **去缓存读**：${formatInteger(report.totalTokensWithoutCacheRead)} token`,
     `> **缓存率**：${formatReportCacheRate(report)}`,
-    `> **费用**：${formatUsd(report.costUsd)} / 会话：${formatInteger(report.sessionCount)}`,
+    `> **费用**：${formatCostWithAvailability(report.costUsd, report.sourceSplit)} / 会话：${formatInteger(report.sessionCount)}`,
     '',
     '**主要来源**',
     ...formatFeishuSourceSplit(report),
@@ -196,7 +196,7 @@ export function formatDailyReport(report: DailyTokenReport) {
     `日期：${report.reportDate}`,
     '',
     `${report.displayName} 在 ${report.reportDate} 共消耗 ${formatInteger(report.totalTokens)} token，去掉缓存读后为 ${formatInteger(report.totalTokensWithoutCacheRead)} token，缓存率 ${formatReportCacheRate(report)}。`,
-    `预估费用 ${formatUsd(report.costUsd)}，共完成 ${formatInteger(report.sessionCount)} 个会话。`,
+    `预估费用 ${formatCostWithAvailability(report.costUsd, report.sourceSplit)}，共完成 ${formatInteger(report.sessionCount)} 个会话。`,
     '',
     '主要来源',
     ...formatSourceSplit(report),
@@ -240,7 +240,7 @@ function formatWeComSourceSplit(report: DailyTokenReport) {
   if (report.sourceSplit.length === 0) return ['暂无数据']
   const items = report.sourceSplit.slice(0, wecomListLimit).flatMap((item) => [
     `- **${escapeWeComMarkdownText(formatSource(item.source))}**：${formatInteger(item.totalTokensWithoutCacheRead)} token`,
-    `  <font color="comment">含缓存读 ${formatInteger(item.totalTokens)} / 缓存率 ${formatReportCacheRate(item)}</font>`
+    `  <font color="comment">含缓存读 ${formatInteger(item.totalTokens)} / 缓存率 ${formatReportCacheRate(item)}${formatSourceCostSuffix(item.source)}</font>`
   ])
   return appendHiddenCount(items, report.sourceSplit.length)
 }
@@ -248,7 +248,7 @@ function formatWeComSourceSplit(report: DailyTokenReport) {
 function formatWeComTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   const items = report.topModels.slice(0, wecomListLimit).flatMap((item) => [
-    `- **${escapeWeComMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / <font color="warning">${formatUsd(item.costUsd)}</font>`,
+    `- **${escapeWeComMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / <font color="warning">${escapeWeComMarkdownText(formatCostWithAvailability(item.costUsd, report.sourceSplit))}</font>`,
     `  <font color="comment">缓存率 ${formatReportCacheRate(item)}</font>`
   ])
   return appendHiddenCount(items, report.topModels.length)
@@ -278,7 +278,7 @@ function formatDingTalkSourceSplit(report: DailyTokenReport) {
   if (report.sourceSplit.length === 0) return ['暂无数据']
   const items = report.sourceSplit.slice(0, dingtalkListLimit).flatMap((item) => [
     `- **${escapeDingTalkMarkdownText(formatSource(item.source))}**：${formatInteger(item.totalTokensWithoutCacheRead)} token`,
-    `  - 含缓存读 ${formatInteger(item.totalTokens)} token / 缓存率 ${formatReportCacheRate(item)}`
+    `  - 含缓存读 ${formatInteger(item.totalTokens)} token / 缓存率 ${formatReportCacheRate(item)}${formatSourceCostSuffix(item.source)}`
   ])
   return appendDingTalkHiddenCount(items, report.sourceSplit.length)
 }
@@ -286,7 +286,7 @@ function formatDingTalkSourceSplit(report: DailyTokenReport) {
 function formatDingTalkTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   const items = report.topModels.slice(0, dingtalkListLimit).flatMap((item) => [
-    `- **${escapeDingTalkMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatUsd(item.costUsd)}`,
+    `- **${escapeDingTalkMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatCostWithAvailability(item.costUsd, report.sourceSplit)}`,
     `  - 缓存率 ${formatReportCacheRate(item)}`
   ])
   return appendDingTalkHiddenCount(items, report.topModels.length)
@@ -296,7 +296,7 @@ function formatFeishuSourceSplit(report: DailyTokenReport) {
   if (report.sourceSplit.length === 0) return ['暂无数据']
   const items = report.sourceSplit.slice(0, wecomListLimit).flatMap((item) => [
     `- **${formatSource(item.source)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token`,
-    `  - 含缓存读 ${formatInteger(item.totalTokens)} token / 缓存率 ${formatReportCacheRate(item)}`
+    `  - 含缓存读 ${formatInteger(item.totalTokens)} token / 缓存率 ${formatReportCacheRate(item)}${formatSourceCostSuffix(item.source)}`
   ])
   return appendFeishuHiddenCount(items, report.sourceSplit.length)
 }
@@ -304,7 +304,7 @@ function formatFeishuSourceSplit(report: DailyTokenReport) {
 function formatFeishuTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   const items = report.topModels.slice(0, wecomListLimit).flatMap((item) => [
-    `- **${item.model}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatUsd(item.costUsd)}`,
+    `- **${item.model}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatCostWithAvailability(item.costUsd, report.sourceSplit)}`,
     `  - 缓存率 ${formatReportCacheRate(item)}`
   ])
   return appendFeishuHiddenCount(items, report.topModels.length)
@@ -320,15 +320,20 @@ function appendFeishuHiddenCount(items: string[], total: number) {
 function formatSourceSplit(report: DailyTokenReport) {
   if (report.sourceSplit.length === 0) return ['暂无数据']
   return report.sourceSplit.map((item) => (
-    `- ${formatSource(item.source)}：${formatInteger(item.totalTokensWithoutCacheRead)} token，含缓存读 ${formatInteger(item.totalTokens)} token，缓存率 ${formatReportCacheRate(item)}`
+    `- ${formatSource(item.source)}：${formatInteger(item.totalTokensWithoutCacheRead)} token，含缓存读 ${formatInteger(item.totalTokens)} token，缓存率 ${formatReportCacheRate(item)}${formatSourceCostSuffix(item.source)}`
   ))
 }
 
 function formatTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   return report.topModels.map((item) => (
-    `- ${item.model}：${formatInteger(item.totalTokensWithoutCacheRead)} token，缓存率 ${formatReportCacheRate(item)}，${formatUsd(item.costUsd)}`
+    `- ${item.model}：${formatInteger(item.totalTokensWithoutCacheRead)} token，缓存率 ${formatReportCacheRate(item)}，${formatCostWithAvailability(item.costUsd, report.sourceSplit)}`
   ))
+}
+
+function formatSourceCostSuffix(source: string) {
+  const note = formatSourceCostNote(source)
+  return note ? ` / ${note}` : ''
 }
 
 function formatReportCacheRate(input: {
@@ -341,12 +346,6 @@ function formatReportCacheRate(input: {
 
 function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
-}
-
-function formatSource(source: string) {
-  if (source === 'claude-code') return 'Claude Code'
-  if (source === 'codex') return 'Codex'
-  return source
 }
 
 function escapeWeComMarkdownText(value: string) {

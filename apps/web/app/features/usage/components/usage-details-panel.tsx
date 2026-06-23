@@ -3,19 +3,20 @@ import { Badge } from '../../../components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { LucideIcon } from '../../../components/ui/icon'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../../components/ui/table'
-import { formatUsd } from '../../../lib/money'
 import { formatPercentRate } from '../../../lib/usage-metrics'
 import type { UserDevice } from '../../device/service'
 import type { UsageDetails } from '../queries'
 import type { UsageDetailsFilters } from '../service'
+import { formatCostWithAvailability, hasUnavailableCostSource } from '../source-format'
 import { UsageMetricCard, UsageMetricGrid } from './usage-metric-card'
 import { UsageDetailsFiltersForm } from './usage-details-filters'
 import { formatInteger, formatPercent, formatSource } from './usage-details-format'
-import { formatUsageMetricInteger, formatUsageMetricUsd } from './usage-metric-format'
+import { formatUsageMetricInteger, formatUsageMetricUsdWithAvailability } from './usage-metric-format'
 
 export function UsageDetailsPanel(props: { details: UsageDetails; filters: UsageDetailsFilters; devices: UserDevice[] }) {
   const dailyRows = [...props.details.dailyRows].reverse()
   const selectedDevice = props.devices.find((device) => device.id === props.filters.deviceId)
+  const hasUnavailableCost = hasUnavailableCostSource(props.details.modelRows)
 
   return (
     <section class="mx-auto flex max-w-7xl flex-col gap-5">
@@ -25,7 +26,7 @@ export function UsageDetailsPanel(props: { details: UsageDetails; filters: Usage
         <UsageMetricCard label="范围 tokens" value={formatUsageMetricInteger(props.details.summary.totalTokens)} tone="lime" />
         <UsageMetricCard label="不含缓存读" value={formatUsageMetricInteger(props.details.summary.totalTokensWithoutCacheRead)} />
         <UsageMetricCard label="缓存率" value={formatPercentRate(props.details.summary.cacheReadRate)} />
-        <UsageMetricCard label="范围费用" value={formatUsageMetricUsd(props.details.summary.costUsd)} />
+        <UsageMetricCard label={hasUnavailableCost ? '范围费用(不含 agy)' : '范围费用'} value={formatUsageMetricUsdWithAvailability(props.details.summary.costUsd, props.details.modelRows)} />
         <UsageMetricCard label="Sessions" value={formatUsageMetricInteger(props.details.summary.sessionCount)} />
         <UsageMetricCard label="活跃天数" value={formatUsageMetricInteger(props.details.summary.activeDays)} />
       </UsageMetricGrid>
@@ -113,7 +114,7 @@ function DailySummaryRowHeader(props: { row: UsageDetails['dailyRows'][number] }
       <MobileValue label="Tokens">{formatInteger(props.row.totalTokens)}</MobileValue>
       <MobileValue label="不含缓存读">{formatInteger(props.row.totalTokensWithoutCacheRead)}</MobileValue>
       <MobileValue label="缓存率">{formatPercentRate(props.row.cacheReadRate)}</MobileValue>
-      <MobileValue label="费用">{formatUsd(props.row.costUsd)}</MobileValue>
+      <MobileValue label="费用">{formatCostWithAvailability(props.row.costUsd, props.row.sourceSplit)}</MobileValue>
       <MobileValue label="Sessions">{formatInteger(props.row.sessionCount)}</MobileValue>
       <div class="grid gap-1 md:block">
         <span class="text-xs font-bold uppercase tracking-wide text-[var(--app-muted)] md:hidden">来源</span>
@@ -212,7 +213,7 @@ function DailyModelRowsBody(props: { rows: UsageDetails['dailyRows'][number]['mo
           <TableCell>{formatPercentRate(modelRow.cacheReadRate)}</TableCell>
           <TableCell>{formatInteger(modelRow.totalTokensWithoutCacheRead)}</TableCell>
           <TableCell class="font-bold">{formatInteger(modelRow.totalTokens)}</TableCell>
-          <TableCell>{formatUsd(modelRow.costUsd)}</TableCell>
+          <TableCell>{formatCostWithAvailability(modelRow.costUsd, [modelRow])}</TableCell>
         </TableRow>
       ))}
     </TableBody>

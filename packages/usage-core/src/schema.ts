@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
-export const usageSourceSchema = z.enum(['claude-code', 'codex'])
+export const usageSources = ['claude-code', 'codex', 'antigravity-cli'] as const
+export const usageSourceSchema = z.enum(usageSources)
 export const maxUsageTimezoneLength = 80
 export const maxUsageModelNameLength = 160
 

@@ -45,4 +45,12 @@ describe('LeaderboardPanel', () => {
     expect(html).toContain('app-surface-subtle rounded-xl')
     expect(html).not.toContain('colspan="4"')
   })
+
+  test('labels Antigravity CLI cost as unavailable on leaderboards', async () => {
+    const html = await renderToString(
+      <LeaderboardPanel entries={[]} period="daily" metric="tokens" />
+    )
+
+    expect(html).toContain('Antigravity CLI 费用不可用，费用列和费用排名不包含该来源成本。')
+  })
 })

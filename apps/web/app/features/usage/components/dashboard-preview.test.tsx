@@ -86,4 +86,30 @@ describe('DashboardPreview', () => {
     expect(dashboardPreviewTestUtils.containedBarHeight(50, 100)).toBe(50)
     expect(dashboardPreviewTestUtils.containedBarHeight(160, 100)).toBe(100)
   })
+
+  test('labels Antigravity CLI source cost as unavailable', async () => {
+    const html = await renderToString(
+      <DashboardPreview
+        summary={{
+          todayTokens: 100,
+          todayTokensWithoutCacheRead: 100,
+          todayCacheReadRate: 0,
+          todayCostUsd: 0,
+          monthTokens: 100,
+          monthTokensWithoutCacheRead: 100,
+          monthCacheReadRate: 0,
+          monthCostUsd: 0,
+          lastSyncedAt: null,
+          deviceCount: 1,
+          sourceSplit: [
+            { source: 'antigravity-cli', totalTokens: 100, totalTokensWithoutCacheRead: 100, cacheReadRate: 0 }
+          ],
+          dailyTrend: []
+        }}
+      />
+    )
+
+    expect(html).toContain('Antigravity CLI (agy)')
+    expect(html).toContain('Antigravity CLI 费用不可用，不计入费用卡片。')
+  })
 })

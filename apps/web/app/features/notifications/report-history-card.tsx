@@ -1,8 +1,8 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
-import { formatUsd } from '../../lib/money'
 import { formatPercentRate } from '../../lib/usage-metrics'
+import { formatCostWithAvailability, formatSource } from '../usage/source-format'
 import type { DailyReportHistoryItem } from './report-history-item'
 
 export function DailyReportHistoryCard(props: {
@@ -81,7 +81,7 @@ function DailyReportHistoryRow(props: { item: DailyReportHistoryItem }) {
         {formatInteger(props.item.totalTokensWithoutCacheRead)}
       </TableCell>
       <TableCell class="font-bold tabular-nums">{formatPercentRate(props.item.cacheReadRate ?? 0)}</TableCell>
-      <TableCell class="font-bold tabular-nums">{formatUsd(props.item.costUsd)}</TableCell>
+      <TableCell class="font-bold tabular-nums">{formatCostWithAvailability(props.item.costUsd, props.item.sourceSplit)}</TableCell>
       <TableCell class="font-bold tabular-nums">{formatInteger(props.item.sessionCount)}</TableCell>
       <TableCell class="rounded-r-xl text-xs text-[var(--app-muted)]">
         <div>{props.item.generatedAt}</div>
@@ -142,7 +142,7 @@ function HistoryDetails(props: { item: DailyReportHistoryItem }) {
         <HistoryList
           title="主要模型"
           items={props.item.topModels.map((model) => (
-            `${model.model}: ${formatInteger(model.totalTokensWithoutCacheRead)} / ${formatInteger(model.totalTokens)} tokens, ${formatUsd(model.costUsd)}`
+            `${model.model}: ${formatInteger(model.totalTokensWithoutCacheRead)} / ${formatInteger(model.totalTokens)} tokens, ${formatCostWithAvailability(model.costUsd, props.item.sourceSplit)}`
           ))}
         />
       </div>
@@ -167,12 +167,6 @@ function HistoryList(props: { title: string; items: string[] }) {
 
 function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
-}
-
-function formatSource(source: string) {
-  if (source === 'claude-code') return 'Claude Code'
-  if (source === 'codex') return 'Codex'
-  return source
 }
 
 function scheduleSlotLabel(scheduleSlot: string) {

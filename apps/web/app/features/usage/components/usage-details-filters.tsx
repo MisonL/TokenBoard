@@ -77,5 +77,6 @@ function filterControlClass(extra = '') {
 const sourceOptions = [
   { value: 'all', label: '全部' },
   { value: 'claude-code', label: 'Claude Code' },
-  { value: 'codex', label: 'Codex' }
+  { value: 'codex', label: 'Codex' },
+  { value: 'antigravity-cli', label: 'Antigravity CLI (agy)' }
 ]

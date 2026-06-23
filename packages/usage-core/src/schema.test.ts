@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { usageSnapshotSchema, type UsageSnapshot } from './schema'
+import { usageSnapshotSchema, usageSourceSchema, type UsageSnapshot } from './schema'
 
 const baseSnapshot: UsageSnapshot = {
   source: 'codex',
@@ -17,6 +17,18 @@ const baseSnapshot: UsageSnapshot = {
 }
 
 describe('usage snapshot schema', () => {
+  test('accepts Antigravity CLI source', () => {
+    expect(usageSourceSchema.parse('antigravity-cli')).toBe('antigravity-cli')
+    expect(usageSnapshotSchema.parse({
+      ...baseSnapshot,
+      source: 'antigravity-cli'
+    }).source).toBe('antigravity-cli')
+  })
+
+  test('rejects unknown sources', () => {
+    expect(() => usageSourceSchema.parse('agy')).toThrow()
+  })
+
   test('rejects invalid IANA timezones', () => {
     expect(() =>
       usageSnapshotSchema.parse({

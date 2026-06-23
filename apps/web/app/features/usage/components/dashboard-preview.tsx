@@ -3,8 +3,9 @@ import { LinkButton } from '../../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { formatPercentRate } from '../../../lib/usage-metrics'
 import type { DashboardSummary } from '../service'
+import { formatSource, hasUnavailableCostSource } from '../source-format'
 import { UsageMetricCard, UsageMetricGrid } from './usage-metric-card'
-import { formatUsageMetricInteger, formatUsageMetricUsd } from './usage-metric-format'
+import { formatUsageMetricInteger, formatUsageMetricUsdWithAvailability } from './usage-metric-format'
 
 export function DashboardPreview(props: { summary: DashboardSummary; userName?: string }) {
   const totalSourceTokens = props.summary.sourceSplit.reduce(
@@ -24,6 +25,7 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
     (total, item) => total + item.totalTokensWithoutCacheRead,
     0
   )
+  const hasUnavailableCost = hasUnavailableCostSource(props.summary.sourceSplit)
 
   return (
     <section class="mx-auto flex max-w-6xl flex-col gap-3">
@@ -49,11 +51,11 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
         <UsageMetricCard label="今日 tokens" value={formatUsageMetricInteger(props.summary.todayTokens)} tone="lime" />
         <UsageMetricCard label="今日不含缓存读" value={formatUsageMetricInteger(props.summary.todayTokensWithoutCacheRead)} />
         <UsageMetricCard label="今日缓存率" value={formatPercentRate(props.summary.todayCacheReadRate)} />
-        <UsageMetricCard label="今日费用" value={formatUsageMetricUsd(props.summary.todayCostUsd)} />
+        <UsageMetricCard label="今日费用" value={formatUsageMetricUsdWithAvailability(props.summary.todayCostUsd, props.summary.sourceSplit)} />
         <UsageMetricCard label="本月 tokens" value={formatUsageMetricInteger(props.summary.monthTokens)} />
         <UsageMetricCard label="本月不含缓存读" value={formatUsageMetricInteger(props.summary.monthTokensWithoutCacheRead)} />
         <UsageMetricCard label="本月缓存率" value={formatPercentRate(props.summary.monthCacheReadRate)} />
-        <UsageMetricCard label="本月费用" value={formatUsageMetricUsd(props.summary.monthCostUsd)} />
+        <UsageMetricCard label="本月费用" value={formatUsageMetricUsdWithAvailability(props.summary.monthCostUsd, props.summary.sourceSplit)} />
       </UsageMetricGrid>
 
       <section class="grid gap-3 lg:grid-cols-[1.45fr_0.85fr]">
@@ -108,7 +110,9 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
         <Card>
           <CardHeader class="p-4 lg:p-3 xl:p-4">
             <CardTitle>来源占比</CardTitle>
-            <CardDescription>按本月不含缓存读 token 计算，同时保留 total token 对照。</CardDescription>
+            <CardDescription>
+              按本月不含缓存读 token 计算，同时保留 total token 对照。{hasUnavailableCost ? 'Antigravity CLI 费用不可用，不计入费用卡片。' : ''}
+            </CardDescription>
           </CardHeader>
           <CardContent class="space-y-3 p-4 pt-0 text-sm text-[var(--app-muted)] lg:p-3 lg:pt-0 xl:p-4 xl:pt-0">
             {props.summary.sourceSplit.length > 0 ? (
@@ -144,10 +148,6 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
 
 function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
-}
-
-function formatSource(source: string) {
-  return source === 'claude-code' ? 'Claude Code' : 'Codex'
 }
 
 function formatPercent(value: number, total: number) {
