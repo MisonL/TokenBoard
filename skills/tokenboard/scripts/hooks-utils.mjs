@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 export const notifyHandlerMarker = 'TOKENBOARD_NOTIFY_HANDLER'
@@ -141,6 +141,7 @@ export function readOptional(filePath, fs) {
 
 export function nodeFs() {
   return {
+    exists: (path) => existsSync(path),
     mkdir: (path, options) => mkdirSync(path, options),
     readFile: (path) => readFileSync(path, 'utf8'),
     writeFile: (path, value, options) => writeFileSync(path, value, options),

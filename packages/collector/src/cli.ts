@@ -4,13 +4,14 @@ import { fileURLToPath } from 'node:url'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import type { CollectorConfig } from './config'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
+import { collectAntigravityIdeUsage, collectAntigravityUsage } from './providers/antigravity-gui'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
 import { uploadSnapshots } from './upload'
 
 type CliCommand = 'preview' | 'sync' | 'warm-hooks'
-type CliSource = 'claude-code' | 'codex' | 'antigravity-cli' | 'all'
+type CliSource = 'claude-code' | 'codex' | 'antigravity-cli' | 'antigravity' | 'antigravity-ide' | 'all'
 type ConcreteCliSource = Exclude<CliSource, 'all'>
 
 type CliEnv = Partial<Record<string, string>>
@@ -25,6 +26,8 @@ type CliDeps = {
   collectClaudeCodeUsage: typeof collectClaudeCodeUsage
   collectCodexUsage: typeof collectCodexUsage
   collectAntigravityCliUsage?: typeof collectAntigravityCliUsage
+  collectAntigravityUsage?: typeof collectAntigravityUsage
+  collectAntigravityIdeUsage?: typeof collectAntigravityIdeUsage
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
@@ -36,6 +39,8 @@ const defaultDeps: CliDeps = {
   collectClaudeCodeUsage,
   collectCodexUsage,
   collectAntigravityCliUsage,
+  collectAntigravityUsage,
+  collectAntigravityIdeUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
   warmHookCursorHighWater
@@ -98,7 +103,9 @@ export async function runCollectorCli(
 }
 
 function expandSources(source: CliSource): ConcreteCliSource[] {
-  return source === 'all' ? ['claude-code', 'codex', 'antigravity-cli'] : [source]
+  return source === 'all'
+    ? ['claude-code', 'codex', 'antigravity-cli']
+    : [source]
 }
 
 async function warmHookCursors(
@@ -112,7 +119,7 @@ async function warmHookCursors(
   if (since !== 'all') return
   const stateDir = resolveStateDir(env)
   for (const source of collectedSources.filter((item) => item !== 'all')) {
-    if (source === 'antigravity-cli') continue
+    if (source.startsWith('antigravity')) continue
     const sessionsDir = source === 'codex'
       ? join(env.CODEX_HOME || join(homedir(), '.codex'), 'sessions')
       : join(env.CLAUDE_CONFIG_DIR || env.CLAUDE_HOME || join(homedir(), '.claude'), 'projects')
@@ -160,6 +167,16 @@ async function collectSnapshots(source: CliSource, timezone: string, deps: CliDe
     collectedSources.push(source)
   }
 
+  if (source === 'antigravity') {
+    snapshots.push(...(await readAntigravityGuiCollector(deps)({ timezone, stateDir: resolveStateDir(env) })))
+    collectedSources.push(source)
+  }
+
+  if (source === 'antigravity-ide') {
+    snapshots.push(...(await readAntigravityIdeCollector(deps)({ timezone, stateDir: resolveStateDir(env) })))
+    collectedSources.push(source)
+  }
+
   return { snapshots, collectedSources, sourceFailures }
 }
 
@@ -176,6 +193,14 @@ async function collectAllSnapshots(timezone: string, deps: CliDeps, env: CliEnv 
 
 function readAntigravityCollector(deps: CliDeps) {
   return deps.collectAntigravityCliUsage ?? noopAntigravityCollector
+}
+
+function readAntigravityGuiCollector(deps: CliDeps) {
+  return deps.collectAntigravityUsage ?? noopAntigravityCollector
+}
+
+function readAntigravityIdeCollector(deps: CliDeps) {
+  return deps.collectAntigravityIdeUsage ?? noopAntigravityCollector
 }
 
 async function noopAntigravityCollector(): Promise<UsageSnapshot[]> {
@@ -233,11 +258,18 @@ function readCommand(value: string | undefined): CliCommand {
     return value
   }
 
-  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|all]')
+  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|all]')
 }
 
 function readSource(value: string): CliSource {
-  if (value === 'claude-code' || value === 'codex' || value === 'antigravity-cli' || value === 'all') {
+  if (
+    value === 'claude-code' ||
+    value === 'codex' ||
+    value === 'antigravity-cli' ||
+    value === 'antigravity' ||
+    value === 'antigravity-ide' ||
+    value === 'all'
+  ) {
     return value
   }
 

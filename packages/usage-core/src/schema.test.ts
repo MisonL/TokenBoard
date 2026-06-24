@@ -17,12 +17,14 @@ const baseSnapshot: UsageSnapshot = {
 }
 
 describe('usage snapshot schema', () => {
-  test('accepts Antigravity CLI source', () => {
-    expect(usageSourceSchema.parse('antigravity-cli')).toBe('antigravity-cli')
-    expect(usageSnapshotSchema.parse({
-      ...baseSnapshot,
-      source: 'antigravity-cli'
-    }).source).toBe('antigravity-cli')
+  test('accepts Antigravity sources', () => {
+    for (const source of ['antigravity-cli', 'antigravity', 'antigravity-ide'] as const) {
+      expect(usageSourceSchema.parse(source)).toBe(source)
+      expect(usageSnapshotSchema.parse({
+        ...baseSnapshot,
+        source
+      }).source).toBe(source)
+    }
   })
 
   test('rejects unknown sources', () => {

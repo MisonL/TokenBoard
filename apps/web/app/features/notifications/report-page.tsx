@@ -57,7 +57,7 @@ export function SharedDailyReportPage(props: {
           />
           <ReportList
             title="主要模型"
-            description={`按不含缓存读 token 排序，费用为当前日报快照的估算值。${hasUnavailableCostSource(props.report.sourceSplit) ? 'Antigravity CLI 费用不可用。' : ''}`}
+            description={`按不含缓存读 token 排序，费用为当前日报快照的估算值。${hasUnavailableCostSource(props.report.sourceSplit) ? 'Antigravity 费用不可用。' : ''}`}
             items={props.report.topModels.map((item) => ({
               name: item.model,
               value: `${formatInteger(item.totalTokensWithoutCacheRead)} / ${formatInteger(item.totalTokens)} tokens`,

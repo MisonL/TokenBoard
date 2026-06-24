@@ -69,6 +69,8 @@ export function stripCollectedAt(snapshot: UsageSnapshot): CursorSnapshot {
 export function cursorFileName(source: UsageSource) {
   if (source === 'codex') return 'codex-cursor.json'
   if (source === 'antigravity-cli') return 'antigravity-cli-cursor.json'
+  if (source === 'antigravity') return 'antigravity-cursor.json'
+  if (source === 'antigravity-ide') return 'antigravity-ide-cursor.json'
   return 'claude-code-cursor.json'
 }
 
@@ -101,7 +103,13 @@ function isValidCursorEntry(value: unknown): value is CursorEntry {
 function isValidCursorSnapshot(value: unknown): value is CursorSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as CursorSnapshot
-  if (candidate.source !== 'codex' && candidate.source !== 'claude-code' && candidate.source !== 'antigravity-cli') return false
+  if (
+    candidate.source !== 'codex' &&
+    candidate.source !== 'claude-code' &&
+    candidate.source !== 'antigravity-cli' &&
+    candidate.source !== 'antigravity' &&
+    candidate.source !== 'antigravity-ide'
+  ) return false
   return typeof candidate.usageDate === 'string' &&
     typeof candidate.timezone === 'string' &&
     typeof candidate.model === 'string' &&

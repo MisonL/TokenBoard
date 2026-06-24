@@ -85,6 +85,36 @@ test('hook paths prefer CLAUDE_CONFIG_DIR for Claude settings', () => {
   assert.equal(paths.claudeSettingsPath, '/custom/claude-config/settings.json')
 })
 
+test('hook paths include Antigravity CLI, IDE, and standalone homes', () => {
+  const paths = hookPaths({
+    homeDir: '/home/user',
+    stateDir: '/home/user/.tokenboard',
+    env: {
+      ANTIGRAVITY_CONFIG_DIR: '/custom/agy-cli',
+      ANTIGRAVITY_IDE_CONFIG_DIR: '/custom/agy-ide',
+      ANTIGRAVITY_APP_CONFIG_DIR: '/custom/agy-app'
+    }
+  })
+
+  assert.equal(paths.antigravitySettingsPath, '/custom/agy-cli/settings.json')
+  assert.equal(paths.antigravityIdePath, '/custom/agy-ide')
+  assert.equal(paths.antigravityPath, '/custom/agy-app')
+})
+
+test('status detects Antigravity GUI products without token export support', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.antigravityIdePath]: '',
+    [paths.antigravityPath]: ''
+  })
+
+  const status = hookStatus({ paths, fs })
+
+  assert.equal(status.antigravityCli, 'not-installed')
+  assert.equal(status.antigravityIde, 'installed-no-token-export')
+  assert.equal(status.antigravity, 'installed-no-token-export')
+})
+
 test('rejects unsupported hook sources even when all is also present', () => {
   const paths = createPaths()
   const fs = memoryFs({})
@@ -572,7 +602,11 @@ function createPaths() {
     notifyScriptPath: '/repo/scripts/notify.mjs',
     codexConfigPath: '/home/user/.codex/config.toml',
     codexOriginalPath: '/home/user/.tokenboard/codex_notify_original.json',
-    claudeSettingsPath: '/home/user/.claude/settings.json'
+    claudeSettingsPath: '/home/user/.claude/settings.json',
+    antigravitySettingsPath: '/home/user/.gemini/antigravity-cli/settings.json',
+    antigravityOriginalStatuslinePath: '/home/user/.tokenboard/antigravity_statusline_original.json',
+    antigravityIdePath: '/home/user/.gemini/antigravity-ide',
+    antigravityPath: '/home/user/.gemini/antigravity'
   }
 }
 
@@ -584,7 +618,11 @@ function createWindowsPaths() {
     notifyScriptPath: 'C:\\repo\\scripts\\notify.mjs',
     codexConfigPath: 'C:\\Users\\user\\.codex\\config.toml',
     codexOriginalPath: 'C:\\Users\\user\\.tokenboard\\codex_notify_original.json',
-    claudeSettingsPath: 'C:\\Users\\user\\.claude\\settings.json'
+    claudeSettingsPath: 'C:\\Users\\user\\.claude\\settings.json',
+    antigravitySettingsPath: 'C:\\Users\\user\\.gemini\\antigravity-cli\\settings.json',
+    antigravityOriginalStatuslinePath: 'C:\\Users\\user\\.tokenboard\\antigravity_statusline_original.json',
+    antigravityIdePath: 'C:\\Users\\user\\.gemini\\antigravity-ide',
+    antigravityPath: 'C:\\Users\\user\\.gemini\\antigravity'
   }
 }
 
@@ -592,6 +630,7 @@ function memoryFs(initial = {}) {
   const files = new Map(Object.entries(initial))
   return {
     files,
+    exists: (path) => files.has(path),
     mkdir: () => {},
     readFile: (path) => {
       if (!files.has(path)) {

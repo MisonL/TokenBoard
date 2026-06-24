@@ -16,6 +16,10 @@ export function hookPaths({ homeDir = homedir(), stateDir = configDir(), env = p
   const antigravityHome = resolveEnvPath(env.ANTIGRAVITY_CONFIG_DIR) ||
     resolveEnvPath(env.ANTIGRAVITY_HOME) ||
     join(homeDir, '.gemini', 'antigravity-cli')
+  const antigravityIdeHome = resolveEnvPath(env.ANTIGRAVITY_IDE_CONFIG_DIR) ||
+    join(homeDir, '.gemini', 'antigravity-ide')
+  const antigravityAppHome = resolveEnvPath(env.ANTIGRAVITY_APP_CONFIG_DIR) ||
+    join(homeDir, '.gemini', 'antigravity')
   return {
     stateDir: tokenboardHome,
     binDir,
@@ -26,6 +30,8 @@ export function hookPaths({ homeDir = homedir(), stateDir = configDir(), env = p
     codexOriginalPath: join(tokenboardHome, 'codex_notify_original.json'),
     claudeSettingsPath: join(claudeHome, 'settings.json'),
     antigravitySettingsPath: join(antigravityHome, 'settings.json'),
+    antigravityIdePath: antigravityIdeHome,
+    antigravityPath: antigravityAppHome,
     antigravityOriginalStatuslinePath: join(tokenboardHome, 'antigravity_statusline_original.json')
   }
 }
@@ -110,7 +116,9 @@ export function hookStatus(options = {}) {
     notifyHandler: isTokenBoardNotifyHandler(readOptional(paths.notifyPath, fs)) ? 'installed' : 'not-installed',
     codex: getCodexHookStatus({ paths, fs }),
     claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform }),
-    antigravityCli: getAntigravityHookStatus({ paths, fs })
+    antigravityCli: getAntigravityHookStatus({ paths, fs }),
+    antigravityIde: getAntigravityGuiStatus(paths.antigravityIdePath, fs),
+    antigravity: getAntigravityGuiStatus(paths.antigravityPath, fs)
   }
 }
 
@@ -295,6 +303,20 @@ function canRemoveNotifyHandler(status) {
 
 function needsNotifyHandler(sources) {
   return sources.includes(codexSource) || sources.includes(claudeSource)
+}
+
+function getAntigravityGuiStatus(path, fs) {
+  if (!path) return 'not-installed'
+  try {
+    return pathExists(path, fs) ? 'installed-no-token-export' : 'not-installed'
+  } catch {
+    return 'error'
+  }
+}
+
+function pathExists(path, fs) {
+  if (typeof fs.exists === 'function') return fs.exists(path)
+  return readOptional(path, fs) !== null
 }
 
 function resolveEnvPath(value) {

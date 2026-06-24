@@ -78,5 +78,7 @@ const sourceOptions = [
   { value: 'all', label: '全部' },
   { value: 'claude-code', label: 'Claude Code' },
   { value: 'codex', label: 'Codex' },
-  { value: 'antigravity-cli', label: 'Antigravity CLI (agy)' }
+  { value: 'antigravity-cli', label: 'Antigravity CLI (agy)' },
+  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'antigravity-ide', label: 'Antigravity IDE' }
 ]

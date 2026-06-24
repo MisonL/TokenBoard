@@ -37,6 +37,44 @@ describe('runCollectorCli Antigravity source', () => {
     expect(JSON.parse(stdout[0])).toEqual([antigravitySnapshot])
   })
 
+  test('previews the standalone Antigravity source', async () => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'antigravity'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai', TOKENBOARD_STATE_DIR: '/state' },
+      deps({
+        stdout: (line) => stdout.push(line),
+        collectAntigravityUsage: async (options) => {
+          expect(options?.stateDir).toBe('/state')
+          return [{ ...antigravitySnapshot, source: 'antigravity' }]
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([{ ...antigravitySnapshot, source: 'antigravity' }])
+  })
+
+  test('previews the standalone Antigravity IDE source', async () => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'antigravity-ide'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai', TOKENBOARD_STATE_DIR: '/state' },
+      deps({
+        stdout: (line) => stdout.push(line),
+        collectAntigravityIdeUsage: async (options) => {
+          expect(options?.stateDir).toBe('/state')
+          return [{ ...antigravitySnapshot, source: 'antigravity-ide' }]
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([{ ...antigravitySnapshot, source: 'antigravity-ide' }])
+  })
+
   test('treats missing Antigravity statusline capture as optional in all mode', async () => {
     const stderr: string[] = []
 
@@ -55,6 +93,27 @@ describe('runCollectorCli Antigravity source', () => {
     expect(stderr).toEqual([
       'Skipping antigravity-cli source: Antigravity CLI statusline log not found: /state/antigravity-cli-statusline.jsonl'
     ])
+  })
+
+  test('does not probe GUI Antigravity sources in all mode', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          throw new Error('standalone GUI probe should not run')
+        },
+        collectAntigravityIdeUsage: async () => {
+          throw new Error('IDE GUI probe should not run')
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(stderr).toEqual([])
   })
 })
 
