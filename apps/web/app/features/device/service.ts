@@ -564,7 +564,9 @@ export async function rotateUploadToken(
       now
     })
   )
-  await db.batch(statements)
+  const results = await db.batch(statements)
+  assertDeviceBatchSucceeded(results)
+  assertRotatedTokenUpdates(results, Boolean(installationId))
 
   return {
     uploadTokenId,
@@ -718,6 +720,31 @@ function createTokenRotateAuditStatement(
       }),
       input.now
     )
+}
+
+function assertDeviceBatchSucceeded(results: D1Result<unknown>[]) {
+  const batchResults = results as Array<{ success?: boolean; error?: string }>
+  const failedIndex = batchResults.findIndex((result) => result.success === false)
+  if (failedIndex < 0) return
+
+  const error = batchResults[failedIndex]?.error
+  throw new Error(
+    `D1 batch statement ${failedIndex + 1} failed${error ? `: ${error}` : ''}`
+  )
+}
+
+function assertRotatedTokenUpdates(results: D1Result<unknown>[], rotatedInstallClaim: boolean) {
+  assertChangedResult(results[1], 'Upload token is no longer current')
+  if (rotatedInstallClaim) {
+    assertChangedResult(results[2], 'Installation is no longer current')
+  }
+}
+
+function assertChangedResult(result: D1Result<unknown> | undefined, message: string) {
+  if (result?.meta?.changes === undefined) return
+  const changes = Number(result.meta.changes)
+  if (!Number.isFinite(changes) || changes > 0) return
+  throw new ApiError('NOT_FOUND', message, 404)
 }
 
 async function findUploadTokenForUser(db: D1Database, userId: string, uploadTokenId: string) {

@@ -672,7 +672,7 @@ describe('device management', () => {
       },
       async batch(statements: unknown[]) {
         batchStatements.push(...statements)
-        return []
+        return statements.map(() => ({ meta: { changes: 1 } }))
       }
     } as unknown as D1Database
 
@@ -739,6 +739,42 @@ describe('device management', () => {
     ])
   })
 
+  test('fails token rotation when the old token update no longer matches', async () => {
+    const db = createRotateTokenDb({
+      batchResults: [
+        { meta: { changes: 1 } },
+        { meta: { changes: 0 } },
+        { meta: { changes: 1 } },
+        { meta: { changes: 1 } }
+      ]
+    })
+
+    await expect(
+      rotateUploadToken(db, { userId: 'user_1', uploadTokenId: 'ut_old' }, rotateDeps())
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Upload token is no longer current'
+    })
+  })
+
+  test('fails token rotation when the installation claim update no longer matches', async () => {
+    const db = createRotateTokenDb({
+      batchResults: [
+        { meta: { changes: 1 } },
+        { meta: { changes: 1 } },
+        { meta: { changes: 0 } },
+        { meta: { changes: 1 } }
+      ]
+    })
+
+    await expect(
+      rotateUploadToken(db, { userId: 'user_1', uploadTokenId: 'ut_old' }, rotateDeps())
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Installation is no longer current'
+    })
+  })
+
   test('rejects blank device names from forms', () => {
     expect(() => parseDeviceNameForm({ name: '   ' })).toThrow()
     expect(parseDeviceNameForm({ name: '  Laptop  ' })).toBe('Laptop')
@@ -769,6 +805,41 @@ function createRunDb(
           }
         }
       }
+    }
+  } as unknown as D1Database
+}
+
+function rotateDeps() {
+  return {
+    now: () => '2026-04-29T09:00:00.000Z',
+    randomTokenId: () => 'ut_new',
+    randomAuditId: () => 'audit_1',
+    randomToken: () => 'tb_upload_new',
+    randomInstallClaim: () => 'tb_install_new',
+    hash: async (value: string) => `hash:${value}`
+  }
+}
+
+function createRotateTokenDb(options: { batchResults: Array<{ meta: { changes: number } }> }) {
+  return {
+    prepare() {
+      return {
+        bind() {
+          return {
+            async first() {
+              return {
+                name: 'Office PC',
+                deviceId: 'dev_1',
+                installationId: 'inst_1',
+                revokedAt: null
+              }
+            }
+          }
+        }
+      }
+    },
+    async batch() {
+      return options.batchResults
     }
   } as unknown as D1Database
 }
