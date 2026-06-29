@@ -160,7 +160,7 @@ upload token 仍然只展示一次，服务端仍然只保存 `token_hash`。
 
 ## device-link.json
 
-可以额外保留一个恢复状态文件，例如：
+client 会额外保留一个恢复状态文件：
 
 ```txt
 ~/.tokenboard/device-link.json
@@ -188,6 +188,7 @@ upload token 仍然只展示一次，服务端仍然只保存 `token_hash`。
 - `uninstall` 默认保留该文件。
 - `uninstall --all` 删除该文件。
 - token 轮换或设备重连时，应同步轮换 claim，或显式使旧 claim hash 失效。
+- 当前实现只写入和展示存在性，不会用它静默换取新 token。
 
 ## 配对类型
 
@@ -421,13 +422,15 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - ingest 成功后更新 device 与 installation 的同步时间；
 - Web 设备页提供“重新连接”入口，并复用安装页生成绑定旧设备的 pairing code；
 - client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
+- client 写入 `device-link.json`，服务端只保存 `installClaim` hash，status 只展示文件存在性；
+- 已提供 token / installation / device 三种撤销作用域 helper，Web UI 当前只暴露 device 级停用；
 - TokenBoard skill 与安装提示词已说明多 server profile 和 Antigravity hook opt-in 边界。
 
 仍保留为后续阶段：
 
-- `device-link.json` claim 恢复；
+- 使用 `device-link.json` claim 自动辅助重连；
 - reconnect / token rotation 的 step-up 验证；
-- installation 级撤销与设备详情审计 UI；
+- installation 级撤销 UI、token 轮换 UI 与设备详情审计 UI；
 - 手动合并设备。
 
 ## 风险和缓解
@@ -457,7 +460,7 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - 重新连接旧设备时，默认只吊销旧 installation 的 token，还是吊销整个 device 的 token？
 - token 轮换是否需要灰度期，还是第一版坚持立即吊销？
 - 第一版是否提供手动合并设备，还是延后到审计 UI 更完善后？
-- 第一版是否实现 `device-link.json`，还是先只实现 Web UI 显式重连？
+- `device-link.json` claim 何时接入自动辅助重连，以及需要怎样的用户确认和 step-up？
 
 ## 决策摘要
 

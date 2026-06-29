@@ -12,6 +12,7 @@ import {
   writeConfig
 } from './config.mjs'
 import { existsSync } from 'node:fs'
+import { writeDeviceLink } from './device-link.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
@@ -75,6 +76,14 @@ const nextConfig = withServerProfile(currentConfig, serverOrigin, {
   createdAt: new Date().toISOString()
 })
 writeConfig(nextConfig)
+if (paired.installClaim) {
+  writeDeviceLink({
+    serverOrigin,
+    deviceId: paired.deviceId,
+    installationId: paired.installationId,
+    installClaim: paired.installClaim
+  })
+}
 console.log('TokenBoard config written.')
 
 function scriptPath(name) {
