@@ -130,6 +130,32 @@ describe('D1DevicePairingRepository', () => {
     expect(batches[0]).toHaveLength(2)
   })
 
+  test('finds an installation by stored install claim hash', async () => {
+    const { db, sqlStatements, bindings } = createRecordingDb({
+      id: 'inst_1',
+      userId: 'user_1',
+      deviceId: 'dev_1',
+      revokedAt: null
+    })
+    const repository = new D1DevicePairingRepository(db)
+
+    await expect(
+      repository.findInstallationByClaim({
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaimHash: 'hash:claim'
+      })
+    ).resolves.toEqual({
+      id: 'inst_1',
+      userId: 'user_1',
+      deviceId: 'dev_1',
+      revokedAt: null
+    })
+    expect(sqlStatements[0]).toContain('FROM device_installations')
+    expect(sqlStatements[0]).toContain('install_claim_hash = ?')
+    expect(bindings[0]).toEqual(['inst_1', 'dev_1', 'hash:claim'])
+  })
+
   test('records device pairing audit logs', async () => {
     const { db, sqlStatements, bindings } = createRecordingDb()
     const repository = new D1DevicePairingRepository(db)

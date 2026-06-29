@@ -59,6 +59,7 @@ function createInstallPromptIntro() {
     '- 如果已经安装旧版 TokenBoard collector，更新现有 checkout 后重新运行 setup；setup 会为当前 server 写入独立 profile，刷新 upload token/deviceId/installationId 和每日定时任务，不会覆盖其它 server 的已保存凭证。',
     '- 不要为了升级手动删除 ~/.tokenboard/config.json，也不要卸载旧计划任务；除非用户明确要求重装或卸载。',
     '- setup 可能写入 ~/.tokenboard/device-link.json 作为敏感恢复状态；不要打印、复制或上传这个文件。',
+    '- 只有用户明确要求用本机 device-link 恢复旧设备时，才允许在没有 --pairing-code 的恢复命令中使用 --use-device-link；失败必须停止，不要改成新设备安装。',
     '- 如果已经安装了 TokenBoard skill，可以直接运行其中的 setup 脚本；否则用 git clone/update 仓库后运行脚本。',
     '- 如果提示词里带有 --repo-ref 或 --branch，请保留它们，不要改回默认分支。',
     '- 首次安装默认执行全量同步，用于补齐历史 Claude Code / Codex / Antigravity 用量；不要擅自改成最近 7 天窗口。',

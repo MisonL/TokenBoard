@@ -45,3 +45,38 @@ export function buildInstallCollectorArgs({ flags = {}, packageManager, installC
   }
   return args
 }
+
+export function shouldUseDeviceLink(flags = {}, env = process.env) {
+  return Boolean(flags['use-device-link'] || env.TOKENBOARD_USE_DEVICE_LINK === '1')
+}
+
+export async function createPairingCodeFromDeviceLink({
+  baseUrl,
+  readDeviceLink,
+  fetcher = fetch
+} = {}) {
+  if (!baseUrl) {
+    throw new Error('Missing --base-url or TOKENBOARD_BASE_URL')
+  }
+  const deviceLink = readDeviceLink()
+  if (!deviceLink) {
+    throw new Error('TokenBoard device link not found')
+  }
+  const response = await fetcher(`${baseUrl}/api/v1/device/reconnect-pairing-codes`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: deviceLink.deviceId,
+      installationId: deviceLink.installationId,
+      installClaim: deviceLink.installClaim
+    })
+  })
+  if (!response.ok) {
+    throw new Error(`Device-link reconnect failed with status ${response.status}`)
+  }
+  const result = await response.json()
+  if (!result || typeof result.pairingCode !== 'string' || result.pairingCode.trim() === '') {
+    throw new Error('Device-link reconnect response did not include a pairing code')
+  }
+  return result.pairingCode
+}

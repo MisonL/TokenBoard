@@ -96,6 +96,8 @@ describe('InstallCommand', () => {
     expect(prompt).toContain('不要为了升级手动删除 ~/.tokenboard/config.json')
     expect(prompt).toContain('~/.tokenboard/device-link.json 作为敏感恢复状态')
     expect(prompt).toContain('不要打印、复制或上传这个文件')
+    expect(prompt).toContain('只有用户明确要求用本机 device-link 恢复旧设备')
+    expect(prompt).toContain('失败必须停止，不要改成新设备安装')
     expect(prompt).toContain('当前 server 写入独立 profile')
     expect(prompt).toContain('刷新 upload token/deviceId/installationId 和每日定时任务')
     expect(prompt).toContain('不会覆盖其它 server 的已保存凭证')

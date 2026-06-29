@@ -1,4 +1,8 @@
-import type { DevicePairingRepository, PairingCodeRecord } from './service'
+import type {
+  DeviceInstallationClaimRecord,
+  DevicePairingRepository,
+  PairingCodeRecord
+} from './service'
 
 type InstallationInput = {
   uploadTokenId: string
@@ -84,6 +88,32 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       .bind(deviceId, userId)
       .first<{ id: string }>()
     return Boolean(row)
+  }
+
+  async findInstallationByClaim(input: {
+    deviceId: string
+    installationId: string
+    installClaimHash: string
+  }): Promise<DeviceInstallationClaimRecord | null> {
+    const row = await this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            user_id as userId,
+            device_id as deviceId,
+            revoked_at as revokedAt
+          FROM device_installations
+          WHERE id = ?
+            AND device_id = ?
+            AND install_claim_hash = ?
+          LIMIT 1
+        `
+      )
+      .bind(input.installationId, input.deviceId, input.installClaimHash)
+      .first<DeviceInstallationClaimRecord>()
+
+    return row ?? null
   }
 
   async createUploadTokenAndDevice(input: {

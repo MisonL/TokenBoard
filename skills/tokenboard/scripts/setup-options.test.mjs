@@ -4,7 +4,9 @@ import {
   buildInitialSyncArgs,
   buildInstallCollectorArgs,
   buildWarmHookCursorArgs,
+  createPairingCodeFromDeviceLink,
   readSetupBaseUrl,
+  shouldUseDeviceLink,
   shouldWarmHookCursorsBeforeInstall
 } from './setup-options.mjs'
 
@@ -54,6 +56,55 @@ test('setup base url must come from flags or environment', () => {
       env: { TOKENBOARD_BASE_URL: 'https://tokenboard.example.com' }
     }),
     'https://install.tokenboard.example.com'
+  )
+})
+
+test('device-link reconnect setup is explicit opt-in', () => {
+  assert.equal(shouldUseDeviceLink({}, {}), false)
+  assert.equal(shouldUseDeviceLink({ 'use-device-link': true }, {}), true)
+  assert.equal(shouldUseDeviceLink({}, { TOKENBOARD_USE_DEVICE_LINK: '1' }), true)
+})
+
+test('device-link reconnect exchanges local claim for a pairing code', async () => {
+  const requests = []
+  const pairingCode = await createPairingCodeFromDeviceLink({
+    baseUrl: 'https://tokenboard.example.com',
+    readDeviceLink: () => ({
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'claim-secret'
+    }),
+    fetcher: async (url, init) => {
+      requests.push({ url, init })
+      return Response.json({ pairingCode: 'pairing-code' })
+    }
+  })
+
+  assert.equal(pairingCode, 'pairing-code')
+  assert.equal(requests[0].url, 'https://tokenboard.example.com/api/v1/device/reconnect-pairing-codes')
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    deviceId: 'dev_1',
+    installationId: 'inst_1',
+    installClaim: 'claim-secret'
+  })
+})
+
+test('device-link reconnect fails visibly without leaking the claim', async () => {
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      fetcher: async () => new Response('claim-secret', { status: 401 })
+    }),
+    (error) => {
+      assert.equal(error.message, 'Device-link reconnect failed with status 401')
+      assert.equal(error.message.includes('claim-secret'), false)
+      return true
+    }
   )
 })
 

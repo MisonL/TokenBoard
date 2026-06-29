@@ -27,6 +27,11 @@ export type DevicePairingRepository = {
     createdAt: string
   }): Promise<void>
   ensureDeviceOwnedByUser(userId: string, deviceId: string): Promise<boolean>
+  findInstallationByClaim(input: {
+    deviceId: string
+    installationId: string
+    installClaimHash: string
+  }): Promise<DeviceInstallationClaimRecord | null>
   createUploadTokenAndDevice(input: {
     uploadTokenId: string
     uploadTokenHash: string
@@ -60,6 +65,13 @@ export type DevicePairingRepository = {
     createdAt: string
   }): Promise<void>
   consumePairingCode(pairingCodeId: string, consumedAt: string): Promise<boolean>
+}
+
+export type DeviceInstallationClaimRecord = {
+  id: string
+  userId: string
+  deviceId: string
+  revokedAt: string | null
 }
 
 export type PairDeviceDeps = {
@@ -568,6 +580,71 @@ export async function createPairingCode(
     pairingCode,
     expiresAt
   }
+}
+
+export async function createReconnectPairingCodeFromClaim(
+  repository: DevicePairingRepository,
+  input: {
+    deviceId: string
+    installationId: string
+    installClaim: string
+  },
+  deps: CreatePairingCodeDeps,
+  ttlMinutes = 30
+) {
+  const normalized = normalizeInstallClaimInput(input)
+  const installClaimHash = await deps.hash(normalized.installClaim)
+  const installation = await repository.findInstallationByClaim({
+    deviceId: normalized.deviceId,
+    installationId: normalized.installationId,
+    installClaimHash
+  })
+  if (!installation || installation.revokedAt) {
+    throw new ApiError('UNAUTHORIZED', 'Invalid device link claim', 401)
+  }
+
+  const result = await createPairingCode(repository, installation.userId, deps, ttlMinutes, {
+    pairingType: 'reconnect_device',
+    targetDeviceId: normalized.deviceId,
+    metadata: JSON.stringify({
+      method: 'device-link',
+      installationId: normalized.installationId
+    })
+  })
+  const createdAt = deps.now().toISOString()
+  await repository.createAuditLog({
+    auditLogId: deps.randomId(),
+    userId: installation.userId,
+    actorType: 'user',
+    action: 'device.reconnect.claim',
+    targetType: 'device',
+    targetId: normalized.deviceId,
+    metadata: JSON.stringify({ installationId: normalized.installationId }),
+    createdAt
+  })
+  return result
+}
+
+function normalizeInstallClaimInput(input: {
+  deviceId: string
+  installationId: string
+  installClaim: string
+}) {
+  const deviceId = requiredTrimmedString(input.deviceId, 'deviceId')
+  const installationId = requiredTrimmedString(input.installationId, 'installationId')
+  const installClaim = requiredTrimmedString(input.installClaim, 'installClaim')
+  return { deviceId, installationId, installClaim }
+}
+
+function requiredTrimmedString(value: unknown, name: string) {
+  if (typeof value !== 'string') {
+    throw new ApiError('BAD_REQUEST', `Missing ${name}`, 400)
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    throw new ApiError('BAD_REQUEST', `Missing ${name}`, 400)
+  }
+  return trimmed
 }
 
 export async function pairDevice(

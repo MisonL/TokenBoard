@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { ApiError } from '../../lib/errors'
 import {
   createPairingCode,
+  createReconnectPairingCodeFromClaim,
   listDeviceAuditLogs,
   listUserDevices,
   parseDeviceNameForm,
@@ -35,6 +36,15 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
     async ensureDeviceOwnedByUser(userId, deviceId) {
       calls.push(`own:${userId}:${deviceId}`)
       return true
+    },
+    async findInstallationByClaim(input) {
+      calls.push(`claim:${input.deviceId}:${input.installationId}:${input.installClaimHash}`)
+      return {
+        id: input.installationId,
+        userId: 'seed-user',
+        deviceId: input.deviceId,
+        revokedAt: null
+      }
     },
     async createUploadTokenAndDevice(input) {
       calls.push(
@@ -110,6 +120,64 @@ describe('pairDevice', () => {
       'own:seed-user:dev_old',
       'pair:seed-user:hash:pairing-token-fixture:reconnect_device:dev_old:2026-04-28T10:10:00.000Z'
     ])
+  })
+
+  test('creates a reconnect pairing code from a valid install claim', async () => {
+    const { repository, calls } = createRepository()
+
+    const result = await createReconnectPairingCodeFromClaim(
+      repository,
+      {
+        deviceId: 'dev_old',
+        installationId: 'inst_old',
+        installClaim: 'claim-fixture'
+      },
+      {
+        now: () => new Date('2026-04-28T10:00:00.000Z'),
+        randomId: createTokenSequence(['pair_123', 'audit_123']),
+        randomToken: () => 'pairing-token-fixture',
+        hash: async (value) => `hash:${value}`
+      },
+      10
+    )
+
+    expect(result).toEqual({
+      pairingCode: 'pairing-token-fixture',
+      expiresAt: '2026-04-28T10:10:00.000Z'
+    })
+    expect(calls).toEqual([
+      'claim:dev_old:inst_old:hash:claim-fixture',
+      'own:seed-user:dev_old',
+      'pair:seed-user:hash:pairing-token-fixture:reconnect_device:dev_old:2026-04-28T10:10:00.000Z',
+      'audit:device.reconnect.claim:dev_old'
+    ])
+  })
+
+  test('rejects an invalid install claim before creating pairing code', async () => {
+    const { repository, calls } = createRepository({
+      async findInstallationByClaim(input) {
+        calls.push(`claim:${input.deviceId}:${input.installationId}:${input.installClaimHash}`)
+        return null
+      }
+    })
+
+    await expect(
+      createReconnectPairingCodeFromClaim(
+        repository,
+        {
+          deviceId: 'dev_old',
+          installationId: 'inst_old',
+          installClaim: 'claim-fixture'
+        },
+        {
+          now: () => new Date('2026-04-28T10:00:00.000Z'),
+          randomId: () => 'pair_123',
+          randomToken: () => 'pairing-token-fixture',
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    expect(calls).toEqual(['claim:dev_old:inst_old:hash:claim-fixture'])
   })
 
   test('exchanges a pairing code for a one-time upload token and device config', async () => {

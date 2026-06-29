@@ -12,30 +12,43 @@ import {
   writeConfig
 } from './config.mjs'
 import { existsSync } from 'node:fs'
-import { writeDeviceLink } from './device-link.mjs'
+import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
   buildInstallCollectorArgs,
   buildWarmHookCursorArgs,
+  createPairingCodeFromDeviceLink,
   readSetupBaseUrl,
+  shouldUseDeviceLink,
   shouldWarmHookCursorsBeforeInstall
 } from './setup-options.mjs'
 
 const flags = parseArgs(process.argv.slice(2))
-const pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE
+let pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE
 const baseUrl = readSetupBaseUrl({ flags })
 const timezone = flags.timezone || process.env.TOKENBOARD_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone
 const deviceName = flags['device-name'] || `${hostname()} ${platform()}`
 const packageManager = readPackageManager(flags)
 const scheduleTimes = parseScheduleTimes(flags['schedule-times'] || process.env.TOKENBOARD_SCHEDULE_TIMES || dailyScheduleTimes.join(','))
 
-if (!pairingCode) {
-  console.error('Missing --pairing-code')
-  process.exit(1)
-}
 if (!baseUrl) {
   console.error('Missing --base-url or TOKENBOARD_BASE_URL')
+  process.exit(1)
+}
+if (!pairingCode && shouldUseDeviceLink(flags)) {
+  try {
+    pairingCode = await createPairingCodeFromDeviceLink({
+      baseUrl,
+      readDeviceLink
+    })
+  } catch (error) {
+    console.error(error.message)
+    process.exit(1)
+  }
+}
+if (!pairingCode) {
+  console.error('Missing --pairing-code')
   process.exit(1)
 }
 
