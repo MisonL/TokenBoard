@@ -17,6 +17,7 @@ export type InstallCommandProps = {
   baseUrl: string
   timezone: string
   collectorRepoUrl?: string
+  collectorRepoRef?: string
   pairingCode?: string
   expiresAt?: string
 }
@@ -27,14 +28,17 @@ export function InstallCommand(props: InstallCommandProps) {
         baseUrl: props.baseUrl,
         timezone: props.timezone,
         pairingCode: props.pairingCode,
-        collectorRepoUrl: props.collectorRepoUrl
+        collectorRepoUrl: props.collectorRepoUrl,
+        collectorRepoRef: props.collectorRepoRef
       })
     : ''
   const installHookCommands = createInstallHookCommands({
-    collectorRepoUrl: props.collectorRepoUrl
+    collectorRepoUrl: props.collectorRepoUrl,
+    collectorRepoRef: props.collectorRepoRef
   })
   const uninstallCommands = createUninstallCommands({
-    collectorRepoUrl: props.collectorRepoUrl
+    collectorRepoUrl: props.collectorRepoUrl,
+    collectorRepoRef: props.collectorRepoRef
   })
 
   return (

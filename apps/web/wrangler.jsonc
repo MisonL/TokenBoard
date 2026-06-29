@@ -25,6 +25,8 @@
   ],
   "vars": {
     "BETTER_AUTH_URL": "https://tokenboard.chaosyn.com",
+    "TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/evepupil/TokenBoard.git",
+    "TOKENBOARD_COLLECTOR_REF": "master",
     "TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30",
     "TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50",
     "TOKENBOARD_USAGE_SUMMARY_STRICT": "false",

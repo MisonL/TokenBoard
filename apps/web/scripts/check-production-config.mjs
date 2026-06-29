@@ -26,6 +26,8 @@ if (config.workers_dev !== false) {
 }
 
 validateProductionAuthUrl(readRequiredString(config.vars?.BETTER_AUTH_URL, 'vars.BETTER_AUTH_URL'))
+validateCollectorRepoUrl(readRequiredString(config.vars?.TOKENBOARD_COLLECTOR_REPO_URL, 'vars.TOKENBOARD_COLLECTOR_REPO_URL'))
+validateCollectorRepoRef(readRequiredString(config.vars?.TOKENBOARD_COLLECTOR_REF, 'vars.TOKENBOARD_COLLECTOR_REF'))
 validateProductionRoute(readRequiredString(firstRoute(config).pattern, 'routes[0].pattern'))
 validateProductionDatabaseId(readRequiredString(d1Database(config).database_id, 'd1_databases[DB].database_id'))
 validateOptionalIntegerString(
@@ -208,6 +210,28 @@ function validateProductionAuthUrl(value) {
   }
   if (url.pathname !== '/' || url.search || url.hash) {
     fail(`${CONFIG_FILE} BETTER_AUTH_URL must be an origin without path, query, or hash.`)
+  }
+}
+
+function validateCollectorRepoUrl(value) {
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    fail(`${CONFIG_FILE} vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.`)
+  }
+
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
+    fail(`${CONFIG_FILE} vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.`)
+  }
+  if (!/^\/[^/]+\/[^/]+(?:\.git)?$/.test(url.pathname) || url.search || url.hash) {
+    fail(`${CONFIG_FILE} vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.`)
+  }
+}
+
+function validateCollectorRepoRef(value) {
+  if (!value.trim() || /\s/.test(value)) {
+    fail(`${CONFIG_FILE} vars.TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name.`)
   }
 }
 

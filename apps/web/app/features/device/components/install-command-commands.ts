@@ -2,6 +2,7 @@ export const defaultCollectorRepoUrl = 'https://github.com/evepupil/TokenBoard.g
 
 type CommandInput = {
   collectorRepoUrl?: string
+  collectorRepoRef?: string
 }
 
 type InstallPromptInput = {
@@ -9,20 +10,27 @@ type InstallPromptInput = {
   timezone: string
   pairingCode: string
   collectorRepoUrl?: string
+  collectorRepoRef?: string
 }
 
 function createInstallPromptContext(input: InstallPromptInput) {
   const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
+  const collectorRepoRef = normalizeOptionalRef(input.collectorRepoRef)
   return {
     bashRepoUrl: escapeBashArg(collectorRepoUrl),
+    bashRepoRef: collectorRepoRef ? escapeBashArg(collectorRepoRef) : null,
+    bashOriginRepoRef: collectorRepoRef ? escapeBashArg(`origin/${collectorRepoRef}`) : null,
     bashPairingCode: escapeBashArg(input.pairingCode),
     bashBaseUrl: escapeBashArg(input.baseUrl),
     bashTimezone: escapeBashArg(input.timezone),
     powerShellRepoUrl: escapePowerShellArg(collectorRepoUrl),
+    powerShellRepoRef: collectorRepoRef ? escapePowerShellArg(collectorRepoRef) : null,
+    powerShellOriginRepoRef: collectorRepoRef ? escapePowerShellArg(`origin/${collectorRepoRef}`) : null,
     powerShellPairingCode: escapePowerShellArg(input.pairingCode),
     powerShellBaseUrl: escapePowerShellArg(input.baseUrl),
     powerShellTimezone: escapePowerShellArg(input.timezone),
-    setupRepoArg: collectorRepoUrl === defaultCollectorRepoUrl ? null : collectorRepoUrl
+    setupRepoArg: collectorRepoUrl === defaultCollectorRepoUrl ? null : collectorRepoUrl,
+    setupRepoRefArg: collectorRepoRef
   }
 }
 
@@ -51,6 +59,7 @@ function createInstallPromptIntro() {
     '- 如果已经安装旧版 TokenBoard collector，更新现有 checkout 后重新运行 setup；setup 会重新配对设备、刷新 upload token/deviceId、刷新每日定时任务。',
     '- 不要为了升级手动删除 ~/.tokenboard/config.json，也不要卸载旧计划任务；除非用户明确要求重装或卸载。',
     '- 如果已经安装了 TokenBoard skill，可以直接运行其中的 setup 脚本；否则用 git clone/update 仓库后运行脚本。',
+    '- 如果提示词里带有 --repo-ref 或 --branch，请保留它们，不要改回默认分支。',
     '- 首次安装默认执行全量同步，用于补齐历史 Claude Code / Codex / Antigravity 用量；不要擅自改成最近 7 天窗口。',
     '- 历史会话很多时首次全量可能耗时较长；保持命令运行，不要把长时间解析误判为失败。',
     '- 使用 TOKENBOARD_CODEX_BATCH_SIZE=200 控制 Codex 历史会话分批处理，只有用户明确要求降低资源峰值时才调小。',
@@ -66,39 +75,49 @@ function createInstallPromptIntro() {
 
 function createInstallPromptBashBlock(context: ReturnType<typeof createInstallPromptContext>) {
   const setupRepoArg = context.setupRepoArg ? ` --repo-url ${context.bashRepoUrl}` : ''
+  const setupRepoRefArg = context.setupRepoRefArg ? ` --repo-ref ${context.bashRepoRef}` : ''
+  const cloneRefArg = context.bashRepoRef ? ` --branch ${context.bashRepoRef}` : ''
   return [
     'macOS / Linux / Git Bash：',
     '```bash',
     'repo="$HOME/.tokenboard/TokenBoard"',
     'if [ -d "$repo/.git" ]; then',
+    '  git -C "$repo" remote set-url origin ' + context.bashRepoUrl,
+    context.bashRepoRef ? `  git -C "$repo" fetch origin ${context.bashRepoRef}` : '  git -C "$repo" fetch origin',
+    context.bashRepoRef ? `  git -C "$repo" checkout -B ${context.bashRepoRef} ${context.bashOriginRepoRef}` : '',
     '  git -C "$repo" pull --ff-only',
     'else',
     '  if [ -e "$repo" ]; then rm -rf "$repo"; fi',
     '  mkdir -p "$HOME/.tokenboard"',
-    `  git clone ${context.bashRepoUrl} "$repo"`,
+    `  git clone${cloneRefArg} ${context.bashRepoUrl} "$repo"`,
     'fi',
-    `TOKENBOARD_CODEX_BATCH_SIZE=200 node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${context.bashPairingCode} --base-url ${context.bashBaseUrl} --timezone ${context.bashTimezone} --schedule-times "09:00,12:00,18:00,23:00"${setupRepoArg}`,
+    `TOKENBOARD_CODEX_BATCH_SIZE=200 node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${context.bashPairingCode} --base-url ${context.bashBaseUrl} --timezone ${context.bashTimezone} --schedule-times "09:00,12:00,18:00,23:00"${setupRepoArg}${setupRepoRefArg}`,
     '```'
-  ]
+  ].filter(Boolean)
 }
 
 function createInstallPromptPowerShellBlock(context: ReturnType<typeof createInstallPromptContext>) {
   const setupRepoArg = context.setupRepoArg ? ` --repo-url ${context.powerShellRepoUrl}` : ''
+  const setupRepoRefArg = context.setupRepoRefArg ? ` --repo-ref ${context.powerShellRepoRef}` : ''
+  const cloneRefArg = context.powerShellRepoRef ? ` --branch ${context.powerShellRepoRef}` : ''
   return [
     'Windows PowerShell：',
     '```powershell',
     '$repo = Join-Path $HOME ".tokenboard\\TokenBoard"',
     'if (Test-Path (Join-Path $repo ".git")) {',
+    `  git -C $repo remote set-url origin ${context.powerShellRepoUrl}`,
+    context.powerShellRepoRef ? `  git -C $repo fetch origin ${context.powerShellRepoRef}` : '  git -C $repo fetch origin',
+    context.powerShellRepoRef ? `  git -C $repo checkout -B ${context.powerShellRepoRef} ${context.powerShellOriginRepoRef}` : '',
     '  git -C $repo pull --ff-only',
     '} else {',
     '  if (Test-Path $repo) { Remove-Item -Recurse -Force $repo }',
     '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
-    `  git clone ${context.powerShellRepoUrl} $repo`,
+    `  git clone${cloneRefArg} ${context.powerShellRepoUrl} $repo`,
     '}',
     '$env:TOKENBOARD_CODEX_BATCH_SIZE = "200"',
-    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${context.powerShellPairingCode} --base-url ${context.powerShellBaseUrl} --timezone ${context.powerShellTimezone} --schedule-times "09:00,12:00,18:00,23:00"${setupRepoArg}`,
+    `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${context.powerShellPairingCode} --base-url ${context.powerShellBaseUrl} --timezone ${context.powerShellTimezone} --schedule-times "09:00,12:00,18:00,23:00"${setupRepoArg}${setupRepoRefArg}`,
     '```'
-  ]
+  ].filter(Boolean)
 }
 
 export function createInstallHookCommands(input: CommandInput = {}) {
@@ -148,28 +167,44 @@ export function createUninstallCommand(input: CommandInput = {}) {
 
 function createBootstrapCommands(input: CommandInput) {
   const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
+  const collectorRepoRef = normalizeOptionalRef(input.collectorRepoRef)
+  const bashRepoRef = collectorRepoRef ? escapeBashArg(collectorRepoRef) : null
+  const bashOriginRepoRef = collectorRepoRef ? escapeBashArg(`origin/${collectorRepoRef}`) : null
+  const powerShellRepoRef = collectorRepoRef ? escapePowerShellArg(collectorRepoRef) : null
+  const powerShellOriginRepoRef = collectorRepoRef ? escapePowerShellArg(`origin/${collectorRepoRef}`) : null
   return {
     bash: [
       'repo="$HOME/.tokenboard/TokenBoard"',
       'if [ -d "$repo/.git" ]; then',
+      `  git -C "$repo" remote set-url origin ${escapeBashArg(collectorRepoUrl)}`,
+      bashRepoRef ? `  git -C "$repo" fetch origin ${bashRepoRef}` : '  git -C "$repo" fetch origin',
+      bashRepoRef ? `  git -C "$repo" checkout -B ${bashRepoRef} ${bashOriginRepoRef}` : '',
       '  git -C "$repo" pull --ff-only',
       'else',
       '  if [ -e "$repo" ]; then rm -rf "$repo"; fi',
       '  mkdir -p "$HOME/.tokenboard"',
-      `  git clone ${escapeBashArg(collectorRepoUrl)} "$repo"`,
+      `  git clone${bashRepoRef ? ` --branch ${bashRepoRef}` : ''} ${escapeBashArg(collectorRepoUrl)} "$repo"`,
       'fi'
-    ],
+    ].filter(Boolean),
     powerShell: [
       '$repo = Join-Path $HOME ".tokenboard\\TokenBoard"',
       'if (Test-Path (Join-Path $repo ".git")) {',
+      `  git -C $repo remote set-url origin ${escapePowerShellArg(collectorRepoUrl)}`,
+      powerShellRepoRef ? `  git -C $repo fetch origin ${powerShellRepoRef}` : '  git -C $repo fetch origin',
+      powerShellRepoRef ? `  git -C $repo checkout -B ${powerShellRepoRef} ${powerShellOriginRepoRef}` : '',
       '  git -C $repo pull --ff-only',
       '} else {',
       '  if (Test-Path $repo) { Remove-Item -Recurse -Force $repo }',
       '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
-      `  git clone ${escapePowerShellArg(collectorRepoUrl)} $repo`,
+      `  git clone${powerShellRepoRef ? ` --branch ${powerShellRepoRef}` : ''} ${escapePowerShellArg(collectorRepoUrl)} $repo`,
       '}'
-    ]
+    ].filter(Boolean)
   }
+}
+
+function normalizeOptionalRef(value?: string) {
+  const ref = value?.trim()
+  return ref || null
 }
 
 function escapeBashArg(value: string) {

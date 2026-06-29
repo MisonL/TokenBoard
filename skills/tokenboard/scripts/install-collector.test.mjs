@@ -56,6 +56,73 @@ test('updates the existing collector origin before pulling', () => {
   )
 })
 
+test('pins an existing collector checkout to a configured ref', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'research/agy-token-support-plan',
+      packageManager: 'pnpm',
+      exists: true,
+      isGitRepo: true,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['remote', 'set-url', 'origin', 'https://github.com/example/TokenBoard.git'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['fetch', 'origin', 'research/agy-token-support-plan'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['checkout', '-B', 'research/agy-token-support-plan', 'origin/research/agy-token-support-plan'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['pull', '--ff-only'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
+test('clones the configured collector ref when provided', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'research/agy-token-support-plan',
+      packageManager: 'pnpm',
+      exists: false,
+      platform: 'linux'
+    })[0],
+    {
+      command: 'git',
+      args: [
+        'clone',
+        '--depth',
+        '1',
+        '--branch',
+        'research/agy-token-support-plan',
+        'https://github.com/example/TokenBoard.git',
+        '/home/user/.tokenboard/TokenBoard'
+      ],
+      options: {}
+    }
+  )
+})
+
 test('removes an existing non-git collector directory before cloning', () => {
   assert.deepEqual(
     buildInstallCollectorPlan({

@@ -60,13 +60,18 @@ test('setup base url must come from flags or environment', () => {
 test('setup passes repo-url override to install collector', () => {
   assert.deepEqual(
     buildInstallCollectorArgs({
-      flags: { 'repo-url': 'https://github.com/example/TokenBoard.git' },
+      flags: {
+        'repo-url': 'https://github.com/example/TokenBoard.git',
+        'repo-ref': 'research/agy-token-support-plan'
+      },
       installCollectorScript: '/repo/scripts/install-collector.mjs'
     }),
     [
       '/repo/scripts/install-collector.mjs',
       '--repo-url',
-      'https://github.com/example/TokenBoard.git'
+      'https://github.com/example/TokenBoard.git',
+      '--repo-ref',
+      'research/agy-token-support-plan'
     ]
   )
 })

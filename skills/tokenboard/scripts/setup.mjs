@@ -52,6 +52,8 @@ writeConfig({
   deviceId: paired.deviceId,
   timezone: paired.timezone,
   source: 'all',
+  repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,
+  repoRef: flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF,
   packageManager,
   scheduleTimes,
   createdAt: new Date().toISOString()

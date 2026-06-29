@@ -111,6 +111,21 @@ describe('InstallCommand', () => {
     expect(prompt).not.toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
   })
 
+  test('allows deployments to pin a collector ref for feature branch installs', () => {
+    const prompt = createInstallPrompt({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai',
+      pairingCode: 'pair_123',
+      collectorRepoUrl: 'https://github.com/example/TokenBoard.git',
+      collectorRepoRef: 'research/agy-token-support-plan'
+    })
+
+    expect(prompt).toContain('如果提示词里带有 --repo-ref 或 --branch')
+    expect(prompt).toContain("git clone --branch 'research/agy-token-support-plan'")
+    expect(prompt).toContain("--repo-ref 'research/agy-token-support-plan'")
+    expect(prompt).toContain('--repo-ref "research/agy-token-support-plan"')
+  })
+
   test('generates platform-specific one-command uninstall instructions', () => {
     const commands = createUninstallCommands()
 
@@ -138,6 +153,20 @@ describe('InstallCommand', () => {
     expect(commands.powerShell).toContain('skills\\tokenboard\\scripts\\install-hook.mjs") --source all')
     expect(commands.powerShell).toContain('# all installs Codex and Claude Code hooks; install Antigravity CLI capture separately with --source antigravity-cli.')
     expect(commands.powerShell).not.toContain('```')
+  })
+
+  test('generates branch-pinned hook install instructions when configured', () => {
+    const commands = createInstallHookCommands({
+      collectorRepoUrl: 'https://github.com/example/TokenBoard.git',
+      collectorRepoRef: 'research/agy-token-support-plan'
+    })
+
+    expect(commands.bash).toContain("git clone --branch 'research/agy-token-support-plan'")
+    expect(commands.bash).toContain("git -C \"$repo\" fetch origin 'research/agy-token-support-plan'")
+    expect(commands.bash).toContain("git -C \"$repo\" checkout -B 'research/agy-token-support-plan' 'origin/research/agy-token-support-plan'")
+    expect(commands.powerShell).toContain('git clone --branch "research/agy-token-support-plan"')
+    expect(commands.powerShell).toContain('git -C $repo fetch origin "research/agy-token-support-plan"')
+    expect(commands.powerShell).toContain('git -C $repo checkout -B "research/agy-token-support-plan" "origin/research/agy-token-support-plan"')
   })
 
   test('uses overridden repo url for hook install command bootstrap', () => {

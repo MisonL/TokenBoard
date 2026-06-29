@@ -70,6 +70,48 @@ test('does not copy the installed skill onto itself', () => {
   )
 })
 
+test('pins an existing collector checkout to a configured ref during upgrade', () => {
+  assert.deepEqual(
+    buildUpgradePlan({
+      collectorDir: '/home/user/.tokenboard/TokenBoard',
+      skillDir: '/home/user/.tokenboard/TokenBoard/skills/tokenboard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'research/agy-token-support-plan',
+      packageManager: 'pnpm',
+      collectorExists: true,
+      collectorIsGitRepo: true,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['remote', 'set-url', 'origin', 'https://github.com/example/TokenBoard.git'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['fetch', 'origin', 'research/agy-token-support-plan'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['checkout', '-B', 'research/agy-token-support-plan', 'origin/research/agy-token-support-plan'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['pull', '--ff-only'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
 test('clones collector before installing skill when collector is missing', () => {
   assert.deepEqual(
     buildUpgradePlan({
@@ -265,5 +307,16 @@ test('resolves archive fallback URLs from explicit, legacy, and github repo valu
       repoUrl: 'https://github.com/example/TokenBoard.git'
     }),
     'https://github.com/example/TokenBoard/archive/refs/heads/master.zip'
+  )
+
+  assert.equal(
+    resolveArchiveUrl({
+      flags: {},
+      env: {},
+      config: {},
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'research/agy-token-support-plan'
+    }),
+    'https://github.com/example/TokenBoard/archive/refs/heads/research%2Fagy-token-support-plan.zip'
   )
 })

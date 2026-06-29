@@ -37,6 +37,9 @@ export function buildInstallCollectorArgs({ flags = {}, packageManager, installC
   if (flags['repo-url']) {
     args.push('--repo-url', flags['repo-url'])
   }
+  if (flags['repo-ref']) {
+    args.push('--repo-ref', flags['repo-ref'])
+  }
   if (typeof packageManager === 'string' && packageManager.trim()) {
     args.push('--package-manager', packageManager)
   }

@@ -21,7 +21,16 @@ function run(command, args, options = {}) {
   if (result.status !== 0) process.exit(result.status ?? 1)
 }
 
-export function buildInstallCollectorPlan({ dir, repoUrl, packageManager, exists, isGitRepo = exists, configDir, platform = process.platform }) {
+export function buildInstallCollectorPlan({
+  dir,
+  repoUrl,
+  repoRef,
+  packageManager,
+  exists,
+  isGitRepo = exists,
+  configDir,
+  platform = process.platform
+}) {
   if (exists && !isGitRepo && configDir && samePath(dir, configDir)) {
     throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${dir}`)
   }
@@ -29,15 +38,17 @@ export function buildInstallCollectorPlan({ dir, repoUrl, packageManager, exists
   const steps = exists && isGitRepo
     ? [
         { command: 'git', args: ['remote', 'set-url', 'origin', repoUrl], options: { cwd: dir } },
+        ...(repoRef ? [{ command: 'git', args: ['fetch', 'origin', repoRef], options: { cwd: dir } }] : []),
+        ...(repoRef ? [{ command: 'git', args: ['checkout', '-B', repoRef, `origin/${repoRef}`], options: { cwd: dir } }] : []),
         { command: 'git', args: ['pull', '--ff-only'], options: { cwd: dir } }
       ]
     : exists
       ? [
           { command: 'remove', args: [dir], options: { recursive: true, force: true } },
-          { command: 'git', args: ['clone', '--depth', '1', repoUrl, dir], options: {} }
+          { command: 'git', args: buildCloneArgs({ repoUrl, repoRef, dir }), options: {} }
         ]
       : [
-        { command: 'git', args: ['clone', '--depth', '1', repoUrl, dir], options: {} }
+        { command: 'git', args: buildCloneArgs({ repoUrl, repoRef, dir }), options: {} }
       ]
 
   steps.push({
@@ -51,12 +62,14 @@ export function buildInstallCollectorPlan({ dir, repoUrl, packageManager, exists
 function runCli() {
   const flags = parseArgs(process.argv.slice(2))
   const repoUrl = flags['repo-url'] || process.env.TOKENBOARD_REPO_URL || defaultRepoUrl
+  const repoRef = flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF || null
   const packageManager = readPackageManager(flags)
   const dir = collectorDir()
 
   for (const step of buildInstallCollectorPlan({
     dir,
     repoUrl,
+    repoRef,
     packageManager,
     exists: existsSync(dir),
     isGitRepo: existsSync(join(dir, '.git')),
@@ -66,8 +79,14 @@ function runCli() {
     run(step.command, step.args, step.options)
   }
 
-  mergeConfig({ collectorDir: dir, repoUrl, packageManager, updatedAt: new Date().toISOString() })
+  mergeConfig({ collectorDir: dir, repoUrl, repoRef, packageManager, updatedAt: new Date().toISOString() })
   console.log(`TokenBoard collector ready at ${dir}`)
+}
+
+function buildCloneArgs({ repoUrl, repoRef, dir }) {
+  return repoRef
+    ? ['clone', '--depth', '1', '--branch', repoRef, repoUrl, dir]
+    : ['clone', '--depth', '1', repoUrl, dir]
 }
 
 function samePath(leftPath, rightPath) {

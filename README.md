@@ -198,6 +198,8 @@ GitHub Actions variables:
 | `TOKENBOARD_WORKER_ROUTE` | required | production custom domain host |
 | `BETTER_AUTH_URL` | required | canonical `https://...` origin |
 | `TOKENBOARD_DAILY_REPORT_HISTORY_DAYS` | `30` | `1` to `31` |
+| `TOKENBOARD_COLLECTOR_REPO_URL` | required | GitHub repository used in generated collector install prompts |
+| `TOKENBOARD_COLLECTOR_REF` | required | branch/ref used in generated collector install prompts |
 | `TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS` | `90` | `1` to `365` |
 | `TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE` | `5` | `1` to `5` due subscriptions per tick |
 | `TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT` | `50` | `1` to `500` summary keys per cron tick |
@@ -214,6 +216,7 @@ Production config validation requires:
 - an HTTPS `BETTER_AUTH_URL`
 - a production route
 - a D1 UUID
+- a GitHub collector repository URL and branch/ref for generated install prompts
 - the `*/15 * * * *` notification cron trigger
 - numeric retention, cron batch, and summary backfill values
 

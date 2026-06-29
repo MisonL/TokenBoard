@@ -24,6 +24,7 @@ export const GET = createRoute(async (c) => {
         baseUrl={publicOrigin}
         timezone={profile.timezone}
         collectorRepoUrl={c.env.TOKENBOARD_COLLECTOR_REPO_URL}
+        collectorRepoRef={c.env.TOKENBOARD_COLLECTOR_REF}
       />
     </main>
   )
@@ -50,6 +51,7 @@ export const POST = createRoute(async (c) => {
           baseUrl={publicOrigin}
           timezone={timezone}
           collectorRepoUrl={c.env.TOKENBOARD_COLLECTOR_REPO_URL}
+          collectorRepoRef={c.env.TOKENBOARD_COLLECTOR_REF}
           pairingCode={result.pairingCode}
           expiresAt={result.expiresAt}
         />
