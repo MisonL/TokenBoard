@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectorDir, configDir, configPath, parseArgs } from './config.mjs'
+import { deviceLinkPath } from './device-link.mjs'
 import { uninstallHooks } from './hooks.mjs'
 import { uninstallSchedule } from './uninstall-schedule.mjs'
 
@@ -22,7 +23,8 @@ export function uninstallClient(options = {}) {
     schedule: true,
     collector: false,
     config: false,
-    configDir: false
+    configDir: false,
+    deviceLink: false
   }
 
   if (plan.removeCollector && runtime.exists(runtime.collectorDir)) {
@@ -38,8 +40,10 @@ export function uninstallClient(options = {}) {
   }
 
   if (plan.removeConfigDir && runtime.exists(runtime.configDir)) {
+    const deviceLinkWasPresent = runtime.exists(runtime.deviceLinkPath)
     removePath(runtime, runtime.configDir)
     removed.configDir = true
+    removed.deviceLink = deviceLinkWasPresent
   }
 
   runtime.log('TokenBoard client uninstall completed.')
@@ -69,6 +73,7 @@ function createUninstallRuntime(options) {
     collectorDir: options.collectorDir || collectorDir(),
     configDir: options.configDir || configDir(),
     configPath: options.configPath || configPath(),
+    deviceLinkPath: options.deviceLinkPath || deviceLinkPath(options.configDir || configDir()),
     exists: options.exists || existsSync,
     rm: options.rm || rmSync,
     cwd: options.cwd || process.cwd,

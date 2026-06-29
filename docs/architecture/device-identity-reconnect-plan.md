@@ -424,6 +424,7 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - Web 设备页在逻辑设备下展示安装实例、最近操作，并支持停用单个 installation；
 - client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
 - client 写入 `device-link.json`，服务端只保存 `installClaim` hash，status 只展示文件存在性；
+- uninstall 默认保留 `device-link.json`，`--all` 或 `--remove-config-dir` 删除该敏感恢复状态；
 - 已提供 token / installation / device 三种撤销作用域 helper，Web UI 暴露 installation 与 device 级停用；
 - `device.pair`、`device.reconnect`、`device.rename`、`device.revoke`、`installation.revoke`、`token.revoke` 会写入审计日志；
 - TokenBoard skill 与安装提示词已说明多 server profile 和 Antigravity hook opt-in 边界。

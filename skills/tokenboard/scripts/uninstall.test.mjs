@@ -12,7 +12,8 @@ test('uninstalls schedule only by default', () => {
     schedule: true,
     collector: false,
     config: false,
-    configDir: false
+    configDir: false,
+    deviceLink: false
   })
   assert.equal(harness.scheduleCalls, 1)
   assert.equal(harness.hookCalls, 0)
@@ -32,7 +33,8 @@ test('uninstalls hooks only when explicitly requested', () => {
     schedule: true,
     collector: false,
     config: false,
-    configDir: false
+    configDir: false,
+    deviceLink: false
   })
   assert.equal(harness.scheduleCalls, 1)
   assert.equal(harness.hookCalls, 1)
@@ -51,7 +53,8 @@ test('removes collector and config only when explicitly requested', () => {
     schedule: true,
     collector: true,
     config: true,
-    configDir: false
+    configDir: false,
+    deviceLink: false
   })
   assert.deepEqual(harness.removedPaths, [
     '/home/tokenboard/.tokenboard/TokenBoard',
@@ -72,7 +75,8 @@ test('removes hooks when deleting only the config file', () => {
     schedule: true,
     collector: false,
     config: true,
-    configDir: false
+    configDir: false,
+    deviceLink: false
   })
   assert.equal(harness.hookCalls, 1)
   assert.deepEqual(harness.removedPaths, [
@@ -93,7 +97,8 @@ test('removes whole config directory only when explicitly requested', () => {
     schedule: true,
     collector: false,
     config: false,
-    configDir: true
+    configDir: true,
+    deviceLink: true
   })
   assert.deepEqual(harness.removedPaths, [
     '/home/tokenboard/.tokenboard'
@@ -113,7 +118,8 @@ test('removes collector and config directory with all flag', () => {
     schedule: true,
     collector: true,
     config: false,
-    configDir: true
+    configDir: true,
+    deviceLink: true
   })
   assert.deepEqual(harness.removedPaths, [
     '/home/tokenboard/.tokenboard/TokenBoard',
@@ -156,7 +162,8 @@ test('does not delete the config directory before the collector when they are th
     schedule: true,
     collector: false,
     config: false,
-    configDir: true
+    configDir: true,
+    deviceLink: true
   })
   assert.deepEqual(harness.removedPaths, [
     '/home/tokenboard/.tokenboard'
@@ -167,7 +174,8 @@ function createHarness() {
   const existingPaths = new Set([
     '/home/tokenboard/.tokenboard',
     '/home/tokenboard/.tokenboard/TokenBoard',
-    '/home/tokenboard/.tokenboard/config.json'
+    '/home/tokenboard/.tokenboard/config.json',
+    '/home/tokenboard/.tokenboard/device-link.json'
   ])
   const removedPaths = []
   const changedDirectories = []
@@ -188,6 +196,7 @@ function createHarness() {
       collectorDir: '/home/tokenboard/.tokenboard/TokenBoard',
       configDir: '/home/tokenboard/.tokenboard',
       configPath: '/home/tokenboard/.tokenboard/config.json',
+      deviceLinkPath: '/home/tokenboard/.tokenboard/device-link.json',
       fallbackCwd: '/home/tokenboard',
       log: () => {},
       exists: (path) => existingPaths.has(path),
