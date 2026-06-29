@@ -5,6 +5,7 @@ export type DeviceSensitiveAction =
   | 'device.reconnect'
   | 'device.revoke'
   | 'installation.revoke'
+  | 'token.rotate'
   | 'token.revoke'
 
 export function requireDeviceStepUp(

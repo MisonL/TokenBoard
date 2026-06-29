@@ -7,10 +7,11 @@ import {
   listUserDevices,
   parseDeviceNameForm,
   pairDevice,
+  renameDevice,
   revokeDevice,
   revokeInstallation,
   revokeUploadToken,
-  renameDevice,
+  rotateUploadToken,
   type DevicePairingRepository
 } from './service'
 
@@ -642,6 +643,86 @@ describe('device management', () => {
       'upload_token',
       'ut_1',
       '{"deviceId":"dev_1","installationId":"inst_1"}',
+      '2026-04-29T09:00:00.000Z'
+    ])
+  })
+
+  test('rotates one upload token and returns the new token once', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const batchStatements: unknown[] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async first() {
+                return {
+                  name: 'Office PC',
+                  deviceId: 'dev_1',
+                  installationId: 'inst_1',
+                  revokedAt: null
+                }
+              }
+            }
+          }
+        }
+      },
+      async batch(statements: unknown[]) {
+        batchStatements.push(...statements)
+        return []
+      }
+    } as unknown as D1Database
+
+    await expect(
+      rotateUploadToken(
+        db,
+        {
+          userId: 'user_1',
+          uploadTokenId: 'ut_old'
+        },
+        {
+          now: () => '2026-04-29T09:00:00.000Z',
+          randomTokenId: () => 'ut_new',
+          randomAuditId: () => 'audit_1',
+          randomToken: () => 'tb_upload_new',
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).resolves.toEqual({
+      uploadTokenId: 'ut_new',
+      uploadToken: 'tb_upload_new'
+    })
+
+    expect(sqlStatements).toHaveLength(4)
+    expect(sqlStatements[0]).toContain('FROM upload_tokens')
+    expect(sqlStatements[1]).toContain('INSERT INTO upload_tokens')
+    expect(sqlStatements[1]).toContain('supersedes_token_id')
+    expect(sqlStatements[2]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
+    expect(batchStatements).toHaveLength(3)
+    expect(bindings[0]).toEqual(['ut_old', 'user_1'])
+    expect(bindings[1]).toEqual([
+      'ut_new',
+      'user_1',
+      'Office PC',
+      'hash:tb_upload_new',
+      'dev_1',
+      'inst_1',
+      'ut_old',
+      '2026-04-29T09:00:00.000Z'
+    ])
+    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_old'])
+    expect(bindings[3]).toEqual([
+      'audit_1',
+      'user_1',
+      'user',
+      'token.rotate',
+      'upload_token',
+      'ut_new',
+      '{"previousTokenId":"ut_old","deviceId":"dev_1","installationId":"inst_1"}',
       '2026-04-29T09:00:00.000Z'
     ])
   })

@@ -49,6 +49,14 @@ describe('DevicesPage layout', () => {
                 targetId: 'device_1',
                 metadata: '{"installationId":"inst_1"}',
                 createdAt: '2026-05-29T01:30:00.000Z'
+              },
+              {
+                id: 'audit_2',
+                action: 'token.rotate',
+                targetType: 'upload_token',
+                targetId: 'ut_2',
+                metadata: '{"previousTokenId":"ut_1"}',
+                createdAt: '2026-05-29T01:40:00.000Z'
               }
             ]
           }
@@ -82,13 +90,17 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('name="uploadTokenId"')
     expect(html).toContain('value="revoke-token"')
     expect(html).toContain('停用此 token')
+    expect(html).toContain('value="rotate-token"')
+    expect(html).toContain('轮换 token')
+    expect(html).toContain('确认轮换这个上传 token？旧 token 会立即停用，新 token 只显示一次。')
     expect(html).toContain('确认只停用这个上传 token？')
     expect(html).toContain('最近操作')
     expect(html).toContain('旧设备重连')
+    expect(html).toContain('轮换 token')
     expect(html).toContain('data-submitting-label="正在停用..."')
     expect(html).toContain('data-submitting-tone="danger"')
     expect(html).toContain('data-link-button="true"')
-	  })
+  })
 
   test('renders token revoke flash separately from device and installation revoke', async () => {
     const html = await renderToString(
@@ -96,5 +108,20 @@ describe('DevicesPage layout', () => {
     )
 
     expect(html).toContain('上传 token 已停用。')
+  })
+
+  test('renders a rotated upload token as one-time output', async () => {
+    const html = await renderToString(
+      <DevicesPage
+        email="user@example.com"
+        saved={false}
+        revoked={null}
+        rotatedUploadToken="tb_upload_new_secret"
+        devices={[]}
+      />
+    )
+
+    expect(html).toContain('新的上传 token 只显示一次')
+    expect(html).toContain('tb_upload_new_secret')
   })
 })

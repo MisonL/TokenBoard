@@ -5,6 +5,7 @@ import { requireDeviceStepUp } from './step-up'
 describe('requireDeviceStepUp', () => {
   test('allows sensitive device actions by default', () => {
     expect(() => requireDeviceStepUp({}, 'device.reconnect')).not.toThrow()
+    expect(() => requireDeviceStepUp({}, 'token.rotate')).not.toThrow()
     expect(() => requireDeviceStepUp({ TOKENBOARD_STEP_UP_REQUIRED: 'false' }, 'token.revoke')).not.toThrow()
   })
 
@@ -21,6 +22,7 @@ describe('requireDeviceStepUp', () => {
 
     expect(devicesRoute).toContain("requireDeviceStepUp(c.env, 'device.revoke')")
     expect(devicesRoute).toContain("requireDeviceStepUp(c.env, 'installation.revoke')")
+    expect(devicesRoute).toContain("requireDeviceStepUp(c.env, 'token.rotate')")
     expect(devicesRoute).toContain("requireDeviceStepUp(c.env, 'token.revoke')")
     expect(installRoute).toContain("requireDeviceStepUp(c.env, 'device.reconnect')")
   })

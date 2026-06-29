@@ -89,6 +89,14 @@ export type CreatePairingCodeDeps = {
   hash: (value: string) => Promise<string>
 }
 
+export type RotateUploadTokenDeps = {
+  now: () => string
+  randomTokenId: () => string
+  randomAuditId: () => string
+  randomToken: () => string
+  hash: (value: string) => Promise<string>
+}
+
 export type UserDevice = {
   id: string
   name: string
@@ -156,6 +164,16 @@ export function createPairingCodeDeps(): CreatePairingCodeDeps {
     now: () => new Date(),
     randomId: () => randomId('pair'),
     randomToken: () => randomToken('tb_pair'),
+    hash: sha256Hex
+  }
+}
+
+export function createRotateUploadTokenDeps(): RotateUploadTokenDeps {
+  return {
+    now: () => new Date().toISOString(),
+    randomTokenId: () => randomId('ut'),
+    randomAuditId: () => randomId('audit'),
+    randomToken: () => randomToken('tb_upload'),
     hash: sha256Hex
   }
 }
@@ -492,6 +510,56 @@ export async function revokeUploadToken(
   })
 }
 
+export async function rotateUploadToken(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+  },
+  deps: RotateUploadTokenDeps = createRotateUploadTokenDeps()
+) {
+  const existing = await findUploadTokenForUser(db, input.userId, input.uploadTokenId)
+  if (!existing) {
+    throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
+  }
+  if (existing.revokedAt) {
+    throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
+  }
+
+  const now = deps.now()
+  const uploadTokenId = deps.randomTokenId()
+  const uploadToken = deps.randomToken()
+  const uploadTokenHash = await deps.hash(uploadToken)
+  await db.batch([
+    createRotatedUploadTokenInsert(db, {
+      userId: input.userId,
+      previousTokenId: input.uploadTokenId,
+      uploadTokenId,
+      uploadTokenHash,
+      existing,
+      now
+    }),
+    createUploadTokenRevokeStatement(db, input.userId, input.uploadTokenId, now),
+    createTokenRotateAuditStatement(db, {
+      userId: input.userId,
+      previousTokenId: input.uploadTokenId,
+      uploadTokenId,
+      existing,
+      auditId: deps.randomAuditId(),
+      now
+    })
+  ])
+
+  return { uploadTokenId, uploadToken }
+}
+
+type ExistingUploadToken = {
+  name: string
+  deviceId: string | null
+  installationId: string | null
+  revokedAt: string | null
+}
+
 async function findInstallationForUser(db: D1Database, userId: string, installationId: string) {
   return await db
     .prepare(
@@ -507,13 +575,116 @@ async function findInstallationForUser(db: D1Database, userId: string, installat
     .first<{ deviceId: string }>()
 }
 
+function createRotatedUploadTokenInsert(
+  db: D1Database,
+  input: {
+    userId: string
+    previousTokenId: string
+    uploadTokenId: string
+    uploadTokenHash: string
+    existing: ExistingUploadToken
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        INSERT INTO upload_tokens (
+          id,
+          user_id,
+          name,
+          token_hash,
+          device_id,
+          installation_id,
+          supersedes_token_id,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .bind(
+      input.uploadTokenId,
+      input.userId,
+      input.existing.name,
+      input.uploadTokenHash,
+      input.existing.deviceId,
+      input.existing.installationId,
+      input.previousTokenId,
+      input.now
+    )
+}
+
+function createUploadTokenRevokeStatement(
+  db: D1Database,
+  userId: string,
+  uploadTokenId: string,
+  now: string
+) {
+  return db
+    .prepare(
+      `
+        UPDATE upload_tokens
+        SET revoked_at = ?
+        WHERE user_id = ?
+          AND id = ?
+          AND revoked_at IS NULL
+      `
+    )
+    .bind(now, userId, uploadTokenId)
+}
+
+function createTokenRotateAuditStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    previousTokenId: string
+    uploadTokenId: string
+    existing: ExistingUploadToken
+    auditId: string
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        INSERT INTO audit_logs (
+          id,
+          user_id,
+          actor_type,
+          action,
+          target_type,
+          target_id,
+          metadata,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .bind(
+      input.auditId,
+      input.userId,
+      'user',
+      'token.rotate',
+      'upload_token',
+      input.uploadTokenId,
+      JSON.stringify({
+        previousTokenId: input.previousTokenId,
+        deviceId: input.existing.deviceId,
+        installationId: input.existing.installationId
+      }),
+      input.now
+    )
+}
+
 async function findUploadTokenForUser(db: D1Database, userId: string, uploadTokenId: string) {
   return await db
     .prepare(
       `
         SELECT
+          name,
           device_id as deviceId,
-          installation_id as installationId
+          installation_id as installationId,
+          revoked_at as revokedAt
         FROM upload_tokens
         WHERE id = ?
           AND user_id = ?
@@ -521,7 +692,7 @@ async function findUploadTokenForUser(db: D1Database, userId: string, uploadToke
       `
     )
     .bind(uploadTokenId, userId)
-    .first<{ deviceId: string | null; installationId: string | null }>()
+    .first<ExistingUploadToken>()
 }
 
 async function createDeviceAuditLog(

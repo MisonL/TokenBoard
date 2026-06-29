@@ -10,6 +10,7 @@ import {
   listUserDevices,
   parseDeviceNameForm,
   renameDevice,
+  rotateUploadToken,
   revokeDevice,
   revokeInstallation,
   revokeUploadToken,
@@ -89,6 +90,17 @@ export const POST = createRoute(async (c) => {
       return c.redirect('/settings/devices?revoked=token', 303)
     }
 
+    if (action === 'rotate-token') {
+      requireDeviceStepUp(c.env, 'token.rotate')
+      const result = await rotateUploadToken(c.env.DB, {
+        userId: user.id,
+        uploadTokenId: String(form.uploadTokenId ?? '')
+      })
+      return renderDevicesPage(c, user, {
+        rotatedUploadToken: result.uploadToken
+      })
+    }
+
     return c.redirect('/settings/devices', 303)
   } catch (error) {
     return jsonError(c, error)
@@ -100,6 +112,7 @@ export function DevicesPage(props: {
   email: string
   saved: boolean
   revoked: string | null
+  rotatedUploadToken?: string | null
 }) {
   return (
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
@@ -109,9 +122,47 @@ export function DevicesPage(props: {
       <section class="mx-auto flex max-w-6xl flex-col gap-5">
         <DevicesHeader />
         <DevicePageFlash saved={props.saved} revoked={props.revoked} />
+        <RotatedTokenFlash uploadToken={props.rotatedUploadToken ?? null} />
         <DevicesCard devices={props.devices} />
       </section>
     </main>
+  )
+}
+
+type DevicesRenderContext = {
+  env: {
+    DB: D1Database
+  }
+  render: (element: ReturnType<typeof DevicesPage>) => Response | Promise<Response>
+}
+
+async function renderDevicesPage(
+  c: DevicesRenderContext,
+  user: { id: string; email: string },
+  options: { rotatedUploadToken?: string } = {}
+) {
+  const devices = await listUserDevices(c.env.DB, user.id)
+  const auditLogGroups = await Promise.all(
+    devices.map((device) =>
+      listDeviceAuditLogs(c.env.DB, {
+        userId: user.id,
+        deviceId: device.id,
+        limit: 5
+      })
+    )
+  )
+  const devicesWithAudit = devices.map((device, index) => ({
+    ...device,
+    auditLogs: auditLogGroups[index] ?? []
+  }))
+  return c.render(
+    <DevicesPage
+      devices={devicesWithAudit}
+      email={user.email}
+      saved={false}
+      revoked={null}
+      rotatedUploadToken={options.rotatedUploadToken}
+    />
   )
 }
 
@@ -153,6 +204,18 @@ function formatRevokeFlash(revoked: string) {
     token: '上传 token 已停用。'
   }
   return messages[revoked] ?? '设备 token 已停用。'
+}
+
+function RotatedTokenFlash(props: { uploadToken: string | null }) {
+  if (!props.uploadToken) return null
+  return (
+    <section class="app-flash-success grid gap-2 p-3 text-sm">
+      <p class="font-bold">新的上传 token 只显示一次，请立即更新对应 client 配置。</p>
+      <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
+        {props.uploadToken}
+      </code>
+    </section>
+  )
 }
 
 function DevicesCard(props: { devices: DeviceViewModel[] }) {
@@ -286,11 +349,35 @@ function DeviceUploadTokens(props: { device: UserDevice; compact?: boolean }) {
                 最近使用：{token.lastUsedAt ?? '从未使用'}
               </p>
             </div>
-            <UploadTokenRevokeForm token={token} />
+            <div class="flex flex-col gap-2 sm:items-end">
+              <UploadTokenRotateForm token={token} />
+              <UploadTokenRevokeForm token={token} />
+            </div>
           </div>
         </div>
       ))}
     </section>
+  )
+}
+
+function UploadTokenRotateForm(props: { token: UserDevice['uploadTokens'][number] }) {
+  const disabled = props.token.revokedAt !== null
+  return (
+    <form method="post" data-submit-feedback="true">
+      <input type="hidden" name="action" value="rotate-token" />
+      <input type="hidden" name="uploadTokenId" value={props.token.id} />
+      <Button
+        class="w-full sm:w-auto"
+        type="submit"
+        variant="secondary"
+        size="sm"
+        disabled={disabled}
+        data-confirm="确认轮换这个上传 token？旧 token 会立即停用，新 token 只显示一次。"
+        data-submitting-label="正在轮换..."
+      >
+        轮换 token
+      </Button>
+    </form>
   )
 }
 
@@ -454,6 +541,7 @@ function formatAuditAction(action: string) {
     'device.rename': '重命名',
     'device.revoke': '停用设备',
     'installation.revoke': '停用安装',
+    'token.rotate': '轮换 token',
     'token.revoke': '停用 token'
   }
   return labels[action] ?? action

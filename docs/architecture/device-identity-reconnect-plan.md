@@ -423,6 +423,7 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - Web 设备页提供“重新连接”入口，并复用安装页生成绑定旧设备的 pairing code；
 - Web 设备页在逻辑设备下展示安装实例、最近操作，并支持停用单个 installation；
 - Web 设备页展示单个 upload token 元信息，并支持 token 级停用；
+- Web 设备页支持 upload token 轮换，旧 token 立即停用，新 token 只显示一次，并保留原 device/installation 归属；
 - Web 安装页提供显式 `device-link.json` 恢复命令，不进入默认安装命令，也不展示 claim；
 - reconnect、device revoke、installation revoke、token revoke 已接入统一 step-up gate 预留点；默认关闭，不改变现有行为；
 - client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
@@ -430,13 +431,12 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - client setup 支持显式 `--use-device-link`，通过 install claim 换取绑定旧 device 的 reconnect pairing code；
 - uninstall 默认保留 `device-link.json`，`--all` 或 `--remove-config-dir` 删除该敏感恢复状态；
 - 已提供 token / installation / device 三种撤销作用域 helper，Web UI 暴露 installation 与 device 级停用；
-- `device.pair`、`device.reconnect`、`device.rename`、`device.revoke`、`installation.revoke`、`token.revoke` 会写入审计日志；
+- `device.pair`、`device.reconnect`、`device.rename`、`device.revoke`、`installation.revoke`、`token.rotate`、`token.revoke` 会写入审计日志；
 - TokenBoard skill 与安装提示词已说明多 server profile 和 Antigravity hook opt-in 边界。
 
 仍保留为后续阶段：
 
 - WebAuthn / TOTP 等真实 step-up 验证器；
-- token 轮换 UI；
 - 手动合并设备。
 
 ## 风险和缓解
