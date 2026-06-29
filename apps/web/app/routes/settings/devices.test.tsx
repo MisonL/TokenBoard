@@ -8,7 +8,7 @@ describe('DevicesPage layout', () => {
       <DevicesPage
         email="user@example.com"
         saved={false}
-        revoked={false}
+        revoked={null}
         devices={[
           {
             id: 'device_1',
@@ -16,7 +16,30 @@ describe('DevicesPage layout', () => {
             platform: 'darwin',
             lastSyncedAt: '2026-05-29T01:27:47.279Z',
             createdAt: '2026-04-29T10:03:36.232Z',
-            activeTokenCount: 1
+            activeTokenCount: 1,
+            installations: [
+              {
+                id: 'inst_1',
+                deviceId: 'device_1',
+                platform: 'darwin',
+                hostname: 'MacBook Pro',
+                clientVersion: '0.2.0',
+                firstSeenAt: '2026-04-29T10:03:36.232Z',
+                lastSeenAt: '2026-05-29T01:27:47.279Z',
+                revokedAt: null,
+                activeTokenCount: 1
+              }
+            ],
+            auditLogs: [
+              {
+                id: 'audit_1',
+                action: 'device.reconnect',
+                targetType: 'device',
+                targetId: 'device_1',
+                metadata: '{"installationId":"inst_1"}',
+                createdAt: '2026-05-29T01:30:00.000Z'
+              }
+            ]
           }
         ]}
       />
@@ -37,6 +60,13 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('action="/settings/install"')
     expect(html).toContain('name="targetDeviceId"')
     expect(html).toContain('data-submitting-label="正在生成..."')
+    expect(html).toContain('安装实例')
+    expect(html).toContain('MacBook Pro')
+    expect(html).toContain('name="installationId"')
+    expect(html).toContain('value="revoke-installation"')
+    expect(html).toContain('停用此安装')
+    expect(html).toContain('最近操作')
+    expect(html).toContain('旧设备重连')
     expect(html).toContain('data-submitting-label="正在停用..."')
     expect(html).toContain('data-submitting-tone="danger"')
     expect(html).toContain('data-link-button="true"')

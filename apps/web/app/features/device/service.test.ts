@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { ApiError } from '../../lib/errors'
 import {
   createPairingCode,
+  listDeviceAuditLogs,
   listUserDevices,
   parseDeviceNameForm,
   pairDevice,
@@ -269,11 +270,29 @@ describe('device management', () => {
     const db = {
       prepare(sql: string) {
         sqlStatements.push(sql)
+        const statementIndex = sqlStatements.length
         return {
           bind(...values: unknown[]) {
             bindings.push(values)
             return {
               async all() {
+                if (statementIndex === 2) {
+                  return {
+                    results: [
+                      {
+                        id: 'inst_1',
+                        deviceId: 'dev_1',
+                        platform: 'windows',
+                        hostname: 'Office PC',
+                        clientVersion: '0.1.0',
+                        firstSeenAt: '2026-04-28T08:00:00.000Z',
+                        lastSeenAt: '2026-04-29T08:00:00.000Z',
+                        revokedAt: null,
+                        activeTokenCount: 1
+                      }
+                    ]
+                  }
+                }
                 return {
                   results: [
                     {
@@ -300,12 +319,77 @@ describe('device management', () => {
         platform: 'windows',
         lastSyncedAt: '2026-04-29T08:00:00.000Z',
         createdAt: '2026-04-28T08:00:00.000Z',
-        activeTokenCount: 1
+        activeTokenCount: 1,
+        installations: [
+          {
+            id: 'inst_1',
+            deviceId: 'dev_1',
+            platform: 'windows',
+            hostname: 'Office PC',
+            clientVersion: '0.1.0',
+            firstSeenAt: '2026-04-28T08:00:00.000Z',
+            lastSeenAt: '2026-04-29T08:00:00.000Z',
+            revokedAt: null,
+            activeTokenCount: 1
+          }
+        ]
       }
     ])
     expect(sqlStatements[0]).toContain('LEFT JOIN upload_tokens')
     expect(sqlStatements[0]).toContain('revoked_at IS NULL')
+    expect(sqlStatements[1]).toContain('FROM device_installations')
     expect(bindings[0]).toEqual(['user_1'])
+    expect(bindings[1]).toEqual(['user_1'])
+  })
+
+  test('lists recent audit logs for one device', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                return {
+                  results: [
+                    {
+                      id: 'audit_1',
+                      action: 'device.reconnect',
+                      targetType: 'device',
+                      targetId: 'dev_1',
+                      metadata: '{"installationId":"inst_1"}',
+                      createdAt: '2026-04-29T09:00:00.000Z'
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await expect(
+      listDeviceAuditLogs(db, {
+        userId: 'user_1',
+        deviceId: 'dev_1',
+        limit: 5
+      })
+    ).resolves.toEqual([
+      {
+        id: 'audit_1',
+        action: 'device.reconnect',
+        targetType: 'device',
+        targetId: 'dev_1',
+        metadata: '{"installationId":"inst_1"}',
+        createdAt: '2026-04-29T09:00:00.000Z'
+      }
+    ])
+    expect(sqlStatements[0]).toContain('FROM audit_logs')
+    expect(bindings[0]).toEqual(['user_1', 'dev_1', '%"deviceId":"dev_1"%', 5])
   })
 
   test('renames a device owned by the current user', async () => {
@@ -336,6 +420,16 @@ describe('device management', () => {
 
     expect(sqlStatements[0]).toContain('UPDATE devices')
     expect(bindings[0]).toEqual(['Laptop', '2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
+    expect(sqlStatements[1]).toContain('INSERT INTO audit_logs')
+    expect(bindings[1]?.slice(1)).toEqual([
+      'user_1',
+      'user',
+      'device.rename',
+      'device',
+      'dev_1',
+      '{"name":"Laptop"}',
+      '2026-04-29T09:00:00.000Z'
+    ])
   })
 
   test('revokes active upload tokens for a device owned by the current user', async () => {
@@ -367,6 +461,7 @@ describe('device management', () => {
     expect(sqlStatements[0]).toContain('revoked_at IS NULL')
     expect(sqlStatements[1]).toContain('UPDATE device_installations')
     expect(sqlStatements[2]).toContain('UPDATE devices')
+    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
     expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
     expect(bindings[1]).toEqual([
       '2026-04-29T09:00:00.000Z',
@@ -375,12 +470,23 @@ describe('device management', () => {
       'dev_1'
     ])
     expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
+    expect(bindings[3]?.slice(1)).toEqual([
+      'user_1',
+      'user',
+      'device.revoke',
+      'device',
+      'dev_1',
+      '{"deviceId":"dev_1"}',
+      '2026-04-29T09:00:00.000Z'
+    ])
   })
 
   test('revokes active upload tokens for one installation', async () => {
     const sqlStatements: string[] = []
     const bindings: unknown[][] = []
-    const db = createRunDb(sqlStatements, bindings)
+    const db = createRunDb(sqlStatements, bindings, {
+      firstResults: [{ deviceId: 'dev_1' }]
+    })
 
     await revokeInstallation(db, {
       userId: 'user_1',
@@ -388,22 +494,36 @@ describe('device management', () => {
       now: '2026-04-29T09:00:00.000Z'
     })
 
-    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[0]).toContain('installation_id = ?')
-    expect(sqlStatements[1]).toContain('UPDATE device_installations')
-    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
-    expect(bindings[1]).toEqual([
+    expect(sqlStatements[0]).toContain('FROM device_installations')
+    expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[1]).toContain('installation_id = ?')
+    expect(sqlStatements[2]).toContain('UPDATE device_installations')
+    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
+    expect(bindings[0]).toEqual(['inst_1', 'user_1'])
+    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
+    expect(bindings[2]).toEqual([
       '2026-04-29T09:00:00.000Z',
       '2026-04-29T09:00:00.000Z',
       'inst_1',
       'user_1'
+    ])
+    expect(bindings[3]?.slice(1)).toEqual([
+      'user_1',
+      'user',
+      'installation.revoke',
+      'device_installation',
+      'inst_1',
+      '{"deviceId":"dev_1"}',
+      '2026-04-29T09:00:00.000Z'
     ])
   })
 
   test('revokes one upload token without touching its device', async () => {
     const sqlStatements: string[] = []
     const bindings: unknown[][] = []
-    const db = createRunDb(sqlStatements, bindings)
+    const db = createRunDb(sqlStatements, bindings, {
+      firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }]
+    })
 
     await revokeUploadToken(db, {
       userId: 'user_1',
@@ -411,10 +531,22 @@ describe('device management', () => {
       now: '2026-04-29T09:00:00.000Z'
     })
 
-    expect(sqlStatements).toHaveLength(1)
-    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[0]).toContain('AND id = ?')
-    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
+    expect(sqlStatements).toHaveLength(3)
+    expect(sqlStatements[0]).toContain('FROM upload_tokens')
+    expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[1]).toContain('AND id = ?')
+    expect(sqlStatements[2]).toContain('INSERT INTO audit_logs')
+    expect(bindings[0]).toEqual(['ut_1', 'user_1'])
+    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
+    expect(bindings[2]?.slice(1)).toEqual([
+      'user_1',
+      'user',
+      'token.revoke',
+      'upload_token',
+      'ut_1',
+      '{"deviceId":"dev_1","installationId":"inst_1"}',
+      '2026-04-29T09:00:00.000Z'
+    ])
   })
 
   test('rejects blank device names from forms', () => {
@@ -423,7 +555,12 @@ describe('device management', () => {
   })
 })
 
-function createRunDb(sqlStatements: string[], bindings: unknown[][]) {
+function createRunDb(
+  sqlStatements: string[],
+  bindings: unknown[][],
+  options: { firstResults?: unknown[] } = {}
+) {
+  let firstCallCount = 0
   return {
     prepare(sql: string) {
       sqlStatements.push(sql)
@@ -433,6 +570,11 @@ function createRunDb(sqlStatements: string[], bindings: unknown[][]) {
           return {
             async run() {
               return { meta: { changes: 1 } }
+            },
+            async first() {
+              const result = options.firstResults?.[firstCallCount] ?? null
+              firstCallCount += 1
+              return result
             }
           }
         }

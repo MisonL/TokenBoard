@@ -6,10 +6,13 @@ import { Input } from '../../components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
 import { requireUser } from '../../features/auth/middleware'
 import {
+  listDeviceAuditLogs,
   listUserDevices,
   parseDeviceNameForm,
   renameDevice,
   revokeDevice,
+  revokeInstallation,
+  type UserDeviceAuditLog,
   type UserDevice
 } from '../../features/device/service'
 import { jsonError } from '../../lib/http'
@@ -17,12 +20,26 @@ import { jsonError } from '../../lib/http'
 export const GET = createRoute(async (c) => {
   const user = await requireUser(c)
   const devices = await listUserDevices(c.env.DB, user.id)
+  const auditLogGroups = await Promise.all(
+    devices.map((device) =>
+      listDeviceAuditLogs(c.env.DB, {
+        userId: user.id,
+        deviceId: device.id,
+        limit: 5
+      })
+    )
+  )
+  const devicesWithAudit = devices.map((device, index) => ({
+    ...device,
+    auditLogs: auditLogGroups[index] ?? []
+  }))
+
   return c.render(
     <DevicesPage
-      devices={devices}
+      devices={devicesWithAudit}
       email={user.email}
       saved={c.req.query('saved') === '1'}
-      revoked={c.req.query('revoked') === '1'}
+      revoked={c.req.query('revoked') ?? null}
     />
   )
 })
@@ -51,6 +68,14 @@ export const POST = createRoute(async (c) => {
       return c.redirect('/settings/devices?revoked=1', 303)
     }
 
+    if (action === 'revoke-installation') {
+      await revokeInstallation(c.env.DB, {
+        userId: user.id,
+        installationId: String(form.installationId ?? '')
+      })
+      return c.redirect('/settings/devices?revoked=installation', 303)
+    }
+
     return c.redirect('/settings/devices', 303)
   } catch (error) {
     return jsonError(c, error)
@@ -58,10 +83,10 @@ export const POST = createRoute(async (c) => {
 })
 
 export function DevicesPage(props: {
-  devices: UserDevice[]
+  devices: DeviceViewModel[]
   email: string
   saved: boolean
-  revoked: boolean
+  revoked: string | null
 }) {
   return (
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
@@ -75,6 +100,10 @@ export function DevicesPage(props: {
       </section>
     </main>
   )
+}
+
+type DeviceViewModel = UserDevice & {
+  auditLogs?: UserDeviceAuditLog[]
 }
 
 function DevicesHeader() {
@@ -94,20 +123,22 @@ function DevicesHeader() {
   )
 }
 
-function DevicePageFlash(props: { saved: boolean; revoked: boolean }) {
+function DevicePageFlash(props: { saved: boolean; revoked: string | null }) {
   return (
     <>
       {props.saved ? (
         <p class="app-flash-success p-3 text-sm">设备名称已更新。</p>
       ) : null}
       {props.revoked ? (
-        <p class="app-flash-success p-3 text-sm">设备 token 已停用。</p>
+        <p class="app-flash-success p-3 text-sm">
+          {props.revoked === 'installation' ? '安装实例已停用。' : '设备 token 已停用。'}
+        </p>
       ) : null}
     </>
   )
 }
 
-function DevicesCard(props: { devices: UserDevice[] }) {
+function DevicesCard(props: { devices: DeviceViewModel[] }) {
   return (
     <Card>
       <CardHeader>
@@ -121,7 +152,7 @@ function DevicesCard(props: { devices: UserDevice[] }) {
   )
 }
 
-function DevicesTable(props: { devices: UserDevice[] }) {
+function DevicesTable(props: { devices: DeviceViewModel[] }) {
   return (
     <>
       <div class="grid gap-3 md:hidden" data-devices-mobile-list="true">
@@ -130,7 +161,7 @@ function DevicesTable(props: { devices: UserDevice[] }) {
         ))}
       </div>
       <div class="hidden overflow-x-auto md:block" data-devices-desktop-table="true">
-        <Table class="min-w-[900px]">
+        <Table class="min-w-[1120px]">
           <DevicesTableHeader />
           <TableBody>
             {props.devices.map((device) => (
@@ -143,7 +174,7 @@ function DevicesTable(props: { devices: UserDevice[] }) {
   )
 }
 
-function DeviceCard(props: { device: UserDevice }) {
+function DeviceCard(props: { device: DeviceViewModel }) {
   return (
     <article class="app-surface-raised rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
       <div class="flex items-start justify-between gap-3">
@@ -158,6 +189,8 @@ function DeviceCard(props: { device: UserDevice }) {
         <DeviceMeta label="最近同步" value={props.device.lastSyncedAt ?? '从未同步'} />
         <DeviceMeta label="创建时间" value={props.device.createdAt} />
       </dl>
+      <DeviceInstallations device={props.device} />
+      <DeviceAuditTrail auditLogs={props.device.auditLogs ?? []} />
       <div class="mt-4 grid gap-3">
         <DeviceRenameForm device={props.device} />
         <DeviceActionForms device={props.device} />
@@ -182,6 +215,7 @@ function DevicesTableHeader() {
         <TableHead>设备</TableHead>
         <TableHead>Platform</TableHead>
         <TableHead>最近同步</TableHead>
+        <TableHead>安装实例</TableHead>
         <TableHead>创建时间</TableHead>
         <TableHead>状态</TableHead>
         <TableHead>操作</TableHead>
@@ -190,7 +224,7 @@ function DevicesTableHeader() {
   )
 }
 
-function DeviceRow(props: { device: UserDevice }) {
+function DeviceRow(props: { device: DeviceViewModel }) {
   return (
     <TableRow>
       <TableCell class="min-w-64">
@@ -198,6 +232,10 @@ function DeviceRow(props: { device: UserDevice }) {
       </TableCell>
       <TableCell>{props.device.platform}</TableCell>
       <TableCell>{props.device.lastSyncedAt ?? '从未同步'}</TableCell>
+      <TableCell class="min-w-80">
+        <DeviceInstallations device={props.device} compact />
+        <DeviceAuditTrail auditLogs={props.device.auditLogs ?? []} compact />
+      </TableCell>
       <TableCell>{props.device.createdAt}</TableCell>
       <TableCell>
         <DeviceStatus device={props.device} />
@@ -266,6 +304,91 @@ function DeviceRevokeForm(props: { device: UserDevice }) {
       </Button>
     </form>
   )
+}
+
+function DeviceInstallations(props: { device: UserDevice; compact?: boolean }) {
+  if (props.device.installations.length === 0) {
+    return (
+      <div class="mt-4 rounded-lg border border-dashed border-[var(--app-border)] p-3 text-xs font-bold text-[var(--app-muted)]">
+        暂无安装实例
+      </div>
+    )
+  }
+
+  return (
+    <section class={props.compact ? 'grid gap-2' : 'mt-4 grid gap-2'}>
+      <p class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">安装实例</p>
+      {props.device.installations.map((installation) => (
+        <div class="rounded-lg border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div class="min-w-0 text-sm">
+              <p class="truncate font-black text-[var(--app-text)]">
+                {installation.hostname ?? installation.platform}
+              </p>
+              <p class="mt-1 break-all text-xs font-bold text-[var(--app-muted)]">
+                {installation.platform} / {installation.clientVersion ?? '版本未知'}
+              </p>
+              <p class="mt-1 text-xs text-[var(--app-muted)]">
+                最近同步：{installation.lastSeenAt ?? '从未同步'}
+              </p>
+              <p class="mt-1 text-xs text-[var(--app-muted)]">
+                active token：{installation.activeTokenCount}
+              </p>
+            </div>
+            <InstallationRevokeForm installation={installation} />
+          </div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+function InstallationRevokeForm(props: { installation: UserDevice['installations'][number] }) {
+  const disabled = props.installation.revokedAt !== null || props.installation.activeTokenCount <= 0
+  return (
+    <form method="post" data-submit-feedback="true">
+      <input type="hidden" name="action" value="revoke-installation" />
+      <input type="hidden" name="installationId" value={props.installation.id} />
+      <Button
+        class="w-full sm:w-auto"
+        type="submit"
+        variant="secondary"
+        size="sm"
+        disabled={disabled}
+        data-confirm="确认只停用这个安装实例的上传 token？"
+        data-submitting-label="正在停用..."
+      >
+        停用此安装
+      </Button>
+    </form>
+  )
+}
+
+function DeviceAuditTrail(props: { auditLogs: UserDeviceAuditLog[]; compact?: boolean }) {
+  if (props.auditLogs.length === 0) return null
+  return (
+    <section class={props.compact ? 'mt-3 grid gap-1' : 'mt-4 grid gap-1'}>
+      <p class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">最近操作</p>
+      {props.auditLogs.map((log) => (
+        <p class="break-all text-xs text-[var(--app-muted)]">
+          <span class="font-bold text-[var(--app-text)]">{formatAuditAction(log.action)}</span>
+          <span> / {log.createdAt}</span>
+        </p>
+      ))}
+    </section>
+  )
+}
+
+function formatAuditAction(action: string) {
+  const labels: Record<string, string> = {
+    'device.pair': '新设备连接',
+    'device.reconnect': '旧设备重连',
+    'device.rename': '重命名',
+    'device.revoke': '停用设备',
+    'installation.revoke': '停用安装',
+    'token.revoke': '停用 token'
+  }
+  return labels[action] ?? action
 }
 
 function DevicesEmptyState() {

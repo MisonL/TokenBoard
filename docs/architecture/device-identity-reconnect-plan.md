@@ -421,16 +421,18 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - upload token 认证返回 nullable `installationId`，旧 token 仍可上传；
 - ingest 成功后更新 device 与 installation 的同步时间；
 - Web 设备页提供“重新连接”入口，并复用安装页生成绑定旧设备的 pairing code；
+- Web 设备页在逻辑设备下展示安装实例、最近操作，并支持停用单个 installation；
 - client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
 - client 写入 `device-link.json`，服务端只保存 `installClaim` hash，status 只展示文件存在性；
-- 已提供 token / installation / device 三种撤销作用域 helper，Web UI 当前只暴露 device 级停用；
+- 已提供 token / installation / device 三种撤销作用域 helper，Web UI 暴露 installation 与 device 级停用；
+- `device.pair`、`device.reconnect`、`device.rename`、`device.revoke`、`installation.revoke`、`token.revoke` 会写入审计日志；
 - TokenBoard skill 与安装提示词已说明多 server profile 和 Antigravity hook opt-in 边界。
 
 仍保留为后续阶段：
 
 - 使用 `device-link.json` claim 自动辅助重连；
 - reconnect / token rotation 的 step-up 验证；
-- installation 级撤销 UI、token 轮换 UI 与设备详情审计 UI；
+- token 轮换 UI；
 - 手动合并设备。
 
 ## 风险和缓解

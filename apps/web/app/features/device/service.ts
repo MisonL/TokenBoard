@@ -84,9 +84,35 @@ export type UserDevice = {
   lastSyncedAt: string | null
   createdAt: string
   activeTokenCount: number
+  installations: UserDeviceInstallation[]
 }
 
-type DeviceRow = Omit<UserDevice, 'activeTokenCount'> & {
+export type UserDeviceInstallation = {
+  id: string
+  deviceId: string
+  platform: string
+  hostname: string | null
+  clientVersion: string | null
+  firstSeenAt: string
+  lastSeenAt: string | null
+  revokedAt: string | null
+  activeTokenCount: number
+}
+
+export type UserDeviceAuditLog = {
+  id: string
+  action: string
+  targetType: string
+  targetId: string | null
+  metadata: string | null
+  createdAt: string
+}
+
+type DeviceRow = Omit<UserDevice, 'activeTokenCount' | 'installations'> & {
+  activeTokenCount: number | null
+}
+
+type InstallationRow = Omit<UserDeviceInstallation, 'activeTokenCount'> & {
   activeTokenCount: number | null
 }
 
@@ -110,35 +136,114 @@ export function createPairingCodeDeps(): CreatePairingCodeDeps {
 }
 
 export async function listUserDevices(db: D1Database, userId: string): Promise<UserDevice[]> {
-  const rows = await db
-    .prepare(
-      `
-        SELECT
-          devices.id,
-          devices.name,
-          devices.platform,
-          devices.last_synced_at as lastSyncedAt,
-          devices.created_at as createdAt,
-          COALESCE(SUM(CASE WHEN upload_tokens.id IS NOT NULL AND upload_tokens.revoked_at IS NULL THEN 1 ELSE 0 END), 0) as activeTokenCount
-        FROM devices
-        LEFT JOIN upload_tokens ON upload_tokens.device_id = devices.id
-          AND upload_tokens.user_id = devices.user_id
-        WHERE devices.user_id = ?
-        GROUP BY devices.id
-        ORDER BY devices.last_synced_at DESC, devices.created_at DESC
-      `
-    )
-    .bind(userId)
-    .all<DeviceRow>()
+  const [deviceRows, installationRows] = await Promise.all([
+    db
+      .prepare(
+        `
+          SELECT
+            devices.id,
+            devices.name,
+            devices.platform,
+            devices.last_synced_at as lastSyncedAt,
+            devices.created_at as createdAt,
+            COALESCE(SUM(CASE WHEN upload_tokens.id IS NOT NULL AND upload_tokens.revoked_at IS NULL THEN 1 ELSE 0 END), 0) as activeTokenCount
+          FROM devices
+          LEFT JOIN upload_tokens ON upload_tokens.device_id = devices.id
+            AND upload_tokens.user_id = devices.user_id
+          WHERE devices.user_id = ?
+          GROUP BY devices.id
+          ORDER BY devices.last_synced_at DESC, devices.created_at DESC
+        `
+      )
+      .bind(userId)
+      .all<DeviceRow>(),
+    db
+      .prepare(
+        `
+          SELECT
+            device_installations.id,
+            device_installations.device_id as deviceId,
+            device_installations.platform,
+            device_installations.hostname,
+            device_installations.client_version as clientVersion,
+            device_installations.first_seen_at as firstSeenAt,
+            device_installations.last_seen_at as lastSeenAt,
+            device_installations.revoked_at as revokedAt,
+            COALESCE(SUM(CASE WHEN upload_tokens.id IS NOT NULL AND upload_tokens.revoked_at IS NULL THEN 1 ELSE 0 END), 0) as activeTokenCount
+          FROM device_installations
+          LEFT JOIN upload_tokens ON upload_tokens.installation_id = device_installations.id
+            AND upload_tokens.user_id = device_installations.user_id
+          WHERE device_installations.user_id = ?
+          GROUP BY device_installations.id
+          ORDER BY device_installations.last_seen_at DESC, device_installations.created_at DESC
+        `
+      )
+      .bind(userId)
+      .all<InstallationRow>()
+  ])
 
-  return (rows.results ?? []).map((row) => ({
+  const installationsByDevice = new Map<string, UserDeviceInstallation[]>()
+  for (const row of installationRows.results ?? []) {
+    const installation = {
+      id: row.id,
+      deviceId: row.deviceId,
+      platform: row.platform,
+      hostname: row.hostname ?? null,
+      clientVersion: row.clientVersion ?? null,
+      firstSeenAt: row.firstSeenAt,
+      lastSeenAt: row.lastSeenAt ?? null,
+      revokedAt: row.revokedAt ?? null,
+      activeTokenCount: Number(row.activeTokenCount ?? 0)
+    }
+    installationsByDevice.set(row.deviceId, [
+      ...(installationsByDevice.get(row.deviceId) ?? []),
+      installation
+    ])
+  }
+
+  return (deviceRows.results ?? []).map((row) => ({
     id: row.id,
     name: row.name,
     platform: row.platform,
     lastSyncedAt: row.lastSyncedAt ?? null,
     createdAt: row.createdAt,
-    activeTokenCount: Number(row.activeTokenCount ?? 0)
+    activeTokenCount: Number(row.activeTokenCount ?? 0),
+    installations: installationsByDevice.get(row.id) ?? []
   }))
+}
+
+export async function listDeviceAuditLogs(
+  db: D1Database,
+  input: {
+    userId: string
+    deviceId: string
+    limit?: number
+  }
+) {
+  const rows = await db
+    .prepare(
+      `
+        SELECT
+          id,
+          action,
+          target_type as targetType,
+          target_id as targetId,
+          metadata,
+          created_at as createdAt
+        FROM audit_logs
+        WHERE user_id = ?
+          AND (
+            target_id = ?
+            OR metadata LIKE ?
+          )
+        ORDER BY created_at DESC
+        LIMIT ?
+      `
+    )
+    .bind(input.userId, input.deviceId, `%"deviceId":"${input.deviceId}"%`, input.limit ?? 20)
+    .all<UserDeviceAuditLog>()
+
+  return rows.results ?? []
 }
 
 export function parseDeviceNameForm(form: Record<string, unknown>) {
@@ -168,6 +273,15 @@ export async function renameDevice(
   if ((result.meta.changes ?? 0) === 0) {
     throw new ApiError('NOT_FOUND', 'Device not found', 404)
   }
+
+  await createDeviceAuditLog(db, {
+    userId: input.userId,
+    action: 'device.rename',
+    targetType: 'device',
+    targetId: input.deviceId,
+    metadata: { name },
+    now
+  })
 }
 
 export async function revokeDevice(
@@ -207,6 +321,15 @@ export async function revokeDevice(
   if ((result.meta.changes ?? 0) === 0) {
     throw new ApiError('NOT_FOUND', 'Device not found', 404)
   }
+
+  await createDeviceAuditLog(db, {
+    userId: input.userId,
+    action: 'device.revoke',
+    targetType: 'device',
+    targetId: input.deviceId,
+    metadata: { deviceId: input.deviceId },
+    now
+  })
 }
 
 export async function revokeInstallation(
@@ -218,6 +341,10 @@ export async function revokeInstallation(
   }
 ) {
   const now = input.now ?? new Date().toISOString()
+  const installation = await findInstallationForUser(db, input.userId, input.installationId)
+  if (!installation) {
+    throw new ApiError('NOT_FOUND', 'Installation not found', 404)
+  }
 
   await db
     .prepare(
@@ -248,6 +375,15 @@ export async function revokeInstallation(
   if ((result.meta.changes ?? 0) === 0) {
     throw new ApiError('NOT_FOUND', 'Installation not found', 404)
   }
+
+  await createDeviceAuditLog(db, {
+    userId: input.userId,
+    action: 'installation.revoke',
+    targetType: 'device_installation',
+    targetId: input.installationId,
+    metadata: { deviceId: installation.deviceId },
+    now
+  })
 }
 
 export async function revokeUploadToken(
@@ -259,6 +395,11 @@ export async function revokeUploadToken(
   }
 ) {
   const now = input.now ?? new Date().toISOString()
+  const token = await findUploadTokenForUser(db, input.userId, input.uploadTokenId)
+  if (!token) {
+    throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
+  }
+
   const result = await db
     .prepare(
       `
@@ -275,6 +416,90 @@ export async function revokeUploadToken(
   if ((result.meta.changes ?? 0) === 0) {
     throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
   }
+
+  await createDeviceAuditLog(db, {
+    userId: input.userId,
+    action: 'token.revoke',
+    targetType: 'upload_token',
+    targetId: input.uploadTokenId,
+    metadata: {
+      deviceId: token.deviceId,
+      installationId: token.installationId
+    },
+    now
+  })
+}
+
+async function findInstallationForUser(db: D1Database, userId: string, installationId: string) {
+  return await db
+    .prepare(
+      `
+        SELECT device_id as deviceId
+        FROM device_installations
+        WHERE id = ?
+          AND user_id = ?
+        LIMIT 1
+      `
+    )
+    .bind(installationId, userId)
+    .first<{ deviceId: string }>()
+}
+
+async function findUploadTokenForUser(db: D1Database, userId: string, uploadTokenId: string) {
+  return await db
+    .prepare(
+      `
+        SELECT
+          device_id as deviceId,
+          installation_id as installationId
+        FROM upload_tokens
+        WHERE id = ?
+          AND user_id = ?
+        LIMIT 1
+      `
+    )
+    .bind(uploadTokenId, userId)
+    .first<{ deviceId: string | null; installationId: string | null }>()
+}
+
+async function createDeviceAuditLog(
+  db: D1Database,
+  input: {
+    userId: string
+    action: string
+    targetType: string
+    targetId: string | null
+    metadata: Record<string, unknown>
+    now: string
+  }
+) {
+  await db
+    .prepare(
+      `
+        INSERT INTO audit_logs (
+          id,
+          user_id,
+          actor_type,
+          action,
+          target_type,
+          target_id,
+          metadata,
+          created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `
+    )
+    .bind(
+      randomId('audit'),
+      input.userId,
+      'user',
+      input.action,
+      input.targetType,
+      input.targetId,
+      JSON.stringify(input.metadata),
+      input.now
+    )
+    .run()
 }
 
 async function revokeDeviceTokens(
