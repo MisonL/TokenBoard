@@ -18,15 +18,33 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
       return {
         id: 'pair_1',
         userId: 'seed-user',
+        pairingType: 'new_device',
+        targetDeviceId: null,
         expiresAt: '2026-04-28T10:10:00.000Z',
         consumedAt: null
       }
     },
     async createPairingCode(input) {
-      calls.push(`pair:${input.userId}:${input.codeHash}:${input.expiresAt}`)
+      calls.push(
+        `pair:${input.userId}:${input.codeHash}:${input.pairingType}:${input.targetDeviceId ?? 'none'}:${input.expiresAt}`
+      )
+    },
+    async ensureDeviceOwnedByUser(userId, deviceId) {
+      calls.push(`own:${userId}:${deviceId}`)
+      return true
     },
     async createUploadTokenAndDevice(input) {
-      calls.push(`create:${input.userId}:${input.deviceName}:${input.uploadTokenHash}`)
+      calls.push(
+        `create:${input.userId}:${input.deviceId}:${input.installationId}:${input.deviceName}:${input.uploadTokenHash}`
+      )
+    },
+    async createUploadTokenAndInstallation(input) {
+      calls.push(
+        `install:${input.userId}:${input.deviceId}:${input.installationId}:${input.deviceName}:${input.uploadTokenHash}`
+      )
+    },
+    async createAuditLog(input) {
+      calls.push(`audit:${input.action}:${input.targetId}`)
     },
     async consumePairingCode(pairingCodeId, consumedAt) {
       calls.push(`consume:${pairingCodeId}:${consumedAt}`)
@@ -54,7 +72,30 @@ describe('pairDevice', () => {
       expiresAt: '2026-04-28T10:30:00.000Z'
     })
     expect(calls).toEqual([
-      'pair:seed-user:hash:pairing-token-fixture:2026-04-28T10:30:00.000Z'
+      'pair:seed-user:hash:pairing-token-fixture:new_device:none:2026-04-28T10:30:00.000Z'
+    ])
+  })
+
+  test('creates a reconnect pairing code for an owned device', async () => {
+    const { repository, calls } = createRepository()
+
+    const result = await createPairingCode(
+      repository,
+      'seed-user',
+      {
+        now: () => new Date('2026-04-28T10:00:00.000Z'),
+        randomId: () => 'pair_123',
+        randomToken: () => 'pairing-token-fixture',
+        hash: async (value) => `hash:${value}`
+      },
+      10,
+      { pairingType: 'reconnect_device', targetDeviceId: 'dev_old' }
+    )
+
+    expect(result.expiresAt).toBe('2026-04-28T10:10:00.000Z')
+    expect(calls).toEqual([
+      'own:seed-user:dev_old',
+      'pair:seed-user:hash:pairing-token-fixture:reconnect_device:dev_old:2026-04-28T10:10:00.000Z'
     ])
   })
 
@@ -82,12 +123,61 @@ describe('pairDevice', () => {
       endpoint: 'https://tokenboard.example.com/api/v1/ingest',
       uploadToken: 'upload-token-fixture',
       deviceId: 'dev_device-fixture',
+      installationId: 'inst_device-fixture',
       timezone: 'Asia/Shanghai'
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
       'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'create:seed-user:Codex Desktop:hash:upload-token-fixture'
+      'create:seed-user:dev_device-fixture:inst_device-fixture:Codex Desktop:hash:upload-token-fixture',
+      'audit:device.pair:dev_device-fixture'
+    ])
+  })
+
+  test('exchanges a reconnect pairing code for a new installation on an old device', async () => {
+    const { repository, calls } = createRepository({
+      async findUsablePairingCode(codeHash, now) {
+        calls.push(`find:${codeHash}:${now}`)
+        return {
+          id: 'pair_1',
+          userId: 'seed-user',
+          pairingType: 'reconnect_device',
+          targetDeviceId: 'dev_old',
+          expiresAt: '2026-04-28T10:10:00.000Z',
+          consumedAt: null
+        }
+      }
+    })
+
+    const result = await pairDevice(
+      repository,
+      {
+        pairingCode: 'dev-pairing-code',
+        deviceName: 'Reinstalled Desktop',
+        platform: 'linux',
+        timezone: 'Asia/Shanghai'
+      },
+      {
+        now: () => '2026-04-28T10:00:00.000Z',
+        endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+        randomId: () => 'install-fixture',
+        randomToken: () => 'upload-token-fixture',
+        hash: async (value) => `hash:${value}`
+      }
+    )
+
+    expect(result).toEqual({
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'upload-token-fixture',
+      deviceId: 'dev_old',
+      installationId: 'inst_install-fixture',
+      timezone: 'Asia/Shanghai'
+    })
+    expect(calls).toEqual([
+      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
+      'consume:pair_1:2026-04-28T10:00:00.000Z',
+      'install:seed-user:dev_old:inst_install-fixture:Reinstalled Desktop:hash:upload-token-fixture',
+      'audit:device.reconnect:dev_old'
     ])
   })
 

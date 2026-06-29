@@ -1,5 +1,16 @@
 import type { DevicePairingRepository, PairingCodeRecord } from './service'
 
+type InstallationInput = {
+  uploadTokenId: string
+  uploadTokenHash: string
+  deviceId: string
+  installationId: string
+  userId: string
+  deviceName: string
+  platform: string
+  createdAt: string
+}
+
 export class D1DevicePairingRepository implements DevicePairingRepository {
   constructor(private readonly db: D1Database) {}
 
@@ -7,20 +18,35 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     pairingCodeId: string
     userId: string
     codeHash: string
+    pairingType: string
+    targetDeviceId?: string | null
+    metadata?: string | null
     expiresAt: string
     createdAt: string
   }) {
     await this.db
       .prepare(
         `
-          INSERT INTO pairing_codes (id, user_id, code_hash, expires_at, created_at)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO pairing_codes (
+            id,
+            user_id,
+            code_hash,
+            pairing_type,
+            target_device_id,
+            metadata,
+            expires_at,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `
       )
       .bind(
         input.pairingCodeId,
         input.userId,
         input.codeHash,
+        input.pairingType,
+        input.targetDeviceId ?? null,
+        input.metadata ?? null,
         input.expiresAt,
         input.createdAt
       )
@@ -31,7 +57,13 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     const row = await this.db
       .prepare(
         `
-          SELECT id, user_id as userId, expires_at as expiresAt, consumed_at as consumedAt
+          SELECT
+            id,
+            user_id as userId,
+            pairing_type as pairingType,
+            target_device_id as targetDeviceId,
+            expires_at as expiresAt,
+            consumed_at as consumedAt
           FROM pairing_codes
           WHERE code_hash = ?
             AND consumed_at IS NULL
@@ -45,33 +77,49 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     return row ?? null
   }
 
+  async ensureDeviceOwnedByUser(userId: string, deviceId: string) {
+    const row = await this.db
+      .prepare('SELECT id FROM devices WHERE id = ? AND user_id = ? LIMIT 1')
+      .bind(deviceId, userId)
+      .first<{ id: string }>()
+    return Boolean(row)
+  }
+
   async createUploadTokenAndDevice(input: {
     uploadTokenId: string
     uploadTokenHash: string
     deviceId: string
+    installationId: string
     userId: string
     deviceName: string
     platform: string
     createdAt: string
   }) {
-    await this.db
-      .prepare(
-        `
-          INSERT INTO upload_tokens (id, user_id, name, token_hash, device_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `
-      )
-      .bind(
-        input.uploadTokenId,
-        input.userId,
-        input.deviceName,
-        input.uploadTokenHash,
-        input.deviceId,
-        input.createdAt
-      )
-      .run()
+    await this.db.batch([
+      this.deviceInsertStatement(input),
+      this.installationInsertStatement(input),
+      this.uploadTokenInsertStatement(input)
+    ])
+  }
 
-    await this.db
+  async createUploadTokenAndInstallation(input: {
+    uploadTokenId: string
+    uploadTokenHash: string
+    deviceId: string
+    installationId: string
+    userId: string
+    deviceName: string
+    platform: string
+    createdAt: string
+  }) {
+    await this.db.batch([
+      this.installationInsertStatement(input),
+      this.uploadTokenInsertStatement(input)
+    ])
+  }
+
+  private deviceInsertStatement(input: InstallationInput) {
+    return this.db
       .prepare(
         `
           INSERT INTO devices (id, user_id, name, platform, created_at, updated_at)
@@ -84,6 +132,102 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
         input.deviceName,
         input.platform,
         input.createdAt,
+        input.createdAt
+      )
+  }
+
+  private installationInsertStatement(input: InstallationInput) {
+    return this.db
+      .prepare(
+        `
+          INSERT INTO device_installations (
+            id,
+            user_id,
+            device_id,
+            platform,
+            hostname,
+            first_seen_at,
+            last_seen_at,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .bind(
+        input.installationId,
+        input.userId,
+        input.deviceId,
+        input.platform,
+        input.deviceName,
+        input.createdAt,
+        input.createdAt,
+        input.createdAt,
+        input.createdAt
+      )
+  }
+
+  private uploadTokenInsertStatement(input: InstallationInput) {
+    return this.db
+      .prepare(
+        `
+          INSERT INTO upload_tokens (
+            id,
+            user_id,
+            name,
+            token_hash,
+            device_id,
+            installation_id,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .bind(
+        input.uploadTokenId,
+        input.userId,
+        input.deviceName,
+        input.uploadTokenHash,
+        input.deviceId,
+        input.installationId,
+        input.createdAt
+      )
+  }
+
+  async createAuditLog(input: {
+    auditLogId: string
+    userId: string
+    actorType: string
+    action: string
+    targetType: string
+    targetId: string | null
+    metadata?: string | null
+    createdAt: string
+  }) {
+    await this.db
+      .prepare(
+        `
+          INSERT INTO audit_logs (
+            id,
+            user_id,
+            actor_type,
+            action,
+            target_type,
+            target_id,
+            metadata,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `
+      )
+      .bind(
+        input.auditLogId,
+        input.userId,
+        input.actorType,
+        input.action,
+        input.targetType,
+        input.targetId,
+        input.metadata ?? null,
         input.createdAt
       )
       .run()

@@ -52,7 +52,8 @@ describe('ingest route', () => {
     mockedVerifyUploadToken.mockResolvedValue({
       id: 'user_1',
       uploadTokenHash: 'token_hash',
-      deviceId: null
+      deviceId: null,
+      installationId: null
     })
     mockedEnforceRateLimit.mockRejectedValueOnce(
       new ApiError('RATE_LIMITED', 'Too many requests. Try again later.', 429)

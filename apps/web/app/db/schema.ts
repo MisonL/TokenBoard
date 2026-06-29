@@ -76,6 +76,8 @@ export const uploadTokens = sqliteTable('upload_tokens', {
   name: text('name').notNull(),
   tokenHash: text('token_hash').notNull().unique(),
   deviceId: text('device_id'),
+  installationId: text('installation_id'),
+  supersedesTokenId: text('supersedes_token_id'),
   lastUsedAt: text('last_used_at'),
   createdAt: text('created_at').notNull(),
   revokedAt: text('revoked_at')
@@ -87,6 +89,9 @@ export const pairingCodes = sqliteTable('pairing_codes', {
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
   codeHash: text('code_hash').notNull().unique(),
+  pairingType: text('pairing_type').notNull().default('new_device'),
+  targetDeviceId: text('target_device_id'),
+  metadata: text('metadata'),
   expiresAt: text('expires_at').notNull(),
   consumedAt: text('consumed_at'),
   createdAt: text('created_at').notNull()
@@ -103,6 +108,48 @@ export const devices = sqliteTable('devices', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
 })
+
+export const deviceInstallations = sqliteTable(
+  'device_installations',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    deviceId: text('device_id')
+      .notNull()
+      .references(() => devices.id, { onDelete: 'cascade' }),
+    platform: text('platform').notNull(),
+    hostname: text('hostname'),
+    clientVersion: text('client_version'),
+    firstSeenAt: text('first_seen_at').notNull(),
+    lastSeenAt: text('last_seen_at'),
+    revokedAt: text('revoked_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull()
+  },
+  (table) => [
+    index('device_installations_user_id_idx').on(table.userId),
+    index('device_installations_device_id_idx').on(table.deviceId)
+  ]
+)
+
+export const auditLogs = sqliteTable(
+  'audit_logs',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    actorType: text('actor_type').notNull(),
+    action: text('action').notNull(),
+    targetType: text('target_type').notNull(),
+    targetId: text('target_id'),
+    metadata: text('metadata'),
+    createdAt: text('created_at').notNull()
+  },
+  (table) => [index('audit_logs_user_created_idx').on(table.userId, table.createdAt)]
+)
 
 export const dailyUsage = sqliteTable(
   'daily_usage',
@@ -294,7 +341,7 @@ export const apiRateLimits = sqliteTable('api_rate_limits', {
 }, (table) => [index('api_rate_limits_reset_idx').on(table.resetAt)])
 
 export const schema = {
-  users, sessions, accounts, verifications, profiles, uploadTokens, pairingCodes, devices,
+  users, sessions, accounts, verifications, profiles, uploadTokens, pairingCodes, devices, deviceInstallations, auditLogs,
   dailyUsage, dailyUsageSummary, userUsageTotals, usageSummaryBackfillState,
   webhookSubscriptions, webhookDeliveryLogs, dailyReportHistory, apiRateLimits
 }

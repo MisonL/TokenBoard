@@ -3,9 +3,13 @@ import { randomId, randomToken, sha256Hex } from '../../lib/crypto'
 import { defaultTimezone, parseTimezone } from '../../lib/timezone'
 import type { DevicePairRequest } from './schema'
 
+export type PairingType = 'new_device' | 'reconnect_device'
+
 export type PairingCodeRecord = {
   id: string
   userId: string
+  pairingType: PairingType
+  targetDeviceId: string | null
   expiresAt: string
   consumedAt: string | null
 }
@@ -16,16 +20,41 @@ export type DevicePairingRepository = {
     pairingCodeId: string
     userId: string
     codeHash: string
+    pairingType: PairingType
+    targetDeviceId?: string | null
+    metadata?: string | null
     expiresAt: string
     createdAt: string
   }): Promise<void>
+  ensureDeviceOwnedByUser(userId: string, deviceId: string): Promise<boolean>
   createUploadTokenAndDevice(input: {
     uploadTokenId: string
     uploadTokenHash: string
     deviceId: string
+    installationId: string
     userId: string
     deviceName: string
     platform: string
+    createdAt: string
+  }): Promise<void>
+  createUploadTokenAndInstallation(input: {
+    uploadTokenId: string
+    uploadTokenHash: string
+    deviceId: string
+    installationId: string
+    userId: string
+    deviceName: string
+    platform: string
+    createdAt: string
+  }): Promise<void>
+  createAuditLog(input: {
+    auditLogId: string
+    userId: string
+    actorType: string
+    action: string
+    targetType: string
+    targetId: string | null
+    metadata?: string | null
     createdAt: string
   }): Promise<void>
   consumePairingCode(pairingCodeId: string, consumedAt: string): Promise<boolean>
@@ -176,18 +205,38 @@ export async function createPairingCode(
   repository: DevicePairingRepository,
   userId: string,
   deps: CreatePairingCodeDeps,
-  ttlMinutes = 30
+  ttlMinutes = 30,
+  options: {
+    pairingType?: PairingType
+    targetDeviceId?: string | null
+    metadata?: string | null
+  } = {}
 ) {
   const now = deps.now()
   const createdAt = now.toISOString()
   const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString()
   const pairingCode = deps.randomToken()
   const codeHash = await deps.hash(pairingCode)
+  const pairingType = options.pairingType ?? 'new_device'
+  const targetDeviceId = options.targetDeviceId ?? null
+
+  if (pairingType === 'reconnect_device') {
+    if (!targetDeviceId) {
+      throw new ApiError('BAD_REQUEST', 'Reconnect pairing requires target device', 400)
+    }
+    const ownsTarget = await repository.ensureDeviceOwnedByUser(userId, targetDeviceId)
+    if (!ownsTarget) {
+      throw new ApiError('NOT_FOUND', 'Device not found', 404)
+    }
+  }
 
   await repository.createPairingCode({
     pairingCodeId: deps.randomId(),
     userId,
     codeHash,
+    pairingType,
+    targetDeviceId,
+    metadata: options.metadata ?? null,
     expiresAt,
     createdAt
   })
@@ -216,8 +265,9 @@ export async function pairDevice(
   }
 
   const id = deps.randomId()
-  const deviceId = `dev_${id}`
+  const deviceId = pairingCode.pairingType === 'reconnect_device' ? pairingCode.targetDeviceId : `dev_${id}`
   const uploadTokenId = `ut_${id}`
+  const installationId = `inst_${id}`
   const uploadToken = deps.randomToken()
   const uploadTokenHash = await deps.hash(uploadToken)
   const consumed = await repository.consumePairingCode(pairingCode.id, now)
@@ -225,13 +275,37 @@ export async function pairDevice(
     throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
   }
 
-  await repository.createUploadTokenAndDevice({
+  if (!deviceId) {
+    throw new ApiError('BAD_REQUEST', 'Reconnect pairing is missing target device', 400)
+  }
+
+  const deviceName = request.deviceName ?? 'TokenBoard device'
+  const platform = request.platform ?? 'unknown'
+  const input = {
     uploadTokenId,
     uploadTokenHash,
     deviceId,
+    installationId,
     userId: pairingCode.userId,
-    deviceName: request.deviceName ?? 'TokenBoard device',
-    platform: request.platform ?? 'unknown',
+    deviceName,
+    platform,
+    createdAt: now
+  }
+
+  if (pairingCode.pairingType === 'reconnect_device') {
+    await repository.createUploadTokenAndInstallation(input)
+  } else {
+    await repository.createUploadTokenAndDevice(input)
+  }
+
+  await repository.createAuditLog({
+    auditLogId: `audit_${id}`,
+    userId: pairingCode.userId,
+    actorType: 'user',
+    action: pairingCode.pairingType === 'reconnect_device' ? 'device.reconnect' : 'device.pair',
+    targetType: 'device',
+    targetId: deviceId,
+    metadata: JSON.stringify({ installationId, platform }),
     createdAt: now
   })
 
@@ -239,6 +313,7 @@ export async function pairDevice(
     endpoint: deps.endpoint,
     uploadToken,
     deviceId,
+    installationId,
     timezone
   }
 }

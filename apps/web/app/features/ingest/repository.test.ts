@@ -394,6 +394,7 @@ describe('upsertUsageSnapshots', () => {
     await markIngestSynced(db, {
       uploadTokenHash: 'hash:upload-token',
       deviceId: 'dev_123',
+      installationId: 'inst_123',
       syncedAt: '2026-04-28T08:00:00.000Z'
     })
 
@@ -406,6 +407,14 @@ describe('upsertUsageSnapshots', () => {
       '2026-04-28T08:00:00.000Z',
       '2026-04-28T08:00:00.000Z',
       'dev_123'
+    ])
+    expect(sqlStatements[2]).toContain('UPDATE device_installations')
+    expect(sqlStatements[2]).toContain('last_seen_at = ?')
+    expect(bindings[2]).toEqual([
+      '2026-04-28T08:00:00.000Z',
+      '2026-04-28T08:00:00.000Z',
+      'inst_123',
+      'hash:upload-token'
     ])
   })
 })
