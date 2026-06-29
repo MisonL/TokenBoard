@@ -247,7 +247,8 @@ WHERE id = ?
 1. setup 检测到 `device-link.json`。
 2. setup 带上 claim 参与 pairing，或提示用户确认恢复。
 3. 服务端校验 claim hash 和设备归属。
-4. 服务端在旧 device 下创建新的 installation/token。
+4. 服务端先使旧 claim hash 失效，再生成绑定旧 device 的 reconnect pairing code。
+5. client 消费 pairing code 后，服务端在旧 device 下创建新的 installation/token。
 
 ### 系统全新重装且本地状态全丢
 

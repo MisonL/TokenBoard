@@ -38,7 +38,7 @@ New clients store credentials by TokenBoard server origin under `servers` and mi
 
 When the server returns an install claim, setup writes `~/.tokenboard/device-link.json` with mode `0600`. Treat this file as sensitive local recovery state. Never print, copy, upload, or paste its `installClaim`; status output only reports whether the file exists.
 
-If config is missing but `device-link.json` is still present, setup can explicitly request a reconnect pairing code with `--use-device-link` or `TOKENBOARD_USE_DEVICE_LINK=1`. This sends only `deviceId`, `installationId`, and the install claim to `/api/v1/device/reconnect-pairing-codes`; failure must stop setup instead of silently creating a new logical device.
+If config is missing but `device-link.json` is still present, setup can explicitly request a reconnect pairing code with `--use-device-link` or `TOKENBOARD_USE_DEVICE_LINK=1`. This sends only `deviceId`, `installationId`, and the install claim to `/api/v1/device/reconnect-pairing-codes`; a successful exchange invalidates the old install claim, and failure must stop setup instead of silently creating a new logical device.
 
 When the Web UI rotates an upload token, it shows the new token once together with macOS/Linux/Git Bash and Windows PowerShell `rotate-token.mjs` commands. Run the platform-matching command on the matching client machine to update only the matching server profile in `config.json` and refresh `device-link.json`. Do not paste the rotated token or install claim into chat logs, screenshots, docs, or unrelated terminals. If the command says the server profile is missing, stop and reconnect the device instead of creating an ad hoc config.
 

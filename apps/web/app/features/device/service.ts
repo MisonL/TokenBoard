@@ -32,6 +32,14 @@ export type DevicePairingRepository = {
     installationId: string
     installClaimHash: string
   }): Promise<DeviceInstallationClaimRecord | null>
+  rotateInstallationClaim(input: {
+    userId: string
+    deviceId: string
+    installationId: string
+    previousInstallClaimHash: string
+    nextInstallClaimHash: string
+    updatedAt: string
+  }): Promise<boolean>
   createUploadTokenAndDevice(input: {
     uploadTokenId: string
     uploadTokenHash: string
@@ -895,6 +903,14 @@ export async function createReconnectPairingCodeFromClaim(
     throw new ApiError('UNAUTHORIZED', 'Invalid device link claim', 401)
   }
 
+  await rotateDeviceLinkClaim(repository, {
+    userId: installation.userId,
+    deviceId: normalized.deviceId,
+    installationId: normalized.installationId,
+    previousInstallClaimHash: installClaimHash,
+    updatedAt: deps.now().toISOString()
+  }, deps)
+
   const result = await createPairingCode(repository, installation.userId, deps, ttlMinutes, {
     pairingType: 'reconnect_device',
     targetDeviceId: normalized.deviceId,
@@ -915,6 +931,27 @@ export async function createReconnectPairingCodeFromClaim(
     createdAt
   })
   return result
+}
+
+async function rotateDeviceLinkClaim(
+  repository: DevicePairingRepository,
+  input: {
+    userId: string
+    deviceId: string
+    installationId: string
+    previousInstallClaimHash: string
+    updatedAt: string
+  },
+  deps: CreatePairingCodeDeps
+) {
+  const nextInstallClaimHash = await deps.hash(deps.randomToken())
+  const rotated = await repository.rotateInstallationClaim({
+    ...input,
+    nextInstallClaimHash
+  })
+  if (!rotated) {
+    throw new ApiError('UNAUTHORIZED', 'Invalid device link claim', 401)
+  }
 }
 
 function normalizeInstallClaimInput(input: {

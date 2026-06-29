@@ -156,6 +156,33 @@ describe('D1DevicePairingRepository', () => {
     expect(bindings[0]).toEqual(['inst_1', 'dev_1', 'hash:claim'])
   })
 
+  test('rotates an installation claim only when the previous claim is current', async () => {
+    const { db, sqlStatements, bindings } = createRecordingDb()
+    const repository = new D1DevicePairingRepository(db)
+
+    await expect(
+      repository.rotateInstallationClaim({
+        userId: 'user_1',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        previousInstallClaimHash: 'hash:old',
+        nextInstallClaimHash: 'hash:new',
+        updatedAt: '2026-06-30T10:00:00.000Z'
+      })
+    ).resolves.toBe(true)
+    expect(sqlStatements[0]).toContain('UPDATE device_installations')
+    expect(sqlStatements[0]).toContain('install_claim_hash = ?')
+    expect(sqlStatements[0]).toContain('revoked_at IS NULL')
+    expect(bindings[0]).toEqual([
+      'hash:new',
+      '2026-06-30T10:00:00.000Z',
+      'inst_1',
+      'user_1',
+      'dev_1',
+      'hash:old'
+    ])
+  })
+
   test('records device pairing audit logs', async () => {
     const { db, sqlStatements, bindings } = createRecordingDb()
     const repository = new D1DevicePairingRepository(db)

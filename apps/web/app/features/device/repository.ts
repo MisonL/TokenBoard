@@ -116,6 +116,38 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     return row ?? null
   }
 
+  async rotateInstallationClaim(input: {
+    userId: string
+    deviceId: string
+    installationId: string
+    previousInstallClaimHash: string
+    nextInstallClaimHash: string
+    updatedAt: string
+  }) {
+    const result = await this.db
+      .prepare(
+        `
+          UPDATE device_installations
+          SET install_claim_hash = ?, updated_at = ?
+          WHERE id = ?
+            AND user_id = ?
+            AND device_id = ?
+            AND install_claim_hash = ?
+            AND revoked_at IS NULL
+        `
+      )
+      .bind(
+        input.nextInstallClaimHash,
+        input.updatedAt,
+        input.installationId,
+        input.userId,
+        input.deviceId,
+        input.previousInstallClaimHash
+      )
+      .run()
+    return (result.meta.changes ?? 0) > 0
+  }
+
   async createUploadTokenAndDevice(input: {
     uploadTokenId: string
     uploadTokenHash: string

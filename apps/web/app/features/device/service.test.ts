@@ -47,6 +47,12 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
         revokedAt: null
       }
     },
+    async rotateInstallationClaim(input) {
+      calls.push(
+        `rotate-claim:${input.userId}:${input.deviceId}:${input.installationId}:${input.previousInstallClaimHash}:${input.nextInstallClaimHash}`
+      )
+      return true
+    },
     async createUploadTokenAndDevice(input) {
       calls.push(
         `create:${input.userId}:${input.deviceId}:${input.installationId}:${input.installClaimHash}:${input.deviceName}:${input.uploadTokenHash}`
@@ -136,7 +142,7 @@ describe('pairDevice', () => {
       {
         now: () => new Date('2026-04-28T10:00:00.000Z'),
         randomId: createTokenSequence(['pair_123', 'audit_123']),
-        randomToken: () => 'pairing-token-fixture',
+        randomToken: createTokenSequence(['claim-rotated-fixture', 'pairing-token-fixture']),
         hash: async (value) => `hash:${value}`
       },
       10
@@ -148,6 +154,7 @@ describe('pairDevice', () => {
     })
     expect(calls).toEqual([
       'claim:dev_old:inst_old:hash:claim-fixture',
+      'rotate-claim:seed-user:dev_old:inst_old:hash:claim-fixture:hash:claim-rotated-fixture',
       'own:seed-user:dev_old',
       'pair:seed-user:hash:pairing-token-fixture:reconnect_device:dev_old:2026-04-28T10:10:00.000Z',
       'audit:device.reconnect.claim:dev_old'
@@ -179,6 +186,38 @@ describe('pairDevice', () => {
       )
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
     expect(calls).toEqual(['claim:dev_old:inst_old:hash:claim-fixture'])
+  })
+
+  test('rejects replayed install claim before creating pairing code', async () => {
+    const { repository, calls } = createRepository({
+      async rotateInstallationClaim(input) {
+        calls.push(
+          `rotate-claim:${input.userId}:${input.deviceId}:${input.installationId}:${input.previousInstallClaimHash}:${input.nextInstallClaimHash}`
+        )
+        return false
+      }
+    })
+
+    await expect(
+      createReconnectPairingCodeFromClaim(
+        repository,
+        {
+          deviceId: 'dev_old',
+          installationId: 'inst_old',
+          installClaim: 'claim-fixture'
+        },
+        {
+          now: () => new Date('2026-04-28T10:00:00.000Z'),
+          randomId: () => 'pair_123',
+          randomToken: () => 'claim-rotated-fixture',
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    expect(calls).toEqual([
+      'claim:dev_old:inst_old:hash:claim-fixture',
+      'rotate-claim:seed-user:dev_old:inst_old:hash:claim-fixture:hash:claim-rotated-fixture'
+    ])
   })
 
   test('exchanges a pairing code for a one-time upload token and device config', async () => {
