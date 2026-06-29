@@ -1,6 +1,7 @@
 import { renderToString } from 'hono/jsx/dom/server'
 import { describe, expect, test } from 'vitest'
 import {
+  createDeviceLinkReconnectCommands,
   createInstallHookCommands,
   createInstallPrompt,
   createUninstallCommand,
@@ -22,6 +23,8 @@ describe('InstallCommand', () => {
     expect(html).toContain('data-copy-target="install-prompt-text"')
     expect(html).toContain('data-copy-target="install-hook-bash-command-text"')
     expect(html).toContain('data-copy-target="install-hook-powershell-command-text"')
+    expect(html).toContain('data-copy-target="device-link-reconnect-bash-command-text"')
+    expect(html).toContain('data-copy-target="device-link-reconnect-powershell-command-text"')
     expect(html).toContain('data-copy-target="uninstall-bash-command-text"')
     expect(html).toContain('data-copy-target="uninstall-powershell-command-text"')
     expect(html).toContain('data-timezone-input="true"')
@@ -33,6 +36,8 @@ describe('InstallCommand', () => {
     expect(html).toContain('aria-label="复制安装提示词"')
     expect(html).toContain('aria-label="复制 macOS / Linux / Git Bash hook 安装命令"')
     expect(html).toContain('aria-label="复制 Windows PowerShell hook 安装命令"')
+    expect(html).toContain('aria-label="复制 macOS / Linux / Git Bash device-link 恢复命令"')
+    expect(html).toContain('aria-label="复制 Windows PowerShell device-link 恢复命令"')
     expect(html).toContain('aria-label="复制 macOS / Linux / Git Bash 卸载命令"')
     expect(html).toContain('aria-label="复制 Windows PowerShell 卸载命令"')
     expect(html).toContain('flex min-h-12 items-center justify-between')
@@ -46,6 +51,8 @@ describe('InstallCommand', () => {
     expect(html).toContain('skills/tokenboard/scripts/setup.mjs')
     expect(html).toContain('skills/tokenboard/scripts/install-hook.mjs')
     expect(html).toContain('skills/tokenboard/scripts/uninstall.mjs')
+    expect(html).toContain('使用 device-link 恢复旧设备')
+    expect(html).toContain('仅在这台机器仍保留 ~/.tokenboard/device-link.json')
   })
 
   test('generates a direct shell-oriented prompt that discourages browser detours', () => {
@@ -180,6 +187,49 @@ describe('InstallCommand', () => {
     expect(commands.powerShell).toContain('skills\\tokenboard\\scripts\\install-hook.mjs") --source all')
     expect(commands.powerShell).toContain('# all installs Codex and Claude Code hooks; install Antigravity CLI capture separately with --source antigravity-cli.')
     expect(commands.powerShell).not.toContain('```')
+  })
+
+  test('generates explicit device-link reconnect commands without pairing code', () => {
+    const commands = createDeviceLinkReconnectCommands({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai'
+    })
+
+    expect(commands.bash).toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
+    expect(commands.bash).toContain('git -C "$repo" pull --ff-only')
+    expect(commands.bash).toContain('Explicit recovery path')
+    expect(commands.bash).toContain('TOKENBOARD_CODEX_BATCH_SIZE=200')
+    expect(commands.bash).toContain('skills/tokenboard/scripts/setup.mjs" --use-device-link')
+    expect(commands.bash).toContain("--base-url 'https://tokenboard.example'")
+    expect(commands.bash).toContain("--timezone 'Asia/Shanghai'")
+    expect(commands.bash).toContain('--schedule-times "09:00,12:00,18:00,23:00"')
+    expect(commands.bash).not.toContain('--pairing-code')
+    expect(commands.bash).not.toContain('installClaim')
+    expect(commands.bash).not.toContain('```')
+    expect(commands.powerShell).toContain('git clone "https://github.com/evepupil/TokenBoard.git" $repo')
+    expect(commands.powerShell).toContain('$env:TOKENBOARD_CODEX_BATCH_SIZE = "200"')
+    expect(commands.powerShell).toContain('skills\\tokenboard\\scripts\\setup.mjs") --use-device-link')
+    expect(commands.powerShell).toContain('--base-url "https://tokenboard.example"')
+    expect(commands.powerShell).toContain('--timezone "Asia/Shanghai"')
+    expect(commands.powerShell).not.toContain('--pairing-code')
+    expect(commands.powerShell).not.toContain('installClaim')
+    expect(commands.powerShell).not.toContain('```')
+  })
+
+  test('uses overridden repo settings for device-link reconnect commands', () => {
+    const commands = createDeviceLinkReconnectCommands({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai',
+      collectorRepoUrl: 'https://github.com/example/TokenBoard.git',
+      collectorRepoRef: 'docs/device-identity-reconnect-plan'
+    })
+
+    expect(commands.bash).toContain("git clone --branch 'docs/device-identity-reconnect-plan'")
+    expect(commands.bash).toContain("--repo-url 'https://github.com/example/TokenBoard.git'")
+    expect(commands.bash).toContain("--repo-ref 'docs/device-identity-reconnect-plan'")
+    expect(commands.powerShell).toContain('git clone --branch "docs/device-identity-reconnect-plan"')
+    expect(commands.powerShell).toContain('--repo-url "https://github.com/example/TokenBoard.git"')
+    expect(commands.powerShell).toContain('--repo-ref "docs/device-identity-reconnect-plan"')
   })
 
   test('generates branch-pinned hook install instructions when configured', () => {

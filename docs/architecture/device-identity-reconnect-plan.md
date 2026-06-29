@@ -422,6 +422,7 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - ingest 成功后更新 device 与 installation 的同步时间；
 - Web 设备页提供“重新连接”入口，并复用安装页生成绑定旧设备的 pairing code；
 - Web 设备页在逻辑设备下展示安装实例、最近操作，并支持停用单个 installation；
+- Web 安装页提供显式 `device-link.json` 恢复命令，不进入默认安装命令，也不展示 claim；
 - client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
 - client 写入 `device-link.json`，服务端只保存 `installClaim` hash，status 只展示文件存在性；
 - client setup 支持显式 `--use-device-link`，通过 install claim 换取绑定旧 device 的 reconnect pairing code；
@@ -432,7 +433,6 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 
 仍保留为后续阶段：
 
-- Web UI 引导用户触发 `device-link.json` claim 辅助重连；
 - reconnect / token rotation 的 step-up 验证；
 - token 轮换 UI；
 - 手动合并设备。

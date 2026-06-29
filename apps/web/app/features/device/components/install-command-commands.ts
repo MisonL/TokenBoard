@@ -13,6 +13,11 @@ type InstallPromptInput = {
   collectorRepoRef?: string
 }
 
+type DeviceLinkReconnectCommandInput = CommandInput & {
+  baseUrl: string
+  timezone: string
+}
+
 function createInstallPromptContext(input: InstallPromptInput) {
   const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
   const collectorRepoRef = normalizeOptionalRef(input.collectorRepoRef)
@@ -138,6 +143,24 @@ export function createInstallHookCommands(input: CommandInput = {}) {
   }
 }
 
+export function createDeviceLinkReconnectCommands(input: DeviceLinkReconnectCommandInput) {
+  const bootstrap = createBootstrapCommands(input)
+  const context = createDeviceLinkReconnectCommandContext(input)
+  return {
+    bash: [
+      ...bootstrap.bash,
+      '# Explicit recovery path: uses local ~/.tokenboard/device-link.json and does not need a pairing code.',
+      `TOKENBOARD_CODEX_BATCH_SIZE=200 node "$repo/skills/tokenboard/scripts/setup.mjs" --use-device-link --base-url ${context.bashBaseUrl} --timezone ${context.bashTimezone} --schedule-times "09:00,12:00,18:00,23:00"${context.bashSetupRepoArg}${context.bashSetupRepoRefArg}`
+    ].join('\n'),
+    powerShell: [
+      ...bootstrap.powerShell,
+      '# Explicit recovery path: uses local ~/.tokenboard/device-link.json and does not need a pairing code.',
+      '$env:TOKENBOARD_CODEX_BATCH_SIZE = "200"',
+      `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --use-device-link --base-url ${context.powerShellBaseUrl} --timezone ${context.powerShellTimezone} --schedule-times "09:00,12:00,18:00,23:00"${context.powerShellSetupRepoArg}${context.powerShellSetupRepoRefArg}`
+    ].join('\n')
+  }
+}
+
 export function createUninstallCommands(input: CommandInput = {}) {
   const bootstrap = createBootstrapCommands(input)
   return {
@@ -167,6 +190,21 @@ export function createUninstallCommand(input: CommandInput = {}) {
     commands.powerShell,
     '```'
   ].join('\n')
+}
+
+function createDeviceLinkReconnectCommandContext(input: DeviceLinkReconnectCommandInput) {
+  const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
+  const collectorRepoRef = normalizeOptionalRef(input.collectorRepoRef)
+  return {
+    bashBaseUrl: escapeBashArg(input.baseUrl),
+    bashTimezone: escapeBashArg(input.timezone),
+    bashSetupRepoArg: collectorRepoUrl === defaultCollectorRepoUrl ? '' : ` --repo-url ${escapeBashArg(collectorRepoUrl)}`,
+    bashSetupRepoRefArg: collectorRepoRef ? ` --repo-ref ${escapeBashArg(collectorRepoRef)}` : '',
+    powerShellBaseUrl: escapePowerShellArg(input.baseUrl),
+    powerShellTimezone: escapePowerShellArg(input.timezone),
+    powerShellSetupRepoArg: collectorRepoUrl === defaultCollectorRepoUrl ? '' : ` --repo-url ${escapePowerShellArg(collectorRepoUrl)}`,
+    powerShellSetupRepoRefArg: collectorRepoRef ? ` --repo-ref ${escapePowerShellArg(collectorRepoRef)}` : ''
+  }
 }
 
 function createBootstrapCommands(input: CommandInput) {

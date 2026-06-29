@@ -1,11 +1,13 @@
 import { Copy } from 'lucide'
 import { LucideIcon } from '../../../components/ui/icon'
 import {
+  createDeviceLinkReconnectCommands,
   createInstallHookCommands,
   createInstallPrompt,
   createUninstallCommands
 } from './install-command-commands'
 export {
+  createDeviceLinkReconnectCommands,
   createInstallHookCommands,
   createInstallPrompt,
   createUninstallCommand,
@@ -38,6 +40,12 @@ export function InstallCommand(props: InstallCommandProps) {
     collectorRepoUrl: props.collectorRepoUrl,
     collectorRepoRef: props.collectorRepoRef
   })
+  const deviceLinkReconnectCommands = createDeviceLinkReconnectCommands({
+    baseUrl: props.baseUrl,
+    timezone: props.timezone,
+    collectorRepoUrl: props.collectorRepoUrl,
+    collectorRepoRef: props.collectorRepoRef
+  })
   const uninstallCommands = createUninstallCommands({
     collectorRepoUrl: props.collectorRepoUrl,
     collectorRepoRef: props.collectorRepoRef
@@ -49,6 +57,7 @@ export function InstallCommand(props: InstallCommandProps) {
       <InstallTimezoneForm timezone={props.timezone} targetDeviceId={props.targetDeviceId} />
       <InstallPromptSection prompt={prompt} expiresAt={props.expiresAt} visible={Boolean(props.pairingCode)} />
       <HookCommandSection commands={installHookCommands} />
+      <DeviceLinkReconnectCommandSection commands={deviceLinkReconnectCommands} />
       <UninstallCommandSection commands={uninstallCommands} />
     </section>
   )
@@ -129,6 +138,18 @@ function HookCommandSection(props: { commands: { bash: string; powerShell: strin
       commands={props.commands}
       idPrefix="install-hook"
       actionLabel="hook 安装命令"
+    />
+  )
+}
+
+function DeviceLinkReconnectCommandSection(props: { commands: { bash: string; powerShell: string } }) {
+  return (
+    <CommandSection
+      title="使用 device-link 恢复旧设备"
+      description="仅在这台机器仍保留 ~/.tokenboard/device-link.json，且需要挂回旧设备记录时使用。"
+      commands={props.commands}
+      idPrefix="device-link-reconnect"
+      actionLabel="device-link 恢复命令"
     />
   )
 }
