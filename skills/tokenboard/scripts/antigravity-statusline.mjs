@@ -42,7 +42,9 @@ export function extractStatuslineEvent(raw, capturedAt) {
   const payload = parsePayload(raw)
   const contextWindow = readObject(payload.context_window)
   const usage = readObject(contextWindow.current_usage)
-  const conversationHash = hashIdentifier(readBoundedString(payload.conversation_id, 4096, 'conversation_id'))
+  const conversationId = readBoundedString(payload.conversation_id, 4096, 'conversation_id')
+  const conversationHash = hashLegacyIdentifier(conversationId)
+  const conversationHashAliases = hashIdentifier(conversationId)
   const model = readModel(payload.model)
   const inputTokens = readToken(usage.input_tokens, 'input_tokens')
   const outputTokens = readToken(usage.output_tokens, 'output_tokens')
@@ -57,6 +59,9 @@ export function extractStatuslineEvent(raw, capturedAt) {
     schemaVersion,
     capturedAt,
     conversationHash,
+    conversationHashAliases: conversationHashAliases && conversationHashAliases !== conversationHash
+      ? [conversationHashAliases]
+      : undefined,
     model,
     usage: {
       inputTokens,
@@ -148,6 +153,13 @@ function readObject(value) {
 }
 
 function hashIdentifier(value) {
+  if (!value) return null
+  return createHash('sha256')
+    .update(value)
+    .digest('hex')
+}
+
+function hashLegacyIdentifier(value) {
   if (!value) return null
   return createHash('sha256')
     .update('tokenboard-antigravity-cli\0')

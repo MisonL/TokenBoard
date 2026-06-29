@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { extractStatuslineEvent } from './antigravity-statusline.mjs'
+import { createHash } from 'node:crypto'
 
 const scriptPath = fileURLToPath(new URL('./antigravity-statusline.mjs', import.meta.url))
 
@@ -25,8 +26,9 @@ test('extracts only sanitized Antigravity statusline usage fields', () => {
   assert.equal(event.usage.outputTokens, 12)
   assert.equal(event.usage.cacheCreationTokens, 3)
   assert.equal(event.usage.cacheReadTokens, 40)
-  assert.notEqual(event.conversationHash, 'raw-conversation-id')
-  assert.deepEqual(Object.keys(event).sort(), ['capturedAt', 'conversationHash', 'model', 'schemaVersion', 'usage'])
+  assert.equal(event.conversationHash, legacyHash('raw-conversation-id'))
+  assert.deepEqual(event.conversationHashAliases, [plainHash('raw-conversation-id')])
+  assert.deepEqual(Object.keys(event).sort(), ['capturedAt', 'conversationHash', 'conversationHashAliases', 'model', 'schemaVersion', 'usage'])
 })
 
 test('statusline CLI writes sanitized JSONL and preserves original command output', async () => {
@@ -62,6 +64,8 @@ test('statusline CLI writes sanitized JSONL and preserves original command outpu
     assert.equal(event.schemaVersion, 'antigravity-statusline/v1')
     assert.equal(event.model, 'Gemini 3.5 Flash (Medium)')
     assert.notEqual(event.conversationHash, 'raw-session-id')
+    assert.equal(event.conversationHash, legacyHash('raw-session-id'))
+    assert.deepEqual(event.conversationHashAliases, [plainHash('raw-session-id')])
     assert.match(event.conversationHash, /^[a-f0-9]{64}$/)
     assert.doesNotMatch(await readFile(logPath, 'utf8'), /raw-session-id|\/Users\/example|user@example\.com/)
   } finally {
@@ -183,4 +187,15 @@ function statuslinePayload(overrides = {}) {
     },
     ...overrides
   }
+}
+
+function plainHash(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+function legacyHash(value) {
+  return createHash('sha256')
+    .update('tokenboard-antigravity-cli\0')
+    .update(value)
+    .digest('hex')
 }

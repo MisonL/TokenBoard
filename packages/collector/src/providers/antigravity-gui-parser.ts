@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 export type AntigravityUsageEvent = {
   cascadeHash: string
+  cascadeHashAliases?: string[]
   eventHash: string
   createdAt: string
   model: string
@@ -13,26 +14,13 @@ export type AntigravityUsageEvent = {
 
 const maxTokenValue = 1_000_000_000
 const maxModelLength = 160
-const rawContentKeys = new Set([
-  'content',
-  'conversationHistory',
-  'cwd',
-  'email',
-  'filePath',
-  'path',
-  'prompt',
-  'completion',
-  'transcript_path',
-  'userInput',
-  'workspace',
-  'workspaceFolderAbsoluteUri'
-])
+const placeholderModelPrefix = 'MODEL_PLACEHOLDER_'
+const isoDateTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
 
 export function parseGeneratorMetadata(response: unknown, cascadeId: string) {
   if (!isRecord(response) || !Array.isArray(response.generatorMetadata)) {
     throw new Error('Invalid Antigravity generator metadata response')
   }
-  assertNoRawContentFields(response.generatorMetadata, 'generatorMetadata')
   const cascadeHash = hash(cascadeId)
   const events: AntigravityUsageEvent[] = []
   for (const [index, item] of response.generatorMetadata.entries()) {
@@ -52,47 +40,30 @@ function parseGeneratorMetadataItem(
   if (!chatModel) return null
   const usage = readRecord(chatModel.usage)
   if (!usage) return null
+  if (Object.keys(usage).length === 0) return null
+  const tokens = readUsageTokens(usage, index)
+  if (!tokens) return null
   const startMetadata = readRecord(chatModel.chatStartMetadata)
   const createdAt = readIsoDateTime(startMetadata?.createdAt, index)
-  const model = readString(usage.model ?? chatModel.model, 'model', index)
-  const event = {
+  const model = readModel({ usage, chatModel, index })
+  return {
     cascadeHash,
-    eventHash: usageEventHash({ item, usage, model, createdAt }),
+    eventHash: usageEventHash({ item, usage, tokens, model, createdAt }),
     createdAt,
     model,
-    inputTokens: readRequiredToken(usage.inputTokens, 'inputTokens', index),
-    outputTokens: readRequiredToken(usage.outputTokens, 'outputTokens', index),
+    ...tokens
+  }
+}
+
+function readUsageTokens(usage: Record<string, unknown>, index: number) {
+  const tokens = {
+    inputTokens: readOptionalToken(usage.inputTokens, 'inputTokens', index),
+    outputTokens: readOptionalToken(usage.outputTokens, 'outputTokens', index),
     cacheCreationTokens: readOptionalToken(usage.cacheCreationTokens, 'cacheCreationTokens', index),
     cacheReadTokens: readOptionalToken(usage.cacheReadTokens, 'cacheReadTokens', index)
   }
-  if (event.inputTokens + event.outputTokens + event.cacheCreationTokens + event.cacheReadTokens === 0) {
-    throw new Error(`Invalid Antigravity generator metadata item ${index}: usage is empty`)
-  }
-  return event
-}
-
-function assertNoRawContentFields(value: unknown, path: string) {
-  if (Array.isArray(value)) {
-    for (const [index, item] of value.entries()) {
-      assertNoRawContentFields(item, `${path}[${index}]`)
-    }
-    return
-  }
-  if (!isRecord(value)) return
-  for (const [key, child] of Object.entries(value)) {
-    const childPath = `${path}.${key}`
-    if (rawContentKeys.has(key)) {
-      throw new Error(`Antigravity generator metadata contains raw content field ${childPath}`)
-    }
-    assertNoRawContentFields(child, childPath)
-  }
-}
-
-function readRequiredToken(value: unknown, field: string, index: number) {
-  if (value === undefined || value === null) {
-    throw new Error(`Invalid Antigravity generator metadata item ${index}: ${field} is required`)
-  }
-  return readToken(value, field, index)
+  const total = tokens.inputTokens + tokens.outputTokens + tokens.cacheCreationTokens + tokens.cacheReadTokens
+  return total === 0 ? null : tokens
 }
 
 function readOptionalToken(value: unknown, field: string, index: number) {
@@ -110,6 +81,31 @@ function readToken(value: unknown, field: string, index: number) {
   return token
 }
 
+function readModel(input: {
+  usage: Record<string, unknown>
+  chatModel: Record<string, unknown>
+  index: number
+}) {
+  const candidates = [
+    input.chatModel.responseModel,
+    input.usage.model,
+    input.chatModel.model
+  ]
+  const placeholderCandidates: string[] = []
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue
+    if (candidate.length === 0) continue
+    if (candidate.startsWith(placeholderModelPrefix)) {
+      placeholderCandidates.push(candidate)
+      continue
+    }
+    return readString(candidate, 'model', input.index)
+  }
+  const placeholder = placeholderCandidates[0]
+  if (placeholder) return readString(placeholder, 'model', input.index)
+  throw new Error(`Invalid Antigravity generator metadata item ${input.index}: model must be a non-empty string`)
+}
+
 function readString(value: unknown, field: string, index: number) {
   if (typeof value !== 'string' || value.length === 0 || value.length > maxModelLength) {
     throw new Error(
@@ -121,7 +117,7 @@ function readString(value: unknown, field: string, index: number) {
 }
 
 function readIsoDateTime(value: unknown, index: number) {
-  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) {
+  if (typeof value !== 'string' || !isoDateTimePattern.test(value) || !Number.isFinite(Date.parse(value))) {
     throw new Error(`Invalid Antigravity generator metadata item ${index}: createdAt must be an ISO datetime`)
   }
   return value
@@ -130,6 +126,12 @@ function readIsoDateTime(value: unknown, index: number) {
 function usageEventHash(input: {
   item: Record<string, unknown>
   usage: Record<string, unknown>
+  tokens: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationTokens: number
+    cacheReadTokens: number
+  }
   model: string
   createdAt: string
 }) {
@@ -139,9 +141,10 @@ function usageEventHash(input: {
     input.item.stepIndices,
     input.model,
     input.createdAt,
-    input.usage.inputTokens,
-    input.usage.outputTokens,
-    input.usage.cacheReadTokens
+    input.tokens.inputTokens,
+    input.tokens.outputTokens,
+    input.tokens.cacheCreationTokens,
+    input.tokens.cacheReadTokens
   ]))
 }
 

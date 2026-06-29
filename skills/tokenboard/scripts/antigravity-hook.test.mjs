@@ -3,7 +3,7 @@ import test from 'node:test'
 import { hookStatus, installHooks, uninstallHooks } from './hooks.mjs'
 import { readSources } from './hooks-utils.mjs'
 
-test('Antigravity hooks require explicit opt-in outside default all', () => {
+test('all installs Codex and Claude Code hooks while Antigravity CLI stays explicit opt-in', () => {
   assert.deepEqual(readSources('all'), ['codex', 'claude-code'])
   assert.deepEqual(readSources('all,antigravity-cli'), ['codex', 'claude-code', 'antigravity-cli'])
 })

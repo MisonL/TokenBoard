@@ -101,7 +101,7 @@ test('hook paths include Antigravity CLI, IDE, and standalone homes', () => {
   assert.equal(paths.antigravityPath, '/custom/agy-app')
 })
 
-test('status detects Antigravity GUI products without token export support', () => {
+test('status detects Antigravity GUI products with local history support', () => {
   const paths = createPaths()
   const fs = memoryFs({
     [paths.antigravityIdePath]: '',
@@ -111,8 +111,8 @@ test('status detects Antigravity GUI products without token export support', () 
   const status = hookStatus({ paths, fs })
 
   assert.equal(status.antigravityCli, 'not-installed')
-  assert.equal(status.antigravityIde, 'installed-no-token-export')
-  assert.equal(status.antigravity, 'installed-no-token-export')
+  assert.equal(status.antigravityIde, 'installed-local-history')
+  assert.equal(status.antigravity, 'installed-local-history')
 })
 
 test('rejects unsupported hook sources even when all is also present', () => {
@@ -550,6 +550,21 @@ test('keeps notify handler when uninstalling one source leaves the other install
   assert.equal(fs.files.has(paths.notifyPath), true)
   assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).codex, 'not-installed')
   assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).claudeCode, 'installed')
+})
+
+test('install all keeps Antigravity statusLine opt-in', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.codexConfigPath]: 'model = "gpt-5"\n',
+    [paths.claudeSettingsPath]: JSON.stringify({ hooks: {} }),
+    [paths.antigravitySettingsPath]: JSON.stringify({ other: true })
+  })
+
+  installHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } })
+
+  assert.equal(fs.files.has(paths.antigravityOriginalStatuslinePath), false)
+  assert.deepEqual(JSON.parse(fs.files.get(paths.antigravitySettingsPath)), { other: true })
+  assert.equal(hookStatus({ paths, fs }).antigravityCli, 'not-installed')
 })
 
 test('keeps notify handler when another source status is unreadable during uninstall', () => {

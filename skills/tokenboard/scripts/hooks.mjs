@@ -308,7 +308,7 @@ function needsNotifyHandler(sources) {
 function getAntigravityGuiStatus(path, fs) {
   if (!path) return 'not-installed'
   try {
-    return pathExists(path, fs) ? 'installed-no-token-export' : 'not-installed'
+    return pathExists(path, fs) ? 'installed-local-history' : 'not-installed'
   } catch {
     return 'error'
   }
