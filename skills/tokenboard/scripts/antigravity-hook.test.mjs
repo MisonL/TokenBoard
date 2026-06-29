@@ -61,6 +61,26 @@ test('removes TokenBoard Antigravity statusLine when no original command existed
   assert.deepEqual(JSON.parse(fs.files.get(paths.antigravitySettingsPath)), { other: true })
 })
 
+test('detects Windows Antigravity statusLine commands with backslash paths', () => {
+  const paths = {
+    ...createPaths(),
+    stateDir: 'C:\\Users\\QDM\\.tokenboard',
+    statuslineScriptPath: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\antigravity-statusline.mjs',
+    antigravitySettingsPath: 'C:\\Users\\QDM\\.gemini\\antigravity-cli\\settings.json',
+    antigravityOriginalStatuslinePath: 'C:\\Users\\QDM\\.tokenboard\\antigravity_statusline_original.json'
+  }
+  const fs = memoryFs({
+    [paths.antigravitySettingsPath]: JSON.stringify({
+      statusLine: {
+        enabled: true,
+        command: String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\QDM\.tokenboard\TokenBoard\skills\tokenboard\scripts\antigravity-statusline.mjs" "--state-dir" "C:\Users\QDM\.tokenboard"`
+      }
+    })
+  })
+
+  assert.equal(hookStatus({ paths, fs }).antigravityCli, 'installed')
+})
+
 test('fails visibly when Antigravity statusLine has an unsupported format', () => {
   const paths = createPaths()
   const fs = memoryFs({

@@ -109,7 +109,8 @@ function buildAntigravityStatuslineCommand({ paths, nodePath, platform }) {
 function isAntigravityStatuslineCommand(command, statuslineScriptPath) {
   if (!command) return false
   const argv = splitCommandArgs(command)
-  return argv.some((arg) => arg === statuslineScriptPath)
+  return argv.some((arg) => samePathArg(arg, statuslineScriptPath)) ||
+    normalizePathArg(command).includes(normalizePathArg(statuslineScriptPath))
 }
 
 function captureOriginalAntigravityStatusLine({ settings, paths, fs }) {
@@ -220,4 +221,12 @@ function readQuotedChar(command, index, quote) {
 
 function quoteWindowsCommandArg(value) {
   return `"${String(value).replaceAll('"', '\\"')}"`
+}
+
+function samePathArg(left, right) {
+  return normalizePathArg(left) === normalizePathArg(right)
+}
+
+function normalizePathArg(value) {
+  return String(value).replaceAll('\\', '/').toLowerCase()
 }
