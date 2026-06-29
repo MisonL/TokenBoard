@@ -20,6 +20,8 @@ export type InstallCommandProps = {
   collectorRepoRef?: string
   pairingCode?: string
   expiresAt?: string
+  mode?: 'new' | 'reconnect'
+  targetDeviceId?: string
 }
 
 export function InstallCommand(props: InstallCommandProps) {
@@ -43,8 +45,8 @@ export function InstallCommand(props: InstallCommandProps) {
 
   return (
     <section class="mx-auto flex max-w-4xl flex-col gap-5">
-      <InstallCommandHeader />
-      <InstallTimezoneForm timezone={props.timezone} />
+      <InstallCommandHeader mode={props.mode ?? 'new'} />
+      <InstallTimezoneForm timezone={props.timezone} targetDeviceId={props.targetDeviceId} />
       <InstallPromptSection prompt={prompt} expiresAt={props.expiresAt} visible={Boolean(props.pairingCode)} />
       <HookCommandSection commands={installHookCommands} />
       <UninstallCommandSection commands={uninstallCommands} />
@@ -52,20 +54,24 @@ export function InstallCommand(props: InstallCommandProps) {
   )
 }
 
-function InstallCommandHeader() {
+function InstallCommandHeader(props: { mode: 'new' | 'reconnect' }) {
   return (
     <header class="app-surface-raised relative overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[radial-gradient(circle_at_90%_10%,rgba(190,242,100,.2),transparent_28%),var(--app-panel)] p-5 sm:p-6">
       <div class="absolute -right-16 -top-16 h-40 w-40 rounded-full border border-lime-300/20" />
       <p class="app-accent-text text-sm font-black uppercase tracking-[0.28em]">TokenBoard Collector</p>
-      <h1 class="mt-4 text-3xl font-black tracking-tight sm:text-4xl">连接这台机器</h1>
+      <h1 class="mt-4 text-3xl font-black tracking-tight sm:text-4xl">
+        {props.mode === 'reconnect' ? '重新连接旧设备' : '连接这台机器'}
+      </h1>
       <p class="mt-3 max-w-2xl text-sm leading-6 text-[var(--app-muted)]">
-        生成一个短期有效的配对提示词，把它粘贴给 Codex 或 Claude Code，让本地 agent 用终端命令安装采集器并配置每日同步。
+        {props.mode === 'reconnect'
+          ? '生成一个短期有效的重连提示词，把新的本地安装挂回旧设备记录。'
+          : '生成一个短期有效的配对提示词，把它粘贴给 Codex 或 Claude Code，让本地 agent 用终端命令安装采集器并配置每日同步。'}
       </p>
     </header>
   )
 }
 
-function InstallTimezoneForm(props: { timezone: string }) {
+function InstallTimezoneForm(props: { timezone: string; targetDeviceId?: string }) {
   return (
     <form
       method="post"
@@ -84,6 +90,7 @@ function InstallTimezoneForm(props: { timezone: string }) {
           data-timezone-autofill="always"
         />
       </label>
+      {props.targetDeviceId ? <input type="hidden" name="targetDeviceId" value={props.targetDeviceId} /> : null}
       <button
         class="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-lime-300 px-4 py-2.5 text-sm font-black text-stone-950 transition hover:bg-lime-200 sm:w-auto"
         type="submit"

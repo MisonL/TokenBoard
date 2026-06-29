@@ -40,8 +40,20 @@ export const POST = createRoute(async (c) => {
     })
     const profile = await readProfile(c.env.DB, user.id)
     const timezone = parseInstallTimezone(form.timezone, profile.timezone)
+    const targetDeviceId = parseOptionalDeviceId(form.targetDeviceId)
     const repository = new D1DevicePairingRepository(c.env.DB)
-    const result = await createPairingCode(repository, user.id, createPairingCodeDeps())
+    const result = await createPairingCode(
+      repository,
+      user.id,
+      createPairingCodeDeps(),
+      30,
+      targetDeviceId
+        ? {
+            pairingType: 'reconnect_device',
+            targetDeviceId
+          }
+        : undefined
+    )
 
     return c.render(
       <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
@@ -54,6 +66,8 @@ export const POST = createRoute(async (c) => {
           collectorRepoRef={c.env.TOKENBOARD_COLLECTOR_REF}
           pairingCode={result.pairingCode}
           expiresAt={result.expiresAt}
+          mode={targetDeviceId ? 'reconnect' : 'new'}
+          targetDeviceId={targetDeviceId ?? undefined}
         />
       </main>
     )
@@ -75,4 +89,11 @@ function parseInstallTimezone(value: unknown, fallback: string) {
   }
 
   return timezone
+}
+
+function parseOptionalDeviceId(value: unknown) {
+  if (typeof value !== 'string') return null
+  const deviceId = value.trim()
+  if (!deviceId) return null
+  return deviceId
 }

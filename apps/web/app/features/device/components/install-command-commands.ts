@@ -56,7 +56,7 @@ function createInstallPromptIntro() {
     '- 只使用终端命令完成安装和 setup。',
     '- 不要使用浏览器、Playwright、网页抓取、fetch 或 curl 去访问 GitHub 页面。',
     '- 不要打印 upload token、配对响应、配置文件内容或任何本地隐私数据。',
-    '- 如果已经安装旧版 TokenBoard collector，更新现有 checkout 后重新运行 setup；setup 会重新配对设备、刷新 upload token/deviceId、刷新每日定时任务。',
+    '- 如果已经安装旧版 TokenBoard collector，更新现有 checkout 后重新运行 setup；setup 会为当前 server 写入独立 profile，刷新 upload token/deviceId/installationId 和每日定时任务，不会覆盖其它 server 的已保存凭证。',
     '- 不要为了升级手动删除 ~/.tokenboard/config.json，也不要卸载旧计划任务；除非用户明确要求重装或卸载。',
     '- 如果已经安装了 TokenBoard skill，可以直接运行其中的 setup 脚本；否则用 git clone/update 仓库后运行脚本。',
     '- 如果提示词里带有 --repo-ref 或 --branch，请保留它们，不要改回默认分支。',

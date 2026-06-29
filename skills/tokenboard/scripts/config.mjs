@@ -54,7 +54,7 @@ export function readConfig() {
     throw new Error(`TokenBoard config not found: ${file}`)
   }
 
-  return JSON.parse(stripUtf8Bom(readFileSync(file, 'utf8')))
+  return normalizeActiveServerConfig(JSON.parse(stripUtf8Bom(readFileSync(file, 'utf8'))))
 }
 
 export function writeConfig(config) {
@@ -72,6 +72,49 @@ export function stripUtf8Bom(value) {
 export function mergeConfig(patch) {
   const current = existsSync(configPath()) ? readConfig() : {}
   writeConfig({ ...current, ...patch })
+}
+
+export function serverOriginFromEndpoint(value) {
+  if (!value) return null
+  const url = new URL(value)
+  return url.origin
+}
+
+export function normalizeActiveServerConfig(config) {
+  if (!config || typeof config !== 'object') {
+    return config
+  }
+  if (!config.activeServer || !config.servers || typeof config.servers !== 'object') {
+    return config
+  }
+
+  const activeProfile = config.servers[config.activeServer]
+  if (!activeProfile || typeof activeProfile !== 'object') {
+    return config
+  }
+
+  return {
+    ...config,
+    ...activeProfile,
+    activeServer: config.activeServer,
+    servers: config.servers
+  }
+}
+
+export function withServerProfile(current, serverOrigin, profile) {
+  const servers = { ...(current.servers || {}) }
+  const nextProfile = {
+    ...(servers[serverOrigin] || {}),
+    ...profile
+  }
+  servers[serverOrigin] = nextProfile
+
+  return {
+    ...current,
+    ...nextProfile,
+    activeServer: serverOrigin,
+    servers
+  }
 }
 
 export function parseArgs(args) {

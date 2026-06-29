@@ -2,7 +2,16 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { hostname, platform } from 'node:os'
-import { parseArgs, readPackageManager, writeConfig } from './config.mjs'
+import {
+  configPath,
+  parseArgs,
+  readConfig,
+  readPackageManager,
+  serverOriginFromEndpoint,
+  withServerProfile,
+  writeConfig
+} from './config.mjs'
+import { existsSync } from 'node:fs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
@@ -46,10 +55,17 @@ if (!response.ok) {
 }
 
 const paired = await response.json()
-writeConfig({
+const currentConfig = existsSync(configPath()) ? readConfig() : {}
+const serverOrigin = serverOriginFromEndpoint(paired.endpoint || baseUrl)
+if (!serverOrigin) {
+  console.error('Pairing response did not include a valid endpoint.')
+  process.exit(1)
+}
+const nextConfig = withServerProfile(currentConfig, serverOrigin, {
   endpoint: paired.endpoint,
   uploadToken: paired.uploadToken,
   deviceId: paired.deviceId,
+  installationId: paired.installationId,
   timezone: paired.timezone,
   source: 'all',
   repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,
@@ -58,6 +74,7 @@ writeConfig({
   scheduleTimes,
   createdAt: new Date().toISOString()
 })
+writeConfig(nextConfig)
 console.log('TokenBoard config written.')
 
 function scriptPath(name) {

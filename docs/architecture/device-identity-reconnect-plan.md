@@ -411,6 +411,25 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 
 不要让 server migration 依赖所有 client 立即升级。
 
+当前分支已落地：
+
+- server migration、Drizzle schema、legacy installation backfill；
+- pairing code 的 `new_device` / `reconnect_device` 区分；
+- 新设备配对创建 `device + device_installation + upload_token`；
+- 旧设备重连创建新的 `device_installation + upload_token`，不新建逻辑设备；
+- upload token 认证返回 nullable `installationId`，旧 token 仍可上传；
+- ingest 成功后更新 device 与 installation 的同步时间；
+- Web 设备页提供“重新连接”入口，并复用安装页生成绑定旧设备的 pairing code；
+- client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
+- TokenBoard skill 与安装提示词已说明多 server profile 和 Antigravity hook opt-in 边界。
+
+仍保留为后续阶段：
+
+- `device-link.json` claim 恢复；
+- reconnect / token rotation 的 step-up 验证；
+- installation 级撤销与设备详情审计 UI；
+- 手动合并设备。
+
 ## 风险和缓解
 
 ### 风险：误合并两台机器

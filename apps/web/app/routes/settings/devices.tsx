@@ -160,7 +160,7 @@ function DeviceCard(props: { device: UserDevice }) {
       </dl>
       <div class="mt-4 grid gap-3">
         <DeviceRenameForm device={props.device} />
-        <DeviceRevokeForm device={props.device} />
+        <DeviceActionForms device={props.device} />
       </div>
     </article>
   )
@@ -203,7 +203,7 @@ function DeviceRow(props: { device: UserDevice }) {
         <DeviceStatus device={props.device} />
       </TableCell>
       <TableCell>
-        <DeviceRevokeForm device={props.device} />
+        <DeviceActionForms device={props.device} />
       </TableCell>
     </TableRow>
   )
@@ -223,6 +223,26 @@ function DeviceRenameForm(props: { device: UserDevice }) {
         minLength={1}
       />
       <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm" data-submitting-label="正在保存...">保存</Button>
+    </form>
+  )
+}
+
+function DeviceActionForms(props: { device: UserDevice }) {
+  return (
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <DeviceReconnectForm device={props.device} />
+      <DeviceRevokeForm device={props.device} />
+    </div>
+  )
+}
+
+function DeviceReconnectForm(props: { device: UserDevice }) {
+  return (
+    <form method="post" action="/settings/install" data-submit-feedback="true">
+      <input type="hidden" name="targetDeviceId" value={props.device.id} />
+      <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm" data-submitting-label="正在生成...">
+        重新连接
+      </Button>
     </form>
   )
 }

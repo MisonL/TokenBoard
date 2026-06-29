@@ -94,7 +94,28 @@ describe('InstallCommand', () => {
     expect(prompt).toContain('必须在需要同步用量的目标机器上执行')
     expect(prompt).toContain('如果已经安装旧版 TokenBoard collector，更新现有 checkout 后重新运行 setup')
     expect(prompt).toContain('不要为了升级手动删除 ~/.tokenboard/config.json')
-    expect(prompt).toContain('重新配对设备、刷新 upload token/deviceId、刷新每日定时任务')
+    expect(prompt).toContain('当前 server 写入独立 profile')
+    expect(prompt).toContain('刷新 upload token/deviceId/installationId 和每日定时任务')
+    expect(prompt).toContain('不会覆盖其它 server 的已保存凭证')
+  })
+
+  test('renders reconnect copy for old device pairing', async () => {
+    const html = await renderToString(
+      <InstallCommand
+        baseUrl="https://tokenboard.example"
+        timezone="Asia/Shanghai"
+        pairingCode="pair_123"
+        expiresAt="2026-04-29T18:00:00.000Z"
+        mode="reconnect"
+        targetDeviceId="dev_old"
+      />
+    )
+
+    expect(html).toContain('重新连接旧设备')
+    expect(html).toContain('新的本地安装挂回旧设备记录')
+    expect(html).toContain('name="targetDeviceId"')
+    expect(html).toContain('value="dev_old"')
+    expect(html).toContain('data-copy-target="install-prompt-text"')
   })
 
   test('allows deployments to override the collector repo url', () => {
