@@ -187,7 +187,7 @@ client 会额外保留一个恢复状态文件：
 - claim 必须绑定 `serverOrigin`、`user_id`、`device_id`。
 - `uninstall` 默认保留该文件。
 - `uninstall --all` 删除该文件。
-- token 轮换或设备重连时，应同步轮换 claim，或显式使旧 claim hash 失效。当前 Web token 轮换会为绑定了 installation 的 token 生成新的 install claim，并给出 `rotate-token.mjs` 命令，用于在对应 client 上同时更新当前 server profile 的 upload token 和本机 `device-link.json`；legacy token 没有 installation 时只轮换 upload token。
+- token 轮换或设备重连时，应同步轮换 claim，或显式使旧 claim hash 失效。当前 Web token 轮换会为绑定了 installation 的 token 生成新的 install claim，并给出 macOS/Linux/Git Bash 与 Windows PowerShell 两套 `rotate-token.mjs` 命令，用于在对应 client 上同时更新当前 server profile 的 upload token 和本机 `device-link.json`；legacy token 没有 installation 时只轮换 upload token。
 - 当前实现只写入和展示存在性，不会用它静默换取新 token。
 
 ## 配对类型

@@ -234,20 +234,25 @@ function RotatedTokenFlash(props: {
   serverOrigin: string | null
 }) {
   if (!props.credentials) return null
-  const deviceLinkCommand = buildDeviceLinkUpdateCommand(props.credentials, props.serverOrigin)
+  const deviceLinkCommands = buildRotatedTokenUpdateCommands(props.credentials, props.serverOrigin)
   return (
     <section class="app-flash-success grid gap-2 p-3 text-sm">
       <p class="font-bold">新的上传 token 只显示一次，请立即更新对应 client 配置。</p>
       <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
         {props.credentials.uploadToken}
       </code>
-      {deviceLinkCommand ? (
+      {deviceLinkCommands ? (
         <>
           <p class="text-xs text-[var(--app-muted)]">
             在对应 client 机器执行一次，更新 config 和 device-link 恢复状态，旧 install claim 已失效：
           </p>
+          <p class="text-xs font-bold text-[var(--app-muted)]">macOS / Linux / Git Bash</p>
           <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
-            {deviceLinkCommand}
+            {deviceLinkCommands.bash}
+          </code>
+          <p class="text-xs font-bold text-[var(--app-muted)]">Windows PowerShell</p>
+          <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
+            {deviceLinkCommands.powerShell}
           </code>
         </>
       ) : null}
@@ -255,10 +260,30 @@ function RotatedTokenFlash(props: {
   )
 }
 
-function buildDeviceLinkUpdateCommand(credentials: RotatedCredentials, serverOrigin: string | null) {
+function buildRotatedTokenUpdateCommands(credentials: RotatedCredentials, serverOrigin: string | null) {
   if (!serverOrigin || !credentials.deviceId || !credentials.installationId || !credentials.installClaim) {
     return null
   }
+  const commandInput = {
+    uploadToken: credentials.uploadToken,
+    deviceId: credentials.deviceId,
+    installationId: credentials.installationId,
+    installClaim: credentials.installClaim
+  }
+  return {
+    bash: buildBashRotatedTokenCommand(commandInput, serverOrigin),
+    powerShell: buildPowerShellRotatedTokenCommand(commandInput, serverOrigin)
+  }
+}
+
+type RotatedTokenCommandInput = {
+  uploadToken: string
+  deviceId: string
+  installationId: string
+  installClaim: string
+}
+
+function buildBashRotatedTokenCommand(credentials: RotatedTokenCommandInput, serverOrigin: string) {
   return [
     'node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/rotate-token.mjs',
     `--server-origin ${shellQuote(serverOrigin)}`,
@@ -269,8 +294,26 @@ function buildDeviceLinkUpdateCommand(credentials: RotatedCredentials, serverOri
   ].join(' ')
 }
 
+function buildPowerShellRotatedTokenCommand(credentials: RotatedTokenCommandInput, serverOrigin: string) {
+  return [
+    'node (Join-Path $HOME ".tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\rotate-token.mjs")',
+    `--server-origin ${powerShellQuote(serverOrigin)}`,
+    `--upload-token ${powerShellQuote(credentials.uploadToken)}`,
+    `--device-id ${powerShellQuote(credentials.deviceId)}`,
+    `--installation-id ${powerShellQuote(credentials.installationId)}`,
+    `--install-claim ${powerShellQuote(credentials.installClaim)}`
+  ].join(' ')
+}
+
 function shellQuote(value: string) {
   return `'${value.replaceAll("'", "'\\''")}'`
+}
+
+function powerShellQuote(value: string) {
+  return `"${value
+    .replaceAll('`', '``')
+    .replaceAll('"', '`"')
+    .replaceAll('$', '`$')}"`
 }
 
 function DevicesCard(props: { devices: DeviceViewModel[] }) {
