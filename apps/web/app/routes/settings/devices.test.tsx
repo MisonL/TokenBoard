@@ -116,12 +116,22 @@ describe('DevicesPage layout', () => {
         email="user@example.com"
         saved={false}
         revoked={null}
-        rotatedUploadToken="tb_upload_new_secret"
+        rotatedCredentials={{
+          uploadToken: 'tb_upload_new_secret',
+          deviceId: 'dev_1',
+          installationId: 'inst_1',
+          installClaim: 'tb_install_new_secret'
+        }}
+        serverOrigin="https://tokenboard.example.com"
         devices={[]}
       />
     )
 
     expect(html).toContain('新的上传 token 只显示一次')
     expect(html).toContain('tb_upload_new_secret')
+    expect(html).toContain('旧 install claim 已失效')
+    expect(html).toContain('~/.tokenboard/device-link.json')
+    expect(html).toContain('&quot;serverOrigin&quot;:&quot;https://tokenboard.example.com&quot;')
+    expect(html).toContain('&quot;installClaim&quot;:&quot;tb_install_new_secret&quot;')
   })
 })

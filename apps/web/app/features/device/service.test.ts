@@ -688,21 +688,27 @@ describe('device management', () => {
           randomTokenId: () => 'ut_new',
           randomAuditId: () => 'audit_1',
           randomToken: () => 'tb_upload_new',
+          randomInstallClaim: () => 'tb_install_new',
           hash: async (value) => `hash:${value}`
         }
       )
     ).resolves.toEqual({
       uploadTokenId: 'ut_new',
-      uploadToken: 'tb_upload_new'
+      uploadToken: 'tb_upload_new',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'tb_install_new'
     })
 
-    expect(sqlStatements).toHaveLength(4)
+    expect(sqlStatements).toHaveLength(5)
     expect(sqlStatements[0]).toContain('FROM upload_tokens')
     expect(sqlStatements[1]).toContain('INSERT INTO upload_tokens')
     expect(sqlStatements[1]).toContain('supersedes_token_id')
     expect(sqlStatements[2]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
-    expect(batchStatements).toHaveLength(3)
+    expect(sqlStatements[3]).toContain('UPDATE device_installations')
+    expect(sqlStatements[3]).toContain('install_claim_hash')
+    expect(sqlStatements[4]).toContain('INSERT INTO audit_logs')
+    expect(batchStatements).toHaveLength(4)
     expect(bindings[0]).toEqual(['ut_old', 'user_1'])
     expect(bindings[1]).toEqual([
       'ut_new',
@@ -716,6 +722,12 @@ describe('device management', () => {
     ])
     expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_old'])
     expect(bindings[3]).toEqual([
+      'hash:tb_install_new',
+      '2026-04-29T09:00:00.000Z',
+      'user_1',
+      'inst_1'
+    ])
+    expect(bindings[4]).toEqual([
       'audit_1',
       'user_1',
       'user',

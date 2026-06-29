@@ -94,6 +94,7 @@ export type RotateUploadTokenDeps = {
   randomTokenId: () => string
   randomAuditId: () => string
   randomToken: () => string
+  randomInstallClaim: () => string
   hash: (value: string) => Promise<string>
 }
 
@@ -174,6 +175,7 @@ export function createRotateUploadTokenDeps(): RotateUploadTokenDeps {
     randomTokenId: () => randomId('ut'),
     randomAuditId: () => randomId('audit'),
     randomToken: () => randomToken('tb_upload'),
+    randomInstallClaim: () => randomToken('tb_install'),
     hash: sha256Hex
   }
 }
@@ -529,8 +531,11 @@ export async function rotateUploadToken(
   const now = deps.now()
   const uploadTokenId = deps.randomTokenId()
   const uploadToken = deps.randomToken()
+  const installationId = existing.installationId
+  const installClaim = installationId ? deps.randomInstallClaim() : null
   const uploadTokenHash = await deps.hash(uploadToken)
-  await db.batch([
+  const installClaimHash = installClaim ? await deps.hash(installClaim) : null
+  const statements = [
     createRotatedUploadTokenInsert(db, {
       userId: input.userId,
       previousTokenId: input.uploadTokenId,
@@ -539,7 +544,17 @@ export async function rotateUploadToken(
       existing,
       now
     }),
-    createUploadTokenRevokeStatement(db, input.userId, input.uploadTokenId, now),
+    createUploadTokenRevokeStatement(db, input.userId, input.uploadTokenId, now)
+  ]
+  if (installationId && installClaimHash) {
+    statements.push(createInstallClaimRotateStatement(db, {
+      userId: input.userId,
+      installationId,
+      installClaimHash,
+      now
+    }))
+  }
+  statements.push(
     createTokenRotateAuditStatement(db, {
       userId: input.userId,
       previousTokenId: input.uploadTokenId,
@@ -548,9 +563,16 @@ export async function rotateUploadToken(
       auditId: deps.randomAuditId(),
       now
     })
-  ])
+  )
+  await db.batch(statements)
 
-  return { uploadTokenId, uploadToken }
+  return {
+    uploadTokenId,
+    uploadToken,
+    deviceId: existing.deviceId,
+    installationId: existing.installationId,
+    installClaim
+  }
 }
 
 type ExistingUploadToken = {
@@ -631,6 +653,28 @@ function createUploadTokenRevokeStatement(
       `
     )
     .bind(now, userId, uploadTokenId)
+}
+
+function createInstallClaimRotateStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    installationId: string
+    installClaimHash: string
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        UPDATE device_installations
+        SET install_claim_hash = ?, updated_at = ?
+        WHERE user_id = ?
+          AND id = ?
+          AND revoked_at IS NULL
+      `
+    )
+    .bind(input.installClaimHash, input.now, input.userId, input.installationId)
 }
 
 function createTokenRotateAuditStatement(

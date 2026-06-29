@@ -97,7 +97,8 @@ export const POST = createRoute(async (c) => {
         uploadTokenId: String(form.uploadTokenId ?? '')
       })
       return renderDevicesPage(c, user, {
-        rotatedUploadToken: result.uploadToken
+        rotatedCredentials: result,
+        serverOrigin: new URL(c.req.url).origin
       })
     }
 
@@ -113,7 +114,10 @@ export function DevicesPage(props: {
   saved: boolean
   revoked: string | null
   rotatedUploadToken?: string | null
+  rotatedCredentials?: RotatedCredentials | null
+  serverOrigin?: string | null
 }) {
+  const rotatedCredentials = props.rotatedCredentials ?? credentialsFromLegacyToken(props.rotatedUploadToken)
   return (
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>设备管理 - TokenBoard</title>
@@ -122,7 +126,10 @@ export function DevicesPage(props: {
       <section class="mx-auto flex max-w-6xl flex-col gap-5">
         <DevicesHeader />
         <DevicePageFlash saved={props.saved} revoked={props.revoked} />
-        <RotatedTokenFlash uploadToken={props.rotatedUploadToken ?? null} />
+        <RotatedTokenFlash
+          credentials={rotatedCredentials}
+          serverOrigin={props.serverOrigin ?? null}
+        />
         <DevicesCard devices={props.devices} />
       </section>
     </main>
@@ -139,7 +146,10 @@ type DevicesRenderContext = {
 async function renderDevicesPage(
   c: DevicesRenderContext,
   user: { id: string; email: string },
-  options: { rotatedUploadToken?: string } = {}
+  options: {
+    rotatedCredentials?: RotatedCredentials
+    serverOrigin?: string
+  } = {}
 ) {
   const devices = await listUserDevices(c.env.DB, user.id)
   const auditLogGroups = await Promise.all(
@@ -161,13 +171,26 @@ async function renderDevicesPage(
       email={user.email}
       saved={false}
       revoked={null}
-      rotatedUploadToken={options.rotatedUploadToken}
+      rotatedCredentials={options.rotatedCredentials}
+      serverOrigin={options.serverOrigin}
     />
   )
 }
 
 type DeviceViewModel = UserDevice & {
   auditLogs?: UserDeviceAuditLog[]
+}
+
+type RotatedCredentials = {
+  uploadToken: string
+  deviceId?: string | null
+  installationId?: string | null
+  installClaim?: string | null
+}
+
+function credentialsFromLegacyToken(uploadToken?: string | null): RotatedCredentials | null {
+  if (!uploadToken) return null
+  return { uploadToken }
 }
 
 function DevicesHeader() {
@@ -206,16 +229,44 @@ function formatRevokeFlash(revoked: string) {
   return messages[revoked] ?? '设备 token 已停用。'
 }
 
-function RotatedTokenFlash(props: { uploadToken: string | null }) {
-  if (!props.uploadToken) return null
+function RotatedTokenFlash(props: {
+  credentials: RotatedCredentials | null
+  serverOrigin: string | null
+}) {
+  if (!props.credentials) return null
+  const deviceLinkCommand = buildDeviceLinkUpdateCommand(props.credentials, props.serverOrigin)
   return (
     <section class="app-flash-success grid gap-2 p-3 text-sm">
       <p class="font-bold">新的上传 token 只显示一次，请立即更新对应 client 配置。</p>
       <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
-        {props.uploadToken}
+        {props.credentials.uploadToken}
       </code>
+      {deviceLinkCommand ? (
+        <>
+          <p class="text-xs text-[var(--app-muted)]">
+            同时更新这台机器上的 device-link 恢复状态，旧 install claim 已失效：
+          </p>
+          <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
+            {deviceLinkCommand}
+          </code>
+        </>
+      ) : null}
     </section>
   )
+}
+
+function buildDeviceLinkUpdateCommand(credentials: RotatedCredentials, serverOrigin: string | null) {
+  if (!serverOrigin || !credentials.deviceId || !credentials.installationId || !credentials.installClaim) {
+    return null
+  }
+  const payload = JSON.stringify({
+    version: 1,
+    serverOrigin,
+    deviceId: credentials.deviceId,
+    installationId: credentials.installationId,
+    installClaim: credentials.installClaim
+  })
+  return `mkdir -p ~/.tokenboard && cat > ~/.tokenboard/device-link.json <<'JSON'\n${payload}\nJSON\nchmod 600 ~/.tokenboard/device-link.json`
 }
 
 function DevicesCard(props: { devices: DeviceViewModel[] }) {
