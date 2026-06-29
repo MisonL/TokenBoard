@@ -45,7 +45,7 @@ export function formatUsageMetricUsd(value: number): UsageMetricValue {
 export function formatUsageMetricUsdWithAvailability(value: number, sourceSplit: SourceSplitItem[]): UsageMetricValue {
   const metric = formatUsageMetricUsd(value)
   return hasUnavailableCostSource(sourceSplit)
-    ? { ...metric, detail: metric.detail ? `${metric.detail}, Antigravity CLI 费用不可用` : 'Antigravity CLI 费用不可用' }
+    ? { ...metric, detail: metric.detail ? `${metric.detail}, Antigravity 费用不可用` : 'Antigravity 费用不可用' }
     : metric
 }
 

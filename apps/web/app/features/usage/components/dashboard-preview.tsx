@@ -111,20 +111,20 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
           <CardHeader class="p-4 lg:p-3 xl:p-4">
             <CardTitle>来源占比</CardTitle>
             <CardDescription>
-              按本月不含缓存读 token 计算，同时保留 total token 对照。{hasUnavailableCost ? 'Antigravity CLI 费用不可用，不计入费用卡片。' : ''}
+              按本月不含缓存读 token 计算，同时保留 total token 对照。{hasUnavailableCost ? 'Antigravity 费用不可用，不计入费用卡片。' : ''}
             </CardDescription>
           </CardHeader>
           <CardContent class="space-y-3 p-4 pt-0 text-sm text-[var(--app-muted)] lg:p-3 lg:pt-0 xl:p-4 xl:pt-0">
             {props.summary.sourceSplit.length > 0 ? (
               props.summary.sourceSplit.map((item) => (
-                <div>
-                  <div class="flex items-center justify-between gap-4">
-                    <span>{formatSource(item.source)}</span>
-                    <span class="font-bold text-[var(--app-text)]">
+                <div class="min-w-0">
+                  <div class="flex min-w-0 items-center justify-between gap-4">
+                    <span class="min-w-0 break-words [overflow-wrap:anywhere]">{formatSource(item.source)}</span>
+                    <span class="shrink-0 font-bold text-[var(--app-text)]">
                       {formatPercent(item.totalTokensWithoutCacheRead, totalSourceTokensWithoutCacheRead)}
                     </span>
                   </div>
-                  <p class="mt-1 text-xs">
+                  <p class="mt-1 break-words text-xs [overflow-wrap:anywhere]">
                     {formatInteger(item.totalTokensWithoutCacheRead)} 不含缓存读 / {formatInteger(item.totalTokens)} total / 缓存率 {formatPercentRate(item.cacheReadRate)}
                   </p>
                   <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--app-border)]">

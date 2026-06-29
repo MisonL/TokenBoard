@@ -70,6 +70,10 @@ describe('DashboardPreview', () => {
     expect(html).toContain('h-36 items-end gap-1')
     expect(html).toContain('lg:h-32 2xl:h-36')
     expect(html).toContain('p-4 lg:p-3')
+    expect(html).toContain('flex min-w-0 items-center justify-between gap-4')
+    expect(html).toContain('min-w-0 break-words [overflow-wrap:anywhere]')
+    expect(html).toContain('shrink-0 font-bold text-[var(--app-text)]')
+    expect(html).toContain('mt-1 break-words text-xs [overflow-wrap:anywhere]')
     expect(html).not.toContain('app-surface-contained min-w-0')
     expect(html).not.toContain('bg-[var(--app-bg-soft)] text-[var(--app-text)]')
     expect(html).not.toContain(`xl:${['grid', 'cols', '8'].join('-')}`)
@@ -87,7 +91,7 @@ describe('DashboardPreview', () => {
     expect(dashboardPreviewTestUtils.containedBarHeight(160, 100)).toBe(100)
   })
 
-  test('labels Antigravity CLI source cost as unavailable', async () => {
+  test('labels Antigravity source cost as unavailable', async () => {
     const html = await renderToString(
       <DashboardPreview
         summary={{
@@ -102,14 +106,14 @@ describe('DashboardPreview', () => {
           lastSyncedAt: null,
           deviceCount: 1,
           sourceSplit: [
-            { source: 'antigravity-cli', totalTokens: 100, totalTokensWithoutCacheRead: 100, cacheReadRate: 0 }
+            { source: 'antigravity-ide', totalTokens: 100, totalTokensWithoutCacheRead: 100, cacheReadRate: 0 }
           ],
           dailyTrend: []
         }}
       />
     )
 
-    expect(html).toContain('Antigravity CLI (agy)')
-    expect(html).toContain('Antigravity CLI 费用不可用，不计入费用卡片。')
+    expect(html).toContain('Antigravity IDE')
+    expect(html).toContain('Antigravity 费用不可用，不计入费用卡片。')
   })
 })

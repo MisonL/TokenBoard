@@ -28,7 +28,8 @@ export async function getPublicUsageProfileCore(
   slug: string,
   now: Date,
   summaryStrict: boolean,
-  includeBreakdown = true
+  includeBreakdown = true,
+  includeSourceSplit = includeBreakdown
 ): Promise<PublicUsageProfileCore & Pick<PublicUsageProfile, 'sourceSplit' | 'topModels'> & { userId: string }> {
   const profile = await db
     .prepare(
@@ -61,7 +62,8 @@ export async function getPublicUsageProfileCore(
     today,
     monthStart,
     summaryStrict,
-    includeBreakdown
+    includeBreakdown,
+    includeSourceSplit
   })
 
   return {
@@ -90,6 +92,9 @@ export async function getPublicUsageProfileCore(
       totalTokensWithoutCacheRead: Number(totals?.monthTokensWithoutCacheRead ?? 0)
     }),
     monthCostUsd: Number(totals?.monthCostUsd ?? 0),
+    totalCostAvailable: Boolean(Number(totals?.totalCostAvailable ?? 1)),
+    todayCostAvailable: Boolean(Number(totals?.todayCostAvailable ?? 1)),
+    monthCostAvailable: Boolean(Number(totals?.monthCostAvailable ?? 1)),
     publicCardConfig: parsePublicCardConfig(profile.publicCardConfig),
     sourceSplit: parseSourceSplit(totals?.sourceSplit),
     topModels: parseTopModels(totals?.topModels)

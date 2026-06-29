@@ -18,7 +18,7 @@ export default createRoute(async (c) => {
             为分享而生的 AI 用量面板。
           </h1>
           <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--app-muted)]">
-            连接本机 Claude Code 与 Codex 采集器，只上传聚合后的 token 指标，并由你决定哪些视图可以公开。
+            连接本机 Claude Code、Codex 与 Antigravity 采集器，只上传聚合后的 token 指标，并由你决定哪些视图可以公开。
           </p>
           <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             <a class="inline-flex min-h-11 items-center justify-center rounded-xl bg-lime-300 px-5 py-3 text-sm font-black text-stone-950 transition hover:bg-lime-200" href="/auth/sign-in">使用 GitHub 登录</a>
@@ -37,12 +37,15 @@ export default createRoute(async (c) => {
               <span class="app-accent-text font-bold">来源占比</span>
               <span class="text-[var(--app-muted)]">最近 30 天</span>
             </div>
-            <div class="h-4 overflow-hidden rounded-full bg-[var(--app-border)]">
-              <div class="h-full w-[63%] bg-lime-300" />
+            <div class="flex h-4 overflow-hidden rounded-full bg-[var(--app-border)]">
+              <div class="h-full bg-lime-300" style="width:55%" />
+              <div class="h-full bg-lime-200" style="width:28%" />
+              <div class="h-full bg-lime-500" style="width:17%" />
             </div>
             <div class="mt-3 flex justify-between text-xs text-[var(--app-muted)]">
-              <span>Claude Code 63%</span>
-              <span>Codex 37%</span>
+              <span>Claude Code 55%</span>
+              <span>Codex 28%</span>
+              <span>Antigravity 17%</span>
             </div>
           </div>
         </div>

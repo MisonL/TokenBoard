@@ -66,6 +66,9 @@ describe('UsageDetailsPanel', () => {
     expect(html).toContain('w-full sm:mt-7')
     expect(html).toContain('text-xs font-bold uppercase tracking-wide text-[var(--app-muted)] md:hidden')
     expect(html).toContain('缓存率 3%')
+    expect(html).toContain('flex min-w-0 flex-wrap gap-2')
+    expect(html).toContain('max-w-full break-words rounded-full')
+    expect(html).toContain('[overflow-wrap:anywhere]')
     expect(html).toContain('data-usage-metric-grid="true"')
     expect(html).toContain('data-usage-metric-card="true"')
     expect(html).toContain('app-surface-raised min-w-0 rounded-2xl')
@@ -155,5 +158,74 @@ describe('UsageDetailsPanel', () => {
 
     expect(html).toContain('text-[var(--app-muted)]">无用量')
     expect(html).not.toContain('text-[var(--app-subtle)]">无用量')
+  })
+
+  test('marks Antigravity costs unavailable without agy-only wording', async () => {
+    const html = await renderToString(
+      <UsageDetailsPanel
+        devices={[]}
+        filters={{
+          source: 'all',
+          startDate: '2026-05-12',
+          endDate: '2026-06-10',
+          deviceId: 'all',
+          modelQuery: ''
+        }}
+        details={{
+          summary: {
+            totalTokens: 1000,
+            totalTokensWithoutCacheRead: 900,
+            cacheReadRate: 0.1,
+            costUsd: 0,
+            sessionCount: 2,
+            activeDays: 1
+          },
+          dailyRows: [
+            {
+              usageDate: '2026-06-10',
+              totalTokens: 1000,
+              totalTokensWithoutCacheRead: 900,
+              cacheReadRate: 0.1,
+              costUsd: 0,
+              sessionCount: 2,
+              sourceSplit: [{ source: 'antigravity-ide', totalTokens: 1000, totalTokensWithoutCacheRead: 900, cacheReadRate: 0.1 }],
+              modelRows: [{
+                usageDate: '2026-06-10',
+                source: 'antigravity-ide',
+                model: 'Gemini 3.5 Flash',
+                inputTokens: 500,
+                outputTokens: 400,
+                cacheCreationTokens: 0,
+                cacheReadTokens: 100,
+                totalTokens: 1000,
+                totalTokensWithoutCacheRead: 900,
+                cacheReadRate: 0.1,
+                costUsd: 0,
+                sessionCount: 2
+              }]
+            }
+          ],
+          modelRows: [{
+            usageDate: '2026-06-10',
+            source: 'antigravity-ide',
+            model: 'Gemini 3.5 Flash',
+            inputTokens: 500,
+            outputTokens: 400,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 100,
+            totalTokens: 1000,
+            totalTokensWithoutCacheRead: 900,
+            cacheReadRate: 0.1,
+            costUsd: 0,
+            sessionCount: 2
+          }]
+        }}
+      />
+    )
+
+    expect(html).toContain('范围费用(不含 Antigravity)')
+    expect(html).toContain('$0.00 (Antigravity IDE 费用不可用)')
+    expect(html).toContain('Antigravity IDE')
+    expect(html).not.toContain('不含 agy')
   })
 })

@@ -12,6 +12,7 @@ export async function getPublicTotals(input: {
   monthStart: string
   summaryStrict: boolean
   includeBreakdown: boolean
+  includeSourceSplit: boolean
 }) {
   return input.db
     .prepare(
@@ -29,8 +30,30 @@ export async function getPublicTotals(input: {
           FROM effective_daily_usage_summary
           JOIN params ON params.user_id = effective_daily_usage_summary.user_id
           WHERE effective_daily_usage_summary.usage_date >= params.month_start
+            AND effective_daily_usage_summary.usage_date < date(params.month_start, '+1 month')
+        ),
+        today_source_usage AS (
+          SELECT
+            source
+          FROM month_usage
+          JOIN params ON params.user_id = month_usage.user_id
+          WHERE month_usage.usage_date = params.today
+          GROUP BY source
+        ),
+        month_source_usage AS (
+          SELECT
+            source
+          FROM month_usage
+          GROUP BY source
+        ),
+        total_source_usage AS (
+          SELECT
+            source
+          FROM effective_daily_usage_summary
+          JOIN params ON params.user_id = effective_daily_usage_summary.user_id
+          GROUP BY source
         )
-        ${publicBreakdownCtes(input.includeBreakdown)}
+        ${publicBreakdownCtes(input.includeBreakdown, input.includeSourceSplit)}
         ,
         effective_totals AS (
           SELECT
@@ -77,7 +100,10 @@ export async function getPublicTotals(input: {
           COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
           COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd
-          ${publicBreakdownSelect(input.includeBreakdown)}
+          , CASE WHEN EXISTS (SELECT 1 FROM total_source_usage WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')) THEN 0 ELSE 1 END as totalCostAvailable
+          , CASE WHEN EXISTS (SELECT 1 FROM today_source_usage WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')) THEN 0 ELSE 1 END as todayCostAvailable
+          , CASE WHEN EXISTS (SELECT 1 FROM month_source_usage WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')) THEN 0 ELSE 1 END as monthCostAvailable
+          ${publicBreakdownSelect(input.includeBreakdown, input.includeSourceSplit)}
         FROM params
         LEFT JOIN effective_totals ON effective_totals.user_id = params.user_id
         LEFT JOIN month_usage ON month_usage.user_id = params.user_id
@@ -87,18 +113,27 @@ export async function getPublicTotals(input: {
     .first<TotalsRow>()
 }
 
-function publicBreakdownCtes(includeBreakdown: boolean) {
-  if (!includeBreakdown) return ''
-  return `,
-        source_usage AS (
+function publicBreakdownCtes(includeBreakdown: boolean, includeSourceSplit: boolean) {
+  const ctes = [
+    includeSourceSplit ? sourceBreakdownCte() : '',
+    includeBreakdown ? modelBreakdownCte() : ''
+  ].filter(Boolean)
+  return ctes.length > 0 ? `,\n        ${ctes.join(',\n        ')}` : ''
+}
+
+function sourceBreakdownCte() {
+  return `source_usage AS (
           SELECT
             source,
             COALESCE(SUM(total_tokens), 0) as total_tokens,
             COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read
           FROM month_usage
           GROUP BY source
-        ),
-        model_usage AS (
+        )`
+}
+
+function modelBreakdownCte() {
+  return `model_usage AS (
           SELECT
             model,
             COALESCE(SUM(total_tokens), 0) as total_tokens,
@@ -109,10 +144,47 @@ function publicBreakdownCtes(includeBreakdown: boolean) {
         )`
 }
 
-function publicBreakdownSelect(includeBreakdown: boolean) {
-  if (!includeBreakdown) return `,
+function publicBreakdownSelect(includeBreakdown: boolean, includeSourceSplit: boolean) {
+  if (!includeBreakdown && !includeSourceSplit) return `,
           '[]' as sourceSplit,
           '[]' as topModels`
+  if (includeSourceSplit && !includeBreakdown) return `,
+          (
+            SELECT COALESCE(json_group_array(json_object(
+              'source', ordered_sources.source,
+              'totalTokens', ordered_sources.total_tokens,
+              'totalTokensWithoutCacheRead', ordered_sources.total_tokens_without_cache_read
+            )), '[]')
+            FROM (
+              SELECT
+                source,
+                total_tokens,
+                total_tokens_without_cache_read
+              FROM source_usage
+              ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
+            ) AS ordered_sources
+          ) as sourceSplit,
+          '[]' as topModels`
+  if (includeBreakdown && !includeSourceSplit) return `,
+          '[]' as sourceSplit,
+          (
+            SELECT COALESCE(json_group_array(json_object(
+              'model', ordered_models.model,
+              'totalTokens', ordered_models.total_tokens,
+              'totalTokensWithoutCacheRead', ordered_models.total_tokens_without_cache_read,
+              'costUsd', ordered_models.cost_usd
+            )), '[]')
+            FROM (
+              SELECT
+                model,
+                total_tokens,
+                total_tokens_without_cache_read,
+                cost_usd
+              FROM model_usage
+              ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
+              LIMIT 5
+            ) AS ordered_models
+          ) as topModels`
   return `,
           (
             SELECT COALESCE(json_group_array(json_object(

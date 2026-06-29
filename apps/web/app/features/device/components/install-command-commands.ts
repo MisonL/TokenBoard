@@ -51,12 +51,13 @@ function createInstallPromptIntro() {
     '- 如果已经安装旧版 TokenBoard collector，更新现有 checkout 后重新运行 setup；setup 会重新配对设备、刷新 upload token/deviceId、刷新每日定时任务。',
     '- 不要为了升级手动删除 ~/.tokenboard/config.json，也不要卸载旧计划任务；除非用户明确要求重装或卸载。',
     '- 如果已经安装了 TokenBoard skill，可以直接运行其中的 setup 脚本；否则用 git clone/update 仓库后运行脚本。',
-    '- 首次安装默认执行全量同步，用于补齐历史 Claude Code / Codex 用量；不要擅自改成最近 7 天窗口。',
+    '- 首次安装默认执行全量同步，用于补齐历史 Claude Code / Codex / Antigravity 用量；不要擅自改成最近 7 天窗口。',
     '- 历史会话很多时首次全量可能耗时较长；保持命令运行，不要把长时间解析误判为失败。',
     '- 使用 TOKENBOARD_CODEX_BATCH_SIZE=200 控制 Codex 历史会话分批处理，只有用户明确要求降低资源峰值时才调小。',
     '- 只有用户明确要求跳过首次同步时，才允许添加 --skip-initial-sync。',
-    '- 默认安装 Codex 和 Claude Code notifier hooks，用于本机会话结束后的近实时增量同步。',
-    '- 只有用户明确要求不安装 hooks 时，才允许添加 --skip-hook；后续可单独运行 install-hook.mjs --source all 补装。',
+    '- 默认安装 Codex 和 Claude Code notifier hooks；Antigravity CLI status line capture 是显式 opt-in，只有用户要求近实时采集 agy 时才单独运行 install-hook.mjs --source antigravity-cli。',
+    '- Antigravity 三类产品的历史用量仍由定时同步读取本地历史；不依赖 status line capture。',
+    '- 只有用户明确要求不安装 hooks 时，才允许添加 --skip-hook；后续可单独运行 install-hook.mjs --source all 补装 Codex / Claude Code hooks。',
     '- setup 命令已经带有网页检测或表单确认的 --timezone；不要改成其它时区，除非用户明确要求。',
     '- 执行 setup 前必须先向用户确认每日任务触发时间：默认是 09:00,12:00,18:00,23:00；如果用户要自定义，只接受 24 小时制 HH:MM 逗号分隔列表。',
     '- 根据用户确认的时间把 setup 命令中的 --schedule-times 参数替换为实际值，不要让用户手工创建定时任务。'
@@ -105,12 +106,12 @@ export function createInstallHookCommands(input: CommandInput = {}) {
   return {
     bash: [
       ...bootstrap.bash,
-      '# all installs Codex and Claude Code hooks. Use --source antigravity-cli to opt in to agy statusline capture.',
+      '# all installs Codex and Claude Code hooks; install Antigravity CLI capture separately with --source antigravity-cli.',
       'node "$repo/skills/tokenboard/scripts/install-hook.mjs" --source all'
     ].join('\n'),
     powerShell: [
       ...bootstrap.powerShell,
-      '# all installs Codex and Claude Code hooks. Use --source antigravity-cli to opt in to agy statusline capture.',
+      '# all installs Codex and Claude Code hooks; install Antigravity CLI capture separately with --source antigravity-cli.',
       'node (Join-Path $repo "skills\\tokenboard\\scripts\\install-hook.mjs") --source all'
     ].join('\n')
   }

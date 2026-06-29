@@ -38,7 +38,7 @@ function LeaderboardPanelHeader(props: {
         <Badge>排行榜</Badge>
         <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">{props.title}</h1>
         <p class="mt-2 max-w-2xl text-sm text-[var(--app-muted)]">
-          Antigravity CLI 费用不可用，费用列和费用排名不包含该来源成本。
+          Antigravity 费用不可用，费用列和费用排名不包含该来源成本。
         </p>
       </div>
       <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">

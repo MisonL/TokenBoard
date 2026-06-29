@@ -59,6 +59,35 @@ describe('notification adapters', () => {
     expect(text).toContain('Antigravity CLI (agy)：260 token')
     expect(text).toContain('Antigravity CLI 费用不可用')
     expect(text).toContain('预估费用 $0.80 (Antigravity CLI 费用不可用)')
+    expect(text).toContain('Gemini 3.5 Flash (Medium)：260 token，缓存率 13%，$0.00 (Antigravity CLI 费用不可用)')
+  })
+
+  test('keeps Antigravity cost-unavailable labels in webhook top model summaries', async () => {
+    const antigravityReport = {
+      ...report,
+      costUsd: 0.8,
+      sourceSplit: [
+        { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
+      ],
+      topModels: [
+        { model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300, totalTokensWithoutCacheRead: 260, costUsd: 0 }
+      ]
+    }
+    const wecomText = formatWeComDailyReport(antigravityReport)
+    const dingtalkText = formatDingTalkDailyReport(antigravityReport)
+    const feishuPayload = await buildWebhookPayload({
+      provider: 'feishu',
+      webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/test',
+      report: antigravityReport,
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+    const feishuText = (feishuPayload.body as {
+      card: { body: { elements: Array<{ tag: string, content?: string }> } }
+    }).card.body.elements[0].content
+
+    expect(wecomText).toContain('$0.00 (Antigravity CLI 费用不可用)')
+    expect(dingtalkText).toContain('$0.00 (Antigravity CLI 费用不可用)')
+    expect(feishuText).toContain('$0.00 (Antigravity CLI 费用不可用)')
   })
 
   test('falls back to the public leaderboards when no shared report URL exists', () => {

@@ -17,6 +17,9 @@ export type PublicUsageProfile = {
   monthTokensWithoutCacheRead: number
   monthCacheReadRate: number
   monthCostUsd: number
+  totalCostAvailable: boolean
+  todayCostAvailable: boolean
+  monthCostAvailable: boolean
   publicCardConfig: PublicCardConfig
   sourceSplit: Array<{
     source: UsageSource
@@ -52,6 +55,9 @@ export type TotalsRow = {
   monthTokens: number | null
   monthTokensWithoutCacheRead: number | null
   monthCostUsd: number | null
+  totalCostAvailable: number | null
+  todayCostAvailable: number | null
+  monthCostAvailable: number | null
   sourceSplit: unknown
   topModels: unknown
 }

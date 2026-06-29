@@ -26,7 +26,7 @@ export function UsageDetailsPanel(props: { details: UsageDetails; filters: Usage
         <UsageMetricCard label="范围 tokens" value={formatUsageMetricInteger(props.details.summary.totalTokens)} tone="lime" />
         <UsageMetricCard label="不含缓存读" value={formatUsageMetricInteger(props.details.summary.totalTokensWithoutCacheRead)} />
         <UsageMetricCard label="缓存率" value={formatPercentRate(props.details.summary.cacheReadRate)} />
-        <UsageMetricCard label={hasUnavailableCost ? '范围费用(不含 agy)' : '范围费用'} value={formatUsageMetricUsdWithAvailability(props.details.summary.costUsd, props.details.modelRows)} />
+        <UsageMetricCard label={hasUnavailableCost ? '范围费用(不含 Antigravity)' : '范围费用'} value={formatUsageMetricUsdWithAvailability(props.details.summary.costUsd, props.details.modelRows)} />
         <UsageMetricCard label="Sessions" value={formatUsageMetricInteger(props.details.summary.sessionCount)} />
         <UsageMetricCard label="活跃天数" value={formatUsageMetricInteger(props.details.summary.activeDays)} />
       </UsageMetricGrid>
@@ -147,9 +147,9 @@ function SourceSplit(props: {
   }
 
   return (
-    <span class="flex flex-wrap gap-2">
+    <span class="flex min-w-0 flex-wrap gap-2">
       {props.sourceSplit.map((item) => (
-        <span class="rounded-full border border-[var(--app-border)] px-2 py-1 text-xs text-[var(--app-muted)]">
+        <span class="max-w-full break-words rounded-full border border-[var(--app-border)] px-2 py-1 text-xs text-[var(--app-muted)] [overflow-wrap:anywhere]">
           {formatSource(item.source)} {formatPercent(item.totalTokensWithoutCacheRead, props.totalTokensWithoutCacheRead)}
           {' · '}
           缓存率 {formatPercentRate(item.cacheReadRate)}

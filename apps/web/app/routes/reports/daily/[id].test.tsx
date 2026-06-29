@@ -85,6 +85,30 @@ describe('daily report share route', () => {
     expect(html).not.toContain('test-preview')
   })
 
+  test('keeps Antigravity cost-unavailable labels in shared report model rows', async () => {
+    mockedGetDailyReportHistoryById.mockResolvedValue(reportItem({
+      costUsd: 0,
+      sourceSplit: [{
+        source: 'antigravity-cli',
+        totalTokens: 300,
+        totalTokensWithoutCacheRead: 260,
+        cacheReadRate: 0.13
+      }],
+      topModels: [{
+        model: 'Gemini 3.5 Flash (Medium)',
+        totalTokens: 300,
+        totalTokensWithoutCacheRead: 260,
+        cacheReadRate: 0.13,
+        costUsd: 0
+      }]
+    }) as never)
+
+    const response = await GET[0](pageContext('drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') as never, async () => undefined) as Response
+    const html = await response.text()
+
+    expect(html).toContain('$0.00 (Antigravity CLI 费用不可用)')
+  })
+
   test('returns 404 for invalid report ids without touching auth or the database', async () => {
     const response = await GET[0](pageContext('bad id') as never, async () => undefined) as Response
 
