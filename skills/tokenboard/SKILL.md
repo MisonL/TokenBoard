@@ -1,6 +1,6 @@
 ---
 name: tokenboard
-description: Install and manage TokenBoard AI token usage collection for Claude Code and Codex. Use when the user asks to install TokenBoard, connect TokenBoard, bind a TokenBoard pairing code, sync AI token usage, preview usage, check TokenBoard status, or set up daily token statistics.
+description: Install and manage TokenBoard AI token usage collection for Claude Code, Codex, and Antigravity. Use when the user asks to install TokenBoard, connect TokenBoard, bind a TokenBoard pairing code, sync AI token usage, preview usage, check TokenBoard status, or set up daily token statistics.
 ---
 
 # TokenBoard
@@ -47,13 +47,15 @@ to change Codex or Claude Code config during initial install. To install hooks l
 node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/install-hook.mjs --source all
 ```
 
-Default `--source all` installs Codex and Claude Code hooks only. Use `--source codex` or `--source claude-code` for a single integration. Antigravity CLI is a separate explicit opt-in because it changes the visible agy status line command:
+Default `--source all` installs Codex and Claude Code hooks only. Use `--source codex` or `--source claude-code` for a single notifier integration. Antigravity CLI status line capture is a separate explicit opt-in because it updates the visible agy status line command:
 
 ```bash
 node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/install-hook.mjs --source antigravity-cli
 ```
 
-Antigravity CLI collection uses `~/.gemini/antigravity-cli/settings.json` `statusLine.command`. The status line handler reads bounded stdin, writes sanitized local JSONL, and never uploads or starts sync from the foreground status line process. It must not persist prompt text, completion text, cwd, workspace, email, plan_tier, tool arguments, file paths, or raw conversation IDs. The JSONL still contains stable hashed conversation IDs, so treat `~/.tokenboard/antigravity-cli-statusline.jsonl` as a private local state file. Do not parse Antigravity `.db`, `.pb`, logs, `/credits`, or `/usage` as TokenBoard upload sources. Antigravity cost is unavailable in the first version; snapshots use `costUsd: 0` and UI/report output must label that cost as unavailable.
+Antigravity collection has three source values: `antigravity-cli`, `antigravity`, and `antigravity-ide`. Scheduled or manual `--source all` syncs read available local Antigravity history metadata for all three products. Antigravity CLI primarily reads `~/.gemini/antigravity-cli/conversations/*.db` `gen_metadata.data`; it may also read the optional sanitized status line JSONL written by `~/.gemini/antigravity-cli/settings.json` `statusLine.command`. Standalone Antigravity and Antigravity IDE read SQLite metadata when present and use a bounded local language-server metadata projection for `.pb`-only histories. Direct `.pb` decoding remains out of scope.
+
+The status line handler reads bounded stdin, writes sanitized local JSONL, and never uploads or starts sync from the foreground status line process. Antigravity history collectors must only persist or upload token counts, model, timestamp, source, cost placeholder, and dedupe hashes. They must not persist or upload prompt text, completion text, cwd, workspace, email, plan_tier, tool arguments, file paths, raw conversation IDs, or raw history blobs. The status line JSONL still contains stable hashed conversation IDs, so treat `~/.tokenboard/antigravity-cli-statusline.jsonl` as a private local state file. Do not parse Antigravity logs, `/credits`, or `/usage` as TokenBoard upload sources. Antigravity cost is unavailable for all three sources; snapshots use `costUsd: 0` and UI/report output must label that cost as unavailable.
 
 The default schedule is `09:00,12:00,18:00,23:00`. When the user asks for custom times, require `HH:MM` 24-hour values and pass them through `--schedule-times`. The scheduler target is platform-specific:
 
@@ -69,7 +71,7 @@ Daily and manual sync default to a 7-day lookback window. Use `--since all` only
 
 Sync runs a lightweight upgrade first by default. It updates the local collector checkout and this installed skill from the configured TokenBoard repo, then continues with collection. Hook syncs do not run this upgrade path; they only enqueue and reconcile usage. If Git upgrade fails, the script falls back to the GitHub ZIP archive path. If upgrade still fails, treat it as a warning unless sync itself fails. For troubleshooting only, skip the upgrade with `--skip-upgrade`, `TOKENBOARD_SKIP_UPGRADE=1`, or `TOKENBOARD_AUTO_UPGRADE=0`.
 
-Do not run `upgrade.mjs` from notifier hooks. Hook-triggered syncs pass `--hook` to `sync.mjs`; this is the supported boundary that disables auto-upgrade during Codex or Claude Code session-end events. Antigravity CLI status line capture does not trigger hook sync; scheduled or manual sync reads the sanitized status line JSONL.
+Do not run `upgrade.mjs` from notifier hooks. Hook-triggered syncs pass `--hook` to `sync.mjs`; this is the supported boundary that disables auto-upgrade during Codex or Claude Code session-end events. Antigravity CLI status line capture does not trigger hook sync; scheduled or manual sync reads Antigravity local history metadata and the optional sanitized status line JSONL.
 
 Preview without upload:
 
@@ -93,7 +95,7 @@ node scripts/upgrade.mjs
 If a Codex session file disappears between scan and copy, the collector should warn on stderr and
 continue with the remaining session files. Treat non-ENOENT copy failures, provider command
 failures, or upload failures as real failures that need debugging.
-Missing Antigravity status line JSONL is optional in `--source all` syncs, but malformed Antigravity JSONL is a real failure that must be debugged instead of silently discarded.
+Missing Antigravity local history or status line JSONL is optional in `--source all` syncs. Malformed installed Antigravity history metadata or status line JSONL is a real failure that must be debugged instead of silently discarded. In hook mode, real parse or validation failures should fail fast while unavailable Antigravity products remain optional.
 
 ## Status
 
