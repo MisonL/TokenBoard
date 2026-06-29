@@ -70,6 +70,7 @@ test('device-link reconnect exchanges local claim for a pairing code', async () 
   const pairingCode = await createPairingCodeFromDeviceLink({
     baseUrl: 'https://tokenboard.example.com',
     readDeviceLink: () => ({
+      serverOrigin: 'https://tokenboard.example.com',
       deviceId: 'dev_1',
       installationId: 'inst_1',
       installClaim: 'claim-secret'
@@ -89,11 +90,53 @@ test('device-link reconnect exchanges local claim for a pairing code', async () 
   })
 })
 
+test('device-link reconnect rejects a different server origin before sending the claim', async () => {
+  const requests = []
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://private-tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      fetcher: async (url, init) => {
+        requests.push({ url, init })
+        return Response.json({ pairingCode: 'pairing-code' })
+      }
+    }),
+    /TokenBoard device link belongs to a different server/
+  )
+  assert.equal(requests.length, 0)
+})
+
+test('device-link reconnect accepts matching origin with a path-like base url', async () => {
+  const requests = []
+  const pairingCode = await createPairingCodeFromDeviceLink({
+    baseUrl: 'https://tokenboard.example.com/install/',
+    readDeviceLink: () => ({
+      serverOrigin: 'https://tokenboard.example.com',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'claim-secret'
+    }),
+    fetcher: async (url, init) => {
+      requests.push({ url, init })
+      return Response.json({ pairingCode: 'pairing-code' })
+    }
+  })
+
+  assert.equal(pairingCode, 'pairing-code')
+  assert.equal(requests[0].url, 'https://tokenboard.example.com/api/v1/device/reconnect-pairing-codes')
+})
+
 test('device-link reconnect fails visibly without leaking the claim', async () => {
   await assert.rejects(
     createPairingCodeFromDeviceLink({
       baseUrl: 'https://tokenboard.example.com',
       readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
         deviceId: 'dev_1',
         installationId: 'inst_1',
         installClaim: 'claim-secret'

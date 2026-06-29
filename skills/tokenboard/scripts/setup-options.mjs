@@ -62,7 +62,11 @@ export async function createPairingCodeFromDeviceLink({
   if (!deviceLink) {
     throw new Error('TokenBoard device link not found')
   }
-  const response = await fetcher(`${baseUrl}/api/v1/device/reconnect-pairing-codes`, {
+  const baseOrigin = serverOriginFromUrl(baseUrl)
+  if (!baseOrigin || deviceLink.serverOrigin !== baseOrigin) {
+    throw new Error('TokenBoard device link belongs to a different server')
+  }
+  const response = await fetcher(`${baseOrigin}/api/v1/device/reconnect-pairing-codes`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -79,4 +83,12 @@ export async function createPairingCodeFromDeviceLink({
     throw new Error('Device-link reconnect response did not include a pairing code')
   }
   return result.pairingCode
+}
+
+function serverOriginFromUrl(value) {
+  try {
+    return new URL(value).origin
+  } catch {
+    return null
+  }
 }
