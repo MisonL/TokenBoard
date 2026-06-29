@@ -244,7 +244,7 @@ function RotatedTokenFlash(props: {
       {deviceLinkCommand ? (
         <>
           <p class="text-xs text-[var(--app-muted)]">
-            同时更新这台机器上的 device-link 恢复状态，旧 install claim 已失效：
+            在对应 client 机器执行一次，更新 config 和 device-link 恢复状态，旧 install claim 已失效：
           </p>
           <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
             {deviceLinkCommand}
@@ -259,14 +259,18 @@ function buildDeviceLinkUpdateCommand(credentials: RotatedCredentials, serverOri
   if (!serverOrigin || !credentials.deviceId || !credentials.installationId || !credentials.installClaim) {
     return null
   }
-  const payload = JSON.stringify({
-    version: 1,
-    serverOrigin,
-    deviceId: credentials.deviceId,
-    installationId: credentials.installationId,
-    installClaim: credentials.installClaim
-  })
-  return `mkdir -p ~/.tokenboard && cat > ~/.tokenboard/device-link.json <<'JSON'\n${payload}\nJSON\nchmod 600 ~/.tokenboard/device-link.json`
+  return [
+    'node ~/.tokenboard/TokenBoard/skills/tokenboard/scripts/rotate-token.mjs',
+    `--server-origin ${shellQuote(serverOrigin)}`,
+    `--upload-token ${shellQuote(credentials.uploadToken)}`,
+    `--device-id ${shellQuote(credentials.deviceId)}`,
+    `--installation-id ${shellQuote(credentials.installationId)}`,
+    `--install-claim ${shellQuote(credentials.installClaim)}`
+  ].join(' ')
+}
+
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`
 }
 
 function DevicesCard(props: { devices: DeviceViewModel[] }) {

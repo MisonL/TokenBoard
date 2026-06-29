@@ -187,7 +187,7 @@ client 会额外保留一个恢复状态文件：
 - claim 必须绑定 `serverOrigin`、`user_id`、`device_id`。
 - `uninstall` 默认保留该文件。
 - `uninstall --all` 删除该文件。
-- token 轮换或设备重连时，应同步轮换 claim，或显式使旧 claim hash 失效。当前 Web token 轮换会为绑定了 installation 的 token 生成新的 install claim，并提示用户更新本机 `device-link.json`；legacy token 没有 installation 时只轮换 upload token。
+- token 轮换或设备重连时，应同步轮换 claim，或显式使旧 claim hash 失效。当前 Web token 轮换会为绑定了 installation 的 token 生成新的 install claim，并给出 `rotate-token.mjs` 命令，用于在对应 client 上同时更新当前 server profile 的 upload token 和本机 `device-link.json`；legacy token 没有 installation 时只轮换 upload token。
 - 当前实现只写入和展示存在性，不会用它静默换取新 token。
 
 ## 配对类型
@@ -428,6 +428,7 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - reconnect、device revoke、installation revoke、token rotate、token revoke 已接入统一 step-up gate 预留点；默认关闭，不改变现有行为；
 - client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
 - client 写入 `device-link.json`，服务端只保存 `installClaim` hash，status 只展示文件存在性；
+- client 提供 `rotate-token.mjs` 用于 Web token 轮换后的本机落盘，只更新匹配的 server profile，不覆盖其它 server 凭证；
 - client setup 支持显式 `--use-device-link`，通过 install claim 换取绑定旧 device 的 reconnect pairing code；
 - uninstall 默认保留 `device-link.json`，`--all` 或 `--remove-config-dir` 删除该敏感恢复状态；
 - 已提供 token / installation / device 三种撤销作用域 helper，Web UI 暴露 installation 与 device 级停用；
