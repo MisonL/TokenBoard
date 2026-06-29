@@ -424,6 +424,7 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 - Web 设备页在逻辑设备下展示安装实例、最近操作，并支持停用单个 installation；
 - Web 设备页展示单个 upload token 元信息，并支持 token 级停用；
 - Web 安装页提供显式 `device-link.json` 恢复命令，不进入默认安装命令，也不展示 claim；
+- reconnect、device revoke、installation revoke、token revoke 已接入统一 step-up gate 预留点；默认关闭，不改变现有行为；
 - client `config.json` 支持多 server profile，并镜像 active profile 到旧字段；
 - client 写入 `device-link.json`，服务端只保存 `installClaim` hash，status 只展示文件存在性；
 - client setup 支持显式 `--use-device-link`，通过 install claim 换取绑定旧 device 的 reconnect pairing code；
@@ -434,7 +435,7 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 
 仍保留为后续阶段：
 
-- reconnect / token rotation 的 step-up 验证；
+- WebAuthn / TOTP 等真实 step-up 验证器；
 - token 轮换 UI；
 - 手动合并设备。
 

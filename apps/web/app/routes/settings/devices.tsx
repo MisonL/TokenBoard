@@ -16,6 +16,7 @@ import {
   type UserDeviceAuditLog,
   type UserDevice
 } from '../../features/device/service'
+import { requireDeviceStepUp } from '../../features/device/step-up'
 import { jsonError } from '../../lib/http'
 
 export const GET = createRoute(async (c) => {
@@ -62,6 +63,7 @@ export const POST = createRoute(async (c) => {
     }
 
     if (action === 'revoke') {
+      requireDeviceStepUp(c.env, 'device.revoke')
       await revokeDevice(c.env.DB, {
         userId: user.id,
         deviceId
@@ -70,6 +72,7 @@ export const POST = createRoute(async (c) => {
     }
 
     if (action === 'revoke-installation') {
+      requireDeviceStepUp(c.env, 'installation.revoke')
       await revokeInstallation(c.env.DB, {
         userId: user.id,
         installationId: String(form.installationId ?? '')
@@ -78,6 +81,7 @@ export const POST = createRoute(async (c) => {
     }
 
     if (action === 'revoke-token') {
+      requireDeviceStepUp(c.env, 'token.revoke')
       await revokeUploadToken(c.env.DB, {
         userId: user.id,
         uploadTokenId: String(form.uploadTokenId ?? '')

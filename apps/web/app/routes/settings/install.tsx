@@ -4,6 +4,7 @@ import { requireUser } from '../../features/auth/middleware'
 import { InstallCommand } from '../../features/device/components/install-command'
 import { D1DevicePairingRepository } from '../../features/device/repository'
 import { createPairingCode, createPairingCodeDeps } from '../../features/device/service'
+import { requireDeviceStepUp } from '../../features/device/step-up'
 import { getCanonicalPublicOrigin, getProfileTimezoneSettings } from '../../features/settings/service'
 import { ApiError } from '../../lib/errors'
 import { jsonError } from '../../lib/http'
@@ -41,6 +42,9 @@ export const POST = createRoute(async (c) => {
     const profile = await readProfile(c.env.DB, user.id)
     const timezone = parseInstallTimezone(form.timezone, profile.timezone)
     const targetDeviceId = parseOptionalDeviceId(form.targetDeviceId)
+    if (targetDeviceId) {
+      requireDeviceStepUp(c.env, 'device.reconnect')
+    }
     const repository = new D1DevicePairingRepository(c.env.DB)
     const result = await createPairingCode(
       repository,
