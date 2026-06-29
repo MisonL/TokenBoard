@@ -71,6 +71,7 @@ describe('D1DevicePairingRepository', () => {
       uploadTokenHash: 'hash:upload',
       deviceId: 'dev_1',
       installationId: 'inst_1',
+      installClaimHash: 'hash:claim',
       userId: 'user_1',
       deviceName: 'Workstation',
       platform: 'darwin',
@@ -79,6 +80,7 @@ describe('D1DevicePairingRepository', () => {
 
     expect(sqlStatements[0]).toContain('INSERT INTO devices')
     expect(sqlStatements[1]).toContain('INSERT INTO device_installations')
+    expect(sqlStatements[1]).toContain('install_claim_hash')
     expect(sqlStatements[2]).toContain('INSERT INTO upload_tokens')
     expect(sqlStatements[2]).toContain('installation_id')
     expect(batches).toHaveLength(1)
@@ -97,6 +99,7 @@ describe('D1DevicePairingRepository', () => {
       'dev_1',
       'darwin',
       'Workstation',
+      'hash:claim',
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
@@ -113,6 +116,7 @@ describe('D1DevicePairingRepository', () => {
       uploadTokenHash: 'hash:upload',
       deviceId: 'dev_old',
       installationId: 'inst_1',
+      installClaimHash: 'hash:claim',
       userId: 'user_1',
       deviceName: 'Reinstalled',
       platform: 'linux',

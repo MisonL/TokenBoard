@@ -5,6 +5,7 @@ type InstallationInput = {
   uploadTokenHash: string
   deviceId: string
   installationId: string
+  installClaimHash: string
   userId: string
   deviceName: string
   platform: string
@@ -90,6 +91,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     uploadTokenHash: string
     deviceId: string
     installationId: string
+    installClaimHash: string
     userId: string
     deviceName: string
     platform: string
@@ -107,6 +109,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     uploadTokenHash: string
     deviceId: string
     installationId: string
+    installClaimHash: string
     userId: string
     deviceName: string
     platform: string
@@ -146,12 +149,13 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             device_id,
             platform,
             hostname,
+            install_claim_hash,
             first_seen_at,
             last_seen_at,
             created_at,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
       )
       .bind(
@@ -160,6 +164,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
         input.deviceId,
         input.platform,
         input.deviceName,
+        input.installClaimHash,
         input.createdAt,
         input.createdAt,
         input.createdAt,

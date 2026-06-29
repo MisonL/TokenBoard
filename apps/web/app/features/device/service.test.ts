@@ -6,6 +6,8 @@ import {
   parseDeviceNameForm,
   pairDevice,
   revokeDevice,
+  revokeInstallation,
+  revokeUploadToken,
   renameDevice,
   type DevicePairingRepository
 } from './service'
@@ -35,12 +37,12 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
     },
     async createUploadTokenAndDevice(input) {
       calls.push(
-        `create:${input.userId}:${input.deviceId}:${input.installationId}:${input.deviceName}:${input.uploadTokenHash}`
+        `create:${input.userId}:${input.deviceId}:${input.installationId}:${input.installClaimHash}:${input.deviceName}:${input.uploadTokenHash}`
       )
     },
     async createUploadTokenAndInstallation(input) {
       calls.push(
-        `install:${input.userId}:${input.deviceId}:${input.installationId}:${input.deviceName}:${input.uploadTokenHash}`
+        `install:${input.userId}:${input.deviceId}:${input.installationId}:${input.installClaimHash}:${input.deviceName}:${input.uploadTokenHash}`
       )
     },
     async createAuditLog(input) {
@@ -54,6 +56,16 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
   }
 
   return { repository, calls }
+}
+
+function createTokenSequence(values: string[]) {
+  let index = 0
+  return () => {
+    const value = values[index]
+    index += 1
+    if (!value) throw new Error('token sequence exhausted')
+    return value
+  }
 }
 
 describe('pairDevice', () => {
@@ -114,7 +126,7 @@ describe('pairDevice', () => {
         now: () => '2026-04-28T10:00:00.000Z',
         endpoint: 'https://tokenboard.example.com/api/v1/ingest',
         randomId: () => 'device-fixture',
-        randomToken: () => 'upload-token-fixture',
+        randomToken: createTokenSequence(['upload-token-fixture', 'install-claim-fixture']),
         hash: async (value) => `hash:${value}`
       }
     )
@@ -124,12 +136,13 @@ describe('pairDevice', () => {
       uploadToken: 'upload-token-fixture',
       deviceId: 'dev_device-fixture',
       installationId: 'inst_device-fixture',
+      installClaim: 'install-claim-fixture',
       timezone: 'Asia/Shanghai'
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
       'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'create:seed-user:dev_device-fixture:inst_device-fixture:Codex Desktop:hash:upload-token-fixture',
+      'create:seed-user:dev_device-fixture:inst_device-fixture:hash:install-claim-fixture:Codex Desktop:hash:upload-token-fixture',
       'audit:device.pair:dev_device-fixture'
     ])
   })
@@ -161,7 +174,7 @@ describe('pairDevice', () => {
         now: () => '2026-04-28T10:00:00.000Z',
         endpoint: 'https://tokenboard.example.com/api/v1/ingest',
         randomId: () => 'install-fixture',
-        randomToken: () => 'upload-token-fixture',
+        randomToken: createTokenSequence(['upload-token-fixture', 'install-claim-fixture']),
         hash: async (value) => `hash:${value}`
       }
     )
@@ -171,12 +184,13 @@ describe('pairDevice', () => {
       uploadToken: 'upload-token-fixture',
       deviceId: 'dev_old',
       installationId: 'inst_install-fixture',
+      installClaim: 'install-claim-fixture',
       timezone: 'Asia/Shanghai'
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
       'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'install:seed-user:dev_old:inst_install-fixture:Reinstalled Desktop:hash:upload-token-fixture',
+      'install:seed-user:dev_old:inst_install-fixture:hash:install-claim-fixture:Reinstalled Desktop:hash:upload-token-fixture',
       'audit:device.reconnect:dev_old'
     ])
   })
@@ -351,9 +365,56 @@ describe('device management', () => {
 
     expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
     expect(sqlStatements[0]).toContain('revoked_at IS NULL')
-    expect(sqlStatements[1]).toContain('UPDATE devices')
+    expect(sqlStatements[1]).toContain('UPDATE device_installations')
+    expect(sqlStatements[2]).toContain('UPDATE devices')
     expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
-    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
+    expect(bindings[1]).toEqual([
+      '2026-04-29T09:00:00.000Z',
+      '2026-04-29T09:00:00.000Z',
+      'user_1',
+      'dev_1'
+    ])
+    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
+  })
+
+  test('revokes active upload tokens for one installation', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = createRunDb(sqlStatements, bindings)
+
+    await revokeInstallation(db, {
+      userId: 'user_1',
+      installationId: 'inst_1',
+      now: '2026-04-29T09:00:00.000Z'
+    })
+
+    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[0]).toContain('installation_id = ?')
+    expect(sqlStatements[1]).toContain('UPDATE device_installations')
+    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
+    expect(bindings[1]).toEqual([
+      '2026-04-29T09:00:00.000Z',
+      '2026-04-29T09:00:00.000Z',
+      'inst_1',
+      'user_1'
+    ])
+  })
+
+  test('revokes one upload token without touching its device', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const db = createRunDb(sqlStatements, bindings)
+
+    await revokeUploadToken(db, {
+      userId: 'user_1',
+      uploadTokenId: 'ut_1',
+      now: '2026-04-29T09:00:00.000Z'
+    })
+
+    expect(sqlStatements).toHaveLength(1)
+    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[0]).toContain('AND id = ?')
+    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
   })
 
   test('rejects blank device names from forms', () => {
@@ -361,3 +422,21 @@ describe('device management', () => {
     expect(parseDeviceNameForm({ name: '  Laptop  ' })).toBe('Laptop')
   })
 })
+
+function createRunDb(sqlStatements: string[], bindings: unknown[][]) {
+  return {
+    prepare(sql: string) {
+      sqlStatements.push(sql)
+      return {
+        bind(...values: unknown[]) {
+          bindings.push(values)
+          return {
+            async run() {
+              return { meta: { changes: 1 } }
+            }
+          }
+        }
+      }
+    }
+  } as unknown as D1Database
+}

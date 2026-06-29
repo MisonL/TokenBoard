@@ -32,6 +32,7 @@ export type DevicePairingRepository = {
     uploadTokenHash: string
     deviceId: string
     installationId: string
+    installClaimHash: string
     userId: string
     deviceName: string
     platform: string
@@ -42,6 +43,7 @@ export type DevicePairingRepository = {
     uploadTokenHash: string
     deviceId: string
     installationId: string
+    installClaimHash: string
     userId: string
     deviceName: string
     platform: string
@@ -178,17 +180,23 @@ export async function revokeDevice(
 ) {
   const now = input.now ?? new Date().toISOString()
 
+  await revokeDeviceTokens(db, {
+    userId: input.userId,
+    deviceId: input.deviceId,
+    now
+  })
+
   await db
     .prepare(
       `
-        UPDATE upload_tokens
-        SET revoked_at = ?
+        UPDATE device_installations
+        SET revoked_at = ?, updated_at = ?
         WHERE user_id = ?
           AND device_id = ?
           AND revoked_at IS NULL
       `
     )
-    .bind(now, input.userId, input.deviceId)
+    .bind(now, now, input.userId, input.deviceId)
     .run()
 
   const result = await db
@@ -199,6 +207,96 @@ export async function revokeDevice(
   if ((result.meta.changes ?? 0) === 0) {
     throw new ApiError('NOT_FOUND', 'Device not found', 404)
   }
+}
+
+export async function revokeInstallation(
+  db: D1Database,
+  input: {
+    userId: string
+    installationId: string
+    now?: string
+  }
+) {
+  const now = input.now ?? new Date().toISOString()
+
+  await db
+    .prepare(
+      `
+        UPDATE upload_tokens
+        SET revoked_at = ?
+        WHERE user_id = ?
+          AND installation_id = ?
+          AND revoked_at IS NULL
+      `
+    )
+    .bind(now, input.userId, input.installationId)
+    .run()
+
+  const result = await db
+    .prepare(
+      `
+        UPDATE device_installations
+        SET revoked_at = ?, updated_at = ?
+        WHERE id = ?
+          AND user_id = ?
+          AND revoked_at IS NULL
+      `
+    )
+    .bind(now, now, input.installationId, input.userId)
+    .run()
+
+  if ((result.meta.changes ?? 0) === 0) {
+    throw new ApiError('NOT_FOUND', 'Installation not found', 404)
+  }
+}
+
+export async function revokeUploadToken(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    now?: string
+  }
+) {
+  const now = input.now ?? new Date().toISOString()
+  const result = await db
+    .prepare(
+      `
+        UPDATE upload_tokens
+        SET revoked_at = ?
+        WHERE user_id = ?
+          AND id = ?
+          AND revoked_at IS NULL
+      `
+    )
+    .bind(now, input.userId, input.uploadTokenId)
+    .run()
+
+  if ((result.meta.changes ?? 0) === 0) {
+    throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
+  }
+}
+
+async function revokeDeviceTokens(
+  db: D1Database,
+  input: {
+    userId: string
+    deviceId: string
+    now: string
+  }
+) {
+  await db
+    .prepare(
+      `
+        UPDATE upload_tokens
+        SET revoked_at = ?
+        WHERE user_id = ?
+          AND device_id = ?
+          AND revoked_at IS NULL
+      `
+    )
+    .bind(input.now, input.userId, input.deviceId)
+    .run()
 }
 
 export async function createPairingCode(
@@ -269,7 +367,9 @@ export async function pairDevice(
   const uploadTokenId = `ut_${id}`
   const installationId = `inst_${id}`
   const uploadToken = deps.randomToken()
+  const installClaim = deps.randomToken()
   const uploadTokenHash = await deps.hash(uploadToken)
+  const installClaimHash = await deps.hash(installClaim)
   const consumed = await repository.consumePairingCode(pairingCode.id, now)
   if (!consumed) {
     throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
@@ -286,6 +386,7 @@ export async function pairDevice(
     uploadTokenHash,
     deviceId,
     installationId,
+    installClaimHash,
     userId: pairingCode.userId,
     deviceName,
     platform,
@@ -314,6 +415,7 @@ export async function pairDevice(
     uploadToken,
     deviceId,
     installationId,
+    installClaim,
     timezone
   }
 }

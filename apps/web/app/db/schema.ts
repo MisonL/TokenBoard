@@ -122,6 +122,7 @@ export const deviceInstallations = sqliteTable(
     platform: text('platform').notNull(),
     hostname: text('hostname'),
     clientVersion: text('client_version'),
+    installClaimHash: text('install_claim_hash'),
     firstSeenAt: text('first_seen_at').notNull(),
     lastSeenAt: text('last_seen_at'),
     revokedAt: text('revoked_at'),
