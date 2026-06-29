@@ -21,7 +21,8 @@ describe('UsageDetailsFiltersForm', () => {
             lastSyncedAt: '2026-05-29T01:27:47.279Z',
             createdAt: '2026-04-29T10:03:36.232Z',
             activeTokenCount: 1,
-            installations: []
+            installations: [],
+            uploadTokens: []
           }
         ]}
       />

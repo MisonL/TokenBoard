@@ -12,6 +12,7 @@ import {
   renameDevice,
   revokeDevice,
   revokeInstallation,
+  revokeUploadToken,
   type UserDeviceAuditLog,
   type UserDevice
 } from '../../features/device/service'
@@ -76,6 +77,14 @@ export const POST = createRoute(async (c) => {
       return c.redirect('/settings/devices?revoked=installation', 303)
     }
 
+    if (action === 'revoke-token') {
+      await revokeUploadToken(c.env.DB, {
+        userId: user.id,
+        uploadTokenId: String(form.uploadTokenId ?? '')
+      })
+      return c.redirect('/settings/devices?revoked=token', 303)
+    }
+
     return c.redirect('/settings/devices', 303)
   } catch (error) {
     return jsonError(c, error)
@@ -129,13 +138,17 @@ function DevicePageFlash(props: { saved: boolean; revoked: string | null }) {
       {props.saved ? (
         <p class="app-flash-success p-3 text-sm">设备名称已更新。</p>
       ) : null}
-      {props.revoked ? (
-        <p class="app-flash-success p-3 text-sm">
-          {props.revoked === 'installation' ? '安装实例已停用。' : '设备 token 已停用。'}
-        </p>
-      ) : null}
+      {props.revoked ? <p class="app-flash-success p-3 text-sm">{formatRevokeFlash(props.revoked)}</p> : null}
     </>
   )
+}
+
+function formatRevokeFlash(revoked: string) {
+  const messages: Record<string, string> = {
+    installation: '安装实例已停用。',
+    token: '上传 token 已停用。'
+  }
+  return messages[revoked] ?? '设备 token 已停用。'
 }
 
 function DevicesCard(props: { devices: DeviceViewModel[] }) {
@@ -190,6 +203,7 @@ function DeviceCard(props: { device: DeviceViewModel }) {
         <DeviceMeta label="创建时间" value={props.device.createdAt} />
       </dl>
       <DeviceInstallations device={props.device} />
+      <DeviceUploadTokens device={props.device} />
       <DeviceAuditTrail auditLogs={props.device.auditLogs ?? []} />
       <div class="mt-4 grid gap-3">
         <DeviceRenameForm device={props.device} />
@@ -215,7 +229,7 @@ function DevicesTableHeader() {
         <TableHead>设备</TableHead>
         <TableHead>Platform</TableHead>
         <TableHead>最近同步</TableHead>
-        <TableHead>安装实例</TableHead>
+        <TableHead>安装 / token</TableHead>
         <TableHead>创建时间</TableHead>
         <TableHead>状态</TableHead>
         <TableHead>操作</TableHead>
@@ -234,6 +248,7 @@ function DeviceRow(props: { device: DeviceViewModel }) {
       <TableCell>{props.device.lastSyncedAt ?? '从未同步'}</TableCell>
       <TableCell class="min-w-80">
         <DeviceInstallations device={props.device} compact />
+        <DeviceUploadTokens device={props.device} compact />
         <DeviceAuditTrail auditLogs={props.device.auditLogs ?? []} compact />
       </TableCell>
       <TableCell>{props.device.createdAt}</TableCell>
@@ -244,6 +259,55 @@ function DeviceRow(props: { device: DeviceViewModel }) {
         <DeviceActionForms device={props.device} />
       </TableCell>
     </TableRow>
+  )
+}
+
+function DeviceUploadTokens(props: { device: UserDevice; compact?: boolean }) {
+  if (props.device.uploadTokens.length === 0) {
+    return null
+  }
+
+  return (
+    <section class={props.compact ? 'mt-3 grid gap-2' : 'mt-4 grid gap-2'}>
+      <p class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">上传 token</p>
+      {props.device.uploadTokens.map((token) => (
+        <div class="rounded-lg border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div class="min-w-0 text-sm">
+              <p class="truncate font-black text-[var(--app-text)]">{token.name}</p>
+              <p class="mt-1 break-all text-xs font-bold text-[var(--app-muted)]">
+                {token.installationId ? `安装实例：${token.installationId}` : '未绑定安装实例'}
+              </p>
+              <p class="mt-1 text-xs text-[var(--app-muted)]">
+                最近使用：{token.lastUsedAt ?? '从未使用'}
+              </p>
+            </div>
+            <UploadTokenRevokeForm token={token} />
+          </div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
+function UploadTokenRevokeForm(props: { token: UserDevice['uploadTokens'][number] }) {
+  const disabled = props.token.revokedAt !== null
+  return (
+    <form method="post" data-submit-feedback="true">
+      <input type="hidden" name="action" value="revoke-token" />
+      <input type="hidden" name="uploadTokenId" value={props.token.id} />
+      <Button
+        class="w-full sm:w-auto"
+        type="submit"
+        variant="secondary"
+        size="sm"
+        disabled={disabled}
+        data-confirm="确认只停用这个上传 token？"
+        data-submitting-label="正在停用..."
+      >
+        停用此 token
+      </Button>
+    </form>
   )
 }
 

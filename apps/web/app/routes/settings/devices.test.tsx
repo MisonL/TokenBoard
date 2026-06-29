@@ -30,6 +30,17 @@ describe('DevicesPage layout', () => {
                 activeTokenCount: 1
               }
             ],
+            uploadTokens: [
+              {
+                id: 'ut_1',
+                deviceId: 'device_1',
+                installationId: 'inst_1',
+                name: 'MacBook Pro upload token',
+                lastUsedAt: '2026-05-29T01:27:47.279Z',
+                createdAt: '2026-04-29T10:03:36.232Z',
+                revokedAt: null
+              }
+            ],
             auditLogs: [
               {
                 id: 'audit_1',
@@ -65,10 +76,25 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('name="installationId"')
     expect(html).toContain('value="revoke-installation"')
     expect(html).toContain('停用此安装')
+    expect(html).toContain('上传 token')
+    expect(html).toContain('MacBook Pro upload token')
+    expect(html).toContain('安装实例：inst_1')
+    expect(html).toContain('name="uploadTokenId"')
+    expect(html).toContain('value="revoke-token"')
+    expect(html).toContain('停用此 token')
+    expect(html).toContain('确认只停用这个上传 token？')
     expect(html).toContain('最近操作')
     expect(html).toContain('旧设备重连')
     expect(html).toContain('data-submitting-label="正在停用..."')
     expect(html).toContain('data-submitting-tone="danger"')
     expect(html).toContain('data-link-button="true"')
+	  })
+
+  test('renders token revoke flash separately from device and installation revoke', async () => {
+    const html = await renderToString(
+      <DevicesPage email="user@example.com" saved={false} revoked="token" devices={[]} />
+    )
+
+    expect(html).toContain('上传 token 已停用。')
   })
 })

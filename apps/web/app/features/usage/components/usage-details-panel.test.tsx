@@ -14,7 +14,8 @@ describe('UsageDetailsPanel', () => {
             lastSyncedAt: '2026-05-25T01:00:00.000Z',
             createdAt: '2026-05-01T01:00:00.000Z',
             activeTokenCount: 1,
-            installations: []
+            installations: [],
+            uploadTokens: []
           }
         ]}
         filters={{

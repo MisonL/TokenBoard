@@ -342,39 +342,54 @@ describe('device management', () => {
         return {
           bind(...values: unknown[]) {
             bindings.push(values)
-            return {
-              async all() {
-                if (statementIndex === 2) {
+              return {
+                async all() {
+                  if (statementIndex === 2) {
+                    return {
+                      results: [
+                        {
+                          id: 'inst_1',
+                          deviceId: 'dev_1',
+                          platform: 'windows',
+                          hostname: 'Office PC',
+                          clientVersion: '0.1.0',
+                          firstSeenAt: '2026-04-28T08:00:00.000Z',
+                          lastSeenAt: '2026-04-29T08:00:00.000Z',
+                          revokedAt: null,
+                          activeTokenCount: 1
+                        }
+                      ]
+                    }
+                  }
+                  if (statementIndex === 3) {
+                    return {
+                      results: [
+                        {
+                          id: 'ut_1',
+                          deviceId: 'dev_1',
+                          installationId: 'inst_1',
+                          name: 'Office PC',
+                          lastUsedAt: '2026-04-29T08:00:00.000Z',
+                          createdAt: '2026-04-28T08:00:00.000Z',
+                          revokedAt: null
+                        }
+                      ]
+                    }
+                  }
                   return {
                     results: [
                       {
-                        id: 'inst_1',
-                        deviceId: 'dev_1',
+                        id: 'dev_1',
+                        name: 'Office PC',
                         platform: 'windows',
-                        hostname: 'Office PC',
-                        clientVersion: '0.1.0',
-                        firstSeenAt: '2026-04-28T08:00:00.000Z',
-                        lastSeenAt: '2026-04-29T08:00:00.000Z',
-                        revokedAt: null,
+                        lastSyncedAt: '2026-04-29T08:00:00.000Z',
+                        createdAt: '2026-04-28T08:00:00.000Z',
                         activeTokenCount: 1
                       }
                     ]
                   }
                 }
-                return {
-                  results: [
-                    {
-                      id: 'dev_1',
-                      name: 'Office PC',
-                      platform: 'windows',
-                      lastSyncedAt: '2026-04-29T08:00:00.000Z',
-                      createdAt: '2026-04-28T08:00:00.000Z',
-                      activeTokenCount: 1
-                    }
-                  ]
-                }
               }
-            }
           }
         }
       }
@@ -400,14 +415,28 @@ describe('device management', () => {
             revokedAt: null,
             activeTokenCount: 1
           }
+        ],
+        uploadTokens: [
+          {
+            id: 'ut_1',
+            deviceId: 'dev_1',
+            installationId: 'inst_1',
+            name: 'Office PC',
+            lastUsedAt: '2026-04-29T08:00:00.000Z',
+            createdAt: '2026-04-28T08:00:00.000Z',
+            revokedAt: null
+          }
         ]
       }
     ])
     expect(sqlStatements[0]).toContain('LEFT JOIN upload_tokens')
     expect(sqlStatements[0]).toContain('revoked_at IS NULL')
     expect(sqlStatements[1]).toContain('FROM device_installations')
+    expect(sqlStatements[2]).toContain('FROM upload_tokens')
+    expect(sqlStatements[2]).not.toContain('token_hash')
     expect(bindings[0]).toEqual(['user_1'])
     expect(bindings[1]).toEqual(['user_1'])
+    expect(bindings[2]).toEqual(['user_1'])
   })
 
   test('lists recent audit logs for one device', async () => {

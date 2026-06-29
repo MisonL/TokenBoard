@@ -97,6 +97,7 @@ export type UserDevice = {
   createdAt: string
   activeTokenCount: number
   installations: UserDeviceInstallation[]
+  uploadTokens: UserDeviceUploadToken[]
 }
 
 export type UserDeviceInstallation = {
@@ -111,6 +112,16 @@ export type UserDeviceInstallation = {
   activeTokenCount: number
 }
 
+export type UserDeviceUploadToken = {
+  id: string
+  deviceId: string | null
+  installationId: string | null
+  name: string
+  lastUsedAt: string | null
+  createdAt: string
+  revokedAt: string | null
+}
+
 export type UserDeviceAuditLog = {
   id: string
   action: string
@@ -120,13 +131,15 @@ export type UserDeviceAuditLog = {
   createdAt: string
 }
 
-type DeviceRow = Omit<UserDevice, 'activeTokenCount' | 'installations'> & {
+type DeviceRow = Omit<UserDevice, 'activeTokenCount' | 'installations' | 'uploadTokens'> & {
   activeTokenCount: number | null
 }
 
 type InstallationRow = Omit<UserDeviceInstallation, 'activeTokenCount'> & {
   activeTokenCount: number | null
 }
+
+type UploadTokenRow = UserDeviceUploadToken
 
 export function createPairDeviceDeps(endpoint: string): PairDeviceDeps {
   return {
@@ -148,7 +161,7 @@ export function createPairingCodeDeps(): CreatePairingCodeDeps {
 }
 
 export async function listUserDevices(db: D1Database, userId: string): Promise<UserDevice[]> {
-  const [deviceRows, installationRows] = await Promise.all([
+  const [deviceRows, installationRows, uploadTokenRows] = await Promise.all([
     db
       .prepare(
         `
@@ -191,7 +204,25 @@ export async function listUserDevices(db: D1Database, userId: string): Promise<U
         `
       )
       .bind(userId)
-      .all<InstallationRow>()
+      .all<InstallationRow>(),
+    db
+      .prepare(
+        `
+          SELECT
+            id,
+            device_id as deviceId,
+            installation_id as installationId,
+            name,
+            last_used_at as lastUsedAt,
+            created_at as createdAt,
+            revoked_at as revokedAt
+          FROM upload_tokens
+          WHERE user_id = ?
+          ORDER BY last_used_at DESC, created_at DESC
+        `
+      )
+      .bind(userId)
+      .all<UploadTokenRow>()
   ])
 
   const installationsByDevice = new Map<string, UserDeviceInstallation[]>()
@@ -213,6 +244,24 @@ export async function listUserDevices(db: D1Database, userId: string): Promise<U
     ])
   }
 
+  const uploadTokensByDevice = new Map<string, UserDeviceUploadToken[]>()
+  for (const row of uploadTokenRows.results ?? []) {
+    if (!row.deviceId) continue
+    const token = {
+      id: row.id,
+      deviceId: row.deviceId,
+      installationId: row.installationId ?? null,
+      name: row.name,
+      lastUsedAt: row.lastUsedAt ?? null,
+      createdAt: row.createdAt,
+      revokedAt: row.revokedAt ?? null
+    }
+    uploadTokensByDevice.set(row.deviceId, [
+      ...(uploadTokensByDevice.get(row.deviceId) ?? []),
+      token
+    ])
+  }
+
   return (deviceRows.results ?? []).map((row) => ({
     id: row.id,
     name: row.name,
@@ -220,7 +269,8 @@ export async function listUserDevices(db: D1Database, userId: string): Promise<U
     lastSyncedAt: row.lastSyncedAt ?? null,
     createdAt: row.createdAt,
     activeTokenCount: Number(row.activeTokenCount ?? 0),
-    installations: installationsByDevice.get(row.id) ?? []
+    installations: installationsByDevice.get(row.id) ?? [],
+    uploadTokens: uploadTokensByDevice.get(row.id) ?? []
   }))
 }
 
