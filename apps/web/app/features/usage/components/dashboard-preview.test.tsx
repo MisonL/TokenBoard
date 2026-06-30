@@ -12,10 +12,12 @@ describe('DashboardPreview', () => {
           todayTokensWithoutCacheRead: 1264069,
           todayCacheReadRate: 80 / 300,
           todayCostUsd: 0.42,
+          todayCostAvailable: true,
           monthTokens: 9027123784974,
           monthTokensWithoutCacheRead: 680228706,
           monthCacheReadRate: 300 / 1200,
           monthCostUsd: 1.7,
+          monthCostAvailable: true,
           lastSyncedAt: '2026-04-28T08:00:00.000Z',
           deviceCount: 2,
           sourceSplit: [
@@ -99,10 +101,12 @@ describe('DashboardPreview', () => {
           todayTokensWithoutCacheRead: 100,
           todayCacheReadRate: 0,
           todayCostUsd: 0,
+          todayCostAvailable: false,
           monthTokens: 100,
           monthTokensWithoutCacheRead: 100,
           monthCacheReadRate: 0,
           monthCostUsd: 0,
+          monthCostAvailable: false,
           lastSyncedAt: null,
           deviceCount: 1,
           sourceSplit: [
@@ -114,6 +118,55 @@ describe('DashboardPreview', () => {
     )
 
     expect(html).toContain('Antigravity IDE')
-    expect(html).toContain('Antigravity 费用不可用，不计入费用卡片。')
+    expect(html).toContain('今日费用')
+    expect(html).toContain('(Antigravity 费用不可用)')
+    expect(html).not.toContain('Antigravity 费用不可用，不计入费用卡片。')
+  })
+
+  test('keeps today and month cost availability separate', async () => {
+    const html = await renderToString(
+      <DashboardPreview
+        summary={{
+          todayTokens: 100,
+          todayTokensWithoutCacheRead: 100,
+          todayCacheReadRate: 0,
+          todayCostUsd: 1.23,
+          todayCostAvailable: true,
+          monthTokens: 200,
+          monthTokensWithoutCacheRead: 180,
+          monthCacheReadRate: 0.1,
+          monthCostUsd: 4.56,
+          monthCostAvailable: false,
+          lastSyncedAt: null,
+          deviceCount: 1,
+          sourceSplit: [
+            { source: 'antigravity', totalTokens: 100, totalTokensWithoutCacheRead: 100, cacheReadRate: 0.1 },
+            { source: 'claude-code', totalTokens: 100, totalTokensWithoutCacheRead: 80, cacheReadRate: 0.2 }
+          ],
+          dailyTrend: []
+        }}
+      />
+    )
+
+    expect(html).toContain('今日费用')
+    expect(html).toContain('$1.23')
+    expect(html).toContain('本月费用')
+    expect(html).toContain('$4.56')
+    expect(html).toContain('(Antigravity 费用不可用)')
+    expect(html).toContain('<span class="sr-only">今日费用: $1.23</span>')
+    expect(html).toContain('<span class="sr-only">本月费用: $4.56</span>')
+    const todayCostCard = metricCardHtml(html, '今日费用')
+    const monthCostCard = metricCardHtml(html, '本月费用')
+    expect(todayCostCard).not.toContain('Antigravity 费用不可用')
+    expect(monthCostCard).toContain('Antigravity 费用不可用')
   })
 })
+
+function metricCardHtml(html: string, label: string) {
+  const labelIndex = html.indexOf(`>${label}</p>`)
+  expect(labelIndex).toBeGreaterThanOrEqual(0)
+  const start = html.lastIndexOf('<div class="app-surface-raised', labelIndex)
+  const next = html.indexOf('<div class="app-surface-raised', labelIndex)
+  expect(start).toBeGreaterThanOrEqual(0)
+  return html.slice(start, next > start ? next : undefined)
+}

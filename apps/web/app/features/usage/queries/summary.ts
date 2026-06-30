@@ -11,9 +11,11 @@ type SummaryRow = {
   todayTokens: number | null
   todayTokensWithoutCacheRead: number | null
   todayCostUsd: number | null
+  todayCostAvailable: number | null
   monthTokens: number | null
   monthTokensWithoutCacheRead: number | null
   monthCostUsd: number | null
+  monthCostAvailable: number | null
   lastSyncedAt: string | null
   deviceCount: number | null
   sourceSplit: unknown
@@ -60,9 +62,11 @@ export async function getUsageSummary(
           COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens ELSE 0 END), 0) as todayTokens,
           COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens_without_cache_read ELSE 0 END), 0) as todayTokensWithoutCacheRead,
           COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today AND month_usage.source IN ('antigravity-cli', 'antigravity', 'antigravity-ide') THEN 1 ELSE 0 END), 0) = 0 as todayCostAvailable,
           COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
           COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd,
+          COALESCE(SUM(CASE WHEN month_usage.source IN ('antigravity-cli', 'antigravity', 'antigravity-ide') THEN 1 ELSE 0 END), 0) = 0 as monthCostAvailable,
           device_stats.lastSyncedAt as lastSyncedAt,
           COALESCE(device_stats.deviceCount, 0) as deviceCount,
           (
@@ -97,6 +101,7 @@ export async function getUsageSummary(
       totalTokensWithoutCacheRead: Number(summary?.todayTokensWithoutCacheRead ?? 0)
     }),
     todayCostUsd: Number(summary?.todayCostUsd ?? 0),
+    todayCostAvailable: Boolean(summary?.todayCostAvailable ?? 1),
     monthTokens: Number(summary?.monthTokens ?? 0),
     monthTokensWithoutCacheRead: Number(summary?.monthTokensWithoutCacheRead ?? 0),
     monthCacheReadRate: cacheReadRateFromTotals({
@@ -104,6 +109,7 @@ export async function getUsageSummary(
       totalTokensWithoutCacheRead: Number(summary?.monthTokensWithoutCacheRead ?? 0)
     }),
     monthCostUsd: Number(summary?.monthCostUsd ?? 0),
+    monthCostAvailable: Boolean(summary?.monthCostAvailable ?? 1),
     lastSyncedAt: summary?.lastSyncedAt ?? null,
     deviceCount: Number(summary?.deviceCount ?? 0),
     sourceSplit: sourceSplit.map((row) => ({

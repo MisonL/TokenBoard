@@ -12,10 +12,12 @@ export type UsageSummary = {
   todayTokensWithoutCacheRead: number
   todayCacheReadRate: number
   todayCostUsd: number
+  todayCostAvailable: boolean
   monthTokens: number
   monthTokensWithoutCacheRead: number
   monthCacheReadRate: number
   monthCostUsd: number
+  monthCostAvailable: boolean
   lastSyncedAt: string | null
   deviceCount: number
   sourceSplit: Array<{

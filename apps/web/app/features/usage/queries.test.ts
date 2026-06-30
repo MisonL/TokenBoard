@@ -17,9 +17,11 @@ describe('getUsageSummary', () => {
                   todayTokens: 300,
                   todayTokensWithoutCacheRead: 220,
                   todayCostUsd: 0.42,
+                  todayCostAvailable: 1,
                   monthTokens: 1200,
                   monthTokensWithoutCacheRead: 900,
                   monthCostUsd: 1.7,
+                  monthCostAvailable: 0,
                   lastSyncedAt: '2026-04-28T08:00:00.000Z',
                   deviceCount: 2,
                   sourceSplit: JSON.stringify([
@@ -48,10 +50,12 @@ describe('getUsageSummary', () => {
       todayTokensWithoutCacheRead: 220,
       todayCacheReadRate: 80 / 300,
       todayCostUsd: 0.42,
+      todayCostAvailable: true,
       monthTokens: 1200,
       monthTokensWithoutCacheRead: 900,
       monthCacheReadRate: 300 / 1200,
       monthCostUsd: 1.7,
+      monthCostAvailable: false,
       lastSyncedAt: '2026-04-28T08:00:00.000Z',
       deviceCount: 2,
       sourceSplit: [
@@ -93,13 +97,28 @@ describe('getUsageSummary', () => {
       }
     } as unknown as D1Database
 
-    await getUsageSummary(db, {
+    const summary = await getUsageSummary(db, {
       userId: 'seed-user',
       today: '2026-04-28',
       monthStart: '2026-04-01',
       summaryStrict: true
     })
 
+    expect(summary).toEqual({
+      todayTokens: 0,
+      todayTokensWithoutCacheRead: 0,
+      todayCacheReadRate: 0,
+      todayCostUsd: 0,
+      todayCostAvailable: true,
+      monthTokens: 0,
+      monthTokensWithoutCacheRead: 0,
+      monthCacheReadRate: 0,
+      monthCostUsd: 0,
+      monthCostAvailable: true,
+      lastSyncedAt: null,
+      deviceCount: 0,
+      sourceSplit: []
+    })
     expect(sqlStatements.join('\n')).toContain('FROM daily_usage_summary')
     expect(sqlStatements.join('\n')).not.toContain('fallback_daily_usage_summary')
     expect(sqlStatements.join('\n')).not.toMatch(/FROM daily_usage(?!_summary)/)

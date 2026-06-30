@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest'
-import { formatUsageMetricInteger, formatUsageMetricUsd } from './usage-metric-format'
+import {
+  formatUsageMetricInteger,
+  formatUsageMetricUsd,
+  formatUsageMetricUsdWithAvailability,
+  formatUsageMetricUsdWithCostAvailability
+} from './usage-metric-format'
 
 describe('usage metric format', () => {
   test('keeps smaller integers exact', () => {
@@ -59,6 +64,30 @@ describe('usage metric format', () => {
       value: '-$1.5M',
       exactValue: '-$1,500,000.00',
       detail: '-150万 USD'
+    })
+  })
+
+  test('adds unavailable cost detail from an explicit availability flag', () => {
+    expect(formatUsageMetricUsdWithCostAvailability(1.23, true)).toEqual({
+      value: '$1.23',
+      exactValue: '$1.23'
+    })
+    expect(formatUsageMetricUsdWithCostAvailability(1.23, false)).toEqual({
+      value: '$1.23',
+      exactValue: '$1.23',
+      detail: 'Antigravity 费用不可用'
+    })
+  })
+
+  test('keeps source-split availability wrapper behavior', () => {
+    expect(formatUsageMetricUsdWithAvailability(1.23, [{ source: 'claude-code' }])).toEqual({
+      value: '$1.23',
+      exactValue: '$1.23'
+    })
+    expect(formatUsageMetricUsdWithAvailability(1.23, [{ source: 'antigravity-cli' }])).toEqual({
+      value: '$1.23',
+      exactValue: '$1.23',
+      detail: 'Antigravity 费用不可用'
     })
   })
 
