@@ -3,7 +3,7 @@ import { describe, expect, test } from 'vitest'
 import { DevicesPage } from './devices'
 
 describe('DevicesPage layout', () => {
-  test('renders adaptive device cards on mobile and the table on desktop', async () => {
+  test('renders the list view with search, summary, and actions', async () => {
     const html = await renderToString(
       <DevicesPage
         email="user@example.com"
@@ -64,11 +64,15 @@ describe('DevicesPage layout', () => {
       />
     )
 
-    expect(html).toContain('data-devices-mobile-list="true"')
-    expect(html).toContain('data-devices-desktop-table="true"')
-    expect(html).toContain('app-surface-raised rounded-xl')
-    expect(html).toContain('md:hidden')
-    expect(html).toContain('hidden overflow-x-auto md:block')
+    expect(html).toContain('data-devices-list="true"')
+    expect(html).toContain('data-device-card-mode="list"')
+    expect(html).toContain('data-devices-overview="true"')
+    expect(html).toContain('aria-current="page"')
+    expect(html).toContain('按设备名、平台、安装实例或 token 名搜索')
+    expect(html).toContain('列表')
+    expect(html).toContain('卡片')
+    expect(html).toContain('连接新设备')
+    expect(html).toContain('tabular-nums')
     expect(html).toContain('MacBook Pro With A Long Local Collector Name')
     expect(html).toContain('w-full sm:w-auto')
     expect(html).toContain('name="name"')
@@ -100,6 +104,83 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('data-submitting-label="正在停用..."')
     expect(html).toContain('data-submitting-tone="danger"')
     expect(html).toContain('data-link-button="true"')
+    expect(html).not.toContain('data-devices-card-grid="true"')
+    expect(html).not.toContain('data-device-card-mode="card"')
+  })
+
+  test('renders the card view and keeps the search state in controls', async () => {
+    const html = await renderToString(
+      <DevicesPage
+        email="user@example.com"
+        saved={false}
+        revoked={null}
+        view="cards"
+        query="macbook"
+        devices={[
+          {
+            id: 'device_1',
+            name: 'MacBook Pro',
+            platform: 'darwin',
+            lastSyncedAt: '2026-05-29T01:27:47.279Z',
+            createdAt: '2026-04-29T10:03:36.232Z',
+            activeTokenCount: 1,
+            installations: [
+              {
+                id: 'inst_1',
+                deviceId: 'device_1',
+                platform: 'darwin',
+                hostname: 'MacBook Pro',
+                clientVersion: '0.2.0',
+                firstSeenAt: '2026-04-29T10:03:36.232Z',
+                lastSeenAt: '2026-05-29T01:27:47.279Z',
+                revokedAt: null,
+                activeTokenCount: 1
+              }
+            ],
+            uploadTokens: [
+              {
+                id: 'ut_1',
+                deviceId: 'device_1',
+                installationId: 'inst_1',
+                name: 'MacBook Pro upload token',
+                lastUsedAt: '2026-05-29T01:27:47.279Z',
+                createdAt: '2026-04-29T10:03:36.232Z',
+                revokedAt: null
+              }
+            ],
+            auditLogs: []
+          }
+        ]}
+      />
+    )
+
+    expect(html).toContain('data-devices-card-grid="true"')
+    expect(html).toContain('data-device-card-mode="card"')
+    expect(html).toContain('value="macbook"')
+    expect(html).toContain('name="view" value="cards"')
+    expect(html).toContain('name="query" value="macbook"')
+    expect(html).toContain('aria-current="page"')
+    expect(html).toContain('data-device-view-toggle="cards"')
+    expect(html).toContain('href="/settings/devices?view=cards&amp;query=macbook"')
+    expect(html).not.toContain('data-device-view-toggle="list" aria-current="page"')
+  })
+
+  test('renders the empty state when no device matches the search', async () => {
+    const html = await renderToString(
+      <DevicesPage
+        email="user@example.com"
+        saved={false}
+        revoked={null}
+        view="cards"
+        query="missing"
+        devices={[]}
+      />
+    )
+
+    expect(html).toContain('data-devices-empty-state="true"')
+    expect(html).toContain('没有找到匹配「missing」的设备。')
+    expect(html).not.toContain('data-devices-list="true"')
+    expect(html).not.toContain('data-devices-card-grid="true"')
   })
 
   test('renders token revoke flash separately from device and installation revoke', async () => {

@@ -3,7 +3,7 @@ import { AppNav } from '../../components/app-nav'
 import { Button, LinkButton } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
+import { LucideIcon } from '../../components/ui/icon'
 import { requireUser } from '../../features/auth/middleware'
 import {
   listDeviceAuditLogs,
@@ -19,10 +19,13 @@ import {
 } from '../../features/device/service'
 import { requireDeviceStepUp } from '../../features/device/step-up'
 import { jsonError } from '../../lib/http'
+import { LayoutGrid, List, Search, type IconNode } from 'lucide'
 
 export const GET = createRoute(async (c) => {
   const user = await requireUser(c)
   const devices = await listUserDevices(c.env.DB, user.id)
+  const view = c.req.query('view') === 'cards' ? 'cards' : 'list'
+  const query = c.req.query('query') ?? ''
   const auditLogGroups = await Promise.all(
     devices.map((device) =>
       listDeviceAuditLogs(c.env.DB, {
@@ -43,6 +46,8 @@ export const GET = createRoute(async (c) => {
       email={user.email}
       saved={c.req.query('saved') === '1'}
       revoked={c.req.query('revoked') ?? null}
+      view={view}
+      query={query}
     />
   )
 })
@@ -53,6 +58,8 @@ export const POST = createRoute(async (c) => {
     const form = await c.req.parseBody()
     const action = String(form.action ?? '')
     const deviceId = String(form.deviceId ?? '')
+    const view = normalizeDevicesView(form.view)
+    const query = String(form.query ?? '')
 
     if (action === 'rename') {
       await renameDevice(c.env.DB, {
@@ -60,7 +67,7 @@ export const POST = createRoute(async (c) => {
         deviceId,
         name: parseDeviceNameForm(form)
       })
-      return c.redirect('/settings/devices?saved=1', 303)
+      return c.redirect(buildDevicesUrl({ saved: '1', view, query }), 303)
     }
 
     if (action === 'revoke') {
@@ -69,7 +76,7 @@ export const POST = createRoute(async (c) => {
         userId: user.id,
         deviceId
       })
-      return c.redirect('/settings/devices?revoked=1', 303)
+      return c.redirect(buildDevicesUrl({ revoked: '1', view, query }), 303)
     }
 
     if (action === 'revoke-installation') {
@@ -78,7 +85,7 @@ export const POST = createRoute(async (c) => {
         userId: user.id,
         installationId: String(form.installationId ?? '')
       })
-      return c.redirect('/settings/devices?revoked=installation', 303)
+      return c.redirect(buildDevicesUrl({ revoked: 'installation', view, query }), 303)
     }
 
     if (action === 'revoke-token') {
@@ -87,7 +94,7 @@ export const POST = createRoute(async (c) => {
         userId: user.id,
         uploadTokenId: String(form.uploadTokenId ?? '')
       })
-      return c.redirect('/settings/devices?revoked=token', 303)
+      return c.redirect(buildDevicesUrl({ revoked: 'token', view, query }), 303)
     }
 
     if (action === 'rotate-token') {
@@ -98,11 +105,13 @@ export const POST = createRoute(async (c) => {
       })
       return renderDevicesPage(c, user, {
         rotatedCredentials: result,
-        serverOrigin: new URL(c.req.url).origin
+        serverOrigin: new URL(c.req.url).origin,
+        view,
+        query
       })
     }
 
-    return c.redirect('/settings/devices', 303)
+    return c.redirect(buildDevicesUrl({ view, query }), 303)
   } catch (error) {
     return jsonError(c, error)
   }
@@ -116,8 +125,15 @@ export function DevicesPage(props: {
   rotatedUploadToken?: string | null
   rotatedCredentials?: RotatedCredentials | null
   serverOrigin?: string | null
+  view?: DevicesView
+  query?: string
 }) {
   const rotatedCredentials = props.rotatedCredentials ?? credentialsFromLegacyToken(props.rotatedUploadToken)
+  const view = props.view ?? 'list'
+  const query = props.query ?? ''
+  const filteredDevices = filterDevices(props.devices, query)
+  const summary = summarizeDevices(filteredDevices)
+  const pageState: DevicesPageState = { view, query }
   return (
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>设备管理 - TokenBoard</title>
@@ -130,7 +146,15 @@ export function DevicesPage(props: {
           credentials={rotatedCredentials}
           serverOrigin={props.serverOrigin ?? null}
         />
-        <DevicesCard devices={props.devices} />
+        <DevicesOverview summary={summary} visible={filteredDevices.length} total={props.devices.length} />
+        <DevicesToolbar view={view} query={query} total={props.devices.length} visible={filteredDevices.length} />
+        {filteredDevices.length === 0 ? (
+          <DevicesEmptyState query={query} />
+        ) : view === 'list' ? (
+          <DevicesList devices={filteredDevices} state={pageState} />
+        ) : (
+          <DevicesCardGrid devices={filteredDevices} state={pageState} />
+        )}
       </section>
     </main>
   )
@@ -149,6 +173,8 @@ async function renderDevicesPage(
   options: {
     rotatedCredentials?: RotatedCredentials
     serverOrigin?: string
+    view?: DevicesView
+    query?: string
   } = {}
 ) {
   const devices = await listUserDevices(c.env.DB, user.id)
@@ -173,6 +199,8 @@ async function renderDevicesPage(
       revoked={null}
       rotatedCredentials={options.rotatedCredentials}
       serverOrigin={options.serverOrigin}
+      view={options.view}
+      query={options.query}
     />
   )
 }
@@ -180,6 +208,8 @@ async function renderDevicesPage(
 type DeviceViewModel = UserDevice & {
   auditLogs?: UserDeviceAuditLog[]
 }
+
+type DevicesView = 'list' | 'cards'
 
 type RotatedCredentials = {
   uploadToken: string
@@ -197,16 +227,53 @@ function DevicesHeader() {
   return (
     <header class="app-surface-raised rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5">
       <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
+        <div class="max-w-2xl">
           <p class="app-accent-text text-sm font-black uppercase tracking-[0.24em]">Devices</p>
-          <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">设备管理</h1>
-          <p class="mt-2 text-sm text-[var(--app-muted)]">
-            查看采集器设备、同步状态，并停用不再使用的上传 token。
+          <h1 class="mt-3 text-3xl font-black tracking-tight text-balance sm:text-4xl">设备管理</h1>
+          <p class="mt-2 text-sm leading-6 text-pretty text-[var(--app-muted)]">
+            查看采集器设备、同步状态、安装实例与上传 token。默认用列表看全局，需要时切到卡片模式逐台处理。
           </p>
         </div>
         <LinkButton class="w-full md:w-auto" href="/settings/install">连接新设备</LinkButton>
       </div>
     </header>
+  )
+}
+
+type DevicesSummary = ReturnType<typeof summarizeDevices>
+
+function DevicesOverview(props: { summary: DevicesSummary; visible: number; total: number }) {
+  return (
+    <section
+      class="app-surface-subtle grid gap-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4"
+      data-devices-overview="true"
+    >
+      <div class="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p class="app-accent-text text-xs font-black uppercase tracking-[0.24em]">Overview</p>
+          <h2 class="mt-2 text-xl font-black tracking-tight">设备概览</h2>
+        </div>
+        <p class="text-xs font-bold text-[var(--app-muted)]">
+          当前显示 {props.visible} / {props.total} 台设备
+        </p>
+      </div>
+      <dl class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <SummaryStat label="设备" value={String(props.summary.deviceCount)} hint="已连接设备总数" />
+        <SummaryStat label="安装实例" value={String(props.summary.installationCount)} hint="已登记的安装记录" />
+        <SummaryStat label="上传 token" value={String(props.summary.uploadTokenCount)} hint="可用的上传凭证" />
+        <SummaryStat label="长时间未同步" value={String(props.summary.staleDeviceCount)} hint="超过 72 小时未同步" />
+      </dl>
+    </section>
+  )
+}
+
+function SummaryStat(props: { label: string; value: string; hint: string }) {
+  return (
+    <div class="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-3">
+      <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">{props.label}</p>
+      <p class="mt-2 text-2xl font-black tabular-nums text-[var(--app-text)]">{props.value}</p>
+      <p class="mt-1 text-xs font-bold leading-5 text-[var(--app-muted)]">{props.hint}</p>
+    </div>
   )
 }
 
@@ -227,6 +294,90 @@ function formatRevokeFlash(revoked: string) {
     token: '上传 token 已停用。'
   }
   return messages[revoked] ?? '设备 token 已停用。'
+}
+
+function DevicesToolbar(props: { view: 'list' | 'cards'; query: string; total: number; visible: number }) {
+  const listActive = props.view === 'list'
+  const cardsActive = props.view === 'cards'
+  return (
+    <section class="app-surface-subtle flex flex-col gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-4 lg:flex-row lg:items-center lg:justify-between">
+      <form method="get" class="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+        <label class="flex min-h-11 flex-1 items-center gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-input)] px-3 text-sm text-[var(--app-text)]">
+          <LucideIcon icon={Search} class="text-[var(--app-muted)]" size={16} />
+          <input
+            type="search"
+            name="query"
+            value={props.query}
+            aria-label="搜索设备"
+            placeholder="按设备名、平台、安装实例或 token 名搜索"
+            class="w-full bg-transparent outline-none placeholder:text-[var(--app-subtle)]"
+          />
+        </label>
+        <input type="hidden" name="view" value={props.view} />
+        <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm">
+          搜索
+        </Button>
+      </form>
+      <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+        <span class="tabular-nums text-xs font-bold text-[var(--app-muted)]">
+          {props.visible} / {props.total}
+        </span>
+        <ViewToggleButton active={listActive} view="list" label="列表" icon={List} query={props.query} />
+        <ViewToggleButton active={cardsActive} view="cards" label="卡片" icon={LayoutGrid} query={props.query} />
+      </div>
+    </section>
+  )
+}
+
+function ViewToggleButton(props: { active: boolean; view: 'list' | 'cards'; label: string; icon: IconNode; query: string }) {
+  return (
+    <a
+      data-device-view-toggle={props.view}
+      href={buildViewHref(props.view, props.query)}
+      class={`inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 py-3 text-sm font-black transition ${
+        props.active
+          ? 'border-lime-300 bg-lime-300 text-stone-950'
+          : 'border-[var(--app-border)] bg-[var(--app-panel-strong)] text-[var(--app-text)] hover:border-lime-300'
+      }`}
+      aria-current={props.active ? 'page' : undefined}
+    >
+      <LucideIcon icon={props.icon} size={16} />
+      <span>{props.label}</span>
+    </a>
+  )
+}
+
+function buildViewHref(view: 'list' | 'cards', query: string) {
+  const params = new URLSearchParams()
+  params.set('view', view)
+  if (query.trim()) {
+    params.set('query', query.trim())
+  }
+  return `/settings/devices?${params.toString()}`
+}
+
+function buildDevicesUrl(options: {
+  saved?: string
+  revoked?: string
+  view: DevicesView
+  query: string
+}) {
+  const params = new URLSearchParams()
+  if (options.saved) {
+    params.set('saved', options.saved)
+  }
+  if (options.revoked) {
+    params.set('revoked', options.revoked)
+  }
+  params.set('view', options.view)
+  if (options.query.trim()) {
+    params.set('query', options.query.trim())
+  }
+  return `/settings/devices?${params.toString()}`
+}
+
+function normalizeDevicesView(value: FormDataEntryValue | null | undefined): DevicesView {
+  return value === 'cards' ? 'cards' : 'list'
 }
 
 function RotatedTokenFlash(props: {
@@ -316,7 +467,17 @@ function powerShellQuote(value: string) {
     .replaceAll('$', '`$')}"`
 }
 
-function DevicesCard(props: { devices: DeviceViewModel[] }) {
+function DevicesCardGrid(props: { devices: DeviceViewModel[]; state: DevicesPageState }) {
+  return (
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-2" data-devices-card-grid="true">
+      {props.devices.map((device) => (
+        <DeviceCard device={device} mode="card" state={props.state} />
+      ))}
+    </div>
+  )
+}
+
+function DevicesList(props: { devices: DeviceViewModel[]; state: DevicesPageState }) {
   return (
     <Card>
       <CardHeader>
@@ -324,55 +485,62 @@ function DevicesCard(props: { devices: DeviceViewModel[] }) {
         <CardDescription>停用设备只会阻止后续上传，历史用量会继续保留。</CardDescription>
       </CardHeader>
       <CardContent>
-        {props.devices.length > 0 ? <DevicesTable devices={props.devices} /> : <DevicesEmptyState />}
+        {props.devices.length > 0 ? (
+          <div class="grid gap-4" data-devices-list="true">
+            {props.devices.map((device) => (
+              <DeviceCard device={device} mode="list" state={props.state} />
+            ))}
+          </div>
+        ) : (
+          <DevicesEmptyState query={props.state.query} />
+        )}
       </CardContent>
     </Card>
   )
 }
 
-function DevicesTable(props: { devices: DeviceViewModel[] }) {
+function DeviceCard(props: { device: DeviceViewModel; mode: 'list' | 'card'; state: DevicesPageState }) {
+  const cardTone = props.mode === 'card' ? 'bg-[var(--app-bg-soft)]' : 'bg-[var(--app-panel-strong)]'
   return (
-    <>
-      <div class="grid gap-3 md:hidden" data-devices-mobile-list="true">
-        {props.devices.map((device) => (
-          <DeviceCard device={device} />
-        ))}
-      </div>
-      <div class="hidden overflow-x-auto md:block" data-devices-desktop-table="true">
-        <Table class="min-w-[1120px]">
-          <DevicesTableHeader />
-          <TableBody>
-            {props.devices.map((device) => (
-              <DeviceRow device={device} />
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </>
-  )
-}
+    <article
+      class={`app-surface-raised rounded-2xl border border-[var(--app-border)] ${cardTone} p-4 sm:p-5`}
+      data-device-card={props.device.id}
+      data-device-card-mode={props.mode}
+    >
+      <div class="flex flex-col gap-5">
+        <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">设备</p>
+              <span class="rounded-full border border-[var(--app-border)] bg-[var(--app-bg-soft)] px-3 py-1 text-xs font-bold text-[var(--app-muted)]">
+                {formatPlatformLabel(props.device.platform)}
+              </span>
+              <DeviceStatus device={props.device} />
+            </div>
 
-function DeviceCard(props: { device: DeviceViewModel }) {
-  return (
-    <article class="app-surface-raised rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0">
-          <p class="text-xs font-bold uppercase tracking-wide text-[var(--app-muted)]">设备</p>
-          <h2 class="mt-1 truncate text-base font-black text-[var(--app-text)]">{props.device.name}</h2>
-          <p class="mt-1 text-sm text-[var(--app-muted)]">{props.device.platform}</p>
+            <div class="mt-3">
+              <DeviceRenameForm device={props.device} state={props.state} />
+            </div>
+
+            <dl class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <DeviceMeta label="最近同步" value={props.device.lastSyncedAt ?? '从未同步'} />
+              <DeviceMeta label="创建时间" value={props.device.createdAt} />
+              <DeviceMeta label="安装实例" value={String(props.device.installations.length)} />
+              <DeviceMeta label="上传 token" value={String(props.device.uploadTokens.length)} />
+            </dl>
+          </div>
+
+          <div class="xl:w-[18rem]">
+            <DeviceActionForms device={props.device} state={props.state} />
+          </div>
         </div>
-        <DeviceStatus device={props.device} />
-      </div>
-      <dl class="mt-4 grid gap-3 text-sm">
-        <DeviceMeta label="最近同步" value={props.device.lastSyncedAt ?? '从未同步'} />
-        <DeviceMeta label="创建时间" value={props.device.createdAt} />
-      </dl>
-      <DeviceInstallations device={props.device} />
-      <DeviceUploadTokens device={props.device} />
-      <DeviceAuditTrail auditLogs={props.device.auditLogs ?? []} />
-      <div class="mt-4 grid gap-3">
-        <DeviceRenameForm device={props.device} />
-        <DeviceActionForms device={props.device} />
+
+        <div class="grid gap-4 xl:grid-cols-2">
+          <DeviceInstallations device={props.device} state={props.state} />
+          <DeviceUploadTokens device={props.device} state={props.state} />
+        </div>
+
+        <DeviceAuditTrail auditLogs={props.device.auditLogs ?? []} />
       </div>
     </article>
   )
@@ -380,76 +548,41 @@ function DeviceCard(props: { device: DeviceViewModel }) {
 
 function DeviceMeta(props: { label: string; value: string }) {
   return (
-    <div>
-      <dt class="text-xs font-bold uppercase tracking-wide text-[var(--app-muted)]">{props.label}</dt>
-      <dd class="mt-1 break-all font-bold text-[var(--app-text)]">{props.value}</dd>
+    <div class="rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+      <dt class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">{props.label}</dt>
+      <dd class="mt-1 break-all font-black text-[var(--app-text)]">{props.value}</dd>
     </div>
   )
 }
 
-function DevicesTableHeader() {
-  return (
-    <TableHeader>
-      <TableRow>
-        <TableHead>设备</TableHead>
-        <TableHead>Platform</TableHead>
-        <TableHead>最近同步</TableHead>
-        <TableHead>安装 / token</TableHead>
-        <TableHead>创建时间</TableHead>
-        <TableHead>状态</TableHead>
-        <TableHead>操作</TableHead>
-      </TableRow>
-    </TableHeader>
-  )
-}
-
-function DeviceRow(props: { device: DeviceViewModel }) {
-  return (
-    <TableRow>
-      <TableCell class="min-w-64">
-        <DeviceRenameForm device={props.device} />
-      </TableCell>
-      <TableCell>{props.device.platform}</TableCell>
-      <TableCell>{props.device.lastSyncedAt ?? '从未同步'}</TableCell>
-      <TableCell class="min-w-80">
-        <DeviceInstallations device={props.device} compact />
-        <DeviceUploadTokens device={props.device} compact />
-        <DeviceAuditTrail auditLogs={props.device.auditLogs ?? []} compact />
-      </TableCell>
-      <TableCell>{props.device.createdAt}</TableCell>
-      <TableCell>
-        <DeviceStatus device={props.device} />
-      </TableCell>
-      <TableCell>
-        <DeviceActionForms device={props.device} />
-      </TableCell>
-    </TableRow>
-  )
-}
-
-function DeviceUploadTokens(props: { device: UserDevice; compact?: boolean }) {
+function DeviceUploadTokens(props: { device: UserDevice; state: DevicesPageState }) {
   if (props.device.uploadTokens.length === 0) {
-    return null
+    return (
+      <div class="grid gap-2">
+        <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">上传 token</p>
+        <div class="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-xs font-bold text-[var(--app-muted)]">
+          暂无上传 token
+        </div>
+      </div>
+    )
   }
 
   return (
-    <section class={props.compact ? 'mt-3 grid gap-2' : 'mt-4 grid gap-2'}>
-      <p class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">上传 token</p>
+    <section class="grid gap-2">
+      <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">上传 token</p>
       {props.device.uploadTokens.map((token) => (
-        <div class="rounded-lg border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+        <div class="rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
           <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div class="min-w-0 text-sm">
               <p class="truncate font-black text-[var(--app-text)]">{token.name}</p>
               <p class="mt-1 break-all text-xs font-bold text-[var(--app-muted)]">
                 {token.installationId ? `安装实例：${token.installationId}` : '未绑定安装实例'}
               </p>
-              <p class="mt-1 text-xs text-[var(--app-muted)]">
-                最近使用：{token.lastUsedAt ?? '从未使用'}
-              </p>
+              <p class="mt-1 text-xs text-[var(--app-muted)]">最近使用：{token.lastUsedAt ?? '从未使用'}</p>
             </div>
             <div class="flex flex-col gap-2 sm:items-end">
-              <UploadTokenRotateForm token={token} />
-              <UploadTokenRevokeForm token={token} />
+              <UploadTokenRotateForm token={token} state={props.state} />
+              <UploadTokenRevokeForm token={token} state={props.state} />
             </div>
           </div>
         </div>
@@ -458,12 +591,14 @@ function DeviceUploadTokens(props: { device: UserDevice; compact?: boolean }) {
   )
 }
 
-function UploadTokenRotateForm(props: { token: UserDevice['uploadTokens'][number] }) {
+function UploadTokenRotateForm(props: { token: UserDevice['uploadTokens'][number]; state: DevicesPageState }) {
   const disabled = props.token.revokedAt !== null
   return (
     <form method="post" data-submit-feedback="true">
       <input type="hidden" name="action" value="rotate-token" />
       <input type="hidden" name="uploadTokenId" value={props.token.id} />
+      <input type="hidden" name="view" value={props.state.view} />
+      <input type="hidden" name="query" value={props.state.query} />
       <Button
         class="w-full sm:w-auto"
         type="submit"
@@ -479,12 +614,14 @@ function UploadTokenRotateForm(props: { token: UserDevice['uploadTokens'][number
   )
 }
 
-function UploadTokenRevokeForm(props: { token: UserDevice['uploadTokens'][number] }) {
+function UploadTokenRevokeForm(props: { token: UserDevice['uploadTokens'][number]; state: DevicesPageState }) {
   const disabled = props.token.revokedAt !== null
   return (
     <form method="post" data-submit-feedback="true">
       <input type="hidden" name="action" value="revoke-token" />
       <input type="hidden" name="uploadTokenId" value={props.token.id} />
+      <input type="hidden" name="view" value={props.state.view} />
+      <input type="hidden" name="query" value={props.state.query} />
       <Button
         class="w-full sm:w-auto"
         type="submit"
@@ -500,29 +637,34 @@ function UploadTokenRevokeForm(props: { token: UserDevice['uploadTokens'][number
   )
 }
 
-function DeviceRenameForm(props: { device: UserDevice }) {
+function DeviceRenameForm(props: { device: UserDevice; state: DevicesPageState }) {
   return (
-    <form method="post" class="flex flex-col gap-2 sm:flex-row sm:items-center" data-submit-feedback="true">
+    <form method="post" class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end" data-submit-feedback="true">
       <input type="hidden" name="action" value="rename" />
       <input type="hidden" name="deviceId" value={props.device.id} />
+      <input type="hidden" name="view" value={props.state.view} />
+      <input type="hidden" name="query" value={props.state.query} />
       <Input
-        class="mt-0 h-10 py-2"
+        class="mt-0 h-11 py-2"
         name="name"
         value={props.device.name}
         autocomplete="off"
         required
         minLength={1}
       />
-      <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm" data-submitting-label="正在保存...">保存</Button>
+      <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm" data-submitting-label="正在保存...">
+        保存
+      </Button>
     </form>
   )
 }
 
-function DeviceActionForms(props: { device: UserDevice }) {
+function DeviceActionForms(props: { device: UserDevice; state: DevicesPageState }) {
   return (
-    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+    <div class="flex flex-col gap-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-3">
+      <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">设备操作</p>
       <DeviceReconnectForm device={props.device} />
-      <DeviceRevokeForm device={props.device} />
+      <DeviceRevokeForm device={props.device} state={props.state} />
     </div>
   )
 }
@@ -531,20 +673,22 @@ function DeviceReconnectForm(props: { device: UserDevice }) {
   return (
     <form method="post" action="/settings/install" data-submit-feedback="true">
       <input type="hidden" name="targetDeviceId" value={props.device.id} />
-      <Button class="w-full sm:w-auto" type="submit" variant="secondary" size="sm" data-submitting-label="正在生成...">
+      <Button class="w-full" type="submit" variant="secondary" size="sm" data-submitting-label="正在生成...">
         重新连接
       </Button>
     </form>
   )
 }
 
-function DeviceRevokeForm(props: { device: UserDevice }) {
+function DeviceRevokeForm(props: { device: UserDevice; state: DevicesPageState }) {
   return (
     <form method="post" data-submit-feedback="true">
       <input type="hidden" name="action" value="revoke" />
       <input type="hidden" name="deviceId" value={props.device.id} />
+      <input type="hidden" name="view" value={props.state.view} />
+      <input type="hidden" name="query" value={props.state.query} />
       <Button
-        class="w-full sm:w-auto"
+        class="w-full"
         type="submit"
         variant="destructive"
         size="sm"
@@ -559,36 +703,35 @@ function DeviceRevokeForm(props: { device: UserDevice }) {
   )
 }
 
-function DeviceInstallations(props: { device: UserDevice; compact?: boolean }) {
+function DeviceInstallations(props: { device: UserDevice; state: DevicesPageState }) {
   if (props.device.installations.length === 0) {
     return (
-      <div class="mt-4 rounded-lg border border-dashed border-[var(--app-border)] p-3 text-xs font-bold text-[var(--app-muted)]">
-        暂无安装实例
+      <div class="grid gap-2">
+        <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">安装实例</p>
+        <div class="rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-panel)] p-3 text-xs font-bold text-[var(--app-muted)]">
+          暂无安装实例
+        </div>
       </div>
     )
   }
 
   return (
-    <section class={props.compact ? 'grid gap-2' : 'mt-4 grid gap-2'}>
-      <p class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">安装实例</p>
+    <section class="grid gap-2">
+      <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">安装实例</p>
       {props.device.installations.map((installation) => (
-        <div class="rounded-lg border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
+        <div class="rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
           <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div class="min-w-0 text-sm">
               <p class="truncate font-black text-[var(--app-text)]">
-                {installation.hostname ?? installation.platform}
+                {installation.hostname ?? formatPlatformLabel(installation.platform)}
               </p>
               <p class="mt-1 break-all text-xs font-bold text-[var(--app-muted)]">
-                {installation.platform} / {installation.clientVersion ?? '版本未知'}
+                {formatPlatformLabel(installation.platform)} / {installation.clientVersion ?? '版本未知'}
               </p>
-              <p class="mt-1 text-xs text-[var(--app-muted)]">
-                最近同步：{installation.lastSeenAt ?? '从未同步'}
-              </p>
-              <p class="mt-1 text-xs text-[var(--app-muted)]">
-                active token：{installation.activeTokenCount}
-              </p>
+              <p class="mt-1 text-xs text-[var(--app-muted)]">最近同步：{installation.lastSeenAt ?? '从未同步'}</p>
+              <p class="mt-1 text-xs text-[var(--app-muted)]">active token：{installation.activeTokenCount}</p>
             </div>
-            <InstallationRevokeForm installation={installation} />
+            <InstallationRevokeForm installation={installation} state={props.state} />
           </div>
         </div>
       ))}
@@ -596,12 +739,14 @@ function DeviceInstallations(props: { device: UserDevice; compact?: boolean }) {
   )
 }
 
-function InstallationRevokeForm(props: { installation: UserDevice['installations'][number] }) {
+function InstallationRevokeForm(props: { installation: UserDevice['installations'][number]; state: DevicesPageState }) {
   const disabled = props.installation.revokedAt !== null || props.installation.activeTokenCount <= 0
   return (
     <form method="post" data-submit-feedback="true">
       <input type="hidden" name="action" value="revoke-installation" />
       <input type="hidden" name="installationId" value={props.installation.id} />
+      <input type="hidden" name="view" value={props.state.view} />
+      <input type="hidden" name="query" value={props.state.query} />
       <Button
         class="w-full sm:w-auto"
         type="submit"
@@ -617,19 +762,82 @@ function InstallationRevokeForm(props: { installation: UserDevice['installations
   )
 }
 
-function DeviceAuditTrail(props: { auditLogs: UserDeviceAuditLog[]; compact?: boolean }) {
+function DeviceAuditTrail(props: { auditLogs: UserDeviceAuditLog[] }) {
   if (props.auditLogs.length === 0) return null
   return (
-    <section class={props.compact ? 'mt-3 grid gap-1' : 'mt-4 grid gap-1'}>
-      <p class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">最近操作</p>
-      {props.auditLogs.map((log) => (
-        <p class="break-all text-xs text-[var(--app-muted)]">
-          <span class="font-bold text-[var(--app-text)]">{formatAuditAction(log.action)}</span>
-          <span> / {log.createdAt}</span>
-        </p>
-      ))}
+    <section class="grid gap-2">
+      <p class="text-xs font-black uppercase tracking-[0.24em] text-[var(--app-muted)]">最近操作</p>
+      <div class="grid gap-2">
+        {props.auditLogs.map((log) => (
+          <p class="break-all text-xs text-[var(--app-muted)]">
+            <span class="font-bold text-[var(--app-text)]">{formatAuditAction(log.action)}</span>
+            <span> / {log.createdAt}</span>
+          </p>
+        ))}
+      </div>
     </section>
   )
+}
+
+function summarizeDevices(devices: DeviceViewModel[]) {
+  return devices.reduce(
+    (summary, device) => {
+      summary.deviceCount += 1
+      summary.installationCount += device.installations.length
+      summary.uploadTokenCount += device.uploadTokens.length
+      if (device.lastSyncedAt && isStaleSync(device.lastSyncedAt)) {
+        summary.staleDeviceCount += 1
+      }
+      return summary
+    },
+    {
+      deviceCount: 0,
+      installationCount: 0,
+      uploadTokenCount: 0,
+      staleDeviceCount: 0
+    }
+  )
+}
+
+type DevicesPageState = {
+  view: DevicesView
+  query: string
+}
+
+function filterDevices(devices: DeviceViewModel[], query: string) {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return devices
+  return devices.filter((device) => {
+    const haystack = [
+      device.name,
+      device.platform,
+      formatPlatformLabel(device.platform),
+      device.createdAt,
+      device.lastSyncedAt ?? '',
+      ...device.installations.flatMap((installation) => [
+        installation.hostname ?? '',
+        installation.platform,
+        formatPlatformLabel(installation.platform),
+        installation.clientVersion ?? ''
+      ]),
+      ...device.uploadTokens.flatMap((token) => [token.name, token.installationId ?? '', token.lastUsedAt ?? '']),
+      ...((device.auditLogs ?? []).map((log) => `${log.action} ${log.createdAt}`))
+    ]
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(normalized)
+  })
+}
+
+function formatPlatformLabel(platform: string) {
+  const labels: Record<string, string> = {
+    darwin: 'macOS',
+    linux: 'Linux',
+    win32: 'Windows',
+    browser: 'Browser',
+    'browser-e2e': 'Browser E2E'
+  }
+  return labels[platform] ?? platform
 }
 
 function formatAuditAction(action: string) {
@@ -645,10 +853,14 @@ function formatAuditAction(action: string) {
   return labels[action] ?? action
 }
 
-function DevicesEmptyState() {
+function DevicesEmptyState(props: { query?: string }) {
+  const hasQuery = props.query?.trim()
   return (
-    <div class="app-surface-subtle rounded-xl border border-dashed border-[var(--app-border)] p-6 text-sm text-[var(--app-muted)]">
-      还没有连接设备。
+    <div
+      class="app-surface-subtle rounded-2xl border border-dashed border-[var(--app-border)] bg-[var(--app-bg-soft)] p-6 text-sm text-[var(--app-muted)]"
+      data-devices-empty-state="true"
+    >
+      {hasQuery ? `没有找到匹配「${hasQuery}」的设备。` : '还没有连接设备。'}
     </div>
   )
 }
