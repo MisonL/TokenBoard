@@ -194,18 +194,18 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             metadata,
             expires_at,
             created_at
-	          )
-	          SELECT ?, ?, ?, 'reconnect_device', ?, ?, ?, ?
-	          WHERE EXISTS (
-	            SELECT 1
-	            FROM device_installations
-	            WHERE id = ?
-	              AND user_id = ?
-	              AND device_id = ?
-	              AND install_claim_hash = ?
-	              AND revoked_at IS NULL
-	          )
-	        `
+          )
+          SELECT ?, ?, ?, 'reconnect_device', ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1
+            FROM device_installations
+            WHERE id = ?
+              AND user_id = ?
+              AND device_id = ?
+              AND install_claim_hash = ?
+              AND revoked_at IS NULL
+          )
+        `
       )
       .bind(
         input.pairingCodeId,
@@ -242,17 +242,17 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             target_id,
             metadata,
             created_at
-	          )
-	          SELECT ?, ?, ?, ?, ?, ?, ?, ?
-	          WHERE EXISTS (
-	            SELECT 1
-	            FROM pairing_codes
-	            WHERE id = ?
-	              AND user_id = ?
-	              AND pairing_type = 'reconnect_device'
-	              AND target_device_id = ?
-	          )
-	        `
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE EXISTS (
+            SELECT 1
+            FROM pairing_codes
+            WHERE id = ?
+              AND user_id = ?
+              AND pairing_type = 'reconnect_device'
+              AND target_device_id = ?
+          )
+        `
       )
       .bind(
         input.auditLogId,

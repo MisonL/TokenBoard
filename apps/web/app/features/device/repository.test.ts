@@ -98,9 +98,11 @@ describe('D1DevicePairingRepository', () => {
     expect(sqlStatements[1]).toContain('INSERT INTO pairing_codes')
     expect(sqlStatements[1]).toContain('WHERE EXISTS')
     expect(sqlStatements[1]).toContain('FROM device_installations')
+    expect(sqlStatements[1]).not.toContain('changes()')
     expect(sqlStatements[2]).toContain('INSERT INTO audit_logs')
     expect(sqlStatements[2]).toContain('WHERE EXISTS')
     expect(sqlStatements[2]).toContain('FROM pairing_codes')
+    expect(sqlStatements[2]).not.toContain('changes()')
     expect(bindings).toHaveLength(3)
     expect(bindings[0]).toEqual([
       'hash:new',
