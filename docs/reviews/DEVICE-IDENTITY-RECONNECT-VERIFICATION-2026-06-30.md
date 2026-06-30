@@ -13,7 +13,7 @@
 - Web UI 支持重新连接旧设备、token 轮换、不同层级撤销和审计日志展示。
 - client config 按 server origin 保存 profile，避免正式环境和私人环境 token 覆盖。
 - `device-link.json` 只作为本机敏感恢复状态，恢复必须显式 opt-in。
-- `device-link` claim 成功换取 reconnect pairing code 后会失效，防止重复使用。
+- `device-link` claim 成功换取 reconnect pairing code 后会失效，防止重复使用；claim 轮换、pairing code 创建和审计日志写入在同一个 D1 batch 中完成。
 - TokenBoard skill、安装提示、setup、status、uninstall、rotate-token 脚本已适配。
 - Antigravity CLI、Antigravity、Antigravity IDE 三类来源已接入采集和 Web 展示。
 
@@ -26,6 +26,7 @@
 - Antigravity prompt、completion、本地路径、原始历史 blob、原始 conversation id、原始 response id 不进入上传 payload。
 - Antigravity 费用不可用，`costUsd` 只能作为 `0` 占位，UI、日报、Webhook、公开 JSON / SVG 必须标注费用不可用。
 - Antigravity CLI status line capture 保持显式 opt-in，不包含在默认 hook `--source all` 安装中。
+- reconnect pairing code 生成不能先失效旧 claim 再写 pairing code；后续写入通过同一 batch 内的真实行状态守卫，不依赖 SQLite `changes()` 跨语句状态。
 
 ## 代码证据
 
@@ -66,7 +67,7 @@ git diff --check
 
 结果摘要：
 
-- Web device 相关测试：3 个文件、27 个测试通过。
+- Web device 相关测试：`service`、`repository`、`reconnect-pairing-codes` 最新目标验证为 3 个文件、31 个测试通过。
 - TokenBoard skill 脚本测试：185 个测试通过。
 - Workspace 测试：`packages/usage-core`、`packages/collector`、`apps/web` 全部通过。
 - Workspace typecheck：全部通过。
@@ -77,16 +78,9 @@ git diff --check
 
 - Web 测试和构建中仍会出现 Node `DEP0205 module.register()` deprecation warning；当前不影响命令退出码，未在本 PR 中处理。
 
-## PR 状态
-
-- PR: https://github.com/evepupil/TokenBoard/pull/19
-- 状态：open，mergeable。
-- GitGuardian Security Checks：通过。
-- 当前没有 reviewer 评论或阻塞 review。
-
 ## 真实环境 gate
 
-本记录证明代码、测试、构建和 PR gate 已收敛，不等同于生产环境已发布。
+本记录证明代码、测试和构建已收敛，不等同于生产环境已发布。
 
 合并前后仍应按实际发布流程验证：
 
