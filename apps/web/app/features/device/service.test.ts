@@ -34,6 +34,11 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
         `pair:${input.userId}:${input.codeHash}:${input.pairingType}:${input.targetDeviceId ?? 'none'}:${input.expiresAt}`
       )
     },
+    async createReconnectPairingCodeExchange(input) {
+      calls.push(
+        `exchange:${input.userId}:${input.deviceId}:${input.installationId}:${input.previousInstallClaimHash}:${input.nextInstallClaimHash}:${input.codeHash}:${input.expiresAt}:${input.pairingCodeId}:${input.pairingMetadata}:${input.auditLogId}:${input.auditMetadata}`
+      )
+    },
     async ensureDeviceOwnedByUser(userId, deviceId) {
       calls.push(`own:${userId}:${deviceId}`)
       return true
@@ -46,12 +51,6 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
         deviceId: input.deviceId,
         revokedAt: null
       }
-    },
-    async rotateInstallationClaim(input) {
-      calls.push(
-        `rotate-claim:${input.userId}:${input.deviceId}:${input.installationId}:${input.previousInstallClaimHash}:${input.nextInstallClaimHash}`
-      )
-      return true
     },
     async createUploadTokenAndDevice(input) {
       calls.push(
@@ -154,10 +153,7 @@ describe('pairDevice', () => {
     })
     expect(calls).toEqual([
       'claim:dev_old:inst_old:hash:claim-fixture',
-      'rotate-claim:seed-user:dev_old:inst_old:hash:claim-fixture:hash:claim-rotated-fixture',
-      'own:seed-user:dev_old',
-      'pair:seed-user:hash:pairing-token-fixture:reconnect_device:dev_old:2026-04-28T10:10:00.000Z',
-      'audit:device.reconnect.claim:dev_old'
+      'exchange:seed-user:dev_old:inst_old:hash:claim-fixture:hash:claim-rotated-fixture:hash:pairing-token-fixture:2026-04-28T10:10:00.000Z:pair_123:{"method":"device-link","installationId":"inst_old"}:audit_123:{"installationId":"inst_old"}'
     ])
   })
 
@@ -190,11 +186,11 @@ describe('pairDevice', () => {
 
   test('rejects replayed install claim before creating pairing code', async () => {
     const { repository, calls } = createRepository({
-      async rotateInstallationClaim(input) {
+      async createReconnectPairingCodeExchange(input) {
         calls.push(
-          `rotate-claim:${input.userId}:${input.deviceId}:${input.installationId}:${input.previousInstallClaimHash}:${input.nextInstallClaimHash}`
+          `exchange:${input.userId}:${input.deviceId}:${input.installationId}:${input.previousInstallClaimHash}:${input.nextInstallClaimHash}:${input.codeHash}:${input.expiresAt}:${input.pairingCodeId}:${input.pairingMetadata}:${input.auditLogId}:${input.auditMetadata}`
         )
-        return false
+        throw new Error('Invalid device link claim')
       }
     })
 
@@ -208,15 +204,15 @@ describe('pairDevice', () => {
         },
         {
           now: () => new Date('2026-04-28T10:00:00.000Z'),
-          randomId: () => 'pair_123',
-          randomToken: () => 'claim-rotated-fixture',
+          randomId: createTokenSequence(['pair_123', 'audit_123']),
+          randomToken: createTokenSequence(['claim-rotated-fixture', 'pairing-token-fixture']),
           hash: async (value) => `hash:${value}`
         }
       )
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
     expect(calls).toEqual([
       'claim:dev_old:inst_old:hash:claim-fixture',
-      'rotate-claim:seed-user:dev_old:inst_old:hash:claim-fixture:hash:claim-rotated-fixture'
+      'exchange:seed-user:dev_old:inst_old:hash:claim-fixture:hash:claim-rotated-fixture:hash:pairing-token-fixture:2026-04-28T10:30:00.000Z:pair_123:{"method":"device-link","installationId":"inst_old"}:audit_123:{"installationId":"inst_old"}'
     ])
   })
 
@@ -526,7 +522,10 @@ describe('device management', () => {
       }
     ])
     expect(sqlStatements[0]).toContain('FROM audit_logs')
-    expect(bindings[0]).toEqual(['user_1', 'dev_1', '%"deviceId":"dev_1"%', 5])
+    expect(sqlStatements[0]).toContain('CASE')
+    expect(sqlStatements[0]).toContain('json_valid(metadata)')
+    expect(sqlStatements[0]).toContain("json_extract(metadata, '$.deviceId')")
+    expect(bindings[0]).toEqual(['user_1', 'dev_1', 'dev_1', 5])
   })
 
   test('renames a device owned by the current user', async () => {

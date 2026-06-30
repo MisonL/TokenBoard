@@ -26,20 +26,26 @@ export type DevicePairingRepository = {
     expiresAt: string
     createdAt: string
   }): Promise<void>
+  createReconnectPairingCodeExchange(input: {
+    pairingCodeId: string
+    userId: string
+    codeHash: string
+    deviceId: string
+    installationId: string
+    previousInstallClaimHash: string
+    nextInstallClaimHash: string
+    pairingMetadata?: string | null
+    auditLogId: string
+    auditMetadata?: string | null
+    expiresAt: string
+    createdAt: string
+  }): Promise<void>
   ensureDeviceOwnedByUser(userId: string, deviceId: string): Promise<boolean>
   findInstallationByClaim(input: {
     deviceId: string
     installationId: string
     installClaimHash: string
   }): Promise<DeviceInstallationClaimRecord | null>
-  rotateInstallationClaim(input: {
-    userId: string
-    deviceId: string
-    installationId: string
-    previousInstallClaimHash: string
-    nextInstallClaimHash: string
-    updatedAt: string
-  }): Promise<boolean>
   createUploadTokenAndDevice(input: {
     uploadTokenId: string
     uploadTokenHash: string
@@ -324,13 +330,16 @@ export async function listDeviceAuditLogs(
         WHERE user_id = ?
           AND (
             target_id = ?
-            OR metadata LIKE ?
+            OR CASE
+              WHEN json_valid(metadata) THEN json_extract(metadata, '$.deviceId')
+              ELSE NULL
+            END = ?
           )
         ORDER BY created_at DESC
         LIMIT ?
       `
     )
-    .bind(input.userId, input.deviceId, `%"deviceId":"${input.deviceId}"%`, input.limit ?? 20)
+    .bind(input.userId, input.deviceId, input.deviceId, input.limit ?? 20)
     .all<UserDeviceAuditLog>()
 
   return rows.results ?? []
@@ -903,54 +912,41 @@ export async function createReconnectPairingCodeFromClaim(
     throw new ApiError('UNAUTHORIZED', 'Invalid device link claim', 401)
   }
 
-  await rotateDeviceLinkClaim(repository, {
-    userId: installation.userId,
-    deviceId: normalized.deviceId,
-    installationId: normalized.installationId,
-    previousInstallClaimHash: installClaimHash,
-    updatedAt: deps.now().toISOString()
-  }, deps)
-
-  const result = await createPairingCode(repository, installation.userId, deps, ttlMinutes, {
-    pairingType: 'reconnect_device',
-    targetDeviceId: normalized.deviceId,
-    metadata: JSON.stringify({
-      method: 'device-link',
-      installationId: normalized.installationId
-    })
-  })
   const createdAt = deps.now().toISOString()
-  await repository.createAuditLog({
-    auditLogId: deps.randomId(),
-    userId: installation.userId,
-    actorType: 'user',
-    action: 'device.reconnect.claim',
-    targetType: 'device',
-    targetId: normalized.deviceId,
-    metadata: JSON.stringify({ installationId: normalized.installationId }),
-    createdAt
-  })
-  return result
-}
+  const expiresAt = new Date(new Date(createdAt).getTime() + ttlMinutes * 60 * 1000).toISOString()
+  const nextInstallClaim = deps.randomToken()
+  const pairingCode = deps.randomToken()
+  const nextInstallClaimHash = await deps.hash(nextInstallClaim)
+  const codeHash = await deps.hash(pairingCode)
 
-async function rotateDeviceLinkClaim(
-  repository: DevicePairingRepository,
-  input: {
-    userId: string
-    deviceId: string
-    installationId: string
-    previousInstallClaimHash: string
-    updatedAt: string
-  },
-  deps: CreatePairingCodeDeps
-) {
-  const nextInstallClaimHash = await deps.hash(deps.randomToken())
-  const rotated = await repository.rotateInstallationClaim({
-    ...input,
-    nextInstallClaimHash
-  })
-  if (!rotated) {
-    throw new ApiError('UNAUTHORIZED', 'Invalid device link claim', 401)
+  try {
+    await repository.createReconnectPairingCodeExchange({
+      pairingCodeId: deps.randomId(),
+      userId: installation.userId,
+      codeHash,
+      deviceId: normalized.deviceId,
+      installationId: normalized.installationId,
+      previousInstallClaimHash: installClaimHash,
+      nextInstallClaimHash,
+      pairingMetadata: JSON.stringify({
+        method: 'device-link',
+        installationId: normalized.installationId
+      }),
+      auditLogId: deps.randomId(),
+      auditMetadata: JSON.stringify({ installationId: normalized.installationId }),
+      expiresAt,
+      createdAt
+    })
+  } catch (error) {
+    if (isInvalidDeviceLinkClaimError(error)) {
+      throw new ApiError('UNAUTHORIZED', 'Invalid device link claim', 401)
+    }
+    throw error
+  }
+
+  return {
+    pairingCode,
+    expiresAt
   }
 }
 
@@ -974,6 +970,10 @@ function requiredTrimmedString(value: unknown, name: string) {
     throw new ApiError('BAD_REQUEST', `Missing ${name}`, 400)
   }
   return trimmed
+}
+
+function isInvalidDeviceLinkClaimError(error: unknown) {
+  return error instanceof Error && error.message === 'Invalid device link claim'
 }
 
 export async function pairDevice(

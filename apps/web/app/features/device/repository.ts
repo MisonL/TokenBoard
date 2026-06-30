@@ -58,6 +58,31 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       .run()
   }
 
+  async createReconnectPairingCodeExchange(input: {
+    pairingCodeId: string
+    userId: string
+    codeHash: string
+    deviceId: string
+    installationId: string
+    previousInstallClaimHash: string
+    nextInstallClaimHash: string
+    pairingMetadata?: string | null
+    auditLogId: string
+    auditMetadata?: string | null
+    expiresAt: string
+    createdAt: string
+  }) {
+    const results = await this.db.batch([
+      this.reconnectClaimRotateStatement(input),
+      this.reconnectPairingCodeInsertStatement(input),
+      this.reconnectAuditLogInsertStatement(input)
+    ])
+    assertBatchSucceeded(results, 3)
+    assertStatementChanged(results[0], 'Invalid device link claim')
+    assertStatementChanged(results[1], 'Reconnect pairing code was not created')
+    assertStatementChanged(results[2], 'Reconnect audit log was not created')
+  }
+
   async findUsablePairingCode(codeHash: string, now: string): Promise<PairingCodeRecord | null> {
     const row = await this.db
       .prepare(
@@ -116,15 +141,15 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     return row ?? null
   }
 
-  async rotateInstallationClaim(input: {
+  private reconnectClaimRotateStatement(input: {
     userId: string
     deviceId: string
     installationId: string
     previousInstallClaimHash: string
     nextInstallClaimHash: string
-    updatedAt: string
+    createdAt: string
   }) {
-    const result = await this.db
+    return this.db
       .prepare(
         `
           UPDATE device_installations
@@ -138,14 +163,110 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       )
       .bind(
         input.nextInstallClaimHash,
-        input.updatedAt,
+        input.createdAt,
         input.installationId,
         input.userId,
         input.deviceId,
         input.previousInstallClaimHash
       )
-      .run()
-    return (result.meta.changes ?? 0) > 0
+  }
+
+  private reconnectPairingCodeInsertStatement(input: {
+    pairingCodeId: string
+    userId: string
+    codeHash: string
+    deviceId: string
+    installationId: string
+    nextInstallClaimHash: string
+    pairingMetadata?: string | null
+    expiresAt: string
+    createdAt: string
+  }) {
+    return this.db
+      .prepare(
+        `
+          INSERT INTO pairing_codes (
+            id,
+            user_id,
+            code_hash,
+            pairing_type,
+            target_device_id,
+            metadata,
+            expires_at,
+            created_at
+	          )
+	          SELECT ?, ?, ?, 'reconnect_device', ?, ?, ?, ?
+	          WHERE EXISTS (
+	            SELECT 1
+	            FROM device_installations
+	            WHERE id = ?
+	              AND user_id = ?
+	              AND device_id = ?
+	              AND install_claim_hash = ?
+	              AND revoked_at IS NULL
+	          )
+	        `
+      )
+      .bind(
+        input.pairingCodeId,
+        input.userId,
+        input.codeHash,
+        input.deviceId,
+        input.pairingMetadata ?? null,
+        input.expiresAt,
+        input.createdAt,
+        input.installationId,
+        input.userId,
+        input.deviceId,
+        input.nextInstallClaimHash
+      )
+  }
+
+  private reconnectAuditLogInsertStatement(input: {
+    auditLogId: string
+    userId: string
+    deviceId: string
+    pairingCodeId: string
+    auditMetadata?: string | null
+    createdAt: string
+  }) {
+    return this.db
+      .prepare(
+        `
+          INSERT INTO audit_logs (
+            id,
+            user_id,
+            actor_type,
+            action,
+            target_type,
+            target_id,
+            metadata,
+            created_at
+	          )
+	          SELECT ?, ?, ?, ?, ?, ?, ?, ?
+	          WHERE EXISTS (
+	            SELECT 1
+	            FROM pairing_codes
+	            WHERE id = ?
+	              AND user_id = ?
+	              AND pairing_type = 'reconnect_device'
+	              AND target_device_id = ?
+	          )
+	        `
+      )
+      .bind(
+        input.auditLogId,
+        input.userId,
+        'user',
+        'device.reconnect.claim',
+        'device',
+        input.deviceId,
+        input.auditMetadata ?? null,
+        input.createdAt,
+        input.pairingCodeId,
+        input.userId,
+        input.deviceId
+      )
   }
 
   async createUploadTokenAndDevice(input: {
@@ -307,4 +428,24 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       .run()
     return (result.meta.changes ?? 0) > 0
   }
+}
+
+function assertBatchSucceeded(results: D1Result<unknown>[], expectedStatements: number) {
+  const batchResults = results as Array<{ success?: boolean; error?: string }>
+  const failedIndex = batchResults.findIndex((result) => result.success === false)
+  if (failedIndex < 0 && batchResults.length >= expectedStatements) return
+
+  const error =
+    failedIndex >= 0
+      ? batchResults[failedIndex]?.error
+      : `expected ${expectedStatements} results, received ${batchResults.length}`
+  const statementNumber = failedIndex >= 0 ? failedIndex + 1 : batchResults.length + 1
+  throw new Error(
+    `D1 batch statement ${statementNumber} failed${error ? `: ${error}` : ''}`
+  )
+}
+
+function assertStatementChanged(result: D1Result<unknown> | undefined, message: string) {
+  if (Number(result?.meta?.changes ?? 0) > 0) return
+  throw new Error(message)
 }
