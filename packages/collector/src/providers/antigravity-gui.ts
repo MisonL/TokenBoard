@@ -40,8 +40,10 @@ export type CollectAntigravityGuiUsageOptions = {
   requestGeneratorMetadata?: (input: AntigravityGeneratorMetadataRequest) => Promise<unknown>
   readDbUsageEvents?: (input?: {
     lastSeenRowIndexByCascadeHash?: Map<string, number>
+    maxDbFiles?: number | null
   }) => Promise<AntigravityDbUsageResult>
   maxLanguageServerCascades?: number
+  maxDbFiles?: number | null
 }
 
 const defaultMaxLanguageServerCascades = 12
@@ -260,7 +262,8 @@ async function readLocalDbUsageOrThrow(
 ) {
   if (options.readDbUsageEvents) {
     return options.readDbUsageEvents({
-      lastSeenRowIndexByCascadeHash: lastSeenDbRowIndexByCascadeHash({ cursor, source: options.source })
+      lastSeenRowIndexByCascadeHash: lastSeenDbRowIndexByCascadeHash({ cursor, source: options.source }),
+      maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
     })
   }
   if (options.requestGeneratorMetadata) {
@@ -268,8 +271,18 @@ async function readLocalDbUsageOrThrow(
   }
   return readAntigravityDbUsageEvents({
     conversationDir: options.conversationDir ?? defaultConversationDir(options.source),
-    lastSeenRowIndexByCascadeHash: lastSeenDbRowIndexByCascadeHash({ cursor, source: options.source })
+    lastSeenRowIndexByCascadeHash: lastSeenDbRowIndexByCascadeHash({ cursor, source: options.source }),
+    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
   })
+}
+
+function resolveMaxDbFiles(value: number | null | undefined) {
+  return value === undefined ? defaultMaxDbFilesForCurrentRun() : value
+}
+
+function defaultMaxDbFilesForCurrentRun() {
+  const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
+  return since === 'all' ? null : undefined
 }
 
 function isUnavailableDbError(error: unknown) {

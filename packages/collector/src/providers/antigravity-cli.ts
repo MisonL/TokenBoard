@@ -29,8 +29,10 @@ export type CollectAntigravityCliUsageOptions = {
   stateDir?: string
   eventPath?: string
   conversationDir?: string
+  maxDbFiles?: number | null
   readDbUsageEvents?: (input: {
     lastSeenRowIndexByCascadeHash: Map<string, number>
+    maxDbFiles?: number | null
   }) => Promise<AntigravityDbUsageResult>
 }
 
@@ -88,12 +90,25 @@ async function readLocalDbUsage(
 ) {
   const lastSeenRowIndexByCascadeHash = lastSeenCliDbRowIndexByCascadeHash({ cursor })
   if (options.readDbUsageEvents) {
-    return options.readDbUsageEvents({ lastSeenRowIndexByCascadeHash })
+    return options.readDbUsageEvents({
+      lastSeenRowIndexByCascadeHash,
+      maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
+    })
   }
   return readAntigravityDbUsageEvents({
     conversationDir: options.conversationDir ?? defaultConversationDir(),
-    lastSeenRowIndexByCascadeHash
+    lastSeenRowIndexByCascadeHash,
+    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
   })
+}
+
+function resolveMaxDbFiles(value: number | null | undefined) {
+  return value === undefined ? defaultMaxDbFilesForCurrentRun() : value
+}
+
+function defaultMaxDbFilesForCurrentRun() {
+  const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
+  return since === 'all' ? null : undefined
 }
 
 async function readOptionalLocalDbUsage(

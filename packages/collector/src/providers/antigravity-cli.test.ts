@@ -352,6 +352,50 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('keeps DB reads bounded unless full-history sync is requested', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-db-limit-'))
+    const previousSince = process.env.TOKENBOARD_SINCE
+    const previousDefaultSince = process.env.TOKENBOARD_DEFAULT_SINCE
+    try {
+      const maxDbFiles: Array<number | null | undefined> = []
+      const readDbUsageEvents = async (input: { maxDbFiles?: number | null }) => {
+        maxDbFiles.push(input.maxDbFiles)
+        return { cascadeIds: new Set<string>(), events: [] }
+      }
+
+      delete process.env.TOKENBOARD_SINCE
+      delete process.env.TOKENBOARD_DEFAULT_SINCE
+      await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        readDbUsageEvents
+      })
+
+      await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:03:00.000Z',
+        maxDbFiles: null,
+        readDbUsageEvents
+      })
+
+      process.env.TOKENBOARD_SINCE = 'all'
+      await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:05:00.000Z',
+        readDbUsageEvents
+      })
+
+      expect(maxDbFiles).toEqual([undefined, null, null])
+    } finally {
+      restoreEnv('TOKENBOARD_SINCE', previousSince)
+      restoreEnv('TOKENBOARD_DEFAULT_SINCE', previousDefaultSince)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('collects local conversation history even when a statusline log path is configured', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-configured-log-'))
     try {
@@ -974,6 +1018,14 @@ function baseEvent() {
 
 async function emptyDbUsage() {
   return { cascadeIds: new Set<string>(), events: [] }
+}
+
+function restoreEnv(name: string, value: string | undefined) {
+  if (value === undefined) {
+    delete process.env[name]
+    return
+  }
+  process.env[name] = value
 }
 
 function plainHash(value: string) {

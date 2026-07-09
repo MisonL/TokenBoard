@@ -9,7 +9,9 @@ import { parseAntigravityGeneratorMetadataBlobEvents } from './antigravity-histo
 const execFileAsync = promisify(execFile)
 const maxSqliteOutputBytes = 128 * 1024 * 1024
 const sqliteTimeoutMs = 15_000
+const defaultMaxDbFiles = 64
 const cascadeIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+type StatFile = (filePath: string) => Promise<{ mtimeMs: number }>
 
 export type AntigravityDbUsageResult = {
   cascadeIds: Set<string>
@@ -21,19 +23,25 @@ export async function readAntigravityDbUsageEvents(input: {
   conversationDir: string
   sqliteBin?: string
   lastSeenRowIndexByCascadeHash?: Map<string, number>
+  maxDbFiles?: number | null
+  statFile?: StatFile
 }): Promise<AntigravityDbUsageResult> {
-  const dbFiles = await listDbFiles(input.conversationDir)
+  const dbFiles = await listDbFiles(
+    input.conversationDir,
+    normalizeMaxDbFiles(input.maxDbFiles),
+    input.statFile ?? stat
+  )
   const result: AntigravityDbUsageResult = {
     cascadeIds: new Set(),
     events: [],
     lastReadRowIndexByCascade: new Map()
   }
   for (const dbFile of dbFiles) {
-    const cascadeId = basename(dbFile, '.db')
-    const fallbackCreatedAt = (await stat(dbFile)).mtime.toISOString()
+    const cascadeId = basename(dbFile.filePath, '.db')
+    const fallbackCreatedAt = new Date(dbFile.mtimeMs).toISOString()
     const beforeCount = result.events.length
     const lastSeenRowIndex = input.lastSeenRowIndexByCascadeHash?.get(hash(cascadeId))
-    for (const row of await readGeneratorMetadataRows(dbFile, {
+    for (const row of await readGeneratorMetadataRows(dbFile.filePath, {
       sqliteBin: input.sqliteBin,
       lastSeenRowIndex
     })) {
@@ -68,7 +76,11 @@ function legacyAntigravityCliConversationHash(value: string) {
     .digest('hex')
 }
 
-async function listDbFiles(conversationDir: string) {
+async function listDbFiles(
+  conversationDir: string,
+  maxDbFiles: number | null,
+  statFile: StatFile
+) {
   let entries
   try {
     entries = await readdir(conversationDir, { withFileTypes: true })
@@ -78,12 +90,29 @@ async function listDbFiles(conversationDir: string) {
     }
     throw error
   }
-  return entries
+  const candidates = (await Promise.all(entries
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .filter((name) => extname(name) === '.db' && cascadeIdPattern.test(basename(name, '.db')))
-    .sort()
-    .map((name) => join(conversationDir, name))
+    .map((name) => readDbFileCandidate(join(conversationDir, name), statFile))))
+    .filter((candidate): candidate is { filePath: string; mtimeMs: number } => candidate !== null)
+  const sorted = candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath))
+  const selected = maxDbFiles === null ? sorted : sorted.slice(0, maxDbFiles)
+  return selected
+}
+
+async function readDbFileCandidate(filePath: string, statFile: StatFile) {
+  try {
+    return { filePath, mtimeMs: (await statFile(filePath)).mtimeMs }
+  } catch {
+    return null
+  }
+}
+
+function normalizeMaxDbFiles(value: number | null | undefined) {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) return defaultMaxDbFiles
+  return Math.min(Math.max(Math.trunc(value), 1), defaultMaxDbFiles)
 }
 
 async function readGeneratorMetadataRows(
