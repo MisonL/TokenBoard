@@ -1,4 +1,4 @@
-# 设备身份与重连机制验收记录 - 2026-06-30
+# 设备身份与重连机制验收记录 - 2026-06-30, updated 2026-07-09
 
 ## 范围
 
@@ -13,7 +13,8 @@
 - Web UI 支持重新连接旧设备、token 轮换、不同层级撤销和审计日志展示。
 - client config 按 server origin 保存 profile，避免正式环境和私人环境 token 覆盖。
 - `device-link.json` 只作为本机敏感恢复状态，恢复必须显式 opt-in。
-- `device-link` claim 成功换取 reconnect pairing code 后会失效，防止重复使用；claim 轮换、pairing code 创建和审计日志写入在同一个 D1 batch 中完成。
+- `device-link` claim 换取 reconnect pairing code 后保留到 code 被消费或过期，避免响应丢失后客户端被卡死；pair 成功消费 code 时再轮换新 claim。
+- reconnect code 消费前重新确认目标设备和安装实例仍有效；已撤销设备或安装实例不能用 stale code 重新换取 token。
 - TokenBoard skill、安装提示、setup、status、uninstall、rotate-token 脚本已适配。
 - Antigravity CLI、Antigravity、Antigravity IDE 三类来源已接入采集和 Web 展示。
 
@@ -26,23 +27,35 @@
 - Antigravity prompt、completion、本地路径、原始历史 blob、原始 conversation id、原始 response id 不进入上传 payload。
 - Antigravity 费用不可用，`costUsd` 只能作为 `0` 占位，UI、日报、Webhook、公开 JSON / SVG 必须标注费用不可用。
 - Antigravity CLI status line capture 保持显式 opt-in，不包含在默认 hook `--source all` 安装中。
-- reconnect pairing code 生成不能先失效旧 claim 再写 pairing code；后续写入通过同一 batch 内的真实行状态守卫，不依赖 SQLite `changes()` 跨语句状态。
+- reconnect pairing code 生成不能先失效旧 claim 再写 pairing code；claim rotation 必须在 code 消费路径完成。
+- settings 页面生成 reconnect code 前必须校验目标设备和安装实例仍处于 active 状态。
 
 ## 代码证据
 
 - D1 migration:
   - `apps/web/db/migrations/0022_device_installations.sql`
   - `apps/web/db/migrations/0023_device_install_claim.sql`
+  - `apps/web/db/migrations/0024_upload_token_active_successor.sql`
+  - `apps/web/db/migrations/0025_antigravity_costs_unavailable.sql`
 - Web / API:
   - `apps/web/app/features/device/service.ts`
   - `apps/web/app/features/device/repository.ts`
+  - `apps/web/app/features/device/device-details-client.ts`
+  - `apps/web/app/features/device/components/install-command-commands.ts`
+  - `apps/web/app/routes/api/v1/device/pair.ts`
+  - `apps/web/app/routes/api/v1/device/pairing-codes.ts`
   - `apps/web/app/routes/api/v1/device/reconnect-pairing-codes.ts`
   - `apps/web/app/routes/settings/devices.tsx`
+  - `apps/web/app/routes/settings/devices/details.tsx`
+  - `apps/web/app/routes/settings/install.tsx`
 - Client / skill:
   - `skills/tokenboard/scripts/config.mjs`
   - `skills/tokenboard/scripts/setup.mjs`
   - `skills/tokenboard/scripts/setup-options.mjs`
   - `skills/tokenboard/scripts/device-link.mjs`
+  - `skills/tokenboard/scripts/install-collector.mjs`
+  - `skills/tokenboard/scripts/upgrade-utils.mjs`
+  - `skills/tokenboard/scripts/upgrade.mjs`
   - `skills/tokenboard/scripts/rotate-token.mjs`
   - `skills/tokenboard/scripts/uninstall.mjs`
   - `skills/tokenboard/SKILL.md`
@@ -57,22 +70,23 @@
 以下命令均在本分支本地执行通过：
 
 ```bash
-pnpm --filter @tokenboard/web exec vitest run app/features/device/service.test.ts app/features/device/repository.test.ts app/routes/api/v1/device/reconnect-pairing-codes.test.ts
+pnpm --filter @tokenboard/web exec vitest run app/features/device app/routes/api/v1/device app/routes/settings/devices.post.test.tsx app/routes/settings/devices.test.tsx app/routes/settings/devices/details.test.tsx app/routes/settings/install.post.test.tsx
+pnpm --filter @tokenboard/collector test -- src/providers/antigravity-cli.test.ts src/providers/antigravity-gui.test.ts src/providers/antigravity-gui-client.test.ts src/providers/antigravity-history-db.test.ts src/providers/antigravity-history-protobuf.test.ts src/cli-antigravity.test.ts
 node --test skills/tokenboard/scripts/*.test.mjs
 pnpm test
 pnpm typecheck
 pnpm build
-git diff --check
+git diff --check HEAD
 ```
 
 结果摘要：
 
-- Web device 相关测试：`service`、`repository`、`reconnect-pairing-codes` 最新目标验证为 3 个文件、31 个测试通过。
-- TokenBoard skill 脚本测试：185 个测试通过。
-- Workspace 测试：`packages/usage-core`、`packages/collector`、`apps/web` 全部通过。
+- Web device/API/settings 相关测试覆盖新设备 pairing、device-link reconnect、stale code 拒绝、安装命令生成、详情页和撤销路径。
+- TokenBoard skill 脚本测试：235 个测试通过。
+- Workspace 测试：`packages/usage-core` 7 个、`packages/collector` 236 个、`apps/web` 516 个测试通过。
 - Workspace typecheck：全部通过。
 - Web build：通过。
-- `git diff --check`：无 whitespace 错误。
+- `git diff --check HEAD`：无 whitespace 错误。
 
 已知 warning：
 
@@ -87,6 +101,8 @@ git diff --check
 - Cloudflare D1 migration 能在目标环境应用成功。
 - Worker 部署后 `/api/v1/me`、pairing、ingest、summary、devices 页面可用。
 - 本机和目标远程 client 可通过最新 skill 完成 setup / status / sync。
+- device-link reconnect 在响应丢失重试、pairing code 过期、设备撤销、安装实例撤销场景下返回稳定错误，不产生新 token。
+- macOS/Linux/Windows 生成安装命令在默认分支、显式分支、all-hex 分支名和 raw ref 场景下行为一致。
 - 多 server profile 切换不会覆盖其它 server credential。
 - 旧 client bearer upload token 仍可 ingest。
 - Web UI 移动端和桌面端设备页、安装页、dashboard、日报、公开 SVG / JSON 展示不溢出。

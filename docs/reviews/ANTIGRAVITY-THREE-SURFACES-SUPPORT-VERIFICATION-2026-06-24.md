@@ -1,4 +1,4 @@
-# Antigravity Support Verification - 2026-06-24
+# Antigravity Support Verification - 2026-06-24, updated 2026-07-09
 
 ## Scope
 
@@ -18,9 +18,11 @@ shared `UsageSnapshot` contract.
   `gen_metadata.data`; it may also read the optional sanitized status line
   JSONL produced by `statusLine.command`.
 - Standalone Antigravity reads `~/.gemini/antigravity/conversations` SQLite
-  metadata and uses bounded language-server metadata projection for `.pb`-only
-  histories.
-- Antigravity IDE uses the same SQLite and bounded projection strategy under
+  metadata. For `.pb`-only histories, it discovers recent candidates by file
+  mtime, then bounds language-server metadata requests with the configured
+  cascade limit and cursor state.
+- Antigravity IDE uses the same SQLite, recency discovery, bounded
+  language-server request, and cursor strategy under
   `~/.gemini/antigravity-ide/conversations`.
 - The Antigravity CLI status line hook is explicit opt-in. It is not installed
   by default `--source all` hook setup.
@@ -68,10 +70,10 @@ git diff --check
 
 Latest observed results:
 
-- `usage-core`: 6 tests passed.
-- `collector`: 218 tests passed.
-- `web`: 431 tests passed.
-- Skill scripts: 166 tests passed.
+- `usage-core`: 7 tests passed.
+- `collector`: 236 tests passed.
+- `web`: 516 tests passed.
+- Skill scripts: 235 tests passed.
 - `pnpm typecheck`: passed.
 - `pnpm build`: passed with the existing Node `DEP0205 module.register()`
   warning.
@@ -81,8 +83,9 @@ Latest observed results:
 
 Reviewed and fixed edge cases around DB/statusline dedupe, statusline-only CLI
 sync, optional unavailable products in `--source all`, real DB parse failures,
-bounded GUI/IDE language-server scanning, cursor acknowledgement, public JSON
-cost availability, and Antigravity cost-unavailable labels.
+partial DB snapshot retry, GUI/IDE recency selection before bounded
+language-server requests, cursor acknowledgement, raw HTTP body redaction,
+public JSON cost availability, and Antigravity cost-unavailable labels.
 
 Do not add time-based cursor pruning without a separate compaction design that
 can still reconstruct full source/date/model snapshots for overwrite ingest.
