@@ -663,6 +663,44 @@ describe('D1DevicePairingRepository', () => {
     expect(bindings[0]).toEqual(['inst_1', 'dev_1', 'hash:claim'])
   })
 
+  test('restores only the pairing code consumed by this attempt', async () => {
+    const { db, sqlStatements, bindings } = createRecordingDb()
+    const repository = new D1DevicePairingRepository(db)
+
+    await repository.restoreConsumedPairingCode('pair_1', '2026-06-30T10:00:00.000Z')
+
+    expect(sqlStatements[0]).toContain('UPDATE pairing_codes')
+    expect(sqlStatements[0]).toContain('consumed_at = NULL')
+    expect(sqlStatements[0]).toContain('consumed_at = ?')
+    expect(bindings[0]).toEqual(['pair_1', '2026-06-30T10:00:00.000Z'])
+  })
+
+  test('restores only the source install claim consumed by this attempt', async () => {
+    const { db, sqlStatements, bindings } = createRecordingDb()
+    const repository = new D1DevicePairingRepository(db)
+
+    await repository.restoreConsumedInstallClaim({
+      userId: 'user_1',
+      deviceId: 'dev_old',
+      sourceInstallationId: 'inst_old',
+      sourceInstallClaimHash: 'hash:old-claim',
+      consumedInstallClaimHash: 'hash:claim-consumed',
+      restoredAt: '2026-06-30T10:00:00.000Z'
+    })
+
+    expect(sqlStatements[0]).toContain('UPDATE device_installations')
+    expect(sqlStatements[0]).toContain('install_claim_hash = ?')
+    expect(sqlStatements[0]).toContain('revoked_at IS NULL')
+    expect(bindings[0]).toEqual([
+      'hash:old-claim',
+      '2026-06-30T10:00:00.000Z',
+      'inst_old',
+      'user_1',
+      'dev_old',
+      'hash:claim-consumed'
+    ])
+  })
+
   test('records device pairing audit logs', async () => {
     const { db, sqlStatements, bindings } = createRecordingDb()
     const repository = new D1DevicePairingRepository(db)

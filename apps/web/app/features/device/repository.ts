@@ -723,6 +723,46 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       .run()
     return (result.meta.changes ?? 0) > 0
   }
+
+  async restoreConsumedPairingCode(pairingCodeId: string, consumedAt: string) {
+    const result = await this.db
+      .prepare('UPDATE pairing_codes SET consumed_at = NULL WHERE id = ? AND consumed_at = ?')
+      .bind(pairingCodeId, consumedAt)
+      .run()
+    assertStatementChanged(result, 'Consumed pairing code was not restored')
+  }
+
+  async restoreConsumedInstallClaim(input: {
+    userId: string
+    deviceId: string
+    sourceInstallationId: string
+    sourceInstallClaimHash: string
+    consumedInstallClaimHash: string
+    restoredAt: string
+  }) {
+    const result = await this.db
+      .prepare(
+        `
+          UPDATE device_installations
+          SET install_claim_hash = ?, updated_at = ?
+          WHERE id = ?
+            AND user_id = ?
+            AND device_id = ?
+            AND install_claim_hash = ?
+            AND revoked_at IS NULL
+        `
+      )
+      .bind(
+        input.sourceInstallClaimHash,
+        input.restoredAt,
+        input.sourceInstallationId,
+        input.userId,
+        input.deviceId,
+        input.consumedInstallClaimHash
+      )
+      .run()
+    assertStatementChanged(result, 'Reconnect source installation was not restored')
+  }
 }
 
 function assertBatchSucceeded(results: D1Result<unknown>[], expectedStatements: number) {

@@ -76,6 +76,14 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
       calls.push(`consume:${pairingCodeId}:${consumedAt}`)
       return true
     },
+    async restoreConsumedPairingCode(pairingCodeId, consumedAt) {
+      calls.push(`restore-pair:${pairingCodeId}:${consumedAt}`)
+    },
+    async restoreConsumedInstallClaim(input) {
+      calls.push(
+        `restore-claim:${input.userId}:${input.deviceId}:${input.sourceInstallationId}:${input.sourceInstallClaimHash}:${input.consumedInstallClaimHash}:${input.restoredAt}`
+      )
+    },
     ...overrides
   }
 
@@ -375,6 +383,84 @@ describe('pairDevice', () => {
     ])
   })
 
+  test('does not consume a reconnect pairing code without a target device', async () => {
+    const { repository, calls } = createRepository({
+      async findUsablePairingCode(codeHash, now) {
+        calls.push(`find:${codeHash}:${now}`)
+        return {
+          id: 'pair_1',
+          userId: 'seed-user',
+          pairingType: 'reconnect_device',
+          targetDeviceId: null,
+          metadata: null,
+          expiresAt: '2026-04-28T10:10:00.000Z',
+          consumedAt: null
+        }
+      }
+    })
+
+    await expect(
+      pairDevice(
+        repository,
+        {
+          pairingCode: 'dev-pairing-code',
+          deviceName: 'Reinstalled Desktop',
+          platform: 'linux',
+          timezone: 'Asia/Shanghai'
+        },
+        {
+          now: () => '2026-04-28T10:00:00.000Z',
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          randomId: () => 'install-fixture',
+          randomToken: () => 'upload-token-fixture',
+          randomInstallClaim: () => 'install-claim-fixture',
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      message: 'Reconnect pairing is missing target device'
+    })
+    expect(calls).toEqual([
+      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z'
+    ])
+  })
+
+  test('restores the pairing code when new-device credential creation fails', async () => {
+    const { repository, calls } = createRepository({
+      async createUploadTokenAndDevice(input) {
+        calls.push(`create:${input.userId}:${input.deviceId}:${input.installationId}`)
+        throw new Error('insert failed')
+      }
+    })
+
+    await expect(
+      pairDevice(
+        repository,
+        {
+          pairingCode: 'dev-pairing-code',
+          deviceName: 'Desktop',
+          platform: 'darwin',
+          timezone: 'Asia/Shanghai'
+        },
+        {
+          now: () => '2026-04-28T10:00:00.000Z',
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          randomId: () => 'device-fixture',
+          randomToken: () => 'upload-token-fixture',
+          randomInstallClaim: () => 'install-claim-fixture',
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toThrow('insert failed')
+    expect(calls).toEqual([
+      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
+      'consume:pair_1:2026-04-28T10:00:00.000Z',
+      'create:seed-user:dev_device-fixture:inst_device-fixture',
+      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+    ])
+  })
+
   test('passes source claim metadata when exchanging a device-link reconnect pairing code', async () => {
     const { repository, calls } = createRepository({
       async findUsablePairingCode(codeHash, now) {
@@ -505,8 +591,167 @@ describe('pairDevice', () => {
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
       'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'install:seed-user:dev_old:inst_install-fixture'
+      'install:seed-user:dev_old:inst_install-fixture',
+      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
     ])
+  })
+
+  test('restores source claim and pairing code when device-link reconnect credentials fail', async () => {
+    const { repository, calls } = createRepository({
+      async findUsablePairingCode(codeHash, now) {
+        calls.push(`find:${codeHash}:${now}`)
+        return {
+          id: 'pair_1',
+          userId: 'seed-user',
+          pairingType: 'reconnect_device',
+          targetDeviceId: 'dev_old',
+          metadata: JSON.stringify({
+            method: 'device-link',
+            installationId: 'inst_old',
+            installClaimHash: 'hash:old-claim'
+          }),
+          expiresAt: '2026-04-28T10:10:00.000Z',
+          consumedAt: null
+        }
+      },
+      async createUploadTokenAndInstallation(input) {
+        calls.push(
+          `install:${input.userId}:${input.deviceId}:${input.installationId}:${input.sourceInstallationId}:${input.sourceInstallClaimHash}:${input.consumedInstallClaimHash}`
+        )
+        throw new Error('Reconnect target is no longer active')
+      }
+    })
+
+    await expect(
+      pairDevice(
+        repository,
+        {
+          pairingCode: 'dev-pairing-code',
+          deviceName: 'Reinstalled Desktop',
+          platform: 'linux',
+          timezone: 'Asia/Shanghai'
+        },
+        {
+          now: () => '2026-04-28T10:00:00.000Z',
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          randomId: () => 'install-fixture',
+          randomToken: () => 'upload-token-fixture',
+          randomInstallClaim: createTokenSequence(['install-claim-fixture', 'claim-consumed-fixture']),
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Device has no active installation'
+    })
+    expect(calls).toEqual([
+      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
+      'consume:pair_1:2026-04-28T10:00:00.000Z',
+      'install:seed-user:dev_old:inst_install-fixture:inst_old:hash:old-claim:hash:claim-consumed-fixture',
+      'restore-claim:seed-user:dev_old:inst_old:hash:old-claim:hash:claim-consumed-fixture:2026-04-28T10:00:00.000Z',
+      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+    ])
+  })
+
+  test('skips source claim restore when the source claim was already changed', async () => {
+    const { repository, calls } = createRepository({
+      async findUsablePairingCode(codeHash, now) {
+        calls.push(`find:${codeHash}:${now}`)
+        return {
+          id: 'pair_1',
+          userId: 'seed-user',
+          pairingType: 'reconnect_device',
+          targetDeviceId: 'dev_old',
+          metadata: JSON.stringify({
+            method: 'device-link',
+            installationId: 'inst_old',
+            installClaimHash: 'hash:old-claim'
+          }),
+          expiresAt: '2026-04-28T10:10:00.000Z',
+          consumedAt: null
+        }
+      },
+      async createUploadTokenAndInstallation(input) {
+        calls.push(
+          `install:${input.userId}:${input.deviceId}:${input.installationId}:${input.sourceInstallationId}:${input.sourceInstallClaimHash}:${input.consumedInstallClaimHash}`
+        )
+        throw new Error('Reconnect source installation is no longer current')
+      }
+    })
+
+    await expect(
+      pairDevice(
+        repository,
+        {
+          pairingCode: 'dev-pairing-code',
+          deviceName: 'Reinstalled Desktop',
+          platform: 'linux',
+          timezone: 'Asia/Shanghai'
+        },
+        {
+          now: () => '2026-04-28T10:00:00.000Z',
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          randomId: () => 'install-fixture',
+          randomToken: () => 'upload-token-fixture',
+          randomInstallClaim: createTokenSequence(['install-claim-fixture', 'claim-consumed-fixture']),
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Device has no active installation'
+    })
+    expect(calls).toEqual([
+      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
+      'consume:pair_1:2026-04-28T10:00:00.000Z',
+      'install:seed-user:dev_old:inst_install-fixture:inst_old:hash:old-claim:hash:claim-consumed-fixture',
+      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+    ])
+  })
+
+  test('preserves the original credential error when pairing restore fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { repository, calls } = createRepository({
+      async createUploadTokenAndDevice(input) {
+        calls.push(`create:${input.userId}:${input.deviceId}:${input.installationId}`)
+        throw new Error('insert failed')
+      },
+      async restoreConsumedPairingCode(pairingCodeId, consumedAt) {
+        calls.push(`restore-pair:${pairingCodeId}:${consumedAt}`)
+        throw new Error('restore failed')
+      }
+    })
+
+    try {
+      await expect(
+        pairDevice(
+          repository,
+          {
+            pairingCode: 'dev-pairing-code',
+            deviceName: 'Desktop',
+            platform: 'darwin',
+            timezone: 'Asia/Shanghai'
+          },
+          {
+            now: () => '2026-04-28T10:00:00.000Z',
+            endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+            randomId: () => 'device-fixture',
+            randomToken: () => 'upload-token-fixture',
+            randomInstallClaim: () => 'install-claim-fixture',
+            hash: async (value) => `hash:${value}`
+          }
+        )
+      ).rejects.toThrow('insert failed')
+      expect(calls).toEqual([
+        'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
+        'consume:pair_1:2026-04-28T10:00:00.000Z',
+        'create:seed-user:dev_device-fixture:inst_device-fixture',
+        'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+      ])
+      expect(consoleError).toHaveBeenCalledWith('TokenBoard pairing code restore failed: restore failed')
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   test('rejects an invalid or expired pairing code', async () => {
@@ -738,6 +983,32 @@ describe('device management', () => {
     expect(sqlStatements[0]).toContain('json_valid(metadata)')
     expect(sqlStatements[0]).toContain("json_extract(metadata, '$.deviceId')")
     expect(bindings[0]).toEqual(['user_1', 'dev_1', 'dev_1', 5])
+  })
+
+  test('caps requested device audit log limits', async () => {
+    const bindings: unknown[][] = []
+    const db = {
+      prepare() {
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async all() {
+                return { results: [] }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await listDeviceAuditLogs(db, {
+      userId: 'user_1',
+      deviceId: 'dev_1',
+      limit: 10000
+    })
+
+    expect(bindings[0]).toEqual(['user_1', 'dev_1', 'dev_1', 100])
   })
 
   test('lists latest audit logs for many devices with one query', async () => {

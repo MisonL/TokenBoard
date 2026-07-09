@@ -5,6 +5,9 @@ import type { DevicePairRequest } from './schema'
 
 export type PairingType = 'new_device' | 'reconnect_device'
 
+const DEFAULT_DEVICE_AUDIT_LOG_LIMIT = 20
+const MAX_DEVICE_AUDIT_LOG_LIMIT = 100
+
 export type PairingCodeRecord = {
   id: string
   userId: string
@@ -89,6 +92,15 @@ export type DevicePairingRepository = {
     createdAt: string
   }): Promise<void>
   consumePairingCode(pairingCodeId: string, consumedAt: string): Promise<boolean>
+  restoreConsumedPairingCode(pairingCodeId: string, consumedAt: string): Promise<void>
+  restoreConsumedInstallClaim(input: {
+    userId: string
+    deviceId: string
+    sourceInstallationId: string
+    sourceInstallClaimHash: string
+    consumedInstallClaimHash: string
+    restoredAt: string
+  }): Promise<void>
 }
 
 export type DeviceInstallationClaimRecord = {
@@ -355,10 +367,16 @@ export async function listDeviceAuditLogs(
         LIMIT ?
       `
     )
-    .bind(input.userId, input.deviceId, input.deviceId, input.limit ?? 20)
+    .bind(input.userId, input.deviceId, input.deviceId, normalizeDeviceAuditLogLimit(input.limit))
     .all<UserDeviceAuditLog>()
 
   return rows.results ?? []
+}
+
+function normalizeDeviceAuditLogLimit(limit: number | undefined) {
+  if (typeof limit !== 'number' || !Number.isFinite(limit)) return DEFAULT_DEVICE_AUDIT_LOG_LIMIT
+  const normalized = Math.trunc(limit)
+  return Math.min(Math.max(normalized, 1), MAX_DEVICE_AUDIT_LOG_LIMIT)
 }
 
 export async function listLatestDeviceAuditLogs(
@@ -1434,6 +1452,48 @@ function isInactiveReconnectTargetError(error: unknown) {
   )
 }
 
+function isUnchangedSourceClaimError(error: unknown) {
+  return error instanceof Error && error.message === 'Reconnect source installation is no longer current'
+}
+
+async function restorePairingAttempt(input: {
+  repository: DevicePairingRepository
+  pairingCodeId: string
+  consumedAt: string
+  shouldRestoreInstallClaim: boolean
+  userId: string
+  deviceId: string
+  sourceInstallationId?: string | null
+  sourceInstallClaimHash?: string | null
+  consumedInstallClaimHash?: string | null
+}) {
+  if (
+    input.shouldRestoreInstallClaim &&
+    input.sourceInstallationId &&
+    input.sourceInstallClaimHash &&
+    input.consumedInstallClaimHash
+  ) {
+    try {
+      await input.repository.restoreConsumedInstallClaim({
+        userId: input.userId,
+        deviceId: input.deviceId,
+        sourceInstallationId: input.sourceInstallationId,
+        sourceInstallClaimHash: input.sourceInstallClaimHash,
+        consumedInstallClaimHash: input.consumedInstallClaimHash,
+        restoredAt: input.consumedAt
+      })
+    } catch (error) {
+      console.error(`TokenBoard install claim restore failed: ${errorMessage(error)}`)
+    }
+  }
+
+  try {
+    await input.repository.restoreConsumedPairingCode(input.pairingCodeId, input.consumedAt)
+  } catch (error) {
+    console.error(`TokenBoard pairing code restore failed: ${errorMessage(error)}`)
+  }
+}
+
 export async function pairDevice(
   repository: DevicePairingRepository,
   request: DevicePairRequest,
@@ -1457,6 +1517,10 @@ export async function pairDevice(
       : null
   const id = deps.randomId()
   const deviceId = pairingCode.pairingType === 'reconnect_device' ? pairingCode.targetDeviceId : `dev_${id}`
+  if (!deviceId) {
+    throw new ApiError('BAD_REQUEST', 'Reconnect pairing is missing target device', 400)
+  }
+
   const uploadTokenId = `ut_${id}`
   const installationId = `inst_${id}`
   const uploadToken = deps.randomToken()
@@ -1472,10 +1536,6 @@ export async function pairDevice(
   const consumed = await repository.consumePairingCode(pairingCode.id, now)
   if (!consumed) {
     throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
-  }
-
-  if (!deviceId) {
-    throw new ApiError('BAD_REQUEST', 'Reconnect pairing is missing target device', 400)
   }
 
   const deviceName = request.deviceName ?? 'TokenBoard device'
@@ -1498,17 +1558,31 @@ export async function pairDevice(
     consumedInstallClaimHash
   }
 
-  if (pairingCode.pairingType === 'reconnect_device') {
-    try {
+  try {
+    if (pairingCode.pairingType === 'reconnect_device') {
       await repository.createUploadTokenAndInstallation(input)
-    } catch (error) {
+    } else {
+      await repository.createUploadTokenAndDevice(input)
+    }
+  } catch (error) {
+    await restorePairingAttempt({
+      repository,
+      pairingCodeId: pairingCode.id,
+      consumedAt: now,
+      shouldRestoreInstallClaim: shouldConsumeSourceClaim && !isUnchangedSourceClaimError(error),
+      userId: pairingCode.userId,
+      deviceId,
+      sourceInstallationId: reconnectMetadata?.sourceInstallationId ?? null,
+      sourceInstallClaimHash: reconnectMetadata?.sourceInstallClaimHash ?? null,
+      consumedInstallClaimHash
+    })
+
+    if (pairingCode.pairingType === 'reconnect_device') {
       if (isInactiveReconnectTargetError(error)) {
         throw new ApiError('NOT_FOUND', 'Device has no active installation', 404)
       }
-      throw error
     }
-  } else {
-    await repository.createUploadTokenAndDevice(input)
+    throw error
   }
 
   return {
