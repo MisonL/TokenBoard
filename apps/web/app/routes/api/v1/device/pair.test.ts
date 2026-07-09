@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
-import { createReconnectPairingCodeFromClaim } from '../../../../features/device/service'
+import { pairDevice } from '../../../../features/device/service'
 import {
   clientIpRateLimitSubject,
   enforceRateLimit
 } from '../../../../lib/rate-limit'
-import { POST } from './reconnect-pairing-codes'
+import { POST } from './pair'
 
 vi.mock('../../../../features/device/repository', () => ({
   D1DevicePairingRepository: vi.fn(function D1DevicePairingRepository() {
@@ -13,8 +13,8 @@ vi.mock('../../../../features/device/repository', () => ({
 }))
 
 vi.mock('../../../../features/device/service', () => ({
-  createPairingCodeDeps: vi.fn(() => ({ kind: 'deps' })),
-  createReconnectPairingCodeFromClaim: vi.fn()
+  createPairDeviceDeps: vi.fn((endpoint: string) => ({ endpoint })),
+  pairDevice: vi.fn()
 }))
 
 vi.mock('../../../../lib/rate-limit', () => ({
@@ -24,65 +24,69 @@ vi.mock('../../../../lib/rate-limit', () => ({
   })),
   enforceRateLimit: vi.fn(),
   writeRateLimitPolicies: {
-    pairingCode: { id: 'pairing-code', maxRequests: 20, windowSeconds: 60 }
+    devicePair: { id: 'device-pair', maxRequests: 20, windowSeconds: 60 }
   }
 }))
 
-const mockedCreateReconnectPairingCodeFromClaim = vi.mocked(createReconnectPairingCodeFromClaim)
+const mockedPairDevice = vi.mocked(pairDevice)
 const mockedClientIpRateLimitSubject = vi.mocked(clientIpRateLimitSubject)
 const mockedEnforceRateLimit = vi.mocked(enforceRateLimit)
 
-describe('reconnect pairing code route', () => {
+describe('device pair route', () => {
   beforeEach(() => {
-    mockedCreateReconnectPairingCodeFromClaim.mockReset()
+    mockedPairDevice.mockReset()
     mockedClientIpRateLimitSubject.mockClear()
     mockedEnforceRateLimit.mockReset()
   })
 
-  test('exchanges a device-link claim for a reconnect pairing code without web session auth', async () => {
-    const request = new Request('https://tokenboard.example/api/v1/device/reconnect-pairing-codes', {
+  test('prevents caching one-time upload token and install claim responses', async () => {
+    const request = new Request('https://tokenboard.example/api/v1/device/pair', {
       method: 'POST',
       headers: { 'cf-connecting-ip': '203.0.113.10' }
     })
     const context = {
-      env: { DB: {}, BETTER_AUTH_URL: 'https://tokenboard.example' },
+      env: { DB: {} },
       req: {
         raw: request,
         url: request.url,
         json: vi.fn(async () => ({
-          deviceId: 'dev_1',
-          installationId: 'inst_1',
-          installClaim: 'claim-secret-fixture'
+          pairingCode: 'pair_123',
+          deviceName: 'MacBook Pro',
+          platform: 'darwin',
+          timezone: 'Asia/Shanghai'
         }))
       },
       header: vi.fn(),
       json: vi.fn((body: unknown, status = 200) => Response.json(body, { status }))
     }
-    mockedCreateReconnectPairingCodeFromClaim.mockResolvedValue({
-      pairingCode: 'pair_123',
-      expiresAt: '2026-06-30T10:30:00.000Z'
-    })
+    mockedPairDevice.mockResolvedValue({
+      uploadToken: 'tb_upload_secret',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'tb_install_secret',
+      endpoint: 'https://tokenboard.example/api/v1/ingest'
+    } as never)
 
     const response = await POST[0](context as never, async () => undefined) as Response
     const body = await response.json()
 
     expect(response.status).toBe(200)
     expect(context.header).toHaveBeenCalledWith('Cache-Control', 'no-store')
-    expect(body).toEqual({
-      pairingCode: 'pair_123',
-      expiresAt: '2026-06-30T10:30:00.000Z',
-      baseUrl: 'https://tokenboard.example'
+    expect(body).toMatchObject({
+      uploadToken: 'tb_upload_secret',
+      installClaim: 'tb_install_secret'
     })
     expect(mockedClientIpRateLimitSubject).toHaveBeenCalledWith(request.headers)
     expect(mockedEnforceRateLimit).toHaveBeenCalled()
-    expect(mockedCreateReconnectPairingCodeFromClaim).toHaveBeenCalledWith(
+    expect(mockedPairDevice).toHaveBeenCalledWith(
       { kind: 'repository' },
       {
-        deviceId: 'dev_1',
-        installationId: 'inst_1',
-        installClaim: 'claim-secret-fixture'
+        pairingCode: 'pair_123',
+        deviceName: 'MacBook Pro',
+        platform: 'darwin',
+        timezone: 'Asia/Shanghai'
       },
-      { kind: 'deps' }
+      { endpoint: 'https://tokenboard.example/api/v1/ingest' }
     )
   })
 })

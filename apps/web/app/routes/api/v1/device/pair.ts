@@ -19,6 +19,7 @@ export const POST = createRoute(async (c) => {
     const repository = new D1DevicePairingRepository(c.env.DB)
     const endpoint = new URL('/api/v1/ingest', c.req.url).toString()
     const result = await pairDevice(repository, request, createPairDeviceDeps(endpoint))
+    c.header('Cache-Control', 'no-store')
     return c.json(result)
   } catch (error) {
     return jsonError(c, error)

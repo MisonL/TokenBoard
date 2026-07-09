@@ -10,6 +10,7 @@ export type PairingCodeRecord = {
   userId: string
   pairingType: PairingType
   targetDeviceId: string | null
+  metadata: string | null
   expiresAt: string
   consumedAt: string | null
 }
@@ -33,7 +34,6 @@ export type DevicePairingRepository = {
     deviceId: string
     installationId: string
     previousInstallClaimHash: string
-    nextInstallClaimHash: string
     pairingMetadata?: string | null
     auditLogId: string
     auditMetadata?: string | null
@@ -41,6 +41,7 @@ export type DevicePairingRepository = {
     createdAt: string
   }): Promise<void>
   ensureDeviceOwnedByUser(userId: string, deviceId: string): Promise<boolean>
+  hasActiveInstallationForDevice(userId: string, deviceId: string): Promise<boolean>
   findInstallationByClaim(input: {
     deviceId: string
     installationId: string
@@ -55,6 +56,9 @@ export type DevicePairingRepository = {
     userId: string
     deviceName: string
     platform: string
+    auditLogId: string
+    auditAction: string
+    auditMetadata?: string | null
     createdAt: string
   }): Promise<void>
   createUploadTokenAndInstallation(input: {
@@ -66,7 +70,13 @@ export type DevicePairingRepository = {
     userId: string
     deviceName: string
     platform: string
+    auditLogId: string
+    auditAction: string
+    auditMetadata?: string | null
     createdAt: string
+    sourceInstallationId?: string | null
+    sourceInstallClaimHash?: string | null
+    consumedInstallClaimHash?: string | null
   }): Promise<void>
   createAuditLog(input: {
     auditLogId: string
@@ -93,6 +103,7 @@ export type PairDeviceDeps = {
   endpoint: string
   randomId: () => string
   randomToken: () => string
+  randomInstallClaim: () => string
   hash: (value: string) => Promise<string>
 }
 
@@ -163,6 +174,10 @@ type InstallationRow = Omit<UserDeviceInstallation, 'activeTokenCount'> & {
 }
 
 type UploadTokenRow = UserDeviceUploadToken
+type LatestDeviceAuditLogRow = UserDeviceAuditLog & { deviceId: string }
+
+const maxD1BindParameters = 100
+const maxLatestAuditLogDeviceIdsPerQuery = maxD1BindParameters - 1
 
 export function createPairDeviceDeps(endpoint: string): PairDeviceDeps {
   return {
@@ -170,6 +185,7 @@ export function createPairDeviceDeps(endpoint: string): PairDeviceDeps {
     endpoint,
     randomId: () => randomId('id'),
     randomToken: () => randomToken('tb_upload'),
+    randomInstallClaim: () => randomToken('tb_install'),
     hash: sha256Hex
   }
 }
@@ -341,6 +357,85 @@ export async function listDeviceAuditLogs(
     )
     .bind(input.userId, input.deviceId, input.deviceId, input.limit ?? 20)
     .all<UserDeviceAuditLog>()
+
+  return rows.results ?? []
+}
+
+export async function listLatestDeviceAuditLogs(
+  db: D1Database,
+  input: {
+    userId: string
+    deviceIds: string[]
+  }
+) {
+  const deviceIds = [...new Set(input.deviceIds)].filter(Boolean)
+  if (deviceIds.length === 0) return new Map<string, UserDeviceAuditLog[]>()
+
+  const logsByDevice = new Map<string, UserDeviceAuditLog[]>()
+  for (let index = 0; index < deviceIds.length; index += maxLatestAuditLogDeviceIdsPerQuery) {
+    const chunk = deviceIds.slice(index, index + maxLatestAuditLogDeviceIdsPerQuery)
+    const rows = await queryLatestDeviceAuditLogs(db, input.userId, chunk)
+    for (const row of rows) {
+      logsByDevice.set(row.deviceId, [{
+        id: row.id,
+        action: row.action,
+        targetType: row.targetType,
+        targetId: row.targetId,
+        metadata: row.metadata,
+        createdAt: row.createdAt
+      }])
+    }
+  }
+  return logsByDevice
+}
+
+async function queryLatestDeviceAuditLogs(
+  db: D1Database,
+  userId: string,
+  deviceIds: string[]
+): Promise<LatestDeviceAuditLogRow[]> {
+  const requestedDeviceRows = deviceIds.map(() => '(?)').join(', ')
+  const rows = await db
+    .prepare(
+      `
+        WITH requested(device_id) AS (
+          VALUES ${requestedDeviceRows}
+        )
+        SELECT
+          deviceId,
+          id,
+          action,
+          targetType,
+          targetId,
+          metadata,
+          createdAt
+        FROM (
+          SELECT
+            requested.device_id as deviceId,
+            id,
+            action,
+            target_type as targetType,
+            target_id as targetId,
+            metadata,
+            created_at as createdAt,
+            ROW_NUMBER() OVER (
+              PARTITION BY requested.device_id
+              ORDER BY created_at DESC
+            ) as rowNumber
+          FROM audit_logs
+          JOIN requested
+            ON target_id = requested.device_id
+            OR CASE
+              WHEN json_valid(metadata) THEN json_extract(metadata, '$.deviceId')
+              ELSE NULL
+            END = requested.device_id
+          WHERE user_id = ?
+        )
+        WHERE rowNumber = 1
+      `
+    )
+    .bind(...deviceIds, userId)
+    .all<LatestDeviceAuditLogRow>()
 
   return rows.results ?? []
 }
@@ -552,21 +647,24 @@ export async function rotateUploadToken(
   const installClaim = installationId ? deps.randomInstallClaim() : null
   const uploadTokenHash = await deps.hash(uploadToken)
   const installClaimHash = installClaim ? await deps.hash(installClaim) : null
+  const auditId = deps.randomAuditId()
   const statements = [
     createRotatedUploadTokenInsert(db, {
       userId: input.userId,
       previousTokenId: input.uploadTokenId,
       uploadTokenId,
       uploadTokenHash,
-      existing,
       now
     }),
-    createUploadTokenRevokeStatement(db, input.userId, input.uploadTokenId, now)
+    createUploadTokenRevokeStatement(db, input.userId, input.uploadTokenId, uploadTokenId, now)
   ]
   if (installationId && installClaimHash) {
     statements.push(createInstallClaimRotateStatement(db, {
       userId: input.userId,
       installationId,
+      previousInstallClaimHash: existing.installClaimHash,
+      previousTokenId: input.uploadTokenId,
+      uploadTokenId,
       installClaimHash,
       now
     }))
@@ -577,13 +675,31 @@ export async function rotateUploadToken(
       previousTokenId: input.uploadTokenId,
       uploadTokenId,
       existing,
-      auditId: deps.randomAuditId(),
+      installClaimHash,
+      auditId,
       now
     })
   )
-  const results = await db.batch(statements)
-  assertDeviceBatchSucceeded(results)
-  assertRotatedTokenUpdates(results, Boolean(installationId))
+  let results: D1Result<unknown>[] | undefined
+  try {
+    results = await db.batch(statements)
+    assertDeviceBatchSucceeded(results)
+    assertRotatedTokenUpdates(results, Boolean(installationId))
+  } catch (error) {
+    if (!results || mayHaveChanged(results[0])) {
+      await cleanupFailedRotationAfterError(db, {
+        userId: input.userId,
+        uploadTokenId,
+        previousTokenId: input.uploadTokenId,
+        installationId,
+        previousInstallClaimHash: existing.installClaimHash,
+        nextInstallClaimHash: installClaimHash,
+        auditId,
+        now
+      })
+    }
+    throw error
+  }
 
   return {
     uploadTokenId,
@@ -594,10 +710,22 @@ export async function rotateUploadToken(
   }
 }
 
+async function cleanupFailedRotationAfterError(
+  db: D1Database,
+  input: Parameters<typeof cleanupFailedRotation>[1]
+) {
+  try {
+    await cleanupFailedRotation(db, input)
+  } catch (cleanupError) {
+    console.error(`TokenBoard token rotation cleanup failed: ${errorMessage(cleanupError)}`)
+  }
+}
+
 type ExistingUploadToken = {
   name: string
   deviceId: string | null
   installationId: string | null
+  installClaimHash: string | null
   revokedAt: string | null
 }
 
@@ -623,14 +751,13 @@ function createRotatedUploadTokenInsert(
     previousTokenId: string
     uploadTokenId: string
     uploadTokenHash: string
-    existing: ExistingUploadToken
     now: string
   }
 ) {
   return db
     .prepare(
       `
-        INSERT INTO upload_tokens (
+        INSERT OR IGNORE INTO upload_tokens (
           id,
           user_id,
           name,
@@ -640,18 +767,44 @@ function createRotatedUploadTokenInsert(
           supersedes_token_id,
           created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        SELECT
+          ?,
+          source.user_id,
+          source.name,
+          ?,
+          source.device_id,
+          source.installation_id,
+          source.id,
+          ?
+        FROM upload_tokens source
+        LEFT JOIN device_installations installation
+          ON installation.id = source.installation_id
+          AND installation.user_id = source.user_id
+        WHERE source.user_id = ?
+          AND source.id = ?
+          AND source.revoked_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM upload_tokens successor
+            WHERE successor.user_id = source.user_id
+              AND successor.supersedes_token_id = source.id
+              AND successor.revoked_at IS NULL
+          )
+          AND (
+            source.installation_id IS NULL
+            OR (
+              installation.id IS NOT NULL
+              AND installation.revoked_at IS NULL
+            )
+          )
       `
     )
     .bind(
       input.uploadTokenId,
-      input.userId,
-      input.existing.name,
       input.uploadTokenHash,
-      input.existing.deviceId,
-      input.existing.installationId,
-      input.previousTokenId,
-      input.now
+      input.now,
+      input.userId,
+      input.previousTokenId
     )
 }
 
@@ -659,6 +812,7 @@ function createUploadTokenRevokeStatement(
   db: D1Database,
   userId: string,
   uploadTokenId: string,
+  rotatedTokenId: string,
   now: string
 ) {
   return db
@@ -669,9 +823,17 @@ function createUploadTokenRevokeStatement(
         WHERE user_id = ?
           AND id = ?
           AND revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM upload_tokens replacement
+            WHERE replacement.user_id = upload_tokens.user_id
+              AND replacement.id = ?
+              AND replacement.supersedes_token_id = upload_tokens.id
+              AND replacement.revoked_at IS NULL
+          )
       `
     )
-    .bind(now, userId, uploadTokenId)
+    .bind(now, userId, uploadTokenId, rotatedTokenId)
 }
 
 function createInstallClaimRotateStatement(
@@ -679,6 +841,9 @@ function createInstallClaimRotateStatement(
   input: {
     userId: string
     installationId: string
+    previousInstallClaimHash: string | null
+    previousTokenId: string
+    uploadTokenId: string
     installClaimHash: string
     now: string
   }
@@ -691,9 +856,33 @@ function createInstallClaimRotateStatement(
         WHERE user_id = ?
           AND id = ?
           AND revoked_at IS NULL
+          AND ((? IS NULL AND install_claim_hash IS NULL) OR install_claim_hash = ?)
+          AND EXISTS (
+            SELECT 1
+            FROM upload_tokens replacement
+            JOIN upload_tokens previous
+              ON previous.id = replacement.supersedes_token_id
+              AND previous.user_id = replacement.user_id
+            WHERE replacement.user_id = device_installations.user_id
+              AND replacement.id = ?
+              AND replacement.supersedes_token_id = ?
+              AND replacement.installation_id = device_installations.id
+              AND replacement.revoked_at IS NULL
+              AND previous.revoked_at = ?
+          )
       `
     )
-    .bind(input.installClaimHash, input.now, input.userId, input.installationId)
+    .bind(
+      input.installClaimHash,
+      input.now,
+      input.userId,
+      input.installationId,
+      input.previousInstallClaimHash,
+      input.previousInstallClaimHash,
+      input.uploadTokenId,
+      input.previousTokenId,
+      input.now
+    )
 }
 
 function createTokenRotateAuditStatement(
@@ -703,6 +892,7 @@ function createTokenRotateAuditStatement(
     previousTokenId: string
     uploadTokenId: string
     existing: ExistingUploadToken
+    installClaimHash: string | null
     auditId: string
     now: string
   }
@@ -720,7 +910,30 @@ function createTokenRotateAuditStatement(
           metadata,
           created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1
+          FROM upload_tokens replacement
+          JOIN upload_tokens previous
+            ON previous.id = replacement.supersedes_token_id
+            AND previous.user_id = replacement.user_id
+          WHERE replacement.user_id = ?
+            AND replacement.id = ?
+            AND replacement.supersedes_token_id = ?
+            AND replacement.revoked_at IS NULL
+            AND previous.revoked_at = ?
+            AND (
+              ? IS NULL
+              OR EXISTS (
+                SELECT 1
+                FROM device_installations installation
+                WHERE installation.user_id = replacement.user_id
+                  AND installation.id = replacement.installation_id
+                  AND installation.install_claim_hash = ?
+                  AND installation.revoked_at IS NULL
+              )
+            )
+        )
       `
     )
     .bind(
@@ -735,7 +948,13 @@ function createTokenRotateAuditStatement(
         deviceId: input.existing.deviceId,
         installationId: input.existing.installationId
       }),
-      input.now
+      input.now,
+      input.userId,
+      input.uploadTokenId,
+      input.previousTokenId,
+      input.now,
+      input.installClaimHash,
+      input.installClaimHash
     )
 }
 
@@ -751,17 +970,32 @@ function assertDeviceBatchSucceeded(results: D1Result<unknown>[]) {
 }
 
 function assertRotatedTokenUpdates(results: D1Result<unknown>[], rotatedInstallClaim: boolean) {
-  assertChangedResult(results[1], 'Upload token is no longer current')
+  assertChangedResult(results[0], 'Upload token already has an active successor')
+  assertChangedResult(results[1], 'Previous upload token is no longer current')
   if (rotatedInstallClaim) {
     assertChangedResult(results[2], 'Installation is no longer current')
   }
+  const auditResultIndex = rotatedInstallClaim ? 3 : 2
+  assertChangedResult(results[auditResultIndex], 'Upload token rotation was not recorded')
 }
 
 function assertChangedResult(result: D1Result<unknown> | undefined, message: string) {
-  if (result?.meta?.changes === undefined) return
+  if (result?.meta?.changes === undefined) {
+    throw new Error(`D1 batch statement did not report changes: ${message}`)
+  }
   const changes = Number(result.meta.changes)
   if (!Number.isFinite(changes) || changes > 0) return
   throw new ApiError('NOT_FOUND', message, 404)
+}
+
+function mayHaveChanged(result: D1Result<unknown> | undefined) {
+  if (result?.meta?.changes === undefined) return true
+  const changes = Number(result.meta.changes)
+  return !Number.isFinite(changes) || changes > 0
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 async function findUploadTokenForUser(db: D1Database, userId: string, uploadTokenId: string) {
@@ -770,17 +1004,174 @@ async function findUploadTokenForUser(db: D1Database, userId: string, uploadToke
       `
         SELECT
           name,
-          device_id as deviceId,
-          installation_id as installationId,
-          revoked_at as revokedAt
+          upload_tokens.device_id as deviceId,
+          upload_tokens.installation_id as installationId,
+          device_installations.install_claim_hash as installClaimHash,
+          upload_tokens.revoked_at as revokedAt
         FROM upload_tokens
-        WHERE id = ?
-          AND user_id = ?
+        LEFT JOIN device_installations
+          ON device_installations.id = upload_tokens.installation_id
+          AND device_installations.user_id = upload_tokens.user_id
+        WHERE upload_tokens.id = ?
+          AND upload_tokens.user_id = ?
         LIMIT 1
       `
     )
     .bind(uploadTokenId, userId)
     .first<ExistingUploadToken>()
+}
+
+async function cleanupFailedRotation(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    previousTokenId: string
+    installationId: string | null
+    previousInstallClaimHash: string | null
+    nextInstallClaimHash: string | null
+    auditId: string
+    now: string
+  }
+) {
+  const statements = [
+    createRevokeFailedRotatedUploadTokenStatement(db, input)
+  ]
+  if (input.installationId && input.nextInstallClaimHash) {
+    statements.push(createRestoreFailedInstallClaimStatement(db, input))
+  }
+  statements.push(
+    createRestoreFailedPreviousUploadTokenStatement(db, input),
+    createDeleteFailedRotationAuditStatement(db, input)
+  )
+
+  const results = await db.batch(statements)
+  assertDeviceBatchSucceeded(results)
+}
+
+function createRestoreFailedInstallClaimStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    previousTokenId: string
+    installationId: string | null
+    previousInstallClaimHash: string | null
+    nextInstallClaimHash: string | null
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        UPDATE device_installations
+        SET install_claim_hash = ?, updated_at = ?
+        WHERE user_id = ?
+          AND id = ?
+          AND install_claim_hash = ?
+          AND revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM upload_tokens replacement
+            WHERE replacement.user_id = device_installations.user_id
+              AND replacement.id = ?
+              AND replacement.supersedes_token_id = ?
+          )
+      `
+    )
+    .bind(
+      input.previousInstallClaimHash,
+      input.now,
+      input.userId,
+      input.installationId,
+      input.nextInstallClaimHash,
+      input.uploadTokenId,
+      input.previousTokenId
+    )
+}
+
+function createRevokeFailedRotatedUploadTokenStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    previousTokenId: string
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        UPDATE upload_tokens
+        SET revoked_at = ?
+        WHERE user_id = ?
+          AND id = ?
+          AND supersedes_token_id = ?
+          AND revoked_at IS NULL
+      `
+    )
+    .bind(input.now, input.userId, input.uploadTokenId, input.previousTokenId)
+}
+
+function createRestoreFailedPreviousUploadTokenStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    previousTokenId: string
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        UPDATE upload_tokens
+        SET revoked_at = NULL
+        WHERE user_id = ?
+          AND id = ?
+          AND revoked_at = ?
+          AND EXISTS (
+            SELECT 1
+            FROM upload_tokens replacement
+            WHERE replacement.user_id = upload_tokens.user_id
+              AND replacement.id = ?
+              AND replacement.supersedes_token_id = upload_tokens.id
+              AND replacement.revoked_at = ?
+          )
+      `
+    )
+    .bind(input.userId, input.previousTokenId, input.now, input.uploadTokenId, input.now)
+}
+
+function createDeleteFailedRotationAuditStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    auditId: string
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        DELETE FROM audit_logs
+        WHERE id = ?
+          AND user_id = ?
+          AND action = ?
+          AND target_type = ?
+          AND target_id = ?
+          AND created_at = ?
+      `
+    )
+    .bind(
+      input.auditId,
+      input.userId,
+      'token.rotate',
+      'upload_token',
+      input.uploadTokenId,
+      input.now
+    )
 }
 
 async function createDeviceAuditLog(
@@ -872,18 +1263,29 @@ export async function createPairingCode(
     if (!ownsTarget) {
       throw new ApiError('NOT_FOUND', 'Device not found', 404)
     }
+    const hasActiveInstallation = await repository.hasActiveInstallationForDevice(userId, targetDeviceId)
+    if (!hasActiveInstallation) {
+      throw new ApiError('NOT_FOUND', 'Device has no active installation', 404)
+    }
   }
 
-  await repository.createPairingCode({
-    pairingCodeId: deps.randomId(),
-    userId,
-    codeHash,
-    pairingType,
-    targetDeviceId,
-    metadata: options.metadata ?? null,
-    expiresAt,
-    createdAt
-  })
+  try {
+    await repository.createPairingCode({
+      pairingCodeId: deps.randomId(),
+      userId,
+      codeHash,
+      pairingType,
+      targetDeviceId,
+      metadata: options.metadata ?? null,
+      expiresAt,
+      createdAt
+    })
+  } catch (error) {
+    if (isNoActiveInstallationError(error)) {
+      throw new ApiError('NOT_FOUND', 'Device has no active installation', 404)
+    }
+    throw error
+  }
 
   return {
     pairingCode,
@@ -914,9 +1316,7 @@ export async function createReconnectPairingCodeFromClaim(
 
   const createdAt = deps.now().toISOString()
   const expiresAt = new Date(new Date(createdAt).getTime() + ttlMinutes * 60 * 1000).toISOString()
-  const nextInstallClaim = deps.randomToken()
   const pairingCode = deps.randomToken()
-  const nextInstallClaimHash = await deps.hash(nextInstallClaim)
   const codeHash = await deps.hash(pairingCode)
 
   try {
@@ -927,10 +1327,10 @@ export async function createReconnectPairingCodeFromClaim(
       deviceId: normalized.deviceId,
       installationId: normalized.installationId,
       previousInstallClaimHash: installClaimHash,
-      nextInstallClaimHash,
       pairingMetadata: JSON.stringify({
         method: 'device-link',
-        installationId: normalized.installationId
+        installationId: normalized.installationId,
+        installClaimHash
       }),
       auditLogId: deps.randomId(),
       auditMetadata: JSON.stringify({ installationId: normalized.installationId }),
@@ -976,6 +1376,64 @@ function isInvalidDeviceLinkClaimError(error: unknown) {
   return error instanceof Error && error.message === 'Invalid device link claim'
 }
 
+function isNoActiveInstallationError(error: unknown) {
+  return error instanceof Error && error.message === 'Device has no active installation'
+}
+
+type ReconnectPairingMetadata = {
+  sourceInstallationId: string | null
+  sourceInstallClaimHash: string | null
+}
+
+function parseReconnectPairingMetadata(metadata: string | null): ReconnectPairingMetadata {
+  if (!metadata) {
+    return { sourceInstallationId: null, sourceInstallClaimHash: null }
+  }
+
+  const parsed = parseReconnectMetadataJson(metadata)
+  const sourceInstallationId = optionalTrimmedString(parsed.installationId)
+  const sourceInstallClaimHash = optionalTrimmedString(parsed.installClaimHash)
+  const method = optionalTrimmedString(parsed.method)
+  const isDeviceLinkMetadata = method === 'device-link' || Boolean(
+    sourceInstallationId || sourceInstallClaimHash
+  )
+  if (!isDeviceLinkMetadata) {
+    return { sourceInstallationId: null, sourceInstallClaimHash: null }
+  }
+  if (!sourceInstallationId || !sourceInstallClaimHash) {
+    throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
+  }
+  return {
+    sourceInstallationId,
+    sourceInstallClaimHash
+  }
+}
+
+function parseReconnectMetadataJson(metadata: string) {
+  try {
+    return JSON.parse(metadata) as {
+      method?: unknown
+      installationId?: unknown
+      installClaimHash?: unknown
+    }
+  } catch {
+    throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
+  }
+}
+
+function optionalTrimmedString(value: unknown) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed || null
+}
+
+function isInactiveReconnectTargetError(error: unknown) {
+  return error instanceof Error && (
+    error.message === 'Reconnect target is no longer active' ||
+    error.message === 'Reconnect source installation is no longer current'
+  )
+}
+
 export async function pairDevice(
   repository: DevicePairingRepository,
   request: DevicePairRequest,
@@ -993,14 +1451,24 @@ export async function pairDevice(
     throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
   }
 
+  const reconnectMetadata =
+    pairingCode.pairingType === 'reconnect_device'
+      ? parseReconnectPairingMetadata(pairingCode.metadata)
+      : null
   const id = deps.randomId()
   const deviceId = pairingCode.pairingType === 'reconnect_device' ? pairingCode.targetDeviceId : `dev_${id}`
   const uploadTokenId = `ut_${id}`
   const installationId = `inst_${id}`
   const uploadToken = deps.randomToken()
-  const installClaim = deps.randomToken()
+  const installClaim = deps.randomInstallClaim()
   const uploadTokenHash = await deps.hash(uploadToken)
   const installClaimHash = await deps.hash(installClaim)
+  const shouldConsumeSourceClaim = Boolean(
+    reconnectMetadata?.sourceInstallationId && reconnectMetadata.sourceInstallClaimHash
+  )
+  const consumedInstallClaimHash = shouldConsumeSourceClaim
+    ? await deps.hash(deps.randomInstallClaim())
+    : null
   const consumed = await repository.consumePairingCode(pairingCode.id, now)
   if (!consumed) {
     throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
@@ -1021,25 +1489,27 @@ export async function pairDevice(
     userId: pairingCode.userId,
     deviceName,
     platform,
-    createdAt: now
+    auditLogId: `audit_${id}`,
+    auditAction: pairingCode.pairingType === 'reconnect_device' ? 'device.reconnect' : 'device.pair',
+    auditMetadata: JSON.stringify({ installationId, platform }),
+    createdAt: now,
+    sourceInstallationId: reconnectMetadata?.sourceInstallationId ?? null,
+    sourceInstallClaimHash: reconnectMetadata?.sourceInstallClaimHash ?? null,
+    consumedInstallClaimHash
   }
 
   if (pairingCode.pairingType === 'reconnect_device') {
-    await repository.createUploadTokenAndInstallation(input)
+    try {
+      await repository.createUploadTokenAndInstallation(input)
+    } catch (error) {
+      if (isInactiveReconnectTargetError(error)) {
+        throw new ApiError('NOT_FOUND', 'Device has no active installation', 404)
+      }
+      throw error
+    }
   } else {
     await repository.createUploadTokenAndDevice(input)
   }
-
-  await repository.createAuditLog({
-    auditLogId: `audit_${id}`,
-    userId: pairingCode.userId,
-    actorType: 'user',
-    action: pairingCode.pairingType === 'reconnect_device' ? 'device.reconnect' : 'device.pair',
-    targetType: 'device',
-    targetId: deviceId,
-    metadata: JSON.stringify({ installationId, platform }),
-    createdAt: now
-  })
 
   return {
     endpoint: deps.endpoint,

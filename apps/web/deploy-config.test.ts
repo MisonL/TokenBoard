@@ -201,6 +201,19 @@ describe('Wrangler deploy config', () => {
     expect(migration).toContain('CREATE INDEX api_rate_limits_reset_idx')
   })
 
+  test('device token rotation migration prevents duplicate active successors', () => {
+    const schema = readPackageFile('app/db/schema.ts')
+    const migration = readPackageFile('db/migrations/0024_upload_token_active_successor.sql')
+
+    expect(schema).toContain("uniqueIndex('upload_tokens_active_successor_idx')")
+    expect(schema).toContain('table.supersedesTokenId} IS NOT NULL')
+    expect(schema).toContain('table.revokedAt} IS NULL')
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS upload_tokens_active_successor_idx')
+    expect(migration).toContain('ON upload_tokens(supersedes_token_id)')
+    expect(migration).toContain('supersedes_token_id IS NOT NULL')
+    expect(migration).toContain('revoked_at IS NULL')
+  })
+
   test('usage summary migration creates cache tables without blocking backfill work', () => {
     const migration = readPackageFile('db/migrations/0016_usage_summary_cache.sql')
     const refreshMigration = readPackageFile('db/migrations/0017_refresh_usage_summary_cache.sql')

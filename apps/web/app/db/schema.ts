@@ -68,20 +68,28 @@ export const profiles = sqliteTable('profiles', {
   updatedAt: text('updated_at').notNull()
 })
 
-export const uploadTokens = sqliteTable('upload_tokens', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  tokenHash: text('token_hash').notNull().unique(),
-  deviceId: text('device_id'),
-  installationId: text('installation_id'),
-  supersedesTokenId: text('supersedes_token_id'),
-  lastUsedAt: text('last_used_at'),
-  createdAt: text('created_at').notNull(),
-  revokedAt: text('revoked_at')
-})
+export const uploadTokens = sqliteTable(
+  'upload_tokens',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    tokenHash: text('token_hash').notNull().unique(),
+    deviceId: text('device_id'),
+    installationId: text('installation_id'),
+    supersedesTokenId: text('supersedes_token_id'),
+    lastUsedAt: text('last_used_at'),
+    createdAt: text('created_at').notNull(),
+    revokedAt: text('revoked_at')
+  },
+  (table) => [
+    uniqueIndex('upload_tokens_active_successor_idx')
+      .on(table.supersedesTokenId)
+      .where(sql`${table.supersedesTokenId} IS NOT NULL AND ${table.revokedAt} IS NULL`)
+  ]
+)
 
 export const pairingCodes = sqliteTable('pairing_codes', {
   id: text('id').primaryKey(),

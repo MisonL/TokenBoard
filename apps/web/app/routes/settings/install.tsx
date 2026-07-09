@@ -59,6 +59,7 @@ export const POST = createRoute(async (c) => {
         : undefined
     )
 
+    c.header('Cache-Control', 'no-store')
     return c.render(
       <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
         <title>连接 TokenBoard</title>
