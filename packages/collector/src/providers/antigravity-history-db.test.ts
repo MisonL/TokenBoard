@@ -62,7 +62,51 @@ describe('readAntigravityDbUsageEvents', () => {
         lastSeenRowIndexByCascadeHash: new Map([[hash(cascadeId), 41]])
       })
 
-      expect(await readFile(queryPath, 'utf8')).toBe('select idx, hex(data) from gen_metadata where idx > 41 order by idx')
+      expect(await readFile(queryPath, 'utf8')).toBe('select idx, hex(data) from gen_metadata where idx > 41 order by idx limit 500')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('pages large metadata backlogs and advances the row cursor between sqlite calls', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-paged-db-'))
+    try {
+      const dir = join(root, 'conversations')
+      const sqliteBin = join(root, 'sqlite3-paged.sh')
+      const queriesPath = join(root, 'queries.sql')
+      const cascadeId = '00000000-0000-0000-0000-000000000001'
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `${cascadeId}.db`), '')
+      await writeFile(sqliteBin, [
+        '#!/bin/sh',
+        `printf '%s\\n' "$3" >> ${JSON.stringify(queriesPath)}`,
+        'case "$3" in',
+        '  *"idx > 41 "*)',
+        '    i=42',
+        '    while [ "$i" -le 541 ]; do',
+        '      printf "%s|\\n" "$i"',
+        '      i=$((i + 1))',
+        '    done',
+        '    ;;',
+        '  *"idx > 541 "*)',
+        '    printf "542|\\n"',
+        '    ;;',
+        'esac'
+      ].join('\n'))
+      await chmod(sqliteBin, 0o755)
+
+      const result = await readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        sqliteBin,
+        lastSeenRowIndexByCascadeHash: new Map([[hash(cascadeId), 41]])
+      })
+
+      expect((await readFile(queriesPath, 'utf8')).trim().split('\n')).toEqual([
+        'select idx, hex(data) from gen_metadata where idx > 41 order by idx limit 500',
+        'select idx, hex(data) from gen_metadata where idx > 541 order by idx limit 500'
+      ])
+      expect(result.events).toHaveLength(0)
+      expect(result.lastReadRowIndexByCascade?.get(cascadeId)).toBe(542)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile)
 const maxSqliteOutputBytes = 128 * 1024 * 1024
 const sqliteTimeoutMs = 15_000
 const defaultMaxDbFiles = 64
+const generatorMetadataRowsPageSize = 500
 const cascadeIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type StatFile = (filePath: string) => Promise<{ mtimeMs: number }>
 
@@ -41,7 +42,7 @@ export async function readAntigravityDbUsageEvents(input: {
     const fallbackCreatedAt = new Date(dbFile.mtimeMs).toISOString()
     const beforeCount = result.events.length
     const lastSeenRowIndex = input.lastSeenRowIndexByCascadeHash?.get(hash(cascadeId))
-    for (const row of await readGeneratorMetadataRows(dbFile.filePath, {
+    for await (const row of readGeneratorMetadataRows(dbFile.filePath, {
       sqliteBin: input.sqliteBin,
       lastSeenRowIndex
     })) {
@@ -115,7 +116,7 @@ function normalizeMaxDbFiles(value: number | null | undefined) {
   return Math.min(Math.max(Math.trunc(value), 1), defaultMaxDbFiles)
 }
 
-async function readGeneratorMetadataRows(
+async function * readGeneratorMetadataRows(
   dbFile: string,
   options: {
     sqliteBin?: string
@@ -123,18 +124,43 @@ async function readGeneratorMetadataRows(
   } = {}
 ) {
   const sqliteBin = options.sqliteBin ?? process.env.TOKENBOARD_SQLITE_BIN ?? 'sqlite3'
-  const lastSeenRowIndex = normalizeLastSeenRowIndex(options.lastSeenRowIndex)
-  const sql = `select idx, hex(data) from gen_metadata where idx > ${lastSeenRowIndex} order by idx`
+  let lastSeenRowIndex = normalizeLastSeenRowIndex(options.lastSeenRowIndex)
+  while (true) {
+    const rows = await readGeneratorMetadataRowPage(dbFile, {
+      sqliteBin,
+      lastSeenRowIndex
+    })
+    if (rows.length === 0) return
+    for (const row of rows) {
+      yield row
+    }
+    const nextLastSeenRowIndex = rows[rows.length - 1]?.index
+    if (nextLastSeenRowIndex === undefined || rows.length < generatorMetadataRowsPageSize) return
+    if (nextLastSeenRowIndex <= lastSeenRowIndex) {
+      throw new Error(`Antigravity SQLite metadata cursor did not advance for ${dbFile}`)
+    }
+    lastSeenRowIndex = nextLastSeenRowIndex
+  }
+}
+
+async function readGeneratorMetadataRowPage(
+  dbFile: string,
+  options: {
+    sqliteBin: string
+    lastSeenRowIndex: number
+  }
+) {
+  const sql = `select idx, hex(data) from gen_metadata where idx > ${options.lastSeenRowIndex} order by idx limit ${generatorMetadataRowsPageSize}`
   let stdout
   try {
-    stdout = (await execFileAsync(sqliteBin, ['-batch', dbFile, sql], {
+    stdout = (await execFileAsync(options.sqliteBin, ['-batch', dbFile, sql], {
       maxBuffer: maxSqliteOutputBytes,
       timeout: sqliteTimeoutMs,
       killSignal: 'SIGKILL'
     })).stdout
   } catch (error) {
     if (isMissingFileError(error)) {
-      throw new Error(`Antigravity SQLite reader unavailable: ${sqliteBin} not found`)
+      throw new Error(`Antigravity SQLite reader unavailable: ${options.sqliteBin} not found`)
     }
     throw new Error(`Failed to read Antigravity SQLite metadata from ${dbFile}: ${errorMessage(error)}`)
   }

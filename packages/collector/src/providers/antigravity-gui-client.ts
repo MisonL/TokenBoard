@@ -198,12 +198,14 @@ function spawnLanguageServer(input: {
 
 function waitForReady(server: LanguageServerProcess, port: number) {
   const lines: string[] = []
+  let output = ''
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => rejectWithTail(`Timed out starting Antigravity language server on port ${port}`), readReadyTimeoutMs())
     const onData = (chunk: Buffer) => {
       const text = chunk.toString('utf8')
       lines.push(text)
-      if (text.includes(`fixed port at ${port} for HTTPS`) || text.includes(`:${port}`)) {
+      output += text
+      if (output.includes(`fixed port at ${port} for HTTPS`) || output.includes(`:${port}`)) {
         cleanup()
         drainOutput(server)
         resolve()

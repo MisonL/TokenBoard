@@ -56,6 +56,32 @@ describe('createAntigravityLanguageServerClient', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test.skipIf(process.platform === 'win32')('detects readiness markers split across output chunks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-split-ready-'))
+    try {
+      const serverPath = join(root, 'server.mjs')
+      await writeFile(serverPath, [
+        '#!/usr/bin/env node',
+        'const portIndex = process.argv.indexOf("--https_server_port")',
+        'const port = process.argv[portIndex + 1]',
+        'process.stdout.write("fixed port ")',
+        'setTimeout(() => process.stderr.write(`at ${port} `), 25)',
+        'setTimeout(() => process.stdout.write("for HTTPS"), 50)',
+        'setInterval(() => undefined, 1000)'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+
+      const client = await createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      })
+
+      await client.close()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('listAntigravityCascades', () => {
