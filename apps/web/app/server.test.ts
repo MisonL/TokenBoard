@@ -52,7 +52,7 @@ describe('worker server', () => {
     expect(env.boundValues[0]).toEqual(['eve'])
   })
 
-  test('serves cached public responses after reusing cached public subject metadata', async () => {
+  test('serves cached public responses after rechecking visibility', async () => {
     const cache = createCache()
     globalThis.caches = { default: cache } as unknown as CacheStorage
     const env = createEnv({ publicProfile: true })
@@ -71,9 +71,9 @@ describe('worker server', () => {
     expect(secondResponse.headers.get('x-cache-test')).toBe('hit')
     expect(secondResponse.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate')
     expect(await secondResponse.text()).toContain('<svg')
-    expect(env.DB.prepare).toHaveBeenCalledTimes(3)
-    expect(cache.match).toHaveBeenCalledTimes(4)
-    expect(cache.put).toHaveBeenCalledTimes(2)
+    expect(env.DB.prepare).toHaveBeenCalledTimes(4)
+    expect(cache.match).toHaveBeenCalledTimes(2)
+    expect(cache.put).toHaveBeenCalledTimes(1)
   })
 
   test('serves cached public responses with immutable response headers', async () => {
@@ -96,8 +96,8 @@ describe('worker server', () => {
     expect(secondResponse.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate')
     expect(secondResponse.headers.get('content-type')).toContain('image/svg+xml')
     expect(await secondResponse.text()).toContain('<svg')
-    expect(cache.match).toHaveBeenCalledTimes(4)
-    expect(cache.put).toHaveBeenCalledTimes(2)
+    expect(cache.match).toHaveBeenCalledTimes(2)
+    expect(cache.put).toHaveBeenCalledTimes(1)
   })
 
   test('uses canonical public cache keys without caller query parameters', async () => {
@@ -127,7 +127,7 @@ describe('worker server', () => {
       /^https:\/\/tokenboard\.example\/api\/public\/eve\.svg\?__tokenboard_public_subject=/
     )
     expect(cachePutRequest?.url).not.toContain('utm=')
-    expect(cache.put).toHaveBeenCalledTimes(2)
+    expect(cache.put).toHaveBeenCalledTimes(1)
   })
 
   test('does not reuse cached public responses after slug ownership changes', async () => {
@@ -141,7 +141,6 @@ describe('worker server', () => {
     const firstResponse = await worker.fetch(request, env, ctx)
     await Promise.all(ctx.waitUntilPromises)
     env.profileUserId = 'user_2'
-    clock.now += 16_000
     const secondResponse = await worker.fetch(
       workerRequest('https://tokenboard.example/api/public/eve.svg'),
       env,
@@ -153,7 +152,7 @@ describe('worker server', () => {
     expect(secondResponse.headers.get('x-cache-test')).toBeNull()
     expect(await secondResponse.text()).toContain('<svg')
     expect(env.DB.prepare).toHaveBeenCalledTimes(6)
-    expect(cache.put).toHaveBeenCalledTimes(4)
+    expect(cache.put).toHaveBeenCalledTimes(2)
   })
 
   test('does not reuse cached public responses after the same profile changes', async () => {
@@ -167,7 +166,6 @@ describe('worker server', () => {
     const firstResponse = await worker.fetch(request, env, ctx)
     await Promise.all(ctx.waitUntilPromises)
     env.profileUpdatedAt = '2026-04-29T02:00:00.000Z'
-    clock.now += 16_000
     const secondResponse = await worker.fetch(
       workerRequest('https://tokenboard.example/api/public/eve.svg'),
       env,
@@ -178,7 +176,7 @@ describe('worker server', () => {
     expect(secondResponse.status).toBe(200)
     expect(secondResponse.headers.get('x-cache-test')).toBeNull()
     expect(await secondResponse.text()).toContain('<svg')
-    expect(cache.put).toHaveBeenCalledTimes(4)
+    expect(cache.put).toHaveBeenCalledTimes(2)
   })
 
   test('does not reuse cached public responses after usage totals change', async () => {
@@ -195,7 +193,6 @@ describe('worker server', () => {
     )
     await Promise.all(ctx.waitUntilPromises)
     env.usageUpdatedAt = '2026-04-29T01:05:00.000Z'
-    clock.now += 16_000
     const secondResponse = await worker.fetch(
       workerRequest('https://tokenboard.example/api/public/eve.svg'),
       env,
@@ -206,7 +203,7 @@ describe('worker server', () => {
     expect(secondResponse.status).toBe(200)
     expect(secondResponse.headers.get('x-cache-test')).toBeNull()
     expect(await secondResponse.text()).toContain('<svg')
-    expect(cache.put).toHaveBeenCalledTimes(4)
+    expect(cache.put).toHaveBeenCalledTimes(2)
   })
 
   test('does not reuse cached public responses after summary-only usage changes', async () => {
@@ -227,7 +224,6 @@ describe('worker server', () => {
     )
     await Promise.all(ctx.waitUntilPromises)
     env.summaryUpdatedAt = '2026-04-29T01:05:00.000Z'
-    clock.now += 16_000
     const secondResponse = await worker.fetch(
       workerRequest('https://tokenboard.example/api/public/eve.svg'),
       env,
@@ -238,7 +234,7 @@ describe('worker server', () => {
     expect(secondResponse.status).toBe(200)
     expect(secondResponse.headers.get('x-cache-test')).toBeNull()
     expect(await secondResponse.text()).toContain('<svg')
-    expect(cache.put).toHaveBeenCalledTimes(4)
+    expect(cache.put).toHaveBeenCalledTimes(2)
   })
 
   test('does not reuse cached public responses after summary strict mode changes', async () => {
@@ -261,12 +257,11 @@ describe('worker server', () => {
     expect(secondResponse.status).toBe(200)
     expect(secondResponse.headers.get('x-cache-test')).toBeNull()
     expect(await secondResponse.text()).toContain('<svg')
-    expect(cache.put).toHaveBeenCalledTimes(3)
+    expect(cache.put).toHaveBeenCalledTimes(2)
   })
 
-  test('rechecks public sharing after the subject metadata cache expires', async () => {
-    const clock = { now: 0 }
-    const cache = createCache(clock)
+  test('rechecks public sharing before serving cached public responses', async () => {
+    const cache = createCache()
     globalThis.caches = { default: cache } as unknown as CacheStorage
     const env = createEnv({ publicProfile: true })
     const ctx = createExecutionContext()
@@ -275,7 +270,6 @@ describe('worker server', () => {
     const firstResponse = await worker.fetch(request, env, ctx)
     await Promise.all(ctx.waitUntilPromises)
     env.publicProfile = false
-    clock.now += 16_000
     const secondResponse = await worker.fetch(
       workerRequest('https://tokenboard.example/api/public/eve.svg'),
       env,
@@ -291,7 +285,7 @@ describe('worker server', () => {
         message: 'Public profile not found'
       }
     })
-    expect(cache.put).toHaveBeenCalledTimes(2)
+    expect(cache.put).toHaveBeenCalledTimes(1)
   })
 
   test('does not serve public content for unsupported public API methods', async () => {
