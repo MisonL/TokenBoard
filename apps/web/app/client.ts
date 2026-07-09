@@ -2,6 +2,7 @@ import { createClient } from 'honox/client'
 import { initCustomSelects } from './components/ui/custom-select-client'
 import { initDashboardTrendTooltip, resetDashboardTrendTooltip } from './features/usage/dashboard-trend-tooltip'
 import { shouldEnhanceDeviceDetailsClick } from './features/device/device-details-client'
+import { initLoginCardFocus } from './features/auth/login-card-focus-client'
 import { initPublicCardPreview, refreshPublicCardPreview } from './features/public-card/client-preview'
 import { leaderboardDocumentTitle } from './features/leaderboards/title'
 import { copyTextToClipboard } from './lib/clipboard'
@@ -24,10 +25,6 @@ initAppNavigation()
 initCustomSelects()
 initPublicCardPreview()
 initDashboardTrendTooltip()
-
-const loginCardAttentionDurationMs = 900
-const loginCardScrollAttentionDelayMs = 320
-let loginCardFocusSeq = 0
 
 function initBrowserTimezone() {
   const timezone = detectBrowserTimezone()
@@ -235,80 +232,6 @@ function initSubmitFeedback() {
       }
     })
   })
-}
-
-function initLoginCardFocus() {
-  document.addEventListener('click', (event) => {
-    const trigger = getLoginFocusTrigger(event)
-    if (!trigger) return
-
-    const currentUrl = new URL(window.location.href)
-    const targetUrl = new URL(trigger.href)
-    if (
-      currentUrl.pathname !== '/auth/sign-in' ||
-      targetUrl.pathname !== '/auth/sign-in' ||
-      targetUrl.search !== currentUrl.search
-    ) {
-      return
-    }
-
-    const card = document.querySelector<HTMLElement>('[data-login-card="true"]')
-    if (!card) return
-
-    event.preventDefault()
-    focusLoginCard(card)
-  })
-}
-
-function getLoginFocusTrigger(event: MouseEvent) {
-  if (
-    event.defaultPrevented ||
-    event.button !== 0 ||
-    event.metaKey ||
-    event.ctrlKey ||
-    event.shiftKey ||
-    event.altKey ||
-    !(event.target instanceof Element)
-  ) {
-    return null
-  }
-
-  return event.target.closest<HTMLAnchorElement>('a[data-login-focus="true"][href]')
-}
-
-function focusLoginCard(card: HTMLElement) {
-  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-  const shouldDelayAttention = !reducedMotion && !isElementFullyVisible(card)
-  const runId = String(++loginCardFocusSeq)
-
-  card.dataset.loginFocusRun = runId
-  card.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' })
-
-  window.setTimeout(() => {
-    startLoginCardAttention(card, runId)
-  }, shouldDelayAttention ? loginCardScrollAttentionDelayMs : 0)
-}
-
-function isElementFullyVisible(element: HTMLElement) {
-  const rect = element.getBoundingClientRect()
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth
-
-  return rect.top >= 0 && rect.left >= 0 && rect.bottom <= viewportHeight && rect.right <= viewportWidth
-}
-
-function startLoginCardAttention(card: HTMLElement, runId: string) {
-  if (card.dataset.loginFocusRun !== runId) return
-
-  card.classList.remove('app-login-card-attention')
-  void card.offsetWidth
-  card.classList.add('app-login-card-attention')
-
-  window.setTimeout(() => {
-    if (card.dataset.loginFocusRun !== runId) return
-    card.classList.remove('app-login-card-attention')
-    delete card.dataset.loginFocusRun
-  }, loginCardAttentionDurationMs)
 }
 
 function preserveSubmitterValue(form: HTMLFormElement, submitter: HTMLButtonElement | null) {

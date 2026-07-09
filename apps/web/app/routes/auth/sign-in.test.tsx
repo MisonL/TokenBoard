@@ -32,6 +32,7 @@ describe('sign-in route', () => {
     expect(response.status).toBe(200)
     expect(html).toContain('data-login-focus="true"')
     expect(html).toContain('data-login-card="true"')
+    expect(html).toContain('data-login-primary="true"')
     expect(html).toContain('app-login-card')
   })
 

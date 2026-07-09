@@ -52,7 +52,7 @@ function AuthScreen(props: { hasError: boolean }) {
                 GitHub 登录失败。请检查 OAuth 配置后重试。
               </p>
             ) : null}
-            <Button class="w-full rounded-md" type="submit" data-submitting-label="正在跳转 GitHub...">
+            <Button class="w-full rounded-md" type="submit" data-login-primary="true" data-submitting-label="正在跳转 GitHub...">
               <GitHubMark />
               使用 GitHub 继续
             </Button>

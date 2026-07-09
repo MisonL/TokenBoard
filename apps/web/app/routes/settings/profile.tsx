@@ -36,6 +36,9 @@ export function ProfilePage(props: { profile: ProfileSettings; saved: boolean; e
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>公开资料 - TokenBoard</title>
       <AppNav active="profile" email={props.email} />
+      <header class="mx-auto mb-5 max-w-6xl">
+        <h1 class="text-3xl font-black tracking-tight sm:text-4xl">公开资料</h1>
+      </header>
 
       <form
         method="post"
@@ -54,7 +57,7 @@ function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean }
   return (
     <Card class="min-w-0 self-start">
       <CardHeader>
-        <h1 class="text-2xl font-black tracking-tight sm:text-3xl">公开资料设置</h1>
+        <CardTitle class="text-2xl sm:text-3xl">公开资料设置</CardTitle>
         <CardDescription>默认保持私有；只有开启公开后，JSON 和 SVG 才会返回真实统计。</CardDescription>
       </CardHeader>
       <CardContent>
