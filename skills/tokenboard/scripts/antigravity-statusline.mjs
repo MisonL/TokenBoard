@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -170,6 +170,7 @@ function hashLegacyIdentifier(value) {
 function appendJsonLine(filePath, value) {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
   appendFileSync(filePath, `${JSON.stringify(value)}\n`, { mode: 0o600 })
+  chmodSync(filePath, 0o600)
 }
 
 function recordStatuslineError(filePath, stage, error) {
@@ -208,7 +209,10 @@ function readOriginalCommand(filePath, selfPath) {
     if (error && error.code === 'ENOENT') return ''
     throw new Error('Invalid Antigravity original statusline command backup', { cause: error })
   }
-  const command = readBoundedString(parsed && parsed.command, maxCommandLength)
+  if (parsed?.statusLine && typeof parsed.statusLine === 'object' && parsed.statusLine.enabled === false) {
+    return ''
+  }
+  const command = readBoundedString(parsed?.statusLine?.command ?? parsed?.command, maxCommandLength)
   if (!command) return ''
   return isSelfCommand(command, selfPath) ? '' : command
 }

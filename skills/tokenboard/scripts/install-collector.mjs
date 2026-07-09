@@ -4,28 +4,32 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
 import { collectorDir, configDir, mergeConfig, parseArgs, readPackageManager } from './config.mjs'
+import {
+  buildCloneSteps,
+  buildDefaultBranchPullSteps,
+  buildFetchAndCheckoutRefSteps,
+  runStep
+} from './upgrade-utils.mjs'
 
 const defaultRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
 
 function run(command, args, options = {}) {
-  if (command === 'remove') {
-    rmSync(args[0], options)
-    return
+  try {
+    runStep({ command, args, options }, {
+      spawn: spawnSync,
+      remove: rmSync,
+      platform: process.platform
+    })
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
   }
-
-  const result = spawnSync(command, args, {
-    stdio: 'inherit',
-    shell: process.platform === 'win32' && command.endsWith('.cmd'),
-    ...options
-  })
-  if (result.status !== 0) process.exit(result.status ?? 1)
 }
 
 export function buildInstallCollectorPlan({
   dir,
   repoUrl,
   repoRef,
-  packageManager,
   exists,
   isGitRepo = exists,
   configDir,
@@ -38,17 +42,16 @@ export function buildInstallCollectorPlan({
   const steps = exists && isGitRepo
     ? [
         { command: 'git', args: ['remote', 'set-url', 'origin', repoUrl], options: { cwd: dir } },
-        ...(repoRef ? [{ command: 'git', args: ['fetch', 'origin', repoRef], options: { cwd: dir } }] : []),
-        ...(repoRef ? [{ command: 'git', args: ['checkout', '-B', repoRef, `origin/${repoRef}`], options: { cwd: dir } }] : []),
-        { command: 'git', args: ['pull', '--ff-only'], options: { cwd: dir } }
+        ...buildFetchAndCheckoutRefSteps({ dir, repoRef }),
+        ...(repoRef ? [] : buildDefaultBranchPullSteps({ dir }))
       ]
     : exists
       ? [
           { command: 'remove', args: [dir], options: { recursive: true, force: true } },
-          { command: 'git', args: buildCloneArgs({ repoUrl, repoRef, dir }), options: {} }
+          ...buildCloneSteps({ repoUrl, repoRef, dir })
         ]
       : [
-        { command: 'git', args: buildCloneArgs({ repoUrl, repoRef, dir }), options: {} }
+        ...buildCloneSteps({ repoUrl, repoRef, dir })
       ]
 
   steps.push({
@@ -70,7 +73,6 @@ function runCli() {
     dir,
     repoUrl,
     repoRef,
-    packageManager,
     exists: existsSync(dir),
     isGitRepo: existsSync(join(dir, '.git')),
     configDir: configDir(),
@@ -81,12 +83,6 @@ function runCli() {
 
   mergeConfig({ collectorDir: dir, repoUrl, repoRef, packageManager, updatedAt: new Date().toISOString() })
   console.log(`TokenBoard collector ready at ${dir}`)
-}
-
-function buildCloneArgs({ repoUrl, repoRef, dir }) {
-  return repoRef
-    ? ['clone', '--depth', '1', '--branch', repoRef, repoUrl, dir]
-    : ['clone', '--depth', '1', repoUrl, dir]
 }
 
 function samePath(leftPath, rightPath) {

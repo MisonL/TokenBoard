@@ -62,11 +62,13 @@ test('setup base url must come from flags or environment', () => {
 test('device-link reconnect setup is explicit opt-in', () => {
   assert.equal(shouldUseDeviceLink({}, {}), false)
   assert.equal(shouldUseDeviceLink({ 'use-device-link': true }, {}), true)
+  assert.equal(shouldUseDeviceLink({ 'use-device-link': 'false' }, { TOKENBOARD_USE_DEVICE_LINK: '1' }), false)
   assert.equal(shouldUseDeviceLink({}, { TOKENBOARD_USE_DEVICE_LINK: '1' }), true)
 })
 
 test('device-link reconnect exchanges local claim for a pairing code', async () => {
   const requests = []
+  const writes = []
   const pairingCode = await createPairingCodeFromDeviceLink({
     baseUrl: 'https://tokenboard.example.com',
     readDeviceLink: () => ({
@@ -75,6 +77,7 @@ test('device-link reconnect exchanges local claim for a pairing code', async () 
       installationId: 'inst_1',
       installClaim: 'claim-secret'
     }),
+    writeDeviceLink: (link) => writes.push(link),
     fetcher: async (url, init) => {
       requests.push({ url, init })
       return Response.json({ pairingCode: 'pairing-code' })
@@ -82,12 +85,224 @@ test('device-link reconnect exchanges local claim for a pairing code', async () 
   })
 
   assert.equal(pairingCode, 'pairing-code')
+  assert.deepEqual(writes, [])
   assert.equal(requests[0].url, 'https://tokenboard.example.com/api/v1/device/reconnect-pairing-codes')
   assert.deepEqual(JSON.parse(requests[0].init.body), {
     deviceId: 'dev_1',
     installationId: 'inst_1',
     installClaim: 'claim-secret'
   })
+})
+
+test('device-link reconnect supports legacy rotated claim responses before pairing', async () => {
+  const writes = []
+  const pairingCode = await createPairingCodeFromDeviceLink({
+    baseUrl: 'https://tokenboard.example.com',
+    readDeviceLink: () => ({
+      serverOrigin: 'https://tokenboard.example.com',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'claim-secret'
+    }),
+    writeDeviceLink: (link) => writes.push(link),
+    fetcher: async () => Response.json({
+      pairingCode: 'pairing-code',
+      installClaim: 'claim-rotated'
+    })
+  })
+
+  assert.equal(pairingCode, 'pairing-code')
+  assert.deepEqual(writes, [{
+    serverOrigin: 'https://tokenboard.example.com',
+    deviceId: 'dev_1',
+    installationId: 'inst_1',
+    installClaim: 'claim-rotated'
+  }])
+})
+
+test('device-link reconnect fails when a legacy rotated claim cannot be written', async () => {
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      writeDeviceLink: () => {
+        throw new Error('permission denied')
+      },
+      fetcher: async () => Response.json({
+        pairingCode: 'pairing-code',
+        installClaim: 'claim-rotated'
+      })
+    }),
+    (error) => {
+      assert(error instanceof Error)
+      assert.equal(error.message, 'Failed to refresh TokenBoard device link after reconnect')
+      assert.equal(error.message.includes('claim-secret'), false)
+      assert.equal(error.message.includes('claim-rotated'), false)
+      return true
+    }
+  )
+})
+
+test('device-link reconnect fails when a legacy rotated claim has no writer', async () => {
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      fetcher: async () => Response.json({
+        pairingCode: 'pairing-code',
+        installClaim: 'claim-rotated'
+      })
+    }),
+    (error) => {
+      assert(error instanceof Error)
+      assert.equal(error.message, 'Failed to refresh TokenBoard device link after reconnect')
+      assert.equal(error.message.includes('claim-secret'), false)
+      assert.equal(error.message.includes('claim-rotated'), false)
+      return true
+    }
+  )
+})
+
+test('device-link reconnect fails when an async legacy rotated claim write rejects', async () => {
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      writeDeviceLink: async () => {
+        throw new Error('permission denied')
+      },
+      fetcher: async () => Response.json({
+        pairingCode: 'pairing-code',
+        installClaim: 'claim-rotated'
+      })
+    }),
+    (error) => {
+      assert(error instanceof Error)
+      assert.equal(error.message, 'Failed to refresh TokenBoard device link after reconnect')
+      assert.equal(error.message.includes('claim-secret'), false)
+      assert.equal(error.message.includes('claim-rotated'), false)
+      return true
+    }
+  )
+})
+
+test('device-link reconnect writes a legacy rotated claim before rejecting a missing pairing code', async () => {
+  const writes = []
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      writeDeviceLink: (link) => writes.push(link),
+      fetcher: async () => Response.json({
+        installClaim: 'claim-rotated'
+      })
+    }),
+    /Device-link reconnect response did not include a pairing code/
+  )
+  assert.deepEqual(writes, [{
+    serverOrigin: 'https://tokenboard.example.com',
+    deviceId: 'dev_1',
+    installationId: 'inst_1',
+    installClaim: 'claim-rotated'
+  }])
+})
+
+test('device-link reconnect fails when a rotated claim without a pairing code has no writer', async () => {
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      fetcher: async () => Response.json({
+        installClaim: 'claim-rotated'
+      })
+    }),
+    (error) => {
+      assert(error instanceof Error)
+      assert.equal(error.message, 'Failed to refresh TokenBoard device link after reconnect')
+      assert.equal(error.message.includes('claim-secret'), false)
+      assert.equal(error.message.includes('claim-rotated'), false)
+      return true
+    }
+  )
+})
+
+test('device-link reconnect fails when a rotated claim without a pairing code throws during write', async () => {
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      writeDeviceLink: () => {
+        throw new Error('permission denied')
+      },
+      fetcher: async () => Response.json({
+        installClaim: 'claim-rotated'
+      })
+    }),
+    (error) => {
+      assert(error instanceof Error)
+      assert.equal(error.message, 'Failed to refresh TokenBoard device link after reconnect')
+      assert.equal(error.message.includes('claim-secret'), false)
+      assert.equal(error.message.includes('claim-rotated'), false)
+      return true
+    }
+  )
+})
+
+test('device-link reconnect fails when a rotated claim without a pairing code rejects during async write', async () => {
+  await assert.rejects(
+    createPairingCodeFromDeviceLink({
+      baseUrl: 'https://tokenboard.example.com',
+      readDeviceLink: () => ({
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }),
+      writeDeviceLink: async () => {
+        throw new Error('permission denied')
+      },
+      fetcher: async () => Response.json({
+        installClaim: 'claim-rotated'
+      })
+    }),
+    (error) => {
+      assert(error instanceof Error)
+      assert.equal(error.message, 'Failed to refresh TokenBoard device link after reconnect')
+      assert.equal(error.message.includes('claim-secret'), false)
+      assert.equal(error.message.includes('claim-rotated'), false)
+      return true
+    }
+  )
 })
 
 test('device-link reconnect rejects a different server origin before sending the claim', async () => {

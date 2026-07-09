@@ -22,15 +22,15 @@ function createInstallPromptContext(input: InstallPromptInput) {
   const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
   const collectorRepoRef = normalizeOptionalRef(input.collectorRepoRef)
   return {
+    collectorRepoUrl,
+    collectorRepoRef,
     bashRepoUrl: escapeBashArg(collectorRepoUrl),
     bashRepoRef: collectorRepoRef ? escapeBashArg(collectorRepoRef) : null,
-    bashOriginRepoRef: collectorRepoRef ? escapeBashArg(`origin/${collectorRepoRef}`) : null,
     bashPairingCode: escapeBashArg(input.pairingCode),
     bashBaseUrl: escapeBashArg(input.baseUrl),
     bashTimezone: escapeBashArg(input.timezone),
     powerShellRepoUrl: escapePowerShellArg(collectorRepoUrl),
     powerShellRepoRef: collectorRepoRef ? escapePowerShellArg(collectorRepoRef) : null,
-    powerShellOriginRepoRef: collectorRepoRef ? escapePowerShellArg(`origin/${collectorRepoRef}`) : null,
     powerShellPairingCode: escapePowerShellArg(input.pairingCode),
     powerShellBaseUrl: escapePowerShellArg(input.baseUrl),
     powerShellTimezone: escapePowerShellArg(input.timezone),
@@ -83,20 +83,17 @@ function createInstallPromptIntro() {
 function createInstallPromptBashBlock(context: ReturnType<typeof createInstallPromptContext>) {
   const setupRepoArg = context.setupRepoArg ? ` --repo-url ${context.bashRepoUrl}` : ''
   const setupRepoRefArg = context.setupRepoRefArg ? ` --repo-ref ${context.bashRepoRef}` : ''
-  const cloneRefArg = context.bashRepoRef ? ` --branch ${context.bashRepoRef}` : ''
   return [
     'macOS / Linux / Git Bash：',
     '```bash',
+    'set -euo pipefail',
     'repo="$HOME/.tokenboard/TokenBoard"',
     'if [ -d "$repo/.git" ]; then',
-    '  git -C "$repo" remote set-url origin ' + context.bashRepoUrl,
-    context.bashRepoRef ? `  git -C "$repo" fetch origin ${context.bashRepoRef}` : '  git -C "$repo" fetch origin',
-    context.bashRepoRef ? `  git -C "$repo" checkout -B ${context.bashRepoRef} ${context.bashOriginRepoRef}` : '',
-    '  git -C "$repo" pull --ff-only',
+    ...indent(createBashUpdateExistingRepoCommands(context.collectorRepoUrl, context.collectorRepoRef)),
     'else',
     '  if [ -e "$repo" ]; then rm -rf "$repo"; fi',
     '  mkdir -p "$HOME/.tokenboard"',
-    `  git clone${cloneRefArg} ${context.bashRepoUrl} "$repo"`,
+    ...indent(createBashCloneRepoCommands(context.collectorRepoUrl, context.collectorRepoRef)),
     'fi',
     `TOKENBOARD_CODEX_BATCH_SIZE=200 node "$repo/skills/tokenboard/scripts/setup.mjs" --pairing-code ${context.bashPairingCode} --base-url ${context.bashBaseUrl} --timezone ${context.bashTimezone} --schedule-times "09:00,12:00,18:00,23:00"${setupRepoArg}${setupRepoRefArg}`,
     '```'
@@ -106,20 +103,18 @@ function createInstallPromptBashBlock(context: ReturnType<typeof createInstallPr
 function createInstallPromptPowerShellBlock(context: ReturnType<typeof createInstallPromptContext>) {
   const setupRepoArg = context.setupRepoArg ? ` --repo-url ${context.powerShellRepoUrl}` : ''
   const setupRepoRefArg = context.setupRepoRefArg ? ` --repo-ref ${context.powerShellRepoRef}` : ''
-  const cloneRefArg = context.powerShellRepoRef ? ` --branch ${context.powerShellRepoRef}` : ''
   return [
     'Windows PowerShell：',
     '```powershell',
+    '$ErrorActionPreference = "Stop"',
+    'function Invoke-Git { git @args; if ($LASTEXITCODE -ne 0) { throw "git failed with exit code $LASTEXITCODE" } }',
     '$repo = Join-Path $HOME ".tokenboard\\TokenBoard"',
     'if (Test-Path (Join-Path $repo ".git")) {',
-    `  git -C $repo remote set-url origin ${context.powerShellRepoUrl}`,
-    context.powerShellRepoRef ? `  git -C $repo fetch origin ${context.powerShellRepoRef}` : '  git -C $repo fetch origin',
-    context.powerShellRepoRef ? `  git -C $repo checkout -B ${context.powerShellRepoRef} ${context.powerShellOriginRepoRef}` : '',
-    '  git -C $repo pull --ff-only',
+    ...indent(createPowerShellUpdateExistingRepoCommands(context.collectorRepoUrl, context.collectorRepoRef)),
     '} else {',
     '  if (Test-Path $repo) { Remove-Item -Recurse -Force $repo }',
     '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
-    `  git clone${cloneRefArg} ${context.powerShellRepoUrl} $repo`,
+    ...indent(createPowerShellCloneRepoCommands(context.collectorRepoUrl, context.collectorRepoRef)),
     '}',
     '$env:TOKENBOARD_CODEX_BATCH_SIZE = "200"',
     `node (Join-Path $repo "skills\\tokenboard\\scripts\\setup.mjs") --pairing-code ${context.powerShellPairingCode} --base-url ${context.powerShellBaseUrl} --timezone ${context.powerShellTimezone} --schedule-times "09:00,12:00,18:00,23:00"${setupRepoArg}${setupRepoRefArg}`,
@@ -210,38 +205,209 @@ function createDeviceLinkReconnectCommandContext(input: DeviceLinkReconnectComma
 function createBootstrapCommands(input: CommandInput) {
   const collectorRepoUrl = input.collectorRepoUrl || defaultCollectorRepoUrl
   const collectorRepoRef = normalizeOptionalRef(input.collectorRepoRef)
-  const bashRepoRef = collectorRepoRef ? escapeBashArg(collectorRepoRef) : null
-  const bashOriginRepoRef = collectorRepoRef ? escapeBashArg(`origin/${collectorRepoRef}`) : null
-  const powerShellRepoRef = collectorRepoRef ? escapePowerShellArg(collectorRepoRef) : null
-  const powerShellOriginRepoRef = collectorRepoRef ? escapePowerShellArg(`origin/${collectorRepoRef}`) : null
   return {
     bash: [
+      'set -euo pipefail',
       'repo="$HOME/.tokenboard/TokenBoard"',
       'if [ -d "$repo/.git" ]; then',
-      `  git -C "$repo" remote set-url origin ${escapeBashArg(collectorRepoUrl)}`,
-      bashRepoRef ? `  git -C "$repo" fetch origin ${bashRepoRef}` : '  git -C "$repo" fetch origin',
-      bashRepoRef ? `  git -C "$repo" checkout -B ${bashRepoRef} ${bashOriginRepoRef}` : '',
-      '  git -C "$repo" pull --ff-only',
+      ...indent(createBashUpdateExistingRepoCommands(collectorRepoUrl, collectorRepoRef)),
       'else',
       '  if [ -e "$repo" ]; then rm -rf "$repo"; fi',
       '  mkdir -p "$HOME/.tokenboard"',
-      `  git clone${bashRepoRef ? ` --branch ${bashRepoRef}` : ''} ${escapeBashArg(collectorRepoUrl)} "$repo"`,
+      ...indent(createBashCloneRepoCommands(collectorRepoUrl, collectorRepoRef)),
       'fi'
     ].filter(Boolean),
     powerShell: [
+      '$ErrorActionPreference = "Stop"',
+      'function Invoke-Git { git @args; if ($LASTEXITCODE -ne 0) { throw "git failed with exit code $LASTEXITCODE" } }',
       '$repo = Join-Path $HOME ".tokenboard\\TokenBoard"',
       'if (Test-Path (Join-Path $repo ".git")) {',
-      `  git -C $repo remote set-url origin ${escapePowerShellArg(collectorRepoUrl)}`,
-      powerShellRepoRef ? `  git -C $repo fetch origin ${powerShellRepoRef}` : '  git -C $repo fetch origin',
-      powerShellRepoRef ? `  git -C $repo checkout -B ${powerShellRepoRef} ${powerShellOriginRepoRef}` : '',
-      '  git -C $repo pull --ff-only',
+      ...indent(createPowerShellUpdateExistingRepoCommands(collectorRepoUrl, collectorRepoRef)),
       '} else {',
       '  if (Test-Path $repo) { Remove-Item -Recurse -Force $repo }',
       '  New-Item -ItemType Directory -Force (Split-Path $repo) | Out-Null',
-      `  git clone${powerShellRepoRef ? ` --branch ${powerShellRepoRef}` : ''} ${escapePowerShellArg(collectorRepoUrl)} $repo`,
+      ...indent(createPowerShellCloneRepoCommands(collectorRepoUrl, collectorRepoRef)),
       '}'
     ].filter(Boolean)
   }
+}
+
+function createBashUpdateExistingRepoCommands(repoUrl: string, repoRef: string | null) {
+  return [
+    `git -C "$repo" remote set-url origin ${escapeBashArg(repoUrl)}`,
+    ...createBashCheckoutRepoRefCommands(repoRef),
+    ...(!repoRef ? ['git -C "$repo" pull --ff-only'] : [])
+  ]
+}
+
+function createBashCloneRepoCommands(repoUrl: string, repoRef: string | null) {
+  if (!repoRef) return [`git clone ${escapeBashArg(repoUrl)} "$repo"`]
+
+  return [
+    `git clone --depth 1 --no-checkout ${escapeBashArg(repoUrl)} "$repo"`,
+    ...createBashCheckoutRepoRefCommands(repoRef)
+  ]
+}
+
+function createBashCheckoutRepoRefCommands(repoRef: string | null) {
+  const ref = normalizeRepoRefForCommands(repoRef)
+  if (!ref) return createBashEnsureDefaultBranchCommands()
+
+  if (ref.kind === 'branch') {
+    return createBashCheckoutBranchCommands(ref.name)
+  }
+
+  if (ref.kind === 'raw') {
+    return createBashCheckoutRawRefCommands(ref.name)
+  }
+
+  return [
+    `if git -C "$repo" fetch --depth 1 origin ${escapeBashArg(branchFetchRefspec(ref.name))}; then`,
+    ...indent(createBashCheckoutFetchedBranchCommands(ref.name)),
+    'else',
+    ...indent(createBashCheckoutRawRefCommands(ref.name)),
+    'fi'
+  ]
+}
+
+function createBashEnsureDefaultBranchCommands() {
+  return [
+    'default_branch="$(git -C "$repo" ls-remote --symref origin HEAD | sed -n \'s#^ref: refs/heads/\\([^[:space:]]*\\)[[:space:]]HEAD$#\\1#p\' | head -n 1)"',
+    'test -n "$default_branch"',
+    'git -C "$repo" config --replace-all remote.origin.fetch \'+refs/heads/*:refs/remotes/origin/*\'',
+    'git -C "$repo" fetch origin "+refs/heads/$default_branch:refs/remotes/origin/$default_branch"',
+    'git -C "$repo" remote set-head origin --auto',
+    'if git -C "$repo" show-ref --verify --quiet "refs/heads/$default_branch"; then',
+    '  git -C "$repo" checkout "$default_branch"',
+    'else',
+    '  git -C "$repo" checkout -B "$default_branch" "refs/remotes/origin/$default_branch"',
+    'fi',
+    'git -C "$repo" config "branch.$default_branch.remote" origin',
+    'git -C "$repo" config "branch.$default_branch.merge" "refs/heads/$default_branch"'
+  ]
+}
+
+function createBashCheckoutBranchCommands(branchName: string) {
+  return [
+    `git -C "$repo" fetch --depth 1 origin ${escapeBashArg(branchFetchRefspec(branchName))}`,
+    ...createBashCheckoutFetchedBranchCommands(branchName)
+  ]
+}
+
+function createBashCheckoutFetchedBranchCommands(branchName: string) {
+  return [
+    `git -C "$repo" checkout -B ${escapeBashArg(branchName)} ${escapeBashArg(remoteBranchRef(branchName))}`,
+    `git -C "$repo" config ${escapeBashArg(`branch.${branchName}.remote`)} origin`,
+    `git -C "$repo" config ${escapeBashArg(`branch.${branchName}.merge`)} ${escapeBashArg(`refs/heads/${branchName}`)}`
+  ]
+}
+
+function createBashCheckoutRawRefCommands(refName: string) {
+  return [
+    `git -C "$repo" fetch --depth 1 origin ${escapeBashArg(refName)}`,
+    'git -C "$repo" checkout FETCH_HEAD'
+  ]
+}
+
+function createPowerShellUpdateExistingRepoCommands(repoUrl: string, repoRef: string | null) {
+  return [
+    `Invoke-Git -C $repo remote set-url origin ${escapePowerShellArg(repoUrl)}`,
+    ...createPowerShellCheckoutRepoRefCommands(repoRef),
+    ...(!repoRef ? ['Invoke-Git -C $repo pull --ff-only'] : [])
+  ]
+}
+
+function createPowerShellCloneRepoCommands(repoUrl: string, repoRef: string | null) {
+  if (!repoRef) return [`Invoke-Git clone ${escapePowerShellArg(repoUrl)} $repo`]
+
+  return [
+    `Invoke-Git clone --depth 1 --no-checkout ${escapePowerShellArg(repoUrl)} $repo`,
+    ...createPowerShellCheckoutRepoRefCommands(repoRef)
+  ]
+}
+
+function createPowerShellCheckoutRepoRefCommands(repoRef: string | null) {
+  const ref = normalizeRepoRefForCommands(repoRef)
+  if (!ref) return createPowerShellEnsureDefaultBranchCommands()
+
+  if (ref.kind === 'branch') {
+    return createPowerShellCheckoutBranchCommands(ref.name)
+  }
+
+  if (ref.kind === 'raw') {
+    return createPowerShellCheckoutRawRefCommands(ref.name)
+  }
+
+  return [
+    `git -C $repo fetch --depth 1 origin ${escapePowerShellArg(branchFetchRefspec(ref.name))}`,
+    'if ($LASTEXITCODE -eq 0) {',
+    ...indent(createPowerShellCheckoutFetchedBranchCommands(ref.name)),
+    '} else {',
+    ...indent(createPowerShellCheckoutRawRefCommands(ref.name)),
+    '}'
+  ]
+}
+
+function createPowerShellEnsureDefaultBranchCommands() {
+  return [
+    '$defaultBranchLine = git -C $repo ls-remote --symref origin HEAD | Where-Object { $_ -match "^ref: refs/heads/.+\\sHEAD$" } | Select-Object -First 1',
+    'if (-not $defaultBranchLine) { throw "Unable to resolve origin default branch" }',
+    "$defaultBranch = $defaultBranchLine -replace \"^ref: refs/heads/([^\\s]+)\\sHEAD$\", '$1'",
+    'Invoke-Git -C $repo config --replace-all remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"',
+    'Invoke-Git -C $repo fetch origin "+refs/heads/${defaultBranch}:refs/remotes/origin/${defaultBranch}"',
+    'Invoke-Git -C $repo remote set-head origin --auto',
+    'git -C $repo show-ref --verify --quiet "refs/heads/$defaultBranch"',
+    'if ($LASTEXITCODE -eq 0) {',
+    '  Invoke-Git -C $repo checkout $defaultBranch',
+    '} else {',
+    '  Invoke-Git -C $repo checkout -B $defaultBranch "refs/remotes/origin/$defaultBranch"',
+    '}',
+    'Invoke-Git -C $repo config "branch.$defaultBranch.remote" origin',
+    'Invoke-Git -C $repo config "branch.$defaultBranch.merge" "refs/heads/$defaultBranch"'
+  ]
+}
+
+function createPowerShellCheckoutBranchCommands(branchName: string) {
+  return [
+    `Invoke-Git -C $repo fetch --depth 1 origin ${escapePowerShellArg(branchFetchRefspec(branchName))}`,
+    ...createPowerShellCheckoutFetchedBranchCommands(branchName)
+  ]
+}
+
+function createPowerShellCheckoutFetchedBranchCommands(branchName: string) {
+  return [
+    `Invoke-Git -C $repo checkout -B ${escapePowerShellArg(branchName)} ${escapePowerShellArg(remoteBranchRef(branchName))}`,
+    `Invoke-Git -C $repo config ${escapePowerShellArg(`branch.${branchName}.remote`)} origin`,
+    `Invoke-Git -C $repo config ${escapePowerShellArg(`branch.${branchName}.merge`)} ${escapePowerShellArg(`refs/heads/${branchName}`)}`
+  ]
+}
+
+function createPowerShellCheckoutRawRefCommands(refName: string) {
+  return [
+    `Invoke-Git -C $repo fetch --depth 1 origin ${escapePowerShellArg(refName)}`,
+    'Invoke-Git -C $repo checkout FETCH_HEAD'
+  ]
+}
+
+function normalizeRepoRefForCommands(repoRef: string | null) {
+  if (!repoRef) return null
+  if (repoRef.startsWith('refs/heads/')) {
+    return { kind: 'branch' as const, name: repoRef.slice('refs/heads/'.length) }
+  }
+  if (repoRef.startsWith('refs/')) return { kind: 'raw' as const, name: repoRef }
+  return { kind: 'branch-or-ref' as const, name: repoRef }
+}
+
+function branchFetchRefspec(branchName: string) {
+  return `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`
+}
+
+function remoteBranchRef(branchName: string) {
+  return `refs/remotes/origin/${branchName}`
+}
+
+function indent(lines: string[]) {
+  return lines.map((line) => `  ${line}`)
 }
 
 function normalizeOptionalRef(value?: string) {

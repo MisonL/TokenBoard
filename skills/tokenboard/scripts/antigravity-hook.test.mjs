@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { hookStatus, installHooks, uninstallHooks } from './hooks.mjs'
-import { readSources } from './hooks-utils.mjs'
+import { readSources, readUninstallSources } from './hooks-utils.mjs'
 
 test('all installs Codex and Claude Code hooks while Antigravity CLI stays explicit opt-in', () => {
   assert.deepEqual(readSources('all'), ['codex', 'claude-code'])
   assert.deepEqual(readSources('all,antigravity-cli'), ['codex', 'claude-code', 'antigravity-cli'])
+  assert.deepEqual(readUninstallSources('all'), ['codex', 'claude-code', 'antigravity-cli'])
 })
 
 test('installs and restores Antigravity statusLine command without notify handler', () => {
@@ -42,6 +43,28 @@ test('installs and restores Antigravity statusLine command without notify handle
 
   assert.equal(removed.hooks[0].changed, true)
   assert.equal(removed.notifyRemoved, false)
+  assert.deepEqual(JSON.parse(fs.files.get(paths.antigravitySettingsPath)), originalSettings)
+  assert.equal(fs.files.has(paths.antigravityOriginalStatuslinePath), false)
+})
+
+test('all uninstall restores an opted-in Antigravity statusLine', () => {
+  const paths = createPaths()
+  const originalSettings = {
+    statusLine: {
+      enabled: false,
+      command: 'node /custom/statusline.mjs'
+    }
+  }
+  const fs = memoryFs({
+    [paths.antigravitySettingsPath]: JSON.stringify(originalSettings)
+  })
+
+  installHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'antigravity-cli' } })
+  assert.equal(hookStatus({ paths, fs }).antigravityCli, 'installed')
+
+  const removed = uninstallHooks({ paths, fs, flags: { source: 'all' } })
+
+  assert.equal(removed.hooks.some((hook) => hook.source === 'antigravity-cli' && hook.changed), true)
   assert.deepEqual(JSON.parse(fs.files.get(paths.antigravitySettingsPath)), originalSettings)
   assert.equal(fs.files.has(paths.antigravityOriginalStatuslinePath), false)
 })

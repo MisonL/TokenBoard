@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { readFile, rm, writeFile, mkdtemp } from 'node:fs/promises'
+import { chmod, readFile, rm, stat, writeFile, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -68,6 +68,79 @@ test('statusline CLI writes sanitized JSONL and preserves original command outpu
     assert.deepEqual(event.conversationHashAliases, [plainHash('raw-session-id')])
     assert.match(event.conversationHash, /^[a-f0-9]{64}$/)
     assert.doesNotMatch(await readFile(logPath, 'utf8'), /raw-session-id|\/Users\/example|user@example\.com/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline CLI does not run an original command that was disabled', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-disabled-'))
+  try {
+    const originalPath = join(root, 'original.mjs')
+    const backupPath = join(root, 'original.json')
+    const logPath = join(root, 'events.jsonl')
+    const markerPath = join(root, 'original-ran')
+    await writeFile(originalPath, [
+      `import { writeFileSync } from 'node:fs'`,
+      `writeFileSync(${JSON.stringify(markerPath)}, 'ran')`,
+      `process.stdout.write('disabled-original')`
+    ].join('\n'))
+    await writeFile(backupPath, `${JSON.stringify({
+      statusLine: {
+        enabled: false,
+        command: `${process.execPath} ${originalPath}`
+      },
+      command: `${process.execPath} ${originalPath}`
+    })}\n`)
+
+    const result = spawnSync(process.execPath, [
+      scriptPath,
+      '--state-dir',
+      root,
+      '--log-path',
+      logPath,
+      '--original-command-file',
+      backupPath
+    ], {
+      input: JSON.stringify(statuslinePayload({ conversation_id: 'raw-session-id' })),
+      encoding: 'utf8'
+    })
+
+    assert.equal(result.status, 0)
+    assert.equal(result.stdout, '')
+    await assert.rejects(readFile(markerPath, 'utf8'))
+    const event = JSON.parse(await readFile(logPath, 'utf8'))
+    assert.equal(event.schemaVersion, 'antigravity-statusline/v1')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline CLI tightens existing log file permissions after appending', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('POSIX file mode assertion')
+    return
+  }
+
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-mode-'))
+  try {
+    const logPath = join(root, 'events.jsonl')
+    await writeFile(logPath, '')
+    await chmod(logPath, 0o644)
+
+    const result = spawnSync(process.execPath, [
+      scriptPath,
+      '--state-dir',
+      root,
+      '--log-path',
+      logPath
+    ], {
+      input: JSON.stringify(statuslinePayload({ conversation_id: 'raw-session-id' })),
+      encoding: 'utf8'
+    })
+
+    assert.equal(result.status, 0)
+    assert.equal((await stat(logPath)).mode & 0o777, 0o600)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

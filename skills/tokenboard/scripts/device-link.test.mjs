@@ -4,6 +4,7 @@ import { deviceLinkPath, deviceLinkStatus, readDeviceLink, writeDeviceLink } fro
 
 test('writes device-link.json with private file mode', () => {
   const writes = []
+  const chmods = []
   const mkdirs = []
   const files = new Map()
   const fs = {
@@ -13,6 +14,9 @@ test('writes device-link.json with private file mode', () => {
     writeFileSync(path, value, options) {
       writes.push({ path, value, options })
       files.set(path, value)
+    },
+    chmodSync(path, mode) {
+      chmods.push({ path, mode })
     },
     existsSync(path) {
       return files.has(path)
@@ -35,6 +39,7 @@ test('writes device-link.json with private file mode', () => {
   assert.equal(path, '/home/user/.tokenboard/device-link.json')
   assert.deepEqual(mkdirs, [{ path: '/home/user/.tokenboard', options: { recursive: true } }])
   assert.equal(writes[0].options.mode, 0o600)
+  assert.deepEqual(chmods, [{ path: '/home/user/.tokenboard/device-link.json', mode: 0o600 }])
   assert.deepEqual(readDeviceLink({ path, fs }), {
     version: 1,
     serverOrigin: 'https://tokenboard.example',

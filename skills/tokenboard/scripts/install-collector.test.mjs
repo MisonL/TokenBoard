@@ -43,6 +43,11 @@ test('updates the existing collector origin before pulling', () => {
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
+        command: 'git-ensure-default-branch',
+        args: [],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
         command: 'git',
         args: ['pull', '--ff-only'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
@@ -74,18 +79,8 @@ test('pins an existing collector checkout to a configured ref', () => {
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
-        command: 'git',
-        args: ['fetch', 'origin', 'research/agy-token-support-plan'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
-      },
-      {
-        command: 'git',
-        args: ['checkout', '-B', 'research/agy-token-support-plan', 'origin/research/agy-token-support-plan'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
-      },
-      {
-        command: 'git',
-        args: ['pull', '--ff-only'],
+        command: 'git-fetch-branch-or-ref',
+        args: ['research/agy-token-support-plan'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
@@ -106,20 +101,89 @@ test('clones the configured collector ref when provided', () => {
       packageManager: 'pnpm',
       exists: false,
       platform: 'linux'
-    })[0],
-    {
-      command: 'git',
-      args: [
-        'clone',
-        '--depth',
-        '1',
-        '--branch',
-        'research/agy-token-support-plan',
-        'https://github.com/example/TokenBoard.git',
-        '/home/user/.tokenboard/TokenBoard'
-      ],
-      options: {}
-    }
+    }),
+    [
+      {
+        command: 'git',
+        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        options: {}
+      },
+      {
+        command: 'git-fetch-branch-or-ref',
+        args: ['research/agy-token-support-plan'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
+test('treats all-hex collector refs as branch candidates when installing', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'deadbeef',
+      packageManager: 'pnpm',
+      exists: false,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        options: {}
+      },
+      {
+        command: 'git-fetch-branch-or-ref',
+        args: ['deadbeef'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
+test('clones a configured full ref detached when provided', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'refs/tags/v1.2.3',
+      packageManager: 'pnpm',
+      exists: false,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        options: {}
+      },
+      {
+        command: 'git',
+        args: ['fetch', '--depth', '1', 'origin', 'refs/tags/v1.2.3'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['checkout', 'FETCH_HEAD'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
   )
 })
 

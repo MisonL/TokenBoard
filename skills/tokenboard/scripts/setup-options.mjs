@@ -47,12 +47,20 @@ export function buildInstallCollectorArgs({ flags = {}, packageManager, installC
 }
 
 export function shouldUseDeviceLink(flags = {}, env = process.env) {
-  return Boolean(flags['use-device-link'] || env.TOKENBOARD_USE_DEVICE_LINK === '1')
+  const explicit = flags['use-device-link']
+  if (explicit === false || explicit === 'false' || explicit === '0') {
+    return false
+  }
+  if (explicit) {
+    return true
+  }
+  return env.TOKENBOARD_USE_DEVICE_LINK === '1'
 }
 
 export async function createPairingCodeFromDeviceLink({
   baseUrl,
   readDeviceLink,
+  writeDeviceLink,
   fetcher = fetch
 } = {}) {
   if (!baseUrl) {
@@ -79,6 +87,21 @@ export async function createPairingCodeFromDeviceLink({
     throw new Error(`Device-link reconnect failed with status ${response.status}`)
   }
   const result = await response.json()
+  if (result && typeof result.installClaim === 'string' && result.installClaim.trim() !== '') {
+    if (typeof writeDeviceLink !== 'function') {
+      throw new Error('Failed to refresh TokenBoard device link after reconnect')
+    }
+    try {
+      await writeDeviceLink({
+        serverOrigin: baseOrigin,
+        deviceId: deviceLink.deviceId,
+        installationId: deviceLink.installationId,
+        installClaim: result.installClaim
+      })
+    } catch {
+      throw new Error('Failed to refresh TokenBoard device link after reconnect')
+    }
+  }
   if (!result || typeof result.pairingCode !== 'string' || result.pairingCode.trim() === '') {
     throw new Error('Device-link reconnect response did not include a pairing code')
   }

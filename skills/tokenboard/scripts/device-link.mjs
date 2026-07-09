@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { configDir } from './config.mjs'
 
@@ -9,9 +9,10 @@ export function deviceLinkPath(root = configDir()) {
 export function writeDeviceLink(link, options = {}) {
   const root = options.configDir || configDir()
   const path = options.path || deviceLinkPath(root)
-  const fs = options.fs || { mkdirSync, writeFileSync }
+  const fs = options.fs || { chmodSync, mkdirSync, writeFileSync }
   fs.mkdirSync(root, { recursive: true })
   fs.writeFileSync(path, `${JSON.stringify(normalizeDeviceLink(link), null, 2)}\n`, { mode: 0o600 })
+  fs.chmodSync?.(path, 0o600)
   return path
 }
 

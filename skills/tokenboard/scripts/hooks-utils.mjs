@@ -7,6 +7,14 @@ export const claudeSource = 'claude-code'
 export const antigravitySource = 'antigravity-cli'
 
 export function readSources(value) {
+  return readSourcesWithOptions(value, { includeAntigravityInAll: false })
+}
+
+export function readUninstallSources(value) {
+  return readSourcesWithOptions(value, { includeAntigravityInAll: true })
+}
+
+function readSourcesWithOptions(value, options) {
   const sources = String(value || 'all')
     .split(',')
     .map((source) => source.trim())
@@ -19,7 +27,10 @@ export function readSources(value) {
   }
   if (sources.includes('all')) {
     const explicit = sources.filter((source) => source !== 'all')
-    return [...new Set([codexSource, claudeSource, ...explicit])]
+    const implicit = options.includeAntigravityInAll
+      ? [codexSource, claudeSource, antigravitySource]
+      : [codexSource, claudeSource]
+    return [...new Set([...implicit, ...explicit])]
   }
   return [...new Set(sources)]
 }

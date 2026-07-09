@@ -40,7 +40,8 @@ if (!pairingCode && shouldUseDeviceLink(flags)) {
   try {
     pairingCode = await createPairingCodeFromDeviceLink({
       baseUrl,
-      readDeviceLink
+      readDeviceLink,
+      writeDeviceLink
     })
   } catch (error) {
     console.error(error.message)

@@ -3,12 +3,15 @@ import {
   corepackCommand,
   escapePowerShellSingleQuoted,
   joinForPlatform,
-  runStep
+  runStep,
+  samePath
 } from './upgrade-utils.mjs'
 
 export function runArchiveFallback({
   archiveUrl,
+  archiveUrls,
   collectorDir,
+  configDir,
   skillDir,
   workDir,
   platform,
@@ -18,16 +21,27 @@ export function runArchiveFallback({
   readDir,
   remove
 }) {
+  if (configDir && samePath(skillDir, configDir)) {
+    throw new Error(`Refusing to replace TokenBoard config directory as skill install: ${skillDir}`)
+  }
+  if (configDir && samePath(collectorDir, configDir)) {
+    throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${collectorDir}`)
+  }
+
+  const urls = normalizeArchiveUrls({ archiveUrl, archiveUrls })
   const zipPath = join(workDir, 'tokenboard.zip')
   const extractDir = join(workDir, 'extract')
   remove(workDir, { recursive: true, force: true })
   mkdir(workDir, { recursive: true })
-  downloadArchive({ archiveUrl, zipPath, platform, spawn })
+  downloadArchive({ archiveUrls: urls, zipPath, platform, spawn })
   extractArchive({ zipPath, extractDir, platform, spawn, mkdir })
   const extractedRoot = findExtractedRoot({ extractDir, readDir })
   remove(collectorDir, { recursive: true, force: true })
   copy(extractedRoot, collectorDir, { recursive: true, force: true })
-  copy(joinForPlatform(collectorDir, 'skills', 'tokenboard'), skillDir, { recursive: true, force: true })
+  const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
+  if (!samePath(collectorSkillDir, skillDir)) {
+    copy(collectorSkillDir, skillDir, { recursive: true, force: true })
+  }
   runStep({
     command: corepackCommand(platform),
     args: ['pnpm', 'install', '--frozen-lockfile'],
@@ -36,18 +50,34 @@ export function runArchiveFallback({
   remove(workDir, { recursive: true, force: true })
 }
 
-function downloadArchive({ archiveUrl, zipPath, platform, spawn }) {
+function normalizeArchiveUrls({ archiveUrl, archiveUrls }) {
+  const urls = Array.isArray(archiveUrls) && archiveUrls.length > 0 ? archiveUrls : [archiveUrl]
+  return urls
+    .filter((url) => typeof url === 'string' && url.trim())
+    .map((url) => url.trim())
+}
+
+function downloadArchive({ archiveUrls, zipPath, platform, spawn }) {
   const command = platform === 'win32' ? 'powershell.exe' : 'curl'
-  const args = platform === 'win32'
-    ? [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        `$ErrorActionPreference='Stop'; Invoke-WebRequest -Uri '${escapePowerShellSingleQuoted(archiveUrl)}' -OutFile '${escapePowerShellSingleQuoted(zipPath)}'`
-      ]
-    : ['-L', archiveUrl, '-o', zipPath]
-  runExternal(command, args, { spawn, platform })
+  let lastError
+  for (const archiveUrl of archiveUrls) {
+    const args = platform === 'win32'
+      ? [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          `$ErrorActionPreference='Stop'; Invoke-WebRequest -Uri '${escapePowerShellSingleQuoted(archiveUrl)}' -OutFile '${escapePowerShellSingleQuoted(zipPath)}'`
+        ]
+      : ['-fL', archiveUrl, '-o', zipPath]
+    try {
+      runExternal(command, args, { spawn, platform })
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError ?? new Error('No TokenBoard archive URL candidates were provided')
 }
 
 function extractArchive({ zipPath, extractDir, platform, spawn, mkdir }) {

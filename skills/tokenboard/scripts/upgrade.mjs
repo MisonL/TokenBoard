@@ -12,7 +12,16 @@ import {
   readPackageManager
 } from './config.mjs'
 import { runArchiveFallback } from './upgrade-archive.mjs'
-import { corepackCommand, errorMessage, joinForPlatform, runStep, samePath } from './upgrade-utils.mjs'
+import {
+  buildCloneSteps,
+  buildDefaultBranchPullSteps,
+  buildFetchAndCheckoutRefSteps,
+  corepackCommand,
+  errorMessage,
+  joinForPlatform,
+  runStep,
+  samePath
+} from './upgrade-utils.mjs'
 
 export const defaultRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
 
@@ -22,7 +31,6 @@ export function buildUpgradePlan({
   configDir,
   repoUrl,
   repoRef,
-  packageManager,
   collectorExists,
   collectorIsGitRepo = collectorExists,
   workDir,
@@ -31,33 +39,35 @@ export function buildUpgradePlan({
   if (configDir && samePath(skillDir, configDir)) {
     throw new Error(`Refusing to replace TokenBoard config directory as skill install: ${skillDir}`)
   }
+  if (collectorExists && !collectorIsGitRepo && configDir && samePath(collectorDir, configDir)) {
+    throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${collectorDir}`)
+  }
 
   const replacementDir = workDir ? joinForPlatform(workDir, 'TokenBoard') : null
   const steps = collectorExists && collectorIsGitRepo
     ? [
         { command: 'git', args: ['remote', 'set-url', 'origin', repoUrl], options: { cwd: collectorDir } },
-        ...(repoRef ? [{ command: 'git', args: ['fetch', 'origin', repoRef], options: { cwd: collectorDir } }] : []),
-        ...(repoRef ? [{ command: 'git', args: ['checkout', '-B', repoRef, `origin/${repoRef}`], options: { cwd: collectorDir } }] : []),
-        { command: 'git', args: ['pull', '--ff-only'], options: { cwd: collectorDir } }
+        ...buildFetchAndCheckoutRefSteps({ dir: collectorDir, repoRef }),
+        ...(repoRef ? [] : buildDefaultBranchPullSteps({ dir: collectorDir }))
       ]
     : collectorExists
       ? replacementDir
         ? [
             { command: 'remove', args: [workDir], options: { recursive: true, force: true } },
-            { command: 'git', args: buildCloneArgs({ repoUrl, repoRef, dir: replacementDir }), options: {} },
+            ...buildCloneSteps({ repoUrl, repoRef, dir: replacementDir }),
             { command: 'remove', args: [collectorDir], options: { recursive: true, force: true } },
             { command: 'copy', args: [replacementDir, collectorDir], options: { recursive: true, force: true } },
             { command: 'remove', args: [workDir], options: { recursive: true, force: true } }
           ]
         : [
             { command: 'remove', args: [collectorDir], options: { recursive: true, force: true } },
-            { command: 'git', args: buildCloneArgs({ repoUrl, repoRef, dir: collectorDir }), options: {} }
+            ...buildCloneSteps({ repoUrl, repoRef, dir: collectorDir })
           ]
       : [
-          { command: 'git', args: buildCloneArgs({ repoUrl, repoRef, dir: collectorDir }), options: {} }
+          ...buildCloneSteps({ repoUrl, repoRef, dir: collectorDir })
         ]
 
-  const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard', platform)
+  const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
   if (!samePath(collectorSkillDir, skillDir)) {
     steps.push({
       command: 'copy',
@@ -106,7 +116,6 @@ export function runUpgrade({
       configDir: configDirectory,
       repoUrl,
       repoRef,
-      packageManager,
       collectorExists,
       collectorIsGitRepo,
       workDir: join(configDirectory, 'upgrade-work'),
@@ -120,10 +129,10 @@ export function runUpgrade({
     }
     log(`TokenBoard git upgrade failed, trying archive fallback: ${errorMessage(error)}`)
     runArchiveFallback({
-      archiveUrl: resolveArchiveUrl({ flags, env, config, repoUrl, repoRef }),
+      archiveUrls: resolveArchiveUrls({ flags, env, config, repoUrl, repoRef }),
       collectorDir: collector,
+      configDir: configDirectory,
       skillDir,
-      packageManager,
       workDir: join(configDirectory, 'upgrade-work'),
       platform,
       spawn,
@@ -146,34 +155,34 @@ export function runUpgrade({
   return { collectorDir: collector, skillDir, repoUrl, repoRef, packageManager }
 }
 
-export function resolveArchiveUrl({ flags = {}, env = process.env, config = {}, repoUrl = defaultRepoUrl, repoRef = null } = {}) {
-  const explicit = flags['archive-url'] || env.TOKENBOARD_ARCHIVE_URL
+export function resolveArchiveUrls({ flags = {}, env = process.env, config = {}, repoUrl = defaultRepoUrl, repoRef = null } = {}) {
+  const explicit = trimmedString(flags['archive-url'] || env.TOKENBOARD_ARCHIVE_URL)
   if (explicit) {
-    return explicit
+    return [explicit]
   }
 
-  if (typeof config.repoUrl === 'string' && config.repoUrl.endsWith('.zip')) {
-    return config.repoUrl
+  const configuredRepoUrl = trimmedString(config.repoUrl)
+  if (configuredRepoUrl.endsWith('.zip')) {
+    return [configuredRepoUrl]
   }
 
-  const github = /^https:\/\/github\.com\/([^/]+)\/([^/.]+)(?:\.git)?$/.exec(repoUrl)
+  const github = parseGitHubRepoUrl(repoUrl)
   if (github) {
-    return `https://github.com/${github[1]}/${github[2]}/archive/refs/heads/${encodeURIComponent(repoRef || 'master')}.zip`
+    return buildArchiveRefPaths(repoRef)
+      .map((refPath) => `https://github.com/${github[1]}/${github[2]}/archive/${refPath}.zip`)
   }
 
-  return 'https://github.com/evepupil/TokenBoard/archive/refs/heads/master.zip'
+  throw new Error(`Archive fallback requires a GitHub repo URL or explicit archive URL: ${repoUrl}`)
+}
+
+export function resolveArchiveUrl({ flags = {}, env = process.env, config = {}, repoUrl = defaultRepoUrl, repoRef = null } = {}) {
+  return resolveArchiveUrls({ flags, env, config, repoUrl, repoRef })[0]
 }
 
 export function resolveRepoRef({ flags = {}, env = process.env, config = {} } = {}) {
   const explicit = flags['repo-ref'] || env.TOKENBOARD_REPO_REF
   if (explicit) return explicit
   return typeof config.repoRef === 'string' && config.repoRef.trim() ? config.repoRef : null
-}
-
-function buildCloneArgs({ repoUrl, repoRef, dir }) {
-  return repoRef
-    ? ['clone', '--depth', '1', '--branch', repoRef, repoUrl, dir]
-    : ['clone', '--depth', '1', repoUrl, dir]
 }
 
 export function resolveRepoUrl({ flags = {}, env = process.env, config = {} } = {}) {
@@ -190,11 +199,39 @@ export function resolveRepoUrl({ flags = {}, env = process.env, config = {} } = 
 }
 
 function isGitRepoUrl(value) {
-  return typeof value === 'string' && (
-    value.endsWith('.git') ||
-    value.startsWith('git@') ||
-    value.startsWith('ssh://')
+  const url = trimmedString(value)
+  return !!url && !url.endsWith('.zip') && (
+    url.endsWith('.git') ||
+    url.startsWith('git@') ||
+    url.startsWith('ssh://') ||
+    /^https?:\/\//.test(url)
   )
+}
+
+function parseGitHubRepoUrl(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(trimmed) ||
+    /^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(trimmed) ||
+    /^ssh:\/\/git@github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(trimmed)
+}
+
+function trimmedString(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function buildArchiveRefPaths(repoRef) {
+  const ref = typeof repoRef === 'string' && repoRef.trim() ? repoRef.trim() : 'master'
+  if (ref.startsWith('refs/heads/')) {
+    return [`refs/heads/${encodeURIComponent(ref.slice('refs/heads/'.length))}`]
+  }
+  if (ref.startsWith('refs/tags/')) {
+    return [`refs/tags/${encodeURIComponent(ref.slice('refs/tags/'.length))}`]
+  }
+  return [
+    `refs/heads/${encodeURIComponent(ref)}`,
+    encodeURIComponent(ref)
+  ]
 }
 
 function runCli() {

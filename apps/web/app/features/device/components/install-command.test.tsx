@@ -153,9 +153,30 @@ describe('InstallCommand', () => {
     })
 
     expect(prompt).toContain('如果提示词里带有 --repo-ref 或 --branch')
-    expect(prompt).toContain("git clone --branch 'research/agy-token-support-plan'")
+    expect(prompt).toContain("git clone --depth 1 --no-checkout 'https://github.com/example/TokenBoard.git' \"$repo\"")
+    expect(prompt).toContain("git -C \"$repo\" fetch --depth 1 origin '+refs/heads/research/agy-token-support-plan:refs/remotes/origin/research/agy-token-support-plan'")
+    expect(prompt).toContain("git -C \"$repo\" checkout -B 'research/agy-token-support-plan' 'refs/remotes/origin/research/agy-token-support-plan'")
+    expect(prompt).toContain("git -C \"$repo\" fetch --depth 1 origin 'research/agy-token-support-plan'")
+    expect(prompt).toContain('git -C "$repo" checkout FETCH_HEAD')
     expect(prompt).toContain("--repo-ref 'research/agy-token-support-plan'")
     expect(prompt).toContain('--repo-ref "research/agy-token-support-plan"')
+  })
+
+  test('tries all-hex collector refs as branches before raw refs', () => {
+    const prompt = createInstallPrompt({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai',
+      pairingCode: 'pair_123',
+      collectorRepoUrl: 'https://github.com/example/TokenBoard.git',
+      collectorRepoRef: 'deadbeef'
+    })
+
+    expect(prompt).toContain("git -C \"$repo\" fetch --depth 1 origin '+refs/heads/deadbeef:refs/remotes/origin/deadbeef'")
+    expect(prompt).toContain("git -C \"$repo\" checkout -B 'deadbeef' 'refs/remotes/origin/deadbeef'")
+    expect(prompt).toContain("git -C \"$repo\" fetch --depth 1 origin 'deadbeef'")
+    expect(prompt).toContain('git -C "$repo" checkout FETCH_HEAD')
+    expect(prompt).toContain('git -C $repo fetch --depth 1 origin "+refs/heads/deadbeef:refs/remotes/origin/deadbeef"')
+    expect(prompt).toContain('Invoke-Git -C $repo fetch --depth 1 origin "deadbeef"')
   })
 
   test('generates platform-specific one-command uninstall instructions', () => {
@@ -168,7 +189,7 @@ describe('InstallCommand', () => {
     expect(commands.bash).toContain('skills/tokenboard/scripts/uninstall.mjs" --all')
     expect(commands.bash).not.toContain('```')
     expect(commands.bash).not.toContain('Windows PowerShell')
-    expect(commands.powerShell).toContain('git clone "https://github.com/evepupil/TokenBoard.git" $repo')
+    expect(commands.powerShell).toContain('Invoke-Git clone "https://github.com/evepupil/TokenBoard.git" $repo')
     expect(commands.powerShell).toContain('device-link recovery state')
     expect(commands.powerShell).toContain('skills\\tokenboard\\scripts\\uninstall.mjs") --all')
     expect(commands.powerShell).not.toContain('```')
@@ -183,7 +204,7 @@ describe('InstallCommand', () => {
     expect(commands.bash).toContain('skills/tokenboard/scripts/install-hook.mjs" --source all')
     expect(commands.bash).toContain('# all installs Codex and Claude Code hooks; install Antigravity CLI capture separately with --source antigravity-cli.')
     expect(commands.bash).not.toContain('```')
-    expect(commands.powerShell).toContain('git clone "https://github.com/evepupil/TokenBoard.git" $repo')
+    expect(commands.powerShell).toContain('Invoke-Git clone "https://github.com/evepupil/TokenBoard.git" $repo')
     expect(commands.powerShell).toContain('skills\\tokenboard\\scripts\\install-hook.mjs") --source all')
     expect(commands.powerShell).toContain('# all installs Codex and Claude Code hooks; install Antigravity CLI capture separately with --source antigravity-cli.')
     expect(commands.powerShell).not.toContain('```')
@@ -206,7 +227,7 @@ describe('InstallCommand', () => {
     expect(commands.bash).not.toContain('--pairing-code')
     expect(commands.bash).not.toContain('installClaim')
     expect(commands.bash).not.toContain('```')
-    expect(commands.powerShell).toContain('git clone "https://github.com/evepupil/TokenBoard.git" $repo')
+    expect(commands.powerShell).toContain('Invoke-Git clone "https://github.com/evepupil/TokenBoard.git" $repo')
     expect(commands.powerShell).toContain('$env:TOKENBOARD_CODEX_BATCH_SIZE = "200"')
     expect(commands.powerShell).toContain('skills\\tokenboard\\scripts\\setup.mjs") --use-device-link')
     expect(commands.powerShell).toContain('--base-url "https://tokenboard.example"')
@@ -224,10 +245,10 @@ describe('InstallCommand', () => {
       collectorRepoRef: 'docs/device-identity-reconnect-plan'
     })
 
-    expect(commands.bash).toContain("git clone --branch 'docs/device-identity-reconnect-plan'")
+    expect(commands.bash).toContain("git clone --depth 1 --no-checkout 'https://github.com/example/TokenBoard.git' \"$repo\"")
     expect(commands.bash).toContain("--repo-url 'https://github.com/example/TokenBoard.git'")
     expect(commands.bash).toContain("--repo-ref 'docs/device-identity-reconnect-plan'")
-    expect(commands.powerShell).toContain('git clone --branch "docs/device-identity-reconnect-plan"')
+    expect(commands.powerShell).toContain('Invoke-Git clone --depth 1 --no-checkout "https://github.com/example/TokenBoard.git" $repo')
     expect(commands.powerShell).toContain('--repo-url "https://github.com/example/TokenBoard.git"')
     expect(commands.powerShell).toContain('--repo-ref "docs/device-identity-reconnect-plan"')
   })
@@ -238,12 +259,59 @@ describe('InstallCommand', () => {
       collectorRepoRef: 'research/agy-token-support-plan'
     })
 
-    expect(commands.bash).toContain("git clone --branch 'research/agy-token-support-plan'")
-    expect(commands.bash).toContain("git -C \"$repo\" fetch origin 'research/agy-token-support-plan'")
-    expect(commands.bash).toContain("git -C \"$repo\" checkout -B 'research/agy-token-support-plan' 'origin/research/agy-token-support-plan'")
-    expect(commands.powerShell).toContain('git clone --branch "research/agy-token-support-plan"')
-    expect(commands.powerShell).toContain('git -C $repo fetch origin "research/agy-token-support-plan"')
-    expect(commands.powerShell).toContain('git -C $repo checkout -B "research/agy-token-support-plan" "origin/research/agy-token-support-plan"')
+    expect(commands.bash).toContain("git clone --depth 1 --no-checkout 'https://github.com/example/TokenBoard.git' \"$repo\"")
+    expect(commands.bash).toContain("git -C \"$repo\" fetch --depth 1 origin '+refs/heads/research/agy-token-support-plan:refs/remotes/origin/research/agy-token-support-plan'")
+    expect(commands.bash).toContain("git -C \"$repo\" checkout -B 'research/agy-token-support-plan' 'refs/remotes/origin/research/agy-token-support-plan'")
+    expect(commands.powerShell).toContain('Invoke-Git clone --depth 1 --no-checkout "https://github.com/example/TokenBoard.git" $repo')
+    expect(commands.powerShell).toContain('git -C $repo fetch --depth 1 origin "+refs/heads/research/agy-token-support-plan:refs/remotes/origin/research/agy-token-support-plan"')
+    expect(commands.powerShell).toContain('Invoke-Git -C $repo checkout -B "research/agy-token-support-plan" "refs/remotes/origin/research/agy-token-support-plan"')
+  })
+
+  test('supports full branch, tag, and commit refs in generated bootstrap commands', () => {
+    const branchPrompt = createInstallPrompt({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai',
+      pairingCode: 'pair_123',
+      collectorRepoRef: 'refs/heads/master'
+    })
+    const tagCommands = createInstallHookCommands({ collectorRepoRef: 'refs/tags/v1.2.3' })
+    const commitCommands = createDeviceLinkReconnectCommands({
+      baseUrl: 'https://tokenboard.example',
+      timezone: 'Asia/Shanghai',
+      collectorRepoRef: '0123456789abcdef0123456789abcdef01234567'
+    })
+
+    expect(branchPrompt).toContain("git -C \"$repo\" fetch --depth 1 origin '+refs/heads/master:refs/remotes/origin/master'")
+    expect(branchPrompt).toContain("git -C \"$repo\" checkout -B 'master' 'refs/remotes/origin/master'")
+    expect(tagCommands.bash).toContain("git -C \"$repo\" fetch --depth 1 origin 'refs/tags/v1.2.3'")
+    expect(tagCommands.bash).toContain('git -C "$repo" checkout FETCH_HEAD')
+    expect(tagCommands.powerShell).toContain('Invoke-Git -C $repo fetch --depth 1 origin "refs/tags/v1.2.3"')
+    expect(commitCommands.bash).toContain("git -C \"$repo\" fetch --depth 1 origin '0123456789abcdef0123456789abcdef01234567'")
+    expect(commitCommands.powerShell).toContain('Invoke-Git -C $repo checkout FETCH_HEAD')
+  })
+
+  test('generated default-branch bootstrap fails fast and switches back to origin head', () => {
+    const commands = createInstallHookCommands()
+
+    expect(commands.bash).toContain('set -euo pipefail')
+    expect(commands.bash).toContain('ls-remote --symref origin HEAD')
+    expect(commands.bash).toContain("config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'")
+    expect(commands.bash).toContain('git -C "$repo" fetch origin "+refs/heads/$default_branch:refs/remotes/origin/$default_branch"')
+    expect(commands.bash).not.toContain('git -C "$repo" fetch --depth 1 origin "+refs/heads/$default_branch:refs/remotes/origin/$default_branch"')
+    expect(commands.bash).toContain('git -C "$repo" checkout -B "$default_branch" "refs/remotes/origin/$default_branch"')
+    expect(commands.powerShell).toContain('$ErrorActionPreference = "Stop"')
+    expect(commands.powerShell).toContain('function Invoke-Git')
+    expect(commands.powerShell).toContain('$defaultBranchLine = git -C $repo ls-remote --symref origin HEAD')
+    expect(commands.powerShell).toContain(
+      "$defaultBranch = $defaultBranchLine -replace \"^ref: refs/heads/([^\\s]+)\\sHEAD$\", '$1'"
+    )
+    expect(commands.powerShell).not.toContain(
+      '$defaultBranch = $defaultBranchLine -replace "^ref: refs/heads/([^\\s]+)\\sHEAD$", "$1"'
+    )
+    expect(commands.powerShell).toContain('Invoke-Git -C $repo fetch origin "+refs/heads/${defaultBranch}:refs/remotes/origin/${defaultBranch}"')
+    expect(commands.powerShell).not.toContain('Invoke-Git -C $repo fetch --depth 1 origin "+refs/heads/$defaultBranch:refs/remotes/origin/$defaultBranch"')
+    expect(commands.powerShell).not.toContain('$defaultBranch:refs')
+    expect(commands.powerShell).toContain('Invoke-Git -C $repo checkout -B $defaultBranch "refs/remotes/origin/$defaultBranch"')
   })
 
   test('uses overridden repo url for hook install command bootstrap', () => {
@@ -252,7 +320,7 @@ describe('InstallCommand', () => {
     })
 
     expect(commands.bash).toContain("git clone 'https://github.com/example/TokenBoard.git'")
-    expect(commands.powerShell).toContain('git clone "https://github.com/example/TokenBoard.git" $repo')
+    expect(commands.powerShell).toContain('Invoke-Git clone "https://github.com/example/TokenBoard.git" $repo')
     expect(commands.bash).not.toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
   })
 
@@ -271,9 +339,9 @@ describe('InstallCommand', () => {
     })
 
     expect(commands.bash).toContain("git clone 'https://github.com/example/TokenBoard.git'")
-    expect(commands.powerShell).toContain('git clone "https://github.com/example/TokenBoard.git" $repo')
+    expect(commands.powerShell).toContain('Invoke-Git clone "https://github.com/example/TokenBoard.git" $repo')
     expect(commands.bash).not.toContain("git clone 'https://github.com/evepupil/TokenBoard.git'")
-    expect(commands.powerShell).not.toContain('git clone "https://github.com/evepupil/TokenBoard.git" $repo')
+    expect(commands.powerShell).not.toContain('Invoke-Git clone "https://github.com/evepupil/TokenBoard.git" $repo')
   })
 
   test('escapes install prompt command arguments for shells', () => {
