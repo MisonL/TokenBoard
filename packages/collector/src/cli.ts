@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import type { CollectorConfig } from './config'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
-import { collectAntigravityIdeUsage, collectAntigravityUsage } from './providers/antigravity-gui'
+import {
+  collectAntigravityIdeUsage,
+  collectAntigravityUsage,
+  isAntigravityPartialUsageError
+} from './providers/antigravity-gui'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
@@ -22,6 +26,7 @@ type SourceFailure = {
 
 type CollectOptionalSourceOptions = {
   failFast?: boolean
+  failOnNonUnavailable?: boolean
   ignoreUnavailable?: boolean
 }
 
@@ -96,7 +101,7 @@ export async function runCollectorCli(
     await ackUploadCursors(collection.collectedSources, deps, env)
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since)
     deps.stdout(JSON.stringify(result, null, 2))
-    if (options.failOnSourceError && collection.sourceFailures.length > 0) {
+    if ((options.failOnSourceError || options.source !== 'all') && collection.sourceFailures.length > 0) {
       deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
       return 1
     }
@@ -157,30 +162,15 @@ async function collectSnapshots(source: CliSource, timezone: string, deps: CliDe
   const snapshots: UsageSnapshot[] = []
   const collectedSources: CliSource[] = []
   const sourceFailures: SourceFailure[] = []
-  if (source === 'claude-code') {
-    snapshots.push(...(await deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr })))
-    collectedSources.push(source)
-  }
-
-  if (source === 'codex') {
-    snapshots.push(...(await deps.collectCodexUsage({ timezone, stderr: deps.stderr })))
-    collectedSources.push(source)
-  }
-
-  if (source === 'antigravity-cli') {
-    snapshots.push(...(await readAntigravityCollector(deps)({ timezone, stateDir: resolveStateDir(env) })))
-    collectedSources.push(source)
-  }
-
-  if (source === 'antigravity') {
-    snapshots.push(...(await readAntigravityGuiCollector(deps)({ timezone, stateDir: resolveStateDir(env) })))
-    collectedSources.push(source)
-  }
-
-  if (source === 'antigravity-ide') {
-    snapshots.push(...(await readAntigravityIdeCollector(deps)({ timezone, stateDir: resolveStateDir(env) })))
-    collectedSources.push(source)
-  }
+  await collectOptionalSource(
+    source,
+    () => collectSingleSource(source, timezone, deps, env),
+    snapshots,
+    collectedSources,
+    sourceFailures,
+    deps,
+    { failFast: true }
+  )
 
   return { snapshots, collectedSources, sourceFailures }
 }
@@ -196,9 +186,10 @@ async function collectAllSnapshots(timezone: string, deps: CliDeps, env: CliEnv 
   if (hookMode) {
     return { snapshots, collectedSources, sourceFailures }
   }
-  await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)({ timezone, stateDir: resolveStateDir(env) }), snapshots, collectedSources, sourceFailures, deps, { failFast, ignoreUnavailable: true })
-  await collectOptionalSource('antigravity', () => readAntigravityGuiCollector(deps)({ timezone, stateDir: resolveStateDir(env) }), snapshots, collectedSources, sourceFailures, deps, { failFast, ignoreUnavailable: true })
-  await collectOptionalSource('antigravity-ide', () => readAntigravityIdeCollector(deps)({ timezone, stateDir: resolveStateDir(env) }), snapshots, collectedSources, sourceFailures, deps, { failFast, ignoreUnavailable: true })
+  const antigravityOptions = { failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
+  await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)({ timezone, stateDir: resolveStateDir(env) }), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
+  await collectOptionalSource('antigravity', () => readAntigravityGuiCollector(deps)({ timezone, stateDir: resolveStateDir(env) }), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
+  await collectOptionalSource('antigravity-ide', () => readAntigravityIdeCollector(deps)({ timezone, stateDir: resolveStateDir(env) }), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   return { snapshots, collectedSources, sourceFailures }
 }
 
@@ -218,6 +209,19 @@ async function noopAntigravityCollector(): Promise<UsageSnapshot[]> {
   return []
 }
 
+function collectSingleSource(
+  source: ConcreteCliSource,
+  timezone: string,
+  deps: CliDeps,
+  env: CliEnv = process.env
+) {
+  if (source === 'claude-code') return deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr })
+  if (source === 'codex') return deps.collectCodexUsage({ timezone, stderr: deps.stderr })
+  if (source === 'antigravity-cli') return readAntigravityCollector(deps)({ timezone, stateDir: resolveStateDir(env) })
+  if (source === 'antigravity') return readAntigravityGuiCollector(deps)({ timezone, stateDir: resolveStateDir(env) })
+  return readAntigravityIdeCollector(deps)({ timezone, stateDir: resolveStateDir(env) })
+}
+
 async function collectOptionalSource(
   source: ConcreteCliSource,
   collect: () => Promise<UsageSnapshot[]>,
@@ -232,11 +236,18 @@ async function collectOptionalSource(
     collectedSources.push(source)
   } catch (error) {
     const message = errorMessage(error)
+    if (isAntigravityPartialUsageError(error)) {
+      snapshots.push(...error.snapshots)
+      collectedSources.push(source)
+      sourceFailures.push({ source, message })
+      deps.stderr(`Partially collected ${source} source: ${message}`)
+      return
+    }
     if (options.ignoreUnavailable && isOptionalSourceUnavailable(source, message)) {
       deps.stderr(`Skipping ${source} source: ${message}`)
       return
     }
-    if (options.failFast) throw error
+    if (options.failFast || options.failOnNonUnavailable) throw error
     sourceFailures.push({ source, message })
     deps.stderr(`Skipping ${source} source: ${message}`)
   }
@@ -279,8 +290,7 @@ function isOptionalSourceUnavailable(source: ConcreteCliSource, message: string)
     message.includes('Antigravity SQLite reader unavailable') ||
     message.includes('Antigravity language server exited before it was ready') ||
     message.includes('Timed out starting Antigravity language server') ||
-    message.match(/^spawn \S*Antigravity[^ ]*language_server ENOENT/) !== null ||
-    message.match(/^spawn \S*tokenboard-antigravity-language-server ENOENT/) !== null ||
+    message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null ||
     message.includes('Antigravity conversations directory not found') ||
     message.includes('No Antigravity conversations found')
 }

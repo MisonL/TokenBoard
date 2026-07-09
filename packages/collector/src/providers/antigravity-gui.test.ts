@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
@@ -6,6 +6,7 @@ import { clearPendingUploadCursors } from './session-cursor'
 import {
   collectAntigravityGuiUsage,
   collectAntigravityIdeUsage,
+  isAntigravityPartialUsageError,
   type AntigravityGuiSource
 } from './antigravity-gui'
 
@@ -81,6 +82,74 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
+  test('uploads complete DB day snapshots after acknowledged uploads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-complete-db-'))
+    try {
+      const firstEvent = {
+        cascadeHash: 'c'.repeat(64),
+        eventHash: 'e'.repeat(64),
+        createdAt: '2026-06-23T16:30:00.000Z',
+        model: 'gemini-3-flash-a',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 30
+      }
+      const secondEvent = {
+        ...firstEvent,
+        eventHash: 'f'.repeat(64),
+        createdAt: '2026-06-23T16:35:00.000Z',
+        inputTokens: 50,
+        outputTokens: 10,
+        cacheReadTokens: 5
+      }
+      const options = {
+        source: 'antigravity' as const,
+        stateDir: root,
+        timezone: 'UTC',
+        listCascades: async () => []
+      }
+
+      const first = await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-23T16:40:00.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-db']),
+          events: [firstEvent],
+          lastReadRowIndexByCascade: new Map([['conversation-db', 1]])
+        })
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      const second = await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-23T16:45:00.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-db']),
+          events: [secondEvent],
+          lastReadRowIndexByCascade: new Map([['conversation-db', 2]])
+        })
+      })
+
+      expect(first[0]?.inputTokens).toBe(100)
+      expect(second).toEqual([{
+        source: 'antigravity',
+        usageDate: '2026-06-23',
+        timezone: 'UTC',
+        model: 'gemini-3-flash-a',
+        inputTokens: 150,
+        outputTokens: 30,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 35,
+        totalTokens: 215,
+        costUsd: 0,
+        sessionCount: 1,
+        collectedAt: '2026-06-23T16:45:00.000Z'
+      }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('extracts usage from generator metadata that also contains raw local content fields', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-unsafe-'))
     try {
@@ -124,6 +193,7 @@ describe('collectAntigravityGuiUsage', () => {
 
       const cursorText = await readFile(join(root, 'antigravity-cursor.json'), 'utf8')
       expect(cursorText).not.toContain('raw prompt text')
+      expect(cursorText).not.toContain('conversation-a')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -405,32 +475,99 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
-  test('fails when language server metadata is unavailable for uncaptured cascades', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-without-ls-'))
+  test('persists successful language server cursor progress before a later cascade fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-partial-ls-'))
     try {
+      const calls: string[] = []
+      const options = {
+        source: 'antigravity' as const,
+        stateDir: root,
+        timezone: 'UTC',
+        listCascades: async () => [
+          { id: 'conversation-a', mtimeMs: 2000, size: 20 },
+          { id: 'conversation-b', mtimeMs: 1000, size: 10 }
+        ],
+        requestGeneratorMetadata: async (input: { cascadeId: string }) => {
+          calls.push(input.cascadeId)
+          if (input.cascadeId === 'conversation-b') throw new Error('metadata unavailable')
+          return generatorMetadataResponse({ responseId: `response-${input.cascadeId}` })
+        },
+        readDbUsageEvents: async () => ({ cascadeIds: new Set<string>(), events: [] })
+      }
+
       await expect(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      })).rejects.toThrow('metadata unavailable')
+      expect(calls).toEqual(['conversation-a', 'conversation-b'])
+
+      calls.length = 0
+      await expect(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      })).rejects.toThrow('metadata unavailable')
+      expect(calls).toEqual(['conversation-b'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('throws partial usage with DB snapshots when optional language server metadata is unavailable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-without-ls-'))
+    const dbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-06-23T16:30:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      let run = 0
+      const options = {
         source: 'antigravity',
         stateDir: root,
         timezone: 'UTC',
-        collectedAt: '2026-06-24T02:00:00.000Z',
         languageServerPath: '/missing/tokenboard-antigravity-language-server',
         listCascades: async () => [
           { id: 'conversation-a', mtimeMs: 2000, size: 20 }
         ],
         readDbUsageEvents: async () => ({
-          cascadeIds: new Set(['conversation-db']),
-          events: [{
-            cascadeHash: 'c'.repeat(64),
-            eventHash: 'e'.repeat(64),
-            createdAt: '2026-06-23T16:30:00.000Z',
-            model: 'gemini-3-flash-a',
-            inputTokens: 100,
-            outputTokens: 20,
-            cacheCreationTokens: 0,
-            cacheReadTokens: 30
-          }]
+          cascadeIds: run++ === 0 ? new Set(['conversation-db']) : new Set<string>(),
+          events: run === 1 ? [dbEvent] : [],
+          lastReadRowIndexByCascade: new Map([['conversation-db', 3]])
         })
-      })).rejects.toThrow('spawn /missing/tokenboard-antigravity-language-server ENOENT')
+      } satisfies Parameters<typeof collectAntigravityGuiUsage>[0]
+
+      const first = await expectPartialAntigravitySnapshots(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      }))
+      const second = await expectPartialAntigravitySnapshots(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      }))
+
+      expect(first).toEqual([{
+        source: 'antigravity',
+        usageDate: '2026-06-23',
+        timezone: 'UTC',
+        model: 'gemini-3-flash-a',
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 30,
+        totalTokens: 150,
+        costUsd: 0,
+        sessionCount: 1,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      }])
+      expect(second).toEqual([{
+        ...first[0],
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      }])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -457,6 +594,82 @@ describe('collectAntigravityGuiUsage', () => {
 
       expect(calls).toEqual(['conversation-a'])
       expect(snapshots).toHaveLength(1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('requests language server when DB rows produce no usable usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-row-'))
+    const conversationDir = join(root, 'conversations')
+    const cascadeId = '11111111-1111-1111-1111-111111111111'
+    try {
+      await mkdir(conversationDir)
+      for (let index = 0; index < 300; index += 1) {
+        await writeFile(join(conversationDir, `filler-${index}.txt`), 'filler')
+      }
+      await writeFile(join(conversationDir, `${cascadeId}.pb`), 'cascade')
+      const calls: string[] = []
+      const snapshots = await collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        conversationDir,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set<string>(),
+          events: [],
+          lastReadRowIndexByCascade: new Map([[cascadeId, 7]])
+        }),
+        requestGeneratorMetadata: async (input: { cascadeId: string }) => {
+          calls.push(input.cascadeId)
+          return generatorMetadataResponse()
+        }
+      })
+
+      expect(calls).toEqual([cascadeId])
+      expect(snapshots).toHaveLength(1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('fails when DB rows produce no usable usage and language server is unavailable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-row-missing-ls-'))
+    try {
+      const seenCursorSizes: number[] = []
+      const readDbUsageEvents = async (input?: { lastSeenRowIndexByCascadeHash?: Map<string, number> }) => {
+        seenCursorSizes.push(input?.lastSeenRowIndexByCascadeHash?.size ?? 0)
+        return {
+          cascadeIds: new Set<string>(),
+          events: [],
+          lastReadRowIndexByCascade: new Map([['conversation-a', 7]])
+        }
+      }
+      await expect(collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        languageServerPath: '/missing/tokenboard-antigravity-language-server',
+        listCascades: async () => [
+          { id: 'conversation-a', mtimeMs: 2000, size: 20 }
+        ],
+        readDbUsageEvents
+      })).rejects.toThrow('spawn /missing/tokenboard-antigravity-language-server ENOENT')
+      await expect(collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:05:00.000Z',
+        languageServerPath: '/missing/tokenboard-antigravity-language-server',
+        listCascades: async () => [
+          { id: 'conversation-a', mtimeMs: 2000, size: 20 }
+        ],
+        readDbUsageEvents
+      })).rejects.toThrow('spawn /missing/tokenboard-antigravity-language-server ENOENT')
+
+      expect(seenCursorSizes).toEqual([0, 0])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -661,6 +874,184 @@ describe('collectAntigravityGuiUsage', () => {
       expect(second).toEqual([])
       const cursorText = await readFile(join(root, 'antigravity-cursor.json'), 'utf8')
       expect(cursorText).toContain('gemini-3-flash-a')
+      expect(cursorText).not.toContain('conversation-db')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps acknowledged DB-covered cascades from falling back to unavailable language server', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-covered-'))
+    const oldDbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-01-01T10:00:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      let run = 0
+      const options = {
+        source: 'antigravity' as const,
+        stateDir: root,
+        timezone: 'UTC',
+        languageServerPath: '/missing/tokenboard-antigravity-language-server',
+        listCascades: async () => [
+          { id: 'conversation-db', mtimeMs: 2000, size: 20 }
+        ],
+        readDbUsageEvents: async () => {
+          run += 1
+          return run === 1
+            ? {
+                cascadeIds: new Set(['conversation-db']),
+                events: [oldDbEvent],
+                lastReadRowIndexByCascade: new Map([['conversation-db', 1]])
+              }
+            : {
+                cascadeIds: new Set<string>(),
+                events: [],
+                lastReadRowIndexByCascade: new Map()
+              }
+        }
+      }
+
+      const first = await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-01-01T10:05:00.000Z'
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      const second = await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      })
+
+      expect(first).toHaveLength(1)
+      expect(second).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps DB-covered markers when default cascade listing filters language-server requests', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-covered-default-list-'))
+    const conversationDir = join(root, 'conversations')
+    const cascadeId = '11111111-1111-1111-1111-111111111111'
+    const oldDbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-01-01T10:00:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      await mkdir(conversationDir)
+      for (let index = 0; index < 300; index += 1) {
+        await writeFile(join(conversationDir, `filler-${index}.txt`), 'filler')
+      }
+      await writeFile(join(conversationDir, `${cascadeId}.pb`), 'cascade')
+      let run = 0
+      const options = {
+        source: 'antigravity' as const,
+        stateDir: root,
+        conversationDir,
+        timezone: 'UTC',
+        languageServerPath: '/missing/tokenboard-antigravity-language-server',
+        readDbUsageEvents: async () => {
+          run += 1
+          return run === 1
+            ? {
+                cascadeIds: new Set([cascadeId]),
+                events: [oldDbEvent],
+                lastReadRowIndexByCascade: new Map([[cascadeId, 1]])
+              }
+            : {
+                cascadeIds: new Set<string>(),
+                events: [],
+                lastReadRowIndexByCascade: new Map([[cascadeId, 1]])
+              }
+        }
+      }
+
+      const first = await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-01-01T10:05:00.000Z'
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      const second = await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      })
+
+      expect(first).toHaveLength(1)
+      expect(second).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('requests language server for DB-covered cascades after the cascade file changes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-covered-changed-'))
+    const oldDbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-01-01T10:00:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      let run = 0
+      const calls: string[] = []
+      const options = {
+        source: 'antigravity' as const,
+        stateDir: root,
+        timezone: 'UTC',
+        listCascades: async () => [
+          run === 1
+            ? { id: 'conversation-db', mtimeMs: 2000, size: 20 }
+            : { id: 'conversation-db', mtimeMs: 3000, size: 30 }
+        ],
+        readDbUsageEvents: async () => {
+          run += 1
+          return run === 1
+            ? {
+                cascadeIds: new Set(['conversation-db']),
+                events: [oldDbEvent],
+                lastReadRowIndexByCascade: new Map([['conversation-db', 1]])
+              }
+            : {
+                cascadeIds: new Set<string>(),
+                events: [],
+                lastReadRowIndexByCascade: new Map()
+              }
+        },
+        requestGeneratorMetadata: async (input: { cascadeId: string }) => {
+          calls.push(input.cascadeId)
+          return generatorMetadataResponse({ responseId: 'response-new' })
+        }
+      }
+
+      await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-01-01T10:05:00.000Z'
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      const second = await collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      })
+
+      expect(calls).toEqual(['conversation-db'])
+      expect(second).toHaveLength(1)
+      expect(second[0]?.inputTokens).toBe(120)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -786,6 +1177,17 @@ function generatorMetadataResponse(options: { source?: AntigravityGuiSource; res
         }
       })
     ]
+  }
+}
+
+async function expectPartialAntigravitySnapshots(promise: Promise<unknown>) {
+  try {
+    await promise
+    throw new Error('Expected partial Antigravity usage error')
+  } catch (error) {
+    expect(isAntigravityPartialUsageError(error)).toBe(true)
+    if (!isAntigravityPartialUsageError(error)) throw error
+    return error.snapshots
   }
 }
 

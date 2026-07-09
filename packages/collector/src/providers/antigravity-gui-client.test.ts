@@ -4,11 +4,27 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import {
   createAntigravityLanguageServerClient,
+  formatMetadataRequestHttpError,
   listAntigravityCascades,
   type AntigravityCascadeFileSystem
 } from './antigravity-gui-client'
 
 describe('createAntigravityLanguageServerClient', () => {
+  test('does not include raw response bodies in metadata HTTP errors', () => {
+    const rawBody = [
+      'prompt: summarize /Users/test/private/project/file.ts',
+      'email: user@example.com',
+      'completion: raw local content'
+    ].join('\n')
+    const message = formatMetadataRequestHttpError('antigravity', 500)
+
+    expect(message).toBe('Antigravity metadata request failed for antigravity: HTTP 500')
+    expect(message).not.toContain(rawBody)
+    expect(message).not.toContain('/Users/test/private/project/file.ts')
+    expect(message).not.toContain('user@example.com')
+    expect(message).not.toContain('raw local content')
+  })
+
   test.skipIf(process.platform === 'win32')('closes the language server process when startup times out', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-'))
     const previousTimeout = process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS
@@ -81,6 +97,112 @@ describe('listAntigravityCascades', () => {
     expect(statPaths.some((path) => path.includes(cascadeId(0)))).toBe(true)
     expect(statPaths.some((path) => path.includes(cascadeId(1)))).toBe(true)
     expect(statPaths.some((path) => path.includes(cascadeId(2)))).toBe(true)
+  })
+
+  test('selects newest cascades from the full directory before applying the request limit', async () => {
+    const listed: string[] = []
+    const statPaths: string[] = []
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 500; index += 1) {
+          const name = `${cascadeId(index)}.pb`
+          listed.push(name)
+          yield {
+            name,
+            isFile: () => true
+          }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        return { mtimeMs: Number(id?.slice(-12) ?? 0), size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-large-cascades',
+      limit: 2,
+      fileSystem
+    })
+
+    expect(listed).toHaveLength(500)
+    expect(statPaths).toHaveLength(1000)
+    expect(cascades).toHaveLength(2)
+    expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(499), cascadeId(498)])
+  })
+
+  test('does not miss newest cascades when directory order lists them after old entries', async () => {
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 500; index += 1) {
+          yield {
+            name: `${cascadeId(index)}.pb`,
+            isFile: () => true
+          }
+        }
+      },
+      stat: async (path) => {
+        if (path.endsWith('.db')) {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        const index = Number(id?.slice(-12) ?? 0)
+        return { mtimeMs: index >= 498 ? 10_000 + index : index, size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-unsorted-cascades',
+      limit: 2,
+      fileSystem
+    })
+
+    expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(499), cascadeId(498)])
+  })
+
+  test('stats required cascades even when they are outside the bounded directory window', async () => {
+    const listed: string[] = []
+    const statPaths: string[] = []
+    const requiredId = cascadeId(499)
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 500; index += 1) {
+          const name = `${cascadeId(index)}.pb`
+          listed.push(name)
+          yield {
+            name,
+            isFile: () => true
+          }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        return { mtimeMs: Number(id?.slice(-12) ?? 0), size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-required-cascades',
+      limit: 2,
+      requiredCascadeIds: [requiredId],
+      includeCascade: (cascade) => cascade.id === requiredId,
+      fileSystem
+    })
+
+    expect(listed).toHaveLength(500)
+    expect(cascades.map((cascade) => cascade.id)).toEqual([requiredId])
+    expect(statPaths.some((path) => path.includes(requiredId))).toBe(true)
   })
 })
 

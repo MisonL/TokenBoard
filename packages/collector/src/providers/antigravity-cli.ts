@@ -13,7 +13,12 @@ import { mergeSnapshots } from './session-cursor'
 import { readAntigravityDbUsageEvents, type AntigravityDbUsageResult } from './antigravity-history-db'
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseStatuslineEvent, type StatuslineEvent } from './antigravity-cli-statusline'
-import { pushCliUsageEvent, pushPendingCliCursorSnapshots } from './antigravity-cli-cursor'
+import {
+  lastSeenCliDbRowIndexByCascadeHash,
+  markCliDbRowsProcessed,
+  pushCliUsageEvent,
+  pushCompleteCliCursorSnapshots
+} from './antigravity-cli-cursor'
 
 const source = 'antigravity-cli'
 const statuslineFileName = 'antigravity-cli-statusline.jsonl'
@@ -24,7 +29,9 @@ export type CollectAntigravityCliUsageOptions = {
   stateDir?: string
   eventPath?: string
   conversationDir?: string
-  readDbUsageEvents?: () => Promise<AntigravityDbUsageResult>
+  readDbUsageEvents?: (input: {
+    lastSeenRowIndexByCascadeHash: Map<string, number>
+  }) => Promise<AntigravityDbUsageResult>
 }
 
 export async function collectAntigravityCliUsage(
@@ -40,7 +47,6 @@ export async function collectAntigravityCliUsage(
   const cursor = await readCursor(cursorPath, source)
   const emittedKeys = new Set<string>()
   const snapshots: UsageSnapshot[] = []
-  pushPendingCliCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
 
   if (eventStats) {
     const eventSizeBytes = readEventSizeBytes(eventStats.size)
@@ -51,11 +57,16 @@ export async function collectAntigravityCliUsage(
     cursor.lastScanOffsetBytes = eventSizeBytes
   }
 
-  const localDbUsage = await readOptionalLocalDbUsage(options, Boolean(eventStats))
+  const localDbUsage = await readOptionalLocalDbUsage(options, Boolean(eventStats), cursor)
   for (const event of localDbUsage.events.map(historyEvent)) {
     pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt })
   }
+  markCliDbRowsProcessed({
+    cursor,
+    lastReadRowIndexByCascade: localDbUsage.lastReadRowIndexByCascade
+  })
 
+  pushCompleteCliCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
   await writeCursor(cursorPath, cursor)
   return mergeSnapshots(snapshots)
 }
@@ -71,16 +82,27 @@ async function readEventStats(eventPath: string) {
   }
 }
 
-async function readLocalDbUsage(options: CollectAntigravityCliUsageOptions) {
-  if (options.readDbUsageEvents) return options.readDbUsageEvents()
+async function readLocalDbUsage(
+  options: CollectAntigravityCliUsageOptions,
+  cursor: Awaited<ReturnType<typeof readCursor>>
+) {
+  const lastSeenRowIndexByCascadeHash = lastSeenCliDbRowIndexByCascadeHash({ cursor })
+  if (options.readDbUsageEvents) {
+    return options.readDbUsageEvents({ lastSeenRowIndexByCascadeHash })
+  }
   return readAntigravityDbUsageEvents({
-    conversationDir: options.conversationDir ?? defaultConversationDir()
+    conversationDir: options.conversationDir ?? defaultConversationDir(),
+    lastSeenRowIndexByCascadeHash
   })
 }
 
-async function readOptionalLocalDbUsage(options: CollectAntigravityCliUsageOptions, statuslineAvailable: boolean) {
+async function readOptionalLocalDbUsage(
+  options: CollectAntigravityCliUsageOptions,
+  statuslineAvailable: boolean,
+  cursor: Awaited<ReturnType<typeof readCursor>>
+) {
   try {
-    return await readLocalDbUsage(options)
+    return await readLocalDbUsage(options, cursor)
   } catch (error) {
     if (statuslineAvailable && isUnavailableDbError(error)) {
       return { cascadeIds: new Set<string>(), events: [] }

@@ -4,7 +4,8 @@ import { formatDate } from './session-jsonl-parser-utils'
 import {
   readCursor,
   stripCollectedAt,
-  type CursorEntry
+  type CursorEntry,
+  type CursorSnapshot
 } from './session-cursor-store'
 import type { StatuslineEvent } from './antigravity-cli-statusline'
 
@@ -58,15 +59,55 @@ export function pushCliUsageEvent(input: {
   input.emittedKeys.add(primaryKey)
 }
 
-export function pushPendingCliCursorSnapshots(
+export function pushCompleteCliCursorSnapshots(
   snapshots: UsageSnapshot[],
   cursor: AntigravityCliCursor,
   collectedAt: string,
   emittedKeys: Set<string>
 ) {
+  const dirtyGroups = new Set<string>()
   for (const [eventKey, entry] of Object.entries(cursor.files)) {
     if (!entry.pendingUpload || entry.snapshots.length === 0) continue
+    for (const snapshot of entry.snapshots) {
+      dirtyGroups.add(snapshotGroupKey(snapshot))
+    }
+  }
+
+  for (const snapshot of snapshots) {
+    dirtyGroups.add(snapshotGroupKey(snapshot))
+  }
+
+  for (const [eventKey, entry] of Object.entries(cursor.files)) {
+    if (entry.snapshots.length === 0) continue
+    if (!entry.snapshots.some((snapshot) => dirtyGroups.has(snapshotGroupKey(snapshot)))) continue
     pushCachedSnapshots(snapshots, entry, collectedAt, emittedKeys, eventKey)
+  }
+}
+
+export function lastSeenCliDbRowIndexByCascadeHash(input: {
+  cursor: AntigravityCliCursor
+}) {
+  // Keys are sha256(cascadeId), matching antigravity-history-db cursor lookups.
+  const indexes = new Map<string, number>()
+  for (const [key, entry] of Object.entries(input.cursor.files)) {
+    if (!key.startsWith(cliDbCascadeCursorPrefix)) continue
+    indexes.set(key.slice(cliDbCascadeCursorPrefix.length), entry.mtimeMs)
+  }
+  return indexes
+}
+
+export function markCliDbRowsProcessed(input: {
+  cursor: AntigravityCliCursor
+  lastReadRowIndexByCascade?: Map<string, number>
+}) {
+  for (const [cascadeId, rowIndex] of input.lastReadRowIndexByCascade ?? []) {
+    const key = cliDbCascadeCursorKey(cascadeId)
+    input.cursor.files[key] = newCursorEntry({
+      snapshots: [],
+      marker: key,
+      mtimeMs: rowIndex,
+      pendingUpload: false
+    })
   }
 }
 
@@ -221,6 +262,21 @@ function historyStatuslineClaimKey(statuslineKey: string) {
   return ['history-statusline-claim', statuslineKey].join('\0')
 }
 
+const cliDbCascadeCursorPrefix = ['db-row', source, ''].join('\0')
+
+function cliDbCascadeCursorKey(cascadeId: string) {
+  return `${cliDbCascadeCursorPrefix}${hash(cascadeId)}`
+}
+
 function hash(value: string) {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function snapshotGroupKey(snapshot: CursorSnapshot | UsageSnapshot) {
+  return [
+    snapshot.source,
+    snapshot.usageDate,
+    snapshot.timezone,
+    snapshot.model
+  ].join('\0')
 }

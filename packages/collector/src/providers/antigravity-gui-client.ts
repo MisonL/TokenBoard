@@ -46,8 +46,14 @@ export type AntigravityCascadeFileSystem = {
 const nodeCascadeFileSystem: AntigravityCascadeFileSystem = {
   listFiles: async function * (path: string) {
     const dir = await opendir(path)
-    for await (const entry of dir) {
-      yield entry
+    try {
+      while (true) {
+        const entry = await dir.read()
+        if (!entry) break
+        yield entry
+      }
+    } finally {
+      await dir.close()
     }
   },
   stat
@@ -64,6 +70,7 @@ export async function listAntigravityCascades(input: {
   source: AntigravityGuiSource
   conversationDir?: string
   limit?: number
+  requiredCascadeIds?: Iterable<string>
   includeCascade?: (cascade: AntigravityCascadeRef) => boolean
   fileSystem?: AntigravityCascadeFileSystem
 }) {
@@ -86,6 +93,15 @@ export async function listAntigravityCascades(input: {
   const seenIds = new Set<string>()
   let foundCascade = false
   try {
+    for (const id of input.requiredCascadeIds ?? []) {
+      if (!cascadeIdPattern.test(id) || seenIds.has(id)) continue
+      seenIds.add(id)
+      const cascade = await cascadeRef(fileSystem, dir, id)
+      if (!cascade) continue
+      foundCascade = true
+      if (input.includeCascade && !input.includeCascade(cascade)) continue
+      pushRecentCascade(cascades, cascade, limit)
+    }
     for await (const entry of entries) {
       if (!entry.isFile()) continue
       const id = cascadeIdFromFile(entry.name)
@@ -248,7 +264,7 @@ function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & {
       res.on('end', () => {
         const text = Buffer.concat(chunks).toString('utf8')
         if (res.statusCode !== 200) {
-          reject(new Error(`Antigravity metadata request failed for ${input.source}: HTTP ${res.statusCode} ${text.slice(0, 500)}`))
+          reject(new Error(formatMetadataRequestHttpError(input.source, res.statusCode)))
           return
         }
         try {
@@ -262,6 +278,10 @@ function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & {
     req.on('error', reject)
     req.end(body)
   })
+}
+
+export function formatMetadataRequestHttpError(source: AntigravityGuiSource, statusCode?: number) {
+  return `Antigravity metadata request failed for ${source}: HTTP ${statusCode ?? 'unknown'}`
 }
 
 async function closeLanguageServer(server: LanguageServerProcess) {

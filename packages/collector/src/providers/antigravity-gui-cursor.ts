@@ -3,7 +3,8 @@ import { formatDate } from './session-jsonl-parser-utils'
 import {
   readCursor,
   stripCollectedAt,
-  type CursorEntry
+  type CursorEntry,
+  type CursorSnapshot
 } from './session-cursor-store'
 import { hash, type AntigravityUsageEvent } from './antigravity-gui-parser'
 import type { AntigravityCascadeRef } from './antigravity-gui-client'
@@ -37,14 +38,27 @@ export function pushGuiUsageEvent(input: {
   input.emittedKeys.add(eventKey)
 }
 
-export function pushPendingGuiCursorSnapshots(
+export function pushCompleteGuiCursorSnapshots(
   snapshots: UsageSnapshot[],
   cursor: AntigravityGuiCursor,
   collectedAt: string,
   emittedKeys: Set<string>
 ) {
+  const dirtyGroups = new Set<string>()
   for (const [eventKey, entry] of Object.entries(cursor.files)) {
     if (!entry.pendingUpload || entry.snapshots.length === 0) continue
+    for (const snapshot of entry.snapshots) {
+      dirtyGroups.add(snapshotGroupKey(snapshot))
+    }
+  }
+
+  for (const snapshot of snapshots) {
+    dirtyGroups.add(snapshotGroupKey(snapshot))
+  }
+
+  for (const [eventKey, entry] of Object.entries(cursor.files)) {
+    if (entry.snapshots.length === 0) continue
+    if (!entry.snapshots.some((snapshot) => dirtyGroups.has(snapshotGroupKey(snapshot)))) continue
     pushCachedSnapshots(snapshots, entry, collectedAt, emittedKeys, eventKey)
   }
 }
@@ -71,6 +85,60 @@ export function markCascadeProcessed(input: {
     pendingUpload: false,
     size: input.cascade.size
   })
+}
+
+export function hasDbCascadeRowsProcessed(input: {
+  cascade: AntigravityCascadeRef
+  cursor: AntigravityGuiCursor
+  source: AntigravityGuiSource
+}) {
+  const entry = input.cursor.files[dbCoveredCascadeCursorKey(input.source, input.cascade.id)]
+  return entry !== undefined &&
+    entry.mtimeMs === input.cascade.mtimeMs &&
+    entry.size === input.cascade.size
+}
+
+export function lastSeenDbRowIndexByCascadeHash(input: {
+  cursor: AntigravityGuiCursor
+  source: AntigravityGuiSource
+}) {
+  const prefix = dbCascadeCursorPrefix(input.source)
+  const indexes = new Map<string, number>()
+  for (const [key, entry] of Object.entries(input.cursor.files)) {
+    if (!key.startsWith(prefix)) continue
+    indexes.set(key.slice(prefix.length), entry.mtimeMs)
+  }
+  return indexes
+}
+
+export function markDbCascadeRowsProcessed(input: {
+  cursor: AntigravityGuiCursor
+  coveredCascadeIds?: Set<string>
+  coveredCascades?: AntigravityCascadeRef[]
+  source: AntigravityGuiSource
+  lastReadRowIndexByCascade?: Map<string, number>
+}) {
+  for (const [cascadeId, rowIndex] of input.lastReadRowIndexByCascade ?? []) {
+    const key = dbCascadeCursorKey(input.source, cascadeId)
+    input.cursor.files[key] = newCursorEntry({
+      snapshots: [],
+      marker: key,
+      mtimeMs: rowIndex,
+      pendingUpload: false
+    })
+  }
+  const coveredCascadeIds = input.coveredCascadeIds ?? new Set<string>()
+  for (const cascade of input.coveredCascades ?? []) {
+    if (!coveredCascadeIds.has(cascade.id)) continue
+    const key = dbCoveredCascadeCursorKey(input.source, cascade.id)
+    input.cursor.files[key] = newCursorEntry({
+      snapshots: [],
+      marker: key,
+      mtimeMs: cascade.mtimeMs,
+      pendingUpload: false,
+      size: cascade.size
+    })
+  }
 }
 
 function buildSnapshot(input: {
@@ -145,6 +213,27 @@ function cascadeCursorKey(source: AntigravityGuiSource, cascadeId: string) {
   return ['cascade', source, hash(cascadeId)].join('\0')
 }
 
+function dbCascadeCursorKey(source: AntigravityGuiSource, cascadeId: string) {
+  return `${dbCascadeCursorPrefix(source)}${hash(cascadeId)}`
+}
+
+function dbCoveredCascadeCursorKey(source: AntigravityGuiSource, cascadeId: string) {
+  return ['db-covered', source, hash(cascadeId)].join('\0')
+}
+
+function dbCascadeCursorPrefix(source: AntigravityGuiSource) {
+  return ['db', source, ''].join('\0')
+}
+
 function usageSessionKey(event: AntigravityUsageEvent, usageDate: string, source: AntigravityGuiSource) {
   return ['session', source, usageDate, event.model, event.cascadeHash].join('\0')
+}
+
+function snapshotGroupKey(snapshot: CursorSnapshot | UsageSnapshot) {
+  return [
+    snapshot.source,
+    snapshot.usageDate,
+    snapshot.timezone,
+    snapshot.model
+  ].join('\0')
 }

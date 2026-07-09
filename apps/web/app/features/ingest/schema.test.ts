@@ -38,6 +38,20 @@ describe('ingest schemas', () => {
     ).toThrow('cacheReadTokens must not exceed totalTokens')
   })
 
+  test('rejects Antigravity source costs', () => {
+    for (const source of ['antigravity-cli', 'antigravity', 'antigravity-ide'] as const) {
+      expect(() =>
+        ingestRequestSchema.parse({
+          snapshots: [{
+            ...baseSnapshot,
+            source,
+            costUsd: 0.01
+          }]
+        })
+      ).toThrow('Antigravity source costs are unavailable')
+    }
+  })
+
   test('accepts legacy collector snapshot batches', () => {
     const snapshots = Array.from({ length: legacyCollectorBatchSize }, (_, index) => ({
       ...baseSnapshot,

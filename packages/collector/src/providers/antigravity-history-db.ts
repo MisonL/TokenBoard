@@ -14,24 +14,35 @@ const cascadeIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 export type AntigravityDbUsageResult = {
   cascadeIds: Set<string>
   events: AntigravityUsageEvent[]
+  lastReadRowIndexByCascade?: Map<string, number>
 }
 
 export async function readAntigravityDbUsageEvents(input: {
   conversationDir: string
   sqliteBin?: string
+  lastSeenRowIndexByCascadeHash?: Map<string, number>
 }): Promise<AntigravityDbUsageResult> {
   const dbFiles = await listDbFiles(input.conversationDir)
-  const result: AntigravityDbUsageResult = { cascadeIds: new Set(), events: [] }
+  const result: AntigravityDbUsageResult = {
+    cascadeIds: new Set(),
+    events: [],
+    lastReadRowIndexByCascade: new Map()
+  }
   for (const dbFile of dbFiles) {
     const cascadeId = basename(dbFile, '.db')
     const fallbackCreatedAt = (await stat(dbFile)).mtime.toISOString()
     const beforeCount = result.events.length
-    for (const row of await readGeneratorMetadataRows(dbFile, input.sqliteBin)) {
+    const lastSeenRowIndex = input.lastSeenRowIndexByCascadeHash?.get(hash(cascadeId))
+    for (const row of await readGeneratorMetadataRows(dbFile, {
+      sqliteBin: input.sqliteBin,
+      lastSeenRowIndex
+    })) {
       const events = parseAntigravityGeneratorMetadataBlobEvents(row.data, {
         cascadeId,
         rowIndex: row.index,
         fallbackCreatedAt
       })
+      result.lastReadRowIndexByCascade?.set(cascadeId, row.index)
       result.events.push(...events.map((event) => withLegacyCascadeAlias(event, cascadeId)))
     }
     if (result.events.length > beforeCount) {
@@ -75,8 +86,16 @@ async function listDbFiles(conversationDir: string) {
     .map((name) => join(conversationDir, name))
 }
 
-async function readGeneratorMetadataRows(dbFile: string, sqliteBin = process.env.TOKENBOARD_SQLITE_BIN || 'sqlite3') {
-  const sql = 'select idx, hex(data) from gen_metadata order by idx'
+async function readGeneratorMetadataRows(
+  dbFile: string,
+  options: {
+    sqliteBin?: string
+    lastSeenRowIndex?: number
+  } = {}
+) {
+  const sqliteBin = options.sqliteBin ?? process.env.TOKENBOARD_SQLITE_BIN ?? 'sqlite3'
+  const lastSeenRowIndex = normalizeLastSeenRowIndex(options.lastSeenRowIndex)
+  const sql = `select idx, hex(data) from gen_metadata where idx > ${lastSeenRowIndex} order by idx`
   let stdout
   try {
     stdout = (await execFileAsync(sqliteBin, ['-batch', dbFile, sql], {
@@ -94,6 +113,16 @@ async function readGeneratorMetadataRows(dbFile: string, sqliteBin = process.env
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
     .map((line) => parseSqliteRow(line, dbFile))
+}
+
+function normalizeLastSeenRowIndex(value: number | undefined) {
+  if (value === undefined) return -1
+  if (!Number.isSafeInteger(value) || value < -1) return -1
+  return value
+}
+
+function hash(value: string) {
+  return createHash('sha256').update(value).digest('hex')
 }
 
 function parseSqliteRow(line: string, dbFile: string) {

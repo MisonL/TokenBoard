@@ -22,8 +22,21 @@ describe('usage snapshot schema', () => {
       expect(usageSourceSchema.parse(source)).toBe(source)
       expect(usageSnapshotSchema.parse({
         ...baseSnapshot,
-        source
+        source,
+        costUsd: 0
       }).source).toBe(source)
+    }
+  })
+
+  test('rejects Antigravity source costs', () => {
+    for (const source of ['antigravity-cli', 'antigravity', 'antigravity-ide'] as const) {
+      expect(() =>
+        usageSnapshotSchema.parse({
+          ...baseSnapshot,
+          source,
+          costUsd: 0.01
+        })
+      ).toThrow('Antigravity source costs are unavailable')
     }
   })
 

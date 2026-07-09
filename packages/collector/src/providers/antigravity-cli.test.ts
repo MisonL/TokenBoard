@@ -280,6 +280,78 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('passes acknowledged DB row cursors and uploads complete day snapshots', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-cursor-'))
+    try {
+      const firstEvent = {
+        cascadeHash: conversationA,
+        eventHash: 'e'.repeat(64),
+        createdAt: '2026-06-23T16:30:00.000Z',
+        model: 'gemini-3-flash-a',
+        inputTokens: 100,
+        outputTokens: 12,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 50
+      }
+      const secondEvent = {
+        ...firstEvent,
+        eventHash: 'f'.repeat(64),
+        createdAt: '2026-06-23T16:31:00.000Z',
+        inputTokens: 25,
+        outputTokens: 3,
+        cacheReadTokens: 10
+      }
+      const dbCursorReads: Array<Map<string, number>> = []
+      const first = await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        readDbUsageEvents: async ({ lastSeenRowIndexByCascadeHash }) => {
+          dbCursorReads.push(lastSeenRowIndexByCascadeHash)
+          return {
+            cascadeIds: new Set(['conversation-a']),
+            events: [firstEvent],
+            lastReadRowIndexByCascade: new Map([['conversation-a', 1]])
+          }
+        }
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      const second = await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:05:00.000Z',
+        readDbUsageEvents: async ({ lastSeenRowIndexByCascadeHash }) => {
+          dbCursorReads.push(lastSeenRowIndexByCascadeHash)
+          return {
+            cascadeIds: new Set(['conversation-a']),
+            events: [secondEvent],
+            lastReadRowIndexByCascade: new Map([['conversation-a', 2]])
+          }
+        }
+      })
+
+      expect(first[0]?.inputTokens).toBe(100)
+      expect(dbCursorReads[0]?.size).toBe(0)
+      expect(dbCursorReads[1]?.get(plainHash('conversation-a'))).toBe(1)
+      expect(second).toEqual([{
+        source: 'antigravity-cli',
+        usageDate: '2026-06-23',
+        timezone: 'UTC',
+        model: 'gemini-3-flash-a',
+        inputTokens: 125,
+        outputTokens: 15,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 60,
+        totalTokens: 200,
+        costUsd: 0,
+        sessionCount: 1,
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('collects local conversation history even when a statusline log path is configured', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-configured-log-'))
     try {
@@ -608,7 +680,7 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
-  test('scans only appended statusline events after acknowledged uploads', async () => {
+  test('uploads complete statusline day snapshots after acknowledged uploads', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-'))
     try {
       const eventPath = join(root, 'events.jsonl')
@@ -626,13 +698,13 @@ describe('collectAntigravityCliUsage', () => {
           usageDate: '2026-06-23',
           timezone: 'UTC',
           model: 'Gemini 3.5 Flash (Medium)',
-          inputTokens: 20,
-          outputTokens: 4,
+          inputTokens: 30,
+          outputTokens: 6,
           cacheCreationTokens: 0,
           cacheReadTokens: 0,
-          totalTokens: 24,
+          totalTokens: 36,
           costUsd: 0,
-          sessionCount: 1,
+          sessionCount: 2,
           collectedAt: '2026-06-23T10:05:00.000Z'
         }
       ])

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runCollectorCli } from './cli'
+import { AntigravityPartialUsageError } from './providers/antigravity-gui'
 
 const antigravitySnapshot: UsageSnapshot = {
   source: 'antigravity-cli',
@@ -193,7 +194,145 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
-  test('still fails strict all mode when an installed Antigravity source has a real parse error', async () => {
+  test('does not fail strict all mode when a missing Antigravity language server path contains spaces', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_FAIL_ON_SOURCE_ERROR: '1'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new Error('spawn /Applications/Antigravity Beta.app/Contents/Resources/app/bin/language_server ENOENT')
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(uploaded).toEqual([[]])
+    expect(stderr).toEqual([
+      'Skipping antigravity source: spawn /Applications/Antigravity Beta.app/Contents/Resources/app/bin/language_server ENOENT'
+    ])
+  })
+
+  test('uploads partial DB snapshots and warns when optional Antigravity language server is unavailable', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+    const snapshot = { ...antigravitySnapshot, source: 'antigravity' as const }
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new AntigravityPartialUsageError(
+            'Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT',
+            [snapshot]
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(uploaded).toEqual([[snapshot]])
+    expect(stderr).toEqual([
+      'Partially collected antigravity source: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT'
+    ])
+  })
+
+  test('fails strict all mode after uploading partial Antigravity DB snapshots', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+    const snapshot = { ...antigravitySnapshot, source: 'antigravity' as const }
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_FAIL_ON_SOURCE_ERROR: '1'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new AntigravityPartialUsageError(
+            'Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT',
+            [snapshot]
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[snapshot]])
+    expect(stderr).toEqual([
+      'Partially collected antigravity source: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT',
+      'One or more sources failed: antigravity: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT'
+    ])
+  })
+
+  test('uploads partial DB snapshots then fails an explicit Antigravity sync', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+    const acks: string[] = []
+    const snapshot = { ...antigravitySnapshot, source: 'antigravity' as const }
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        clearPendingUploadCursors: async (input) => {
+          acks.push(`${input.stateDir}:${input.source}`)
+        },
+        collectAntigravityUsage: async () => {
+          throw new AntigravityPartialUsageError(
+            'Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT',
+            [snapshot]
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[snapshot]])
+    expect(acks).toEqual(['/state:antigravity'])
+    expect(stderr).toEqual([
+      'Partially collected antigravity source: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT',
+      'One or more sources failed: antigravity: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT'
+    ])
+  })
+
+  test('fails strict all mode when an installed Antigravity source has a real parse error', async () => {
     const stderr: string[] = []
 
     const result = await runCollectorCli(
@@ -213,12 +352,42 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Skipping antigravity source: Invalid Antigravity generator metadata item 3: inputTokens must be a bounded nonnegative integer',
-      'One or more sources failed: antigravity: Invalid Antigravity generator metadata item 3: inputTokens must be a bounded nonnegative integer'
+      'Invalid Antigravity generator metadata item 3: inputTokens must be a bounded nonnegative integer'
     ])
   })
 
-  test('still fails strict all mode for real Antigravity ENOENT failures', async () => {
+  test('fails default all mode when an installed Antigravity source has a real parse error', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [],
+        collectAntigravityUsage: async () => {
+          throw new Error('Invalid Antigravity generator metadata item 3: inputTokens must be a bounded nonnegative integer')
+        },
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual([
+      'Invalid Antigravity generator metadata item 3: inputTokens must be a bounded nonnegative integer'
+    ])
+    expect(uploaded).toEqual([])
+  })
+
+  test('fails strict all mode for real Antigravity ENOENT failures', async () => {
     const stderr: string[] = []
 
     const result = await runCollectorCli(
@@ -238,8 +407,7 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Skipping antigravity source: Failed to read Antigravity metadata from /Users/test/.gemini/antigravity/conversations/cascade.pb: ENOENT',
-      'One or more sources failed: antigravity: Failed to read Antigravity metadata from /Users/test/.gemini/antigravity/conversations/cascade.pb: ENOENT'
+      'Failed to read Antigravity metadata from /Users/test/.gemini/antigravity/conversations/cascade.pb: ENOENT'
     ])
   })
 
