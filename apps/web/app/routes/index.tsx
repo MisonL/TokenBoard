@@ -12,12 +12,12 @@ export default createRoute(async (c) => {
       <AppNav isAuthenticated={false} />
       <section class="relative mx-auto grid min-h-[calc(100vh-7rem)] max-w-7xl items-center gap-8 py-8 sm:gap-10 sm:py-10 lg:grid-cols-[1fr_0.9fr]">
         <div class="absolute left-8 top-8 h-24 w-24 rounded-full bg-lime-300 blur-3xl" />
-        <div class="relative z-10">
+        <div class="relative z-10 min-w-0">
           <p class="text-sm font-black uppercase tracking-[0.45em] text-[var(--app-muted)]">TokenBoard</p>
-          <h1 class="mt-8 max-w-4xl text-4xl font-black leading-[0.95] tracking-tight sm:text-5xl md:text-8xl">
+          <h1 class="mt-8 max-w-full text-4xl font-black leading-[0.95] tracking-tight [overflow-wrap:anywhere] sm:max-w-4xl sm:text-5xl md:text-8xl">
             为分享而生的 AI 用量面板。
           </h1>
-          <p class="mt-6 max-w-2xl text-lg leading-8 text-[var(--app-muted)]">
+          <p class="mt-6 max-w-full text-lg leading-8 text-[var(--app-muted)] [overflow-wrap:anywhere] sm:max-w-2xl">
             连接本机 Claude Code、Codex 与 Antigravity 采集器，只上传聚合后的 token 指标，并由你决定哪些视图可以公开。
           </p>
           <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
