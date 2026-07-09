@@ -10,7 +10,7 @@ export default createRoute(async (c) => {
     <main class="min-h-screen overflow-hidden bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>TokenBoard</title>
       <AppNav isAuthenticated={false} />
-      <section class="relative mx-auto grid min-h-[calc(100vh-7rem)] max-w-7xl items-center gap-8 py-8 sm:gap-10 sm:py-10 lg:grid-cols-[1fr_0.9fr]">
+      <section class="relative mx-auto grid min-h-[calc(100vh-7rem)] w-full min-w-0 max-w-7xl grid-cols-[minmax(0,1fr)] items-center gap-8 py-8 sm:gap-10 sm:py-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
         <div class="absolute left-8 top-8 h-24 w-24 rounded-full bg-lime-300 blur-3xl" />
         <div class="relative z-10 min-w-0">
           <p class="text-sm font-black uppercase tracking-[0.45em] text-[var(--app-muted)]">TokenBoard</p>
@@ -25,7 +25,7 @@ export default createRoute(async (c) => {
             <a class="inline-flex min-h-11 items-center justify-center rounded-xl border border-[var(--app-border)] px-5 py-3 text-sm font-bold text-[var(--app-text)] transition hover:border-lime-300" href="/leaderboards">查看排行榜</a>
           </div>
         </div>
-        <div class="app-surface-floating relative z-10 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-5 text-[var(--app-text)]">
+        <div class="app-surface-floating relative z-10 min-w-0 max-w-full overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-5 text-[var(--app-text)]">
           <div class="grid gap-3 sm:grid-cols-2">
             <Metric label="今日 tokens" value="128,420" />
             <Metric label="不含缓存读" value="97,850" />
@@ -42,7 +42,7 @@ export default createRoute(async (c) => {
               <div class="h-full bg-lime-200" style="width:28%" />
               <div class="h-full bg-lime-500" style="width:17%" />
             </div>
-            <div class="mt-3 flex justify-between text-xs text-[var(--app-muted)]">
+            <div class="mt-3 flex flex-wrap justify-between gap-2 text-xs text-[var(--app-muted)]">
               <span>Claude Code 55%</span>
               <span>Codex 28%</span>
               <span>Antigravity 17%</span>

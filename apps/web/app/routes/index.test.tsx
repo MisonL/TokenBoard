@@ -30,7 +30,11 @@ describe('home route', () => {
     const html = await response.text()
 
     expect(response.status).toBe(200)
+    expect(html).toContain('grid-cols-[minmax(0,1fr)]')
+    expect(html).toContain('lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]')
     expect(html).toContain('relative z-10 min-w-0')
+    expect(html).toContain('relative z-10 min-w-0 max-w-full overflow-hidden')
+    expect(html).toContain('flex flex-wrap justify-between gap-2')
     expect(html).toContain('[overflow-wrap:anywhere] sm:max-w-4xl')
     expect(html).toContain('[overflow-wrap:anywhere] sm:max-w-2xl')
   })
