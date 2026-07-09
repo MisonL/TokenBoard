@@ -53,7 +53,7 @@ export function AppNav(props: AppNavProps) {
           {isAuthenticated ? <NavLink compact={props.compact} href="/settings/devices" active={props.active === 'devices'}>设备</NavLink> : null}
           {isAuthenticated ? <NavLink compact={props.compact} href="/settings/notifications" active={props.active === 'notifications'}>通知</NavLink> : null}
           {isAuthenticated ? <NavLink compact={props.compact} href="/settings/profile" active={props.active === 'profile'} shortLabel="资料">公开资料</NavLink> : null}
-          {isAuthenticated ? null : <NavLink compact={props.compact} href="/auth/sign-in">登录</NavLink>}
+          {isAuthenticated ? null : <NavLink compact={props.compact} href="/auth/sign-in" loginFocus>登录</NavLink>}
           {isAuthenticated ? (
             <form class="xl:hidden" method="post" action="/auth/sign-out" data-submit-feedback="true">
               <button class={signOutButtonClass} type="submit" data-submitting-label="正在退出...">退出登录</button>
@@ -76,7 +76,7 @@ export function AppNav(props: AppNavProps) {
   )
 }
 
-function NavLink(props: { href: string; active?: boolean; compact?: boolean; shortLabel?: string; children: string }) {
+function NavLink(props: { href: string; active?: boolean; compact?: boolean; loginFocus?: boolean; shortLabel?: string; children: string }) {
   return (
     <a
       class={cn(
@@ -84,6 +84,7 @@ function NavLink(props: { href: string; active?: boolean; compact?: boolean; sho
         props.compact ? 'px-3 py-2' : 'px-3 py-2 sm:px-4 sm:py-3',
         props.active && 'bg-lime-300 text-stone-950 shadow-sm shadow-lime-950/10 hover:bg-lime-300 hover:text-stone-950'
       )}
+      data-login-focus={props.loginFocus ? 'true' : undefined}
       href={props.href}
     >
       {props.shortLabel ? (

@@ -38,7 +38,7 @@ function AuthScreen(props: { hasError: boolean }) {
           </div>
         </div>
 
-        <Card class="p-6 backdrop-blur">
+        <Card class="app-login-card p-6 backdrop-blur" data-login-card="true">
           <form method="post" data-submit-feedback="true">
             <div class="mb-6 flex items-center justify-between gap-4">
               <div>

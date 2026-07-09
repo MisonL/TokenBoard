@@ -8,6 +8,8 @@ describe('AppNav', () => {
 
     expect(html).toContain('src="/logo.svg"')
     expect(html).toContain('alt="TokenBoard"')
+    expect(html).toContain('href="/auth/sign-in"')
+    expect(html).toContain('data-login-focus="true"')
   })
 
   test('wraps authenticated navigation without clipping narrow viewports', async () => {

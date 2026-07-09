@@ -104,6 +104,33 @@ body {
   box-shadow: var(--app-shadow-floating);
 }
 
+.app-login-card {
+  position: relative;
+  isolation: isolate;
+  transform-origin: center;
+}
+
+.app-login-card::after {
+  position: absolute;
+  inset: -4px;
+  z-index: 1;
+  border: 1px solid rgba(190, 242, 100, 0.72);
+  border-radius: inherit;
+  box-shadow: 0 0 0 4px rgba(190, 242, 100, 0.14), 0 0 48px rgba(190, 242, 100, 0.18);
+  content: '';
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.985);
+}
+
+.app-login-card-attention {
+  animation: app-login-card-nudge 680ms ease-out;
+}
+
+.app-login-card-attention::after {
+  animation: app-login-card-ring 680ms ease-out;
+}
+
 .app-logo-elevation {
   box-shadow: var(--app-shadow-logo);
 }
@@ -203,16 +230,70 @@ button[data-submitting='true'][data-submitting-tone='danger'] {
   }
 }
 
+@keyframes app-login-card-nudge {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  22% {
+    transform: translateY(-3px);
+  }
+
+  48% {
+    transform: translateY(1px);
+  }
+}
+
+@keyframes app-login-card-ring {
+  0% {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+
+  28% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1.035);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   button,
   a[data-link-button='true'],
   button[data-copy-target],
-  button[data-submitting='true'] {
+  button[data-submitting='true'],
+  .app-login-card-attention,
+  .app-login-card-attention::after {
     transition: none;
   }
 
   button[data-submitting='true']::before {
     animation: none;
+  }
+
+  .app-login-card-attention {
+    animation: none;
+  }
+
+  .app-login-card-attention::after {
+    animation: app-login-card-reduced-focus 900ms ease-out;
+  }
+}
+
+@keyframes app-login-card-reduced-focus {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  18%,
+  78% {
+    opacity: 1;
   }
 }
 
