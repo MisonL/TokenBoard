@@ -54,7 +54,7 @@ function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean }
   return (
     <Card class="min-w-0 self-start">
       <CardHeader>
-        <CardTitle class="text-2xl sm:text-3xl">公开资料设置</CardTitle>
+        <h1 class="text-2xl font-black tracking-tight sm:text-3xl">公开资料设置</h1>
         <CardDescription>默认保持私有；只有开启公开后，JSON 和 SVG 才会返回真实统计。</CardDescription>
       </CardHeader>
       <CardContent>

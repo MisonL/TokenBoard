@@ -24,6 +24,8 @@ describe('AppNav', () => {
     expect(html).toContain('block truncate text-base')
     expect(html).toContain('<span class="sm:hidden">安装</span>')
     expect(html).toContain('<span class="sm:hidden">资料</span>')
+    expect(html).toContain('aria-current="page" href="/dashboard"')
+    expect(html).not.toContain('aria-current="page" href="/settings/devices"')
     expect(html).toContain('data-submit-feedback="true"')
     expect(html).toContain('data-submitting-label="正在退出..."')
   })

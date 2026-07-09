@@ -8,6 +8,7 @@ export function Input(props: {
   value?: string
   placeholder?: string
   autocomplete?: string
+  'aria-label'?: string
   required?: boolean
   disabled?: boolean
   minLength?: number

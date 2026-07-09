@@ -85,6 +85,7 @@ function NavLink(props: { href: string; active?: boolean; compact?: boolean; log
         props.active && 'bg-lime-300 text-stone-950 shadow-sm shadow-lime-950/10 hover:bg-lime-300 hover:text-stone-950'
       )}
       data-login-focus={props.loginFocus ? 'true' : undefined}
+      aria-current={props.active ? 'page' : undefined}
       href={props.href}
     >
       {props.shortLabel ? (

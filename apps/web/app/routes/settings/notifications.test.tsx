@@ -52,6 +52,8 @@ describe('NotificationsPage', () => {
     expect(html).toContain('09:30、18:00')
     expect(html).toContain('周一、周三、周五')
     expect(html).toContain('name="scheduleTimesLocal[]"')
+    expect(html).toContain('aria-label="推送时间 1"')
+    expect(html).toContain('aria-label="推送时间 2（可选）"')
     expect(html).toContain('name="scheduleWeekdays[]"')
     expect(html).toContain('name="name"')
     expect(html).toContain('name="timezone"')
