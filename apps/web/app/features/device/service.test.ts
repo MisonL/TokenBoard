@@ -1261,11 +1261,88 @@ describe('device management', () => {
     ])
   })
 
-  test('revokes one upload token without touching its device', async () => {
+  test('revokes one upload token and clears its installation claim', async () => {
     const sqlStatements: string[] = []
     const bindings: unknown[][] = []
+    const batchStatements: unknown[] = []
     const db = createRunDb(sqlStatements, bindings, {
-      firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }]
+      firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }],
+      batchStatements
+    })
+
+    await revokeUploadToken(db, {
+      userId: 'user_1',
+      uploadTokenId: 'ut_1',
+      now: '2026-04-29T09:00:00.000Z'
+    })
+
+    expect(sqlStatements).toHaveLength(4)
+    expect(sqlStatements[0]).toContain('FROM upload_tokens')
+    expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[1]).toContain('AND id = ?')
+    expect(sqlStatements[2]).toContain('UPDATE device_installations')
+    expect(sqlStatements[2]).toContain('install_claim_hash = NULL')
+    expect(sqlStatements[2]).toContain('upload_tokens.revoked_at = ?')
+    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[3]).toContain('WHERE EXISTS')
+    expect(batchStatements).toHaveLength(3)
+    expect(bindings[0]).toEqual(['ut_1', 'user_1'])
+    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
+    expect(bindings[2]).toEqual([
+      '2026-04-29T09:00:00.000Z',
+      'user_1',
+      'inst_1',
+      'ut_1',
+      '2026-04-29T09:00:00.000Z'
+    ])
+    expect(bindings[3]?.slice(1)).toEqual([
+      'user_1',
+      'user',
+      'token.revoke',
+      'upload_token',
+      'ut_1',
+      '{"deviceId":"dev_1","installationId":"inst_1"}',
+      '2026-04-29T09:00:00.000Z',
+      'user_1',
+      'ut_1',
+      '2026-04-29T09:00:00.000Z'
+    ])
+  })
+
+  test('fails visibly when token revocation batch does not record the token update', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const batchStatements: unknown[] = []
+    const db = createRunDb(sqlStatements, bindings, {
+      firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }],
+      batchStatements,
+      batchResults: [
+        { meta: { changes: 0 } },
+        { meta: { changes: 1 } },
+        { meta: { changes: 1 } }
+      ]
+    })
+
+    await expect(
+      revokeUploadToken(db, {
+        userId: 'user_1',
+        uploadTokenId: 'ut_1',
+        now: '2026-04-29T09:00:00.000Z'
+      })
+    ).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+      message: 'Upload token not found'
+    })
+    expect(batchStatements).toHaveLength(3)
+  })
+
+  test('revokes a legacy upload token without an installation claim statement', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const batchStatements: unknown[] = []
+    const db = createRunDb(sqlStatements, bindings, {
+      firstResults: [{ deviceId: 'dev_1', installationId: null }],
+      batchStatements
     })
 
     await revokeUploadToken(db, {
@@ -1277,19 +1354,70 @@ describe('device management', () => {
     expect(sqlStatements).toHaveLength(3)
     expect(sqlStatements[0]).toContain('FROM upload_tokens')
     expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[1]).toContain('AND id = ?')
     expect(sqlStatements[2]).toContain('INSERT INTO audit_logs')
-    expect(bindings[0]).toEqual(['ut_1', 'user_1'])
-    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
+    expect(sqlStatements.join('\n')).not.toContain('UPDATE device_installations')
+    expect(batchStatements).toHaveLength(2)
     expect(bindings[2]?.slice(1)).toEqual([
       'user_1',
       'user',
       'token.revoke',
       'upload_token',
       'ut_1',
-      '{"deviceId":"dev_1","installationId":"inst_1"}',
+      '{"deviceId":"dev_1","installationId":null}',
+      '2026-04-29T09:00:00.000Z',
+      'user_1',
+      'ut_1',
       '2026-04-29T09:00:00.000Z'
     ])
+  })
+
+  test('keeps token revocation successful when the install claim is already unusable', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const batchStatements: unknown[] = []
+    const db = createRunDb(sqlStatements, bindings, {
+      firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }],
+      batchStatements,
+      batchResults: [
+        { meta: { changes: 1 } },
+        { meta: { changes: 0 } },
+        { meta: { changes: 1 } }
+      ]
+    })
+
+    await revokeUploadToken(db, {
+      userId: 'user_1',
+      uploadTokenId: 'ut_1',
+      now: '2026-04-29T09:00:00.000Z'
+    })
+
+    expect(sqlStatements[2]).toContain('install_claim_hash IS NOT NULL')
+    expect(sqlStatements[2]).toContain('revoked_at IS NULL')
+    expect(batchStatements).toHaveLength(3)
+  })
+
+  test('fails visibly when token revocation batch reports a failed statement', async () => {
+    const sqlStatements: string[] = []
+    const bindings: unknown[][] = []
+    const batchStatements: unknown[] = []
+    const db = createRunDb(sqlStatements, bindings, {
+      firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }],
+      batchStatements,
+      batchResults: [
+        { meta: { changes: 1 } },
+        { success: false, error: 'claim update failed' },
+        { meta: { changes: 1 } }
+      ]
+    })
+
+    await expect(
+      revokeUploadToken(db, {
+        userId: 'user_1',
+        uploadTokenId: 'ut_1',
+        now: '2026-04-29T09:00:00.000Z'
+      })
+    ).rejects.toThrow('D1 batch statement 2 failed: claim update failed')
+    expect(batchStatements).toHaveLength(3)
   })
 
   test('rotates one upload token and returns the new token once', async () => {
@@ -1547,7 +1675,11 @@ describe('device management', () => {
 function createRunDb(
   sqlStatements: string[],
   bindings: unknown[][],
-  options: { firstResults?: unknown[] } = {}
+  options: {
+    batchResults?: Array<{ error?: string; meta?: { changes?: number }; success?: boolean }>
+    batchStatements?: unknown[]
+    firstResults?: unknown[]
+  } = {}
 ) {
   let firstCallCount = 0
   return {
@@ -1568,6 +1700,10 @@ function createRunDb(
           }
         }
       }
+    },
+    async batch(statements: unknown[]) {
+      options.batchStatements?.push(...statements)
+      return options.batchResults ?? statements.map(() => ({ meta: { changes: 1 } }))
     }
   } as unknown as D1Database
 }

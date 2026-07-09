@@ -612,7 +612,46 @@ export async function revokeUploadToken(
     throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
   }
 
-  const result = await db
+  const statements = [
+    createUploadTokenRevokeOnlyStatement(db, {
+      userId: input.userId,
+      uploadTokenId: input.uploadTokenId,
+      now
+    })
+  ]
+  if (token.installationId) {
+    statements.push(createInstallationClaimClearForRevokedTokenStatement(db, {
+      userId: input.userId,
+      installationId: token.installationId,
+      uploadTokenId: input.uploadTokenId,
+      now
+    }))
+  }
+  statements.push(createUploadTokenRevokeAuditStatement(db, {
+    userId: input.userId,
+    uploadTokenId: input.uploadTokenId,
+    metadata: {
+      deviceId: token.deviceId,
+      installationId: token.installationId
+    },
+    now
+  }))
+
+  const results = await db.batch(statements)
+  assertDeviceBatchSucceeded(results)
+  assertChangedResult(results[0], 'Upload token not found')
+  assertChangedResult(results[results.length - 1], 'Upload token revocation was not recorded')
+}
+
+function createUploadTokenRevokeOnlyStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    now: string
+  }
+) {
+  return db
     .prepare(
       `
         UPDATE upload_tokens
@@ -622,24 +661,85 @@ export async function revokeUploadToken(
           AND revoked_at IS NULL
       `
     )
-    .bind(now, input.userId, input.uploadTokenId)
-    .run()
+    .bind(input.now, input.userId, input.uploadTokenId)
+}
 
-  if ((result.meta.changes ?? 0) === 0) {
-    throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
+function createInstallationClaimClearForRevokedTokenStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    installationId: string
+    uploadTokenId: string
+    now: string
   }
+) {
+  return db
+    .prepare(
+      `
+        UPDATE device_installations
+        SET install_claim_hash = NULL, updated_at = ?
+        WHERE user_id = ?
+          AND id = ?
+          AND install_claim_hash IS NOT NULL
+          AND revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM upload_tokens
+            WHERE upload_tokens.user_id = device_installations.user_id
+              AND upload_tokens.id = ?
+              AND upload_tokens.installation_id = device_installations.id
+              AND upload_tokens.revoked_at = ?
+          )
+      `
+    )
+    .bind(input.now, input.userId, input.installationId, input.uploadTokenId, input.now)
+}
 
-  await createDeviceAuditLog(db, {
-    userId: input.userId,
-    action: 'token.revoke',
-    targetType: 'upload_token',
-    targetId: input.uploadTokenId,
-    metadata: {
-      deviceId: token.deviceId,
-      installationId: token.installationId
-    },
-    now
-  })
+function createUploadTokenRevokeAuditStatement(
+  db: D1Database,
+  input: {
+    userId: string
+    uploadTokenId: string
+    metadata: Record<string, unknown>
+    now: string
+  }
+) {
+  return db
+    .prepare(
+      `
+        INSERT INTO audit_logs (
+          id,
+          user_id,
+          actor_type,
+          action,
+          target_type,
+          target_id,
+          metadata,
+          created_at
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1
+          FROM upload_tokens
+          WHERE user_id = ?
+            AND id = ?
+            AND revoked_at = ?
+        )
+      `
+    )
+    .bind(
+      randomId('audit'),
+      input.userId,
+      'user',
+      'token.revoke',
+      'upload_token',
+      input.uploadTokenId,
+      JSON.stringify(input.metadata),
+      input.now,
+      input.userId,
+      input.uploadTokenId,
+      input.now
+    )
 }
 
 export async function rotateUploadToken(
