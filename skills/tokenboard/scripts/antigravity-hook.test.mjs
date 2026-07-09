@@ -37,6 +37,7 @@ test('installs and restores Antigravity statusLine command without notify handle
   assert.match(settings.statusLine.command, /antigravity-statusline\.mjs/)
   assert.match(settings.statusLine.command, /--state-dir/)
   assert.deepEqual(JSON.parse(fs.files.get(paths.antigravityOriginalStatuslinePath)).statusLine, originalSettings.statusLine)
+  assert.equal(fs.modes.get(paths.antigravityOriginalStatuslinePath), 0o600)
   assert.equal(hookStatus({ paths, fs }).antigravityCli, 'installed')
 
   const removed = uninstallHooks({ paths, fs, flags: { source: 'antigravity-cli' } })
@@ -45,6 +46,45 @@ test('installs and restores Antigravity statusLine command without notify handle
   assert.equal(removed.notifyRemoved, false)
   assert.deepEqual(JSON.parse(fs.files.get(paths.antigravitySettingsPath)), originalSettings)
   assert.equal(fs.files.has(paths.antigravityOriginalStatuslinePath), false)
+})
+
+test('re-enables a disabled TokenBoard Antigravity statusLine without replacing original backup', () => {
+  const paths = createPaths()
+  const installedCommand = `/usr/bin/env node ${paths.statuslineScriptPath} --state-dir ${paths.stateDir}`
+  const originalBackup = {
+    statusLine: {
+      enabled: true,
+      command: 'node /custom/statusline.mjs'
+    }
+  }
+  const fs = memoryFs({
+    [paths.antigravitySettingsPath]: JSON.stringify({
+      statusLine: {
+        enabled: false,
+        command: installedCommand,
+        color: 'blue'
+      }
+    }),
+    [paths.antigravityOriginalStatuslinePath]: `${JSON.stringify(originalBackup)}\n`
+  })
+
+  assert.equal(hookStatus({ paths, fs }).antigravityCli, 'not-installed')
+
+  const installed = installHooks({
+    paths,
+    fs,
+    nodePath: '/usr/bin/node',
+    flags: { source: 'antigravity-cli' }
+  })
+
+  const settings = JSON.parse(fs.files.get(paths.antigravitySettingsPath))
+  assert.equal(installed.hooks[0].changed, true)
+  assert.equal(installed.hooks[0].detail, 'Antigravity statusline enabled')
+  assert.equal(settings.statusLine.enabled, true)
+  assert.equal(settings.statusLine.command, installedCommand)
+  assert.equal(settings.statusLine.color, 'blue')
+  assert.deepEqual(JSON.parse(fs.files.get(paths.antigravityOriginalStatuslinePath)), originalBackup)
+  assert.equal(hookStatus({ paths, fs }).antigravityCli, 'installed')
 })
 
 test('all uninstall restores an opted-in Antigravity statusLine', () => {
@@ -133,8 +173,10 @@ function createPaths() {
 
 function memoryFs(initial = {}) {
   const files = new Map(Object.entries(initial))
+  const modes = new Map()
   return {
     files,
+    modes,
     mkdir: () => {},
     readFile: (path) => {
       if (!files.has(path)) {
@@ -144,8 +186,12 @@ function memoryFs(initial = {}) {
       }
       return files.get(path)
     },
-    writeFile: (path, value) => {
+    writeFile: (path, value, options = {}) => {
       files.set(path, String(value))
+      if (typeof options.mode === 'number') modes.set(path, options.mode)
+    },
+    chmod: (path, mode) => {
+      modes.set(path, mode)
     },
     unlink: (path) => {
       if (!files.delete(path)) {

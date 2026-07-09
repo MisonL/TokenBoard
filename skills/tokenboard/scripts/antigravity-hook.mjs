@@ -17,7 +17,18 @@ export function installAntigravityHook({ paths, fs, nodePath = process.execPath,
   const command = buildAntigravityStatuslineCommand({ paths, nodePath, platform })
 
   if (isAntigravityStatuslineCommand(currentCommand, paths.statuslineScriptPath)) {
-    return { source: antigravitySource, action: 'install', changed: false, detail: 'Antigravity statusline already installed' }
+    if (isStatusLineEnabled(statusLine)) {
+      return { source: antigravitySource, action: 'install', changed: false, detail: 'Antigravity statusline already installed' }
+    }
+    const next = {
+      ...settings,
+      statusLine: {
+        ...statusLine,
+        enabled: true
+      }
+    }
+    const backupPath = writeJsonWithBackup(paths.antigravitySettingsPath, next, loaded.raw, fs)
+    return { source: antigravitySource, action: 'install', changed: true, detail: 'Antigravity statusline enabled', backupPath }
   }
 
   captureOriginalAntigravityStatusLine({ settings, paths, fs })
@@ -57,10 +68,10 @@ export function getAntigravityHookStatus({ paths, fs }) {
   if (loaded.status === 'invalid') return 'error'
   try {
     const statusLine = readStatusLineForWrite(loaded.value)
-    return isAntigravityStatuslineCommand(
-      readStatusLineCommand(statusLine),
-      paths.statuslineScriptPath
-    ) ? 'installed' : 'not-installed'
+    return isStatusLineEnabled(statusLine) &&
+      isAntigravityStatuslineCommand(readStatusLineCommand(statusLine), paths.statuslineScriptPath)
+      ? 'installed'
+      : 'not-installed'
   } catch {
     return 'error'
   }
@@ -92,6 +103,10 @@ function readStatusLineCommand(statusLine) {
   return typeof statusLine.command === 'string' ? statusLine.command : ''
 }
 
+function isStatusLineEnabled(statusLine) {
+  return statusLine.enabled === true
+}
+
 function buildAntigravityStatuslineCommand({ paths, nodePath, platform }) {
   const args = [
     paths.statuslineScriptPath,
@@ -116,14 +131,19 @@ function isAntigravityStatuslineCommand(command, statuslineScriptPath) {
 function captureOriginalAntigravityStatusLine({ settings, paths, fs }) {
   fs.mkdir(dirname(paths.antigravityOriginalStatuslinePath), { recursive: true })
   if (Object.hasOwn(settings, 'statusLine')) {
-    fs.writeFile(paths.antigravityOriginalStatuslinePath, `${JSON.stringify({
+    writePrivateFile(paths.antigravityOriginalStatuslinePath, `${JSON.stringify({
       statusLine: settings.statusLine,
       command: readStatusLineCommand(readStatusLineForWrite(settings)),
       capturedAt: new Date().toISOString()
-    }, null, 2)}\n`)
+    }, null, 2)}\n`, fs)
     return
   }
   removeStaleOriginal(paths, fs)
+}
+
+function writePrivateFile(filePath, value, fs) {
+  fs.writeFile(filePath, value, { mode: 0o600 })
+  fs.chmod?.(filePath, 0o600)
 }
 
 function restoreOriginalAntigravityStatusLine(settings, original) {
