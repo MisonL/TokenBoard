@@ -195,8 +195,12 @@ export function updateCursorFile(
   }
 }
 
-export async function clearPendingUploadCursors(input: { stateDir: string; source: UsageSource }) {
-  const cursorPath = join(input.stateDir, cursorFileName(input.source))
+export async function clearPendingUploadCursors(input: {
+  stateDir: string
+  source: UsageSource
+  cursorScope?: string
+}) {
+  const cursorPath = join(input.stateDir, cursorFileName(input.source, input.cursorScope))
   const cursor = await readCursor(cursorPath, input.source)
   let changed = false
   for (const entry of Object.values(cursor.files)) {

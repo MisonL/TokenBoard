@@ -1,4 +1,4 @@
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -64,6 +64,46 @@ describe('collectAntigravityCliUsage', () => {
       expect(first).toHaveLength(1)
       expect(second).toEqual([{ ...first[0], collectedAt: '2026-06-23T10:05:00.000Z' }])
       expect(third).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('isolates acknowledged cursors by server origin without exposing origins in file names', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-server-cursor-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      const serverA = 'https://prod.example.com'
+      const serverB = 'https://private.example.com'
+      await writeEvents(eventPath, [event({ usage: { inputTokens: 10, outputTokens: 2 } })])
+      const firstOptions = {
+        stateDir: root,
+        eventPath,
+        timezone: 'UTC',
+        collectedAt: '2026-06-23T10:00:00.000Z',
+        cursorScope: serverA,
+        readDbUsageEvents: emptyDbUsage
+      }
+      const secondOptions = {
+        ...firstOptions,
+        collectedAt: '2026-06-23T10:05:00.000Z',
+        cursorScope: serverB
+      }
+
+      const first = await collectAntigravityCliUsage(firstOptions)
+      await clearPendingUploadCursors({
+        stateDir: root,
+        source: 'antigravity-cli',
+        cursorScope: serverA
+      })
+      const second = await collectAntigravityCliUsage(secondOptions)
+
+      expect(first).toHaveLength(1)
+      expect(second).toEqual([{ ...first[0], collectedAt: '2026-06-23T10:05:00.000Z' }])
+      const cursorFiles = (await readdir(root)).filter((name) => name.includes('cursor'))
+      expect(cursorFiles).toHaveLength(2)
+      expect(cursorFiles.join('\n')).not.toContain('prod.example.com')
+      expect(cursorFiles.join('\n')).not.toContain('private.example.com')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
@@ -66,7 +67,14 @@ export function stripCollectedAt(snapshot: UsageSnapshot): CursorSnapshot {
   }
 }
 
-export function cursorFileName(source: UsageSource) {
+export function cursorFileName(source: UsageSource, scope?: string) {
+  const baseName = sourceCursorFileName(source)
+  if (!scope) return baseName
+  const scopeHash = createHash('sha256').update(scope).digest('hex')
+  return baseName.replace(/\.json$/, `.server-${scopeHash}.json`)
+}
+
+function sourceCursorFileName(source: UsageSource) {
   if (source === 'codex') return 'codex-cursor.json'
   if (source === 'antigravity-cli') return 'antigravity-cli-cursor.json'
   if (source === 'antigravity') return 'antigravity-cursor.json'

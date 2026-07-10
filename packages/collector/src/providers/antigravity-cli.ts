@@ -29,6 +29,7 @@ export type CollectAntigravityCliUsageOptions = {
   stateDir?: string
   eventPath?: string
   conversationDir?: string
+  cursorScope?: string
   maxDbFiles?: number | null
   readDbUsageEvents?: (input: {
     lastSeenRowIndexByCascadeHash: Map<string, number>
@@ -45,7 +46,7 @@ export async function collectAntigravityCliUsage(
   const eventPath = options.eventPath ?? process.env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_LOG ?? join(stateDir, statuslineFileName)
   const eventStats = await readEventStats(eventPath)
 
-  const cursorPath = join(stateDir, cursorFileName(source))
+  const cursorPath = join(stateDir, cursorFileName(source, options.cursorScope))
   const cursor = await readCursor(cursorPath, source)
   const emittedKeys = new Set<string>()
   const snapshots: UsageSnapshot[] = []

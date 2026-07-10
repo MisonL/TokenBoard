@@ -411,6 +411,45 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
+  test('scopes all Antigravity collectors and upload acknowledgements to the endpoint origin', async () => {
+    const collected: Array<{ source: string; cursorScope: string | undefined }> = []
+    const acknowledged: Array<{ source: string; cursorScope: string | undefined }> = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/custom/ingest?region=cn',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      deps({
+        collectAntigravityCliUsage: async (options) => {
+          collected.push({ source: 'antigravity-cli', cursorScope: options?.cursorScope })
+          return []
+        },
+        collectAntigravityUsage: async (options) => {
+          collected.push({ source: 'antigravity', cursorScope: options?.cursorScope })
+          return []
+        },
+        collectAntigravityIdeUsage: async (options) => {
+          collected.push({ source: 'antigravity-ide', cursorScope: options?.cursorScope })
+          return []
+        },
+        clearPendingUploadCursors: async (input) => {
+          acknowledged.push({ source: input.source, cursorScope: input.cursorScope })
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(collected).toEqual([
+      { source: 'antigravity-cli', cursorScope: 'https://tokenboard.example.com' },
+      { source: 'antigravity', cursorScope: 'https://tokenboard.example.com' },
+      { source: 'antigravity-ide', cursorScope: 'https://tokenboard.example.com' }
+    ])
+    expect(acknowledged).toEqual(collected)
+  })
+
   test('acks Antigravity cursors after a successful non-hook upload', async () => {
     const acks: string[] = []
 

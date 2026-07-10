@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
@@ -81,6 +81,42 @@ describe('collectAntigravityGuiUsage', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test.each(['antigravity', 'antigravity-ide'] as const)(
+    'isolates acknowledged %s cursors by server origin',
+    async (source) => {
+      const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-server-cursor-'))
+      try {
+        const serverA = 'https://prod.example.com'
+        const serverB = 'https://private.example.com'
+        const firstOptions = {
+          source,
+          stateDir: root,
+          timezone: 'UTC',
+          collectedAt: '2026-06-23T10:00:00.000Z',
+          cursorScope: serverA,
+          listCascadeIds: async () => ['conversation-a'],
+          requestGeneratorMetadata: async () => generatorMetadataResponse({ source })
+        }
+        const secondOptions = {
+          ...firstOptions,
+          collectedAt: '2026-06-23T10:05:00.000Z',
+          cursorScope: serverB
+        }
+
+        const first = await collectAntigravityGuiUsage(firstOptions)
+        await clearPendingUploadCursors({ stateDir: root, source, cursorScope: serverA })
+        const second = await collectAntigravityGuiUsage(secondOptions)
+
+        expect(first).toHaveLength(1)
+        expect(second).toEqual([{ ...first[0], collectedAt: '2026-06-23T10:05:00.000Z' }])
+        const cursorFiles = (await readdir(root)).filter((name) => name.includes('cursor'))
+        expect(cursorFiles).toHaveLength(2)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
 
   test('uploads complete DB day snapshots after acknowledged uploads', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-complete-db-'))

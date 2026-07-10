@@ -32,6 +32,7 @@ export type CollectAntigravityGuiUsageOptions = {
   timezone?: string
   collectedAt?: string
   stateDir?: string
+  cursorScope?: string
   conversationDir?: string
   languageServerPath?: string
   overrideIdeVersion?: string
@@ -76,7 +77,7 @@ export async function collectAntigravityGuiUsage(
   const timezone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
   const collectedAt = options.collectedAt ?? new Date().toISOString()
   const stateDir = options.stateDir ?? readStateDir()
-  const cursorPath = join(stateDir, cursorFileName(options.source))
+  const cursorPath = join(stateDir, cursorFileName(options.source, options.cursorScope))
   const cursor = await readCursor(cursorPath, options.source)
   const snapshots: UsageSnapshot[] = []
   const emittedKeys = new Set<string>()
