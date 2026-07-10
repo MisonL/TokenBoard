@@ -109,6 +109,11 @@ export async function collectAntigravityGuiUsage(
         }
       }
     } catch (error) {
+      markDbCascadeRowsProcessed({
+        cursor,
+        source: options.source,
+        lastReadRowIndexByCascade: localDbUsage.lastReadRowIndexByCascade
+      })
       pushCompleteGuiCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
       await writeCursor(cursorPath, cursor)
       if (snapshots.length > 0 && isUnavailableLanguageServerError(error)) {

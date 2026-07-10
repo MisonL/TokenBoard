@@ -562,6 +562,7 @@ describe('collectAntigravityGuiUsage', () => {
     }
     try {
       let run = 0
+      const seenDbCursorSizes: number[] = []
       const options = {
         source: 'antigravity',
         stateDir: root,
@@ -570,11 +571,14 @@ describe('collectAntigravityGuiUsage', () => {
         listCascades: async () => [
           { id: 'conversation-a', mtimeMs: 2000, size: 20 }
         ],
-        readDbUsageEvents: async () => ({
-          cascadeIds: run++ === 0 ? new Set(['conversation-db']) : new Set<string>(),
-          events: run === 1 ? [dbEvent] : [],
-          lastReadRowIndexByCascade: new Map([['conversation-db', 3]])
-        })
+        readDbUsageEvents: async (input?: { lastSeenRowIndexByCascadeHash?: Map<string, number> }) => {
+          seenDbCursorSizes.push(input?.lastSeenRowIndexByCascadeHash?.size ?? 0)
+          return {
+            cascadeIds: run++ === 0 ? new Set(['conversation-db']) : new Set<string>(),
+            events: run === 1 ? [dbEvent] : [],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 3]])
+          }
+        }
       } satisfies Parameters<typeof collectAntigravityGuiUsage>[0]
 
       const first = await expectPartialAntigravitySnapshots(collectAntigravityGuiUsage({
@@ -604,6 +608,7 @@ describe('collectAntigravityGuiUsage', () => {
         ...first[0],
         collectedAt: '2026-06-24T02:05:00.000Z'
       }])
+      expect(seenDbCursorSizes).toEqual([0, 1])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -735,7 +740,7 @@ describe('collectAntigravityGuiUsage', () => {
         readDbUsageEvents
       })).rejects.toThrow('spawn /missing/tokenboard-antigravity-language-server ENOENT')
 
-      expect(seenCursorSizes).toEqual([0, 0])
+      expect(seenCursorSizes).toEqual([0, 1])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
