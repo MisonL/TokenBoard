@@ -799,6 +799,25 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('rescans a compacted statusline log when its generation changes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-generation-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      await writeFile(eventPath, `${JSON.stringify(statuslineLogHeader('a'.repeat(32)))}\n${JSON.stringify(event({ conversationHash: conversationA, usage: { inputTokens: 10, outputTokens: 2 } }))}\n`)
+
+      await collectAntigravityCliUsage({ stateDir: root, eventPath, timezone: 'UTC', readDbUsageEvents: emptyDbUsage })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      await writeFile(eventPath, `${JSON.stringify(statuslineLogHeader('b'.repeat(32)))}\n${JSON.stringify(event({ conversationHash: conversationB, usage: { inputTokens: 20, outputTokens: 4 } }))}\n`)
+
+      const snapshots = await collectAntigravityCliUsage({ stateDir: root, eventPath, timezone: 'UTC', readDbUsageEvents: emptyDbUsage })
+
+      expect(snapshots).toHaveLength(1)
+      expect(snapshots[0]?.inputTokens).toBe(30)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('keeps recently acknowledged old cursor entries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-'))
     try {
@@ -1027,6 +1046,10 @@ describe('collectAntigravityCliUsage', () => {
 
 async function writeEvents(path: string, events: unknown[]) {
   await writeFile(path, `${events.map((item) => JSON.stringify(item)).join('\n')}\n`)
+}
+
+function statuslineLogHeader(generation: string) {
+  return { schemaVersion: 'antigravity-statusline-log/v1', generation }
 }
 
 function event(overrides: Partial<Omit<ReturnType<typeof baseEvent>, 'usage'>> & { usage?: Partial<ReturnType<typeof baseEvent>['usage']> } = {}) {

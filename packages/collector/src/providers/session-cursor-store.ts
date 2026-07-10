@@ -20,6 +20,7 @@ export type CursorState = {
   source: UsageSource
   lastScanHighWaterMs?: number
   lastScanOffsetBytes?: number
+  lastScanGeneration?: string
   files: Record<string, CursorEntry>
 }
 
@@ -89,6 +90,7 @@ function isValidCursor(value: unknown, source: UsageSource): value is CursorStat
     candidate.source === source &&
     (candidate.lastScanHighWaterMs === undefined || isFiniteTimestampMs(candidate.lastScanHighWaterMs)) &&
     (candidate.lastScanOffsetBytes === undefined || isFiniteTimestampMs(candidate.lastScanOffsetBytes)) &&
+    (candidate.lastScanGeneration === undefined || isValidScanGeneration(candidate.lastScanGeneration)) &&
     candidate.files !== null &&
     typeof candidate.files === 'object' &&
     !Array.isArray(candidate.files) &&
@@ -136,4 +138,8 @@ function isFiniteNumber(value: unknown) {
 
 function isFiniteTimestampMs(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function isValidScanGeneration(value: unknown) {
+  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value)
 }

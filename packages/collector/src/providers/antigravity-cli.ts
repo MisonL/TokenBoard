@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { open, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -22,6 +22,8 @@ import {
 
 const source = 'antigravity-cli'
 const statuslineFileName = 'antigravity-cli-statusline.jsonl'
+const statuslineLogSchemaVersion = 'antigravity-statusline-log/v1'
+const statuslineLogHeaderBytes = 512
 
 export type CollectAntigravityCliUsageOptions = {
   timezone?: string
@@ -53,11 +55,17 @@ export async function collectAntigravityCliUsage(
 
   if (eventStats) {
     const eventSizeBytes = readEventSizeBytes(eventStats.size)
-    const scanStartBytes = scanStartOffset(cursor.lastScanOffsetBytes, eventSizeBytes)
+    const generation = await readStatuslineLogGeneration(eventPath, eventSizeBytes)
+    const generationChanged = generation !== cursor.lastScanGeneration &&
+      (generation !== undefined || cursor.lastScanGeneration !== undefined)
+    const scanStartBytes = generationChanged
+      ? 0
+      : scanStartOffset(cursor.lastScanOffsetBytes, eventSizeBytes)
     for await (const event of readStatuslineEvents(eventPath, scanStartBytes, eventSizeBytes)) {
       pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt })
     }
     cursor.lastScanOffsetBytes = eventSizeBytes
+    cursor.lastScanGeneration = generation
   }
 
   const localDbUsage = await readOptionalLocalDbUsage(options, Boolean(eventStats), cursor)
@@ -155,8 +163,43 @@ async function * readStatuslineEvents(eventPath: string, startBytes: number, end
   for await (const line of lines) {
     lineNumber += 1
     if (!line.trim()) continue
+    if (isStatuslineLogHeader(line)) continue
     yield parseStatuslineEvent(line, lineNumber)
   }
+}
+
+async function readStatuslineLogGeneration(eventPath: string, sizeBytes: number) {
+  if (sizeBytes === 0) return undefined
+  const file = await open(eventPath, 'r')
+  try {
+    const buffer = Buffer.alloc(Math.min(statuslineLogHeaderBytes, sizeBytes))
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
+    const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0]
+    const header = parseStatuslineLogHeader(firstLine)
+    return header?.generation
+  } finally {
+    await file.close()
+  }
+}
+
+function isStatuslineLogHeader(line: string) {
+  return parseStatuslineLogHeader(line) !== null
+}
+
+function parseStatuslineLogHeader(line: string) {
+  let value: unknown
+  try {
+    value = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const candidate = value as { schemaVersion?: unknown; generation?: unknown }
+  if (candidate.schemaVersion !== statuslineLogSchemaVersion) return null
+  if (typeof candidate.generation !== 'string' || !/^[a-f0-9]{32}$/.test(candidate.generation)) {
+    throw new Error('Invalid Antigravity statusline log generation')
+  }
+  return { generation: candidate.generation }
 }
 
 function scanStartOffset(value: number | undefined, currentSize: number) {

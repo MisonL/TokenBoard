@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto'
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import {
+  appendFileSync,
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  readSync,
+  realpathSync
+} from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
 
 const defaultMaxInputBytes = 256 * 1024
 const maxTokenValue = 1_000_000_000
@@ -12,6 +20,9 @@ const maxCommandLength = 8192
 const originalCommandTimeoutMs = 1000
 const originalCommandMaxBuffer = 8192
 const schemaVersion = 'antigravity-statusline/v1'
+const defaultMaxLogBytes = 8 * 1024 * 1024
+const minMaxLogBytes = 1024
+const maxMaxLogBytes = 64 * 1024 * 1024
 
 export function runStatuslineCli(argv = process.argv.slice(2), env = process.env) {
   const options = readOptions(argv, env)
@@ -20,7 +31,7 @@ export function runStatuslineCli(argv = process.argv.slice(2), env = process.env
     raw = readStdinLimited(options.maxInputBytes)
     const event = extractStatuslineEvent(raw, new Date().toISOString())
     if (event) {
-      appendJsonLine(options.logPath, event)
+      appendBoundedStatuslineEvent(options.logPath, event, options.maxLogBytes)
     }
   } catch (error) {
     recordStatuslineError(options.errorPath, 'capture', error)
@@ -87,6 +98,7 @@ export function readOptions(argv, env = process.env) {
     errorPath,
     originalCommandFile,
     maxInputBytes: Number(flags['max-input-bytes'] || defaultMaxInputBytes),
+    maxLogBytes: readMaxLogBytes(flags['max-log-bytes'] || env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_MAX_BYTES),
     selfPath: resolve(fileURLToPath(import.meta.url))
   }
 }
@@ -171,6 +183,15 @@ function appendJsonLine(filePath, value) {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
   appendFileSync(filePath, `${JSON.stringify(value)}\n`, { mode: 0o600 })
   chmodSync(filePath, 0o600)
+}
+
+function readMaxLogBytes(value) {
+  if (value === undefined || value === null || value === '') return defaultMaxLogBytes
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < minMaxLogBytes || parsed > maxMaxLogBytes) {
+    throw new Error('Invalid Antigravity statusline log byte limit')
+  }
+  return parsed
 }
 
 function recordStatuslineError(filePath, stage, error) {
