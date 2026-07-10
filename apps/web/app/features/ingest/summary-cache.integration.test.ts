@@ -667,9 +667,9 @@ describe('usage summary cache integration', () => {
           ('agy-user', 'device-a', 'antigravity-cli', '2026-06-02', 'UTC', 'gemini', 10, 5, 0, 0, 15, 9.5, 1, 'hash-a', '2026-06-02T10:00:00.000Z'),
           ('agy-user', 'device-b', 'antigravity', '2026-06-02', 'UTC', 'gemini', 8, 4, 0, 0, 12, 4.0, 1, 'hash-b', '2026-06-02T10:00:00.000Z'),
           ('agy-user', 'device-c', 'antigravity-ide', '2026-06-02', 'UTC', 'gemini', 6, 3, 0, 0, 9, 6.0, 1, 'hash-c', '2026-06-02T10:00:00.000Z'),
-          ('agy-user', 'device-d', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-d', '2026-06-02T10:00:00.000Z'),
-          ('agy-user', 'device-e', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-e', '2026-06-02T10:00:00.000Z'),
-          ('agy-user', 'device-f', 'codex', '2026-06-02', 'UTC', 'gpt-5', 40, 10, 0, 0, 50, 7.0, 1, 'hash-f', '2026-06-02T11:00:00.000Z'),
+          ('agy-user', 'device-d', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-d', '2026-06-02T11:00:00.000Z'),
+          ('agy-user', 'device-e', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-e', '2026-06-02T11:00:00.000Z'),
+          ('agy-user', 'device-f', 'codex', '2026-06-03', 'UTC', 'gpt-5', 40, 10, 0, 0, 50, 7.0, 1, 'hash-f', '2026-06-03T11:00:00.000Z'),
           ('agy-user', 'legacy', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-legacy-codex', '2026-06-02T10:00:00.000Z'),
           ('agy-user', 'legacy', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-legacy-claude', '2026-06-02T10:00:00.000Z');
       `,
@@ -739,7 +739,7 @@ describe('usage summary cache integration', () => {
             0,
             27,
             5,
-            '[{"source":"antigravity-cli","totalTokens":15,"totalTokensWithoutCacheRead":15},{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25},{"source":"claude-code","totalTokens":40,"totalTokensWithoutCacheRead":40}]',
+            '[{"source":"antigravity-cli","totalTokens":15,"totalTokensWithoutCacheRead":15},{"source":"antigravity","totalTokens":12,"totalTokensWithoutCacheRead":12},{"source":"antigravity-ide","totalTokens":9,"totalTokensWithoutCacheRead":9},{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25},{"source":"claude-code","totalTokens":40,"totalTokensWithoutCacheRead":40}]',
             '[{"model":"gemini","totalTokens":36,"totalTokensWithoutCacheRead":36,"costUsd":19.5},{"model":"gpt-5","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":2.5},{"model":"claude-sonnet","totalTokens":40,"totalTokensWithoutCacheRead":40,"costUsd":5}]',
             '2026-06-02T10:00:00.000Z',
             '2026-06-02T10:00:00.000Z'
@@ -779,6 +779,24 @@ describe('usage summary cache integration', () => {
             '[{"model":"gemini","totalTokens":15,"totalTokensWithoutCacheRead":15,"costUsd":9.5}]',
             '2026-05-31T10:00:00.000Z',
             '2026-05-31T10:00:00.000Z'
+          ),
+          (
+            'drr_agy_mismatched_tokens',
+            'agy-user',
+            '2026-06-02',
+            '2026-06-02T20:00',
+            'Agy User',
+            'UTC',
+            'https://tokenboard.example/dashboard',
+            100,
+            100,
+            0,
+            19.5,
+            4,
+            '[{"source":"antigravity-cli","totalTokens":14,"totalTokensWithoutCacheRead":14},{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25}]',
+            '[{"model":"gemini","totalTokens":14,"totalTokensWithoutCacheRead":14,"costUsd":18.25},{"model":"gpt-5","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
+            '2026-06-02T10:00:00.000Z',
+            '2026-06-02T10:00:00.000Z'
           );
       `,
       `.read ${quoteSqlitePath(join(migrationsDir, '0025_antigravity_costs_unavailable.sql'))}`
@@ -818,7 +836,7 @@ describe('usage summary cache integration', () => {
     await expectScalar(
       db,
       "SELECT cost_usd AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
-      3.75
+      7.5
     )
     await expectScalar(
       db,
@@ -828,12 +846,12 @@ describe('usage summary cache integration', () => {
     await expectScalar(
       db,
       "SELECT json_extract(top_models, '$[1].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
-      1.25
+      2.5
     )
     await expectScalar(
       db,
       "SELECT json_extract(top_models, '$[2].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
-      2.5
+      5
     )
     await expectScalar(
       db,
@@ -844,6 +862,16 @@ describe('usage summary cache integration', () => {
       db,
       "SELECT json_extract(top_models, '$[0].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_zero_total_stale_models'",
       0
+    )
+    await expectScalar(
+      db,
+      "SELECT cost_usd AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
+      19.5
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[0].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
+      18.25
     )
   })
 
