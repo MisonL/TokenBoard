@@ -92,7 +92,7 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(0)
     expect(stderr).toEqual([
-      'Skipping antigravity-cli source: Antigravity CLI statusline log not found: /state/antigravity-cli-statusline.jsonl'
+      'Antigravity collection: source=antigravity-cli status=unavailable category=statusline-unavailable'
     ])
   })
 
@@ -128,9 +128,9 @@ describe('runCollectorCli Antigravity source', () => {
     expect(result).toBe(0)
     expect(uploaded).toEqual([[]])
     expect(stderr).toEqual([
-      'Skipping antigravity-cli source: Antigravity CLI statusline log not found: /state/antigravity-cli-statusline.jsonl',
-      'Skipping antigravity source: Antigravity conversations directory not found: /Users/test/.gemini/antigravity/conversations',
-      'Skipping antigravity-ide source: No Antigravity conversations found in /Users/test/.gemini/antigravity-ide/conversations'
+      'Antigravity collection: source=antigravity-cli status=unavailable category=statusline-unavailable',
+      'Antigravity collection: source=antigravity status=unavailable category=history-unavailable',
+      'Antigravity collection: source=antigravity-ide status=unavailable category=history-unavailable'
     ])
   })
 
@@ -160,7 +160,7 @@ describe('runCollectorCli Antigravity source', () => {
     expect(result).toBe(0)
     expect(uploaded).toEqual([[]])
     expect(stderr).toEqual([
-      'Skipping antigravity source: Antigravity SQLite reader unavailable: sqlite3 not found'
+      'Antigravity collection: source=antigravity status=unavailable category=sqlite-reader-unavailable'
     ])
   })
 
@@ -190,7 +190,7 @@ describe('runCollectorCli Antigravity source', () => {
     expect(result).toBe(0)
     expect(uploaded).toEqual([[]])
     expect(stderr).toEqual([
-      'Skipping antigravity source: spawn /missing/tokenboard-antigravity-language-server ENOENT'
+      'Antigravity collection: source=antigravity status=unavailable category=language-server-unavailable'
     ])
   })
 
@@ -220,8 +220,112 @@ describe('runCollectorCli Antigravity source', () => {
     expect(result).toBe(0)
     expect(uploaded).toEqual([[]])
     expect(stderr).toEqual([
-      'Skipping antigravity source: spawn /Applications/Antigravity Beta.app/Contents/Resources/app/bin/language_server ENOENT'
+      'Antigravity collection: source=antigravity status=unavailable category=language-server-unavailable'
     ])
+  })
+
+  test('sanitizes optional Antigravity errors before writing stderr', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {},
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          throw new Error(
+            'Antigravity language server exited before it was ready: /Users/private/conversations/session.db RAW_PROCESS_OUTPUT'
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=unavailable category=language-server-unavailable'
+    ])
+    expect(stderr.join('\n')).not.toContain('/Users/private')
+    expect(stderr.join('\n')).not.toContain('RAW_PROCESS_OUTPUT')
+  })
+
+  test('sanitizes partial Antigravity errors before writing stderr', async () => {
+    const stderr: string[] = []
+    const snapshot = { ...antigravitySnapshot, source: 'antigravity' as const }
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {},
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          throw new AntigravityPartialUsageError(
+            'Antigravity language server unavailable after DB history was collected: /private/bin/language_server RAW_PROCESS_OUTPUT',
+            [snapshot]
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=partial category=language-server-unavailable'
+    ])
+    expect(stderr.join('\n')).not.toContain('/private/bin')
+    expect(stderr.join('\n')).not.toContain('RAW_PROCESS_OUTPUT')
+  })
+
+  test('sanitizes fatal Antigravity errors before writing stderr', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          throw new Error(
+            'Failed to read Antigravity SQLite metadata from /Users/private/conversations/session.db: RAW_SQLITE_OUTPUT'
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=failed category=sqlite-read-failed'
+    ])
+    expect(stderr.join('\n')).not.toContain('/Users/private')
+    expect(stderr.join('\n')).not.toContain('RAW_SQLITE_OUTPUT')
+  })
+
+  test('sanitizes Antigravity cursor acknowledgement errors before writing stderr', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity-cli'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_STATE_DIR: '/Users/private/.tokenboard'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityCliUsage: async () => [antigravitySnapshot],
+        uploadSnapshots: async () => ({ upserted: 1, skipped: 0 }),
+        clearPendingUploadCursors: async () => {
+          throw new Error('Invalid antigravity-cli cursor file: /Users/private/.tokenboard/private-cursor.json')
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity-cli status=failed category=cursor-state-failed'
+    ])
+    expect(stderr.join('\n')).not.toContain('/Users/private')
   })
 
   test('uploads partial DB snapshots and warns when optional Antigravity language server is unavailable', async () => {
@@ -253,7 +357,7 @@ describe('runCollectorCli Antigravity source', () => {
     expect(result).toBe(0)
     expect(uploaded).toEqual([[snapshot]])
     expect(stderr).toEqual([
-      'Partially collected antigravity source: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT'
+      'Antigravity collection: source=antigravity status=partial category=language-server-unavailable'
     ])
   })
 
@@ -287,8 +391,8 @@ describe('runCollectorCli Antigravity source', () => {
     expect(result).toBe(1)
     expect(uploaded).toEqual([[snapshot]])
     expect(stderr).toEqual([
-      'Partially collected antigravity source: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT',
-      'One or more sources failed: antigravity: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT'
+      'Antigravity collection: source=antigravity status=partial category=language-server-unavailable',
+      'One or more sources failed: antigravity: status=partial category=language-server-unavailable'
     ])
   })
 
@@ -327,8 +431,8 @@ describe('runCollectorCli Antigravity source', () => {
     expect(uploaded).toEqual([[snapshot]])
     expect(acks).toEqual(['/state:antigravity'])
     expect(stderr).toEqual([
-      'Partially collected antigravity source: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT',
-      'One or more sources failed: antigravity: Antigravity language server unavailable after DB history was collected: spawn /missing/tokenboard-antigravity-language-server ENOENT'
+      'Antigravity collection: source=antigravity status=partial category=language-server-unavailable',
+      'One or more sources failed: antigravity: status=partial category=language-server-unavailable'
     ])
   })
 
@@ -352,7 +456,7 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Invalid Antigravity generator metadata item 3: inputTokens must be a bounded nonnegative integer'
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata'
     ])
   })
 
@@ -382,7 +486,7 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Invalid Antigravity generator metadata item 3: inputTokens must be a bounded nonnegative integer'
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata'
     ])
     expect(uploaded).toEqual([])
   })
@@ -407,7 +511,7 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Failed to read Antigravity metadata from /Users/test/.gemini/antigravity/conversations/cascade.pb: ENOENT'
+      'Antigravity collection: source=antigravity status=failed category=metadata-read-failed'
     ])
   })
 

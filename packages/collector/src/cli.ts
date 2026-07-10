@@ -255,15 +255,17 @@ async function collectOptionalSource(
     if (isAntigravityPartialUsageError(error)) {
       snapshots.push(...error.snapshots)
       collectedSources.push(source)
-      sourceFailures.push({ source, message })
-      deps.stderr(`Partially collected ${source} source: ${message}`)
+      sourceFailures.push({ source, message: sourceFailureMessage(source, 'partial', message) })
+      deps.stderr(formatAntigravityDiagnostic(source, 'partial', message))
       return
     }
     if (options.ignoreUnavailable && isOptionalSourceUnavailable(source, message)) {
-      deps.stderr(`Skipping ${source} source: ${message}`)
+      deps.stderr(formatAntigravityDiagnostic(source, 'unavailable', message))
       return
     }
-    if (options.failFast || options.failOnNonUnavailable) throw error
+    if (options.failFast || options.failOnNonUnavailable) {
+      throw safeSourceError(source, error, message)
+    }
     sourceFailures.push({ source, message })
     deps.stderr(`Skipping ${source} source: ${message}`)
   }
@@ -280,11 +282,15 @@ async function ackUploadCursors(input: {
   const sources = input.collectedSources.filter((source) => source !== 'all')
   for (const source of sources) {
     if (!shouldAckCursor(source, input.env)) continue
-    await input.deps.clearPendingUploadCursors?.({
-      stateDir,
-      source,
-      cursorScope: source.startsWith('antigravity') ? input.cursorScope : undefined
-    })
+    try {
+      await input.deps.clearPendingUploadCursors?.({
+        stateDir,
+        source,
+        cursorScope: source.startsWith('antigravity') ? input.cursorScope : undefined
+      })
+    } catch (error) {
+      throw safeSourceError(source, error, errorMessage(error))
+    }
   }
 }
 
@@ -303,6 +309,46 @@ function cursorScopeFromEndpoint(endpoint: string) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function formatAntigravityDiagnostic(
+  source: ConcreteCliSource,
+  status: 'unavailable' | 'partial' | 'failed',
+  message: string
+) {
+  return `Antigravity collection: source=${source} status=${status} category=${antigravityErrorCategory(message)}`
+}
+
+function sourceFailureMessage(
+  source: ConcreteCliSource,
+  status: 'partial' | 'failed',
+  message: string
+) {
+  if (!source.startsWith('antigravity')) return message
+  return `status=${status} category=${antigravityErrorCategory(message)}`
+}
+
+function safeSourceError(source: ConcreteCliSource, error: unknown, message: string) {
+  if (!source.startsWith('antigravity')) return error
+  return new Error(formatAntigravityDiagnostic(source, 'failed', message), { cause: error })
+}
+
+function antigravityErrorCategory(message: string) {
+  if (message.toLowerCase().includes('cursor')) return 'cursor-state-failed'
+  if (message.includes('statusline log not found')) return 'statusline-unavailable'
+  if (message.includes('Antigravity SQLite reader unavailable')) return 'sqlite-reader-unavailable'
+  if (message.includes('Antigravity conversations directory not found') ||
+      message.includes('No Antigravity conversations found')) return 'history-unavailable'
+  if (message.includes('Antigravity language server exited before it was ready') ||
+      message.includes('Timed out starting Antigravity language server') ||
+      message.includes('Antigravity language server unavailable after DB history was collected') ||
+      message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null) {
+    return 'language-server-unavailable'
+  }
+  if (message.includes('Invalid Antigravity')) return 'invalid-metadata'
+  if (message.includes('Failed to read Antigravity SQLite metadata')) return 'sqlite-read-failed'
+  if (message.includes('Failed to read Antigravity metadata')) return 'metadata-read-failed'
+  return 'collection-failed'
 }
 
 function formatSourceFailures(failures: SourceFailure[]) {
