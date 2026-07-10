@@ -229,7 +229,10 @@ function shouldRequestLanguageServerCascade(input: {
   localDbUsage: AntigravityDbUsageResult
   source: AntigravityGuiSource
 }) {
-  return !input.localDbUsage.cascadeIds.has(input.cascade.id) &&
+  const databaseScanPending = input.cascade.hasDatabaseFile &&
+    !input.localDbUsage.lastReadRowIndexByCascade?.has(input.cascade.id)
+  return !databaseScanPending &&
+    !input.localDbUsage.cascadeIds.has(input.cascade.id) &&
     !hasDbCascadeRowsProcessed({
       cascade: input.cascade,
       cursor: input.cursor,

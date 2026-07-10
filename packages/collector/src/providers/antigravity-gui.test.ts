@@ -635,6 +635,35 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
+  test('does not request language server metadata for an unscanned database cascade', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-unscanned-db-'))
+    try {
+      const calls: string[] = []
+      const snapshots = await collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        listCascades: async () => [{
+          id: 'conversation-db',
+          mtimeMs: 2000,
+          size: 20,
+          hasDatabaseFile: true
+        }],
+        readDbUsageEvents: async () => ({ cascadeIds: new Set<string>(), events: [] }),
+        requestGeneratorMetadata: async (input: { cascadeId: string }) => {
+          calls.push(input.cascadeId)
+          return generatorMetadataResponse()
+        }
+      })
+
+      expect(calls).toEqual([])
+      expect(snapshots).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('requests language server when DB rows produce no usable usage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-row-'))
     const conversationDir = join(root, 'conversations')
@@ -645,6 +674,7 @@ describe('collectAntigravityGuiUsage', () => {
         await writeFile(join(conversationDir, `filler-${index}.txt`), 'filler')
       }
       await writeFile(join(conversationDir, `${cascadeId}.pb`), 'cascade')
+      await writeFile(join(conversationDir, `${cascadeId}.db`), 'sqlite')
       const calls: string[] = []
       const snapshots = await collectAntigravityGuiUsage({
         source: 'antigravity',

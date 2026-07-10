@@ -85,6 +85,31 @@ describe('createAntigravityLanguageServerClient', () => {
 })
 
 describe('listAntigravityCascades', () => {
+  test('marks cascades that have a SQLite history file', async () => {
+    const id = cascadeId(0)
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        yield { name: `${id}.pb`, isFile: () => true }
+      },
+      stat: async (path) => path.endsWith('.db')
+        ? { mtimeMs: 200, size: 30 }
+        : { mtimeMs: 100, size: 20 }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-db-marker',
+      fileSystem
+    })
+
+    expect(cascades).toEqual([{
+      id,
+      mtimeMs: 200,
+      size: 30,
+      hasDatabaseFile: true
+    }])
+  })
+
   test('selects newest requestable cascades before applying the limit', async () => {
     const statPaths: string[] = []
     const mtimes = new Map([

@@ -30,6 +30,7 @@ export type AntigravityCascadeRef = {
   id: string
   mtimeMs: number
   size: number
+  hasDatabaseFile?: boolean
 }
 
 export type AntigravityCascadeFileSystem = {
@@ -350,7 +351,8 @@ async function cascadeRef(
   ])
   const existingRefs = refs.filter((ref): ref is AntigravityCascadeRef => Boolean(ref))
   if (existingRefs.length === 0) return null
-  return existingRefs.reduce((latest, ref) => ref.mtimeMs > latest.mtimeMs ? ref : latest)
+  const latest = existingRefs.reduce((selected, ref) => ref.mtimeMs > selected.mtimeMs ? ref : selected)
+  return { ...latest, hasDatabaseFile: Boolean(refs[1]) }
 }
 
 async function fileRef(
