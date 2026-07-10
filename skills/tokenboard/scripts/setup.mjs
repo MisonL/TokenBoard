@@ -36,69 +36,90 @@ if (!baseUrl) {
   console.error('Missing --base-url or TOKENBOARD_BASE_URL')
   process.exit(1)
 }
-if (!pairingCode && shouldUseDeviceLink(flags)) {
-  try {
-    pairingCode = await createPairingCodeFromDeviceLink({
-      baseUrl,
-      readDeviceLink,
-      writeDeviceLink
-    })
-  } catch (error) {
-    console.error(error.message)
+const currentConfig = existsSync(configPath()) ? readConfig() : {}
+const serverOrigin = serverOriginFromEndpoint(baseUrl)
+if (!serverOrigin) {
+  console.error('Setup base URL did not include a valid endpoint.')
+  process.exit(1)
+}
+const savedProfile = reusableServerProfile(currentConfig, serverOrigin)
+const useDeviceLink = shouldUseDeviceLink(flags)
+
+if (!pairingCode && !useDeviceLink && savedProfile) {
+  writeConfig(withServerProfile(currentConfig, serverOrigin, savedProfile))
+  console.log('TokenBoard server profile activated.')
+} else {
+  if (!pairingCode && useDeviceLink) {
+    try {
+      pairingCode = await createPairingCodeFromDeviceLink({
+        baseUrl,
+        readDeviceLink,
+        writeDeviceLink
+      })
+    } catch (error) {
+      console.error(error.message)
+      process.exit(1)
+    }
+  }
+  if (!pairingCode) {
+    console.error('Missing --pairing-code')
     process.exit(1)
   }
-}
-if (!pairingCode) {
-  console.error('Missing --pairing-code')
-  process.exit(1)
-}
 
-const response = await fetch(`${baseUrl}/api/v1/device/pair`, {
-  method: 'POST',
-  headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({
-    pairingCode,
-    deviceName,
-    platform: platform(),
-    timezone
+  const response = await fetch(`${baseUrl}/api/v1/device/pair`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      pairingCode,
+      deviceName,
+      platform: platform(),
+      timezone
+    })
   })
-})
 
-if (!response.ok) {
-  console.error(`Pairing failed with status ${response.status}: ${await response.text()}`)
-  process.exit(1)
-}
+  if (!response.ok) {
+    console.error(`Pairing failed with status ${response.status}: ${await response.text()}`)
+    process.exit(1)
+  }
 
-const paired = await response.json()
-const currentConfig = existsSync(configPath()) ? readConfig() : {}
-const serverOrigin = serverOriginFromEndpoint(paired.endpoint || baseUrl)
-if (!serverOrigin) {
-  console.error('Pairing response did not include a valid endpoint.')
-  process.exit(1)
-}
-const nextConfig = withServerProfile(currentConfig, serverOrigin, {
-  endpoint: paired.endpoint,
-  uploadToken: paired.uploadToken,
-  deviceId: paired.deviceId,
-  installationId: paired.installationId,
-  timezone: paired.timezone,
-  source: 'all',
-  repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,
-  repoRef: flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF,
-  packageManager,
-  scheduleTimes,
-  createdAt: new Date().toISOString()
-})
-writeConfig(nextConfig)
-if (paired.installClaim) {
-  writeDeviceLink({
-    serverOrigin,
+  const paired = await response.json()
+  const pairedServerOrigin = serverOriginFromEndpoint(paired.endpoint || baseUrl)
+  if (!pairedServerOrigin) {
+    console.error('Pairing response did not include a valid endpoint.')
+    process.exit(1)
+  }
+  const nextConfig = withServerProfile(currentConfig, pairedServerOrigin, {
+    endpoint: paired.endpoint,
+    uploadToken: paired.uploadToken,
     deviceId: paired.deviceId,
     installationId: paired.installationId,
-    installClaim: paired.installClaim
+    timezone: paired.timezone,
+    source: 'all',
+    repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,
+    repoRef: flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF,
+    packageManager,
+    scheduleTimes,
+    createdAt: new Date().toISOString()
   })
+  writeConfig(nextConfig)
+  if (paired.installClaim) {
+    writeDeviceLink({
+      serverOrigin: pairedServerOrigin,
+      deviceId: paired.deviceId,
+      installationId: paired.installationId,
+      installClaim: paired.installClaim
+    })
+  }
+  console.log('TokenBoard config written.')
 }
-console.log('TokenBoard config written.')
+
+function reusableServerProfile(config, serverOrigin) {
+  const profile = config?.servers?.[serverOrigin]
+  if (!profile || typeof profile !== 'object') return null
+  if (typeof profile.endpoint !== 'string' || !profile.endpoint.trim()) return null
+  if (typeof profile.uploadToken !== 'string' || !profile.uploadToken.trim()) return null
+  return profile
+}
 
 function scriptPath(name) {
   return fileURLToPath(new URL(name, import.meta.url))
