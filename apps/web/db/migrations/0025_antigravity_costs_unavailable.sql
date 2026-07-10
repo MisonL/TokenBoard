@@ -59,6 +59,7 @@ SET
     FROM effective_daily_usage
     WHERE effective_daily_usage.user_id = daily_report_history.user_id
       AND effective_daily_usage.usage_date = daily_report_history.report_date
+      AND effective_daily_usage.synced_at <= daily_report_history.generated_at
   ), 0),
   top_models = (
     SELECT json_group_array(
@@ -70,6 +71,7 @@ SET
           FROM effective_daily_usage
           WHERE effective_daily_usage.user_id = daily_report_history.user_id
             AND effective_daily_usage.usage_date = daily_report_history.report_date
+            AND effective_daily_usage.synced_at <= daily_report_history.generated_at
             AND effective_daily_usage.model = json_extract(top_model.value, '$.model')
         ), 0)
       )
