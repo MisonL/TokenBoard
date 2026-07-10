@@ -27,11 +27,12 @@ export async function readAntigravityDbUsageEvents(input: {
   maxDbFiles?: number | null
   statFile?: StatFile
 }): Promise<AntigravityDbUsageResult> {
-  const dbFiles = await listDbFiles(
-    input.conversationDir,
-    normalizeMaxDbFiles(input.maxDbFiles),
-    input.statFile ?? stat
-  )
+  const dbFiles = await listDbFiles({
+    conversationDir: input.conversationDir,
+    maxDbFiles: normalizeMaxDbFiles(input.maxDbFiles),
+    statFile: input.statFile ?? stat,
+    lastSeenRowIndexByCascadeHash: input.lastSeenRowIndexByCascadeHash ?? new Map()
+  })
   const result: AntigravityDbUsageResult = {
     cascadeIds: new Set(),
     events: [],
@@ -42,6 +43,7 @@ export async function readAntigravityDbUsageEvents(input: {
     const fallbackCreatedAt = new Date(dbFile.mtimeMs).toISOString()
     const beforeCount = result.events.length
     const lastSeenRowIndex = input.lastSeenRowIndexByCascadeHash?.get(hash(cascadeId))
+    let lastReadRowIndex = normalizeLastSeenRowIndex(lastSeenRowIndex)
     for await (const row of readGeneratorMetadataRows(dbFile.filePath, {
       sqliteBin: input.sqliteBin,
       lastSeenRowIndex
@@ -51,9 +53,10 @@ export async function readAntigravityDbUsageEvents(input: {
         rowIndex: row.index,
         fallbackCreatedAt
       })
-      result.lastReadRowIndexByCascade?.set(cascadeId, row.index)
+      lastReadRowIndex = row.index
       result.events.push(...events.map((event) => withLegacyCascadeAlias(event, cascadeId)))
     }
+    result.lastReadRowIndexByCascade?.set(cascadeId, lastReadRowIndex)
     if (result.events.length > beforeCount) {
       result.cascadeIds.add(cascadeId)
     }
@@ -77,17 +80,18 @@ function legacyAntigravityCliConversationHash(value: string) {
     .digest('hex')
 }
 
-async function listDbFiles(
-  conversationDir: string,
-  maxDbFiles: number | null,
+async function listDbFiles(input: {
+  conversationDir: string
+  maxDbFiles: number | null
   statFile: StatFile
-) {
+  lastSeenRowIndexByCascadeHash: Map<string, number>
+}) {
   let entries
   try {
-    entries = await readdir(conversationDir, { withFileTypes: true })
+    entries = await readdir(input.conversationDir, { withFileTypes: true })
   } catch (error) {
     if (isMissingFileError(error)) {
-      throw new Error(`Antigravity conversations directory not found: ${conversationDir}`)
+      throw new Error(`Antigravity conversations directory not found: ${input.conversationDir}`)
     }
     throw error
   }
@@ -95,11 +99,17 @@ async function listDbFiles(
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .filter((name) => extname(name) === '.db' && cascadeIdPattern.test(basename(name, '.db')))
-    .map((name) => readDbFileCandidate(join(conversationDir, name), statFile))))
+    .map((name) => readDbFileCandidate(join(input.conversationDir, name), input.statFile))))
     .filter((candidate): candidate is { filePath: string; mtimeMs: number } => candidate !== null)
   const sorted = candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath))
-  const selected = maxDbFiles === null ? sorted : sorted.slice(0, maxDbFiles)
-  return selected
+  if (input.maxDbFiles === null) return sorted
+  const unread = sorted.filter((candidate) => !hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
+  const processed = sorted.filter((candidate) => hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
+  return [...unread, ...processed].slice(0, input.maxDbFiles)
+}
+
+function hasDbRowCursor(filePath: string, lastSeenRowIndexByCascadeHash: Map<string, number>) {
+  return lastSeenRowIndexByCascadeHash.has(hash(basename(filePath, '.db')))
 }
 
 async function readDbFileCandidate(filePath: string, statFile: StatFile) {
