@@ -169,6 +169,24 @@ function serverProfilePatch(patch) {
 }
 
 export function withServerProfile(current, serverOrigin, profile) {
+  const { servers, nextProfile } = mergedServerProfile(current, serverOrigin, profile)
+  return rootConfigFromProfile({ ...current, activeServer: serverOrigin, servers }, nextProfile)
+}
+
+export function withUpdatedServerProfile(current, serverOrigin, profile) {
+  const { servers, nextProfile } = mergedServerProfile(current, serverOrigin, profile)
+  const activeServer = current.activeServer
+  if (!activeServer || activeServer === serverOrigin) {
+    return rootConfigFromProfile({ ...current, activeServer: serverOrigin, servers }, nextProfile)
+  }
+  const activeProfile = servers[activeServer]
+  if (!activeProfile || typeof activeProfile !== 'object') {
+    return { ...current, servers }
+  }
+  return rootConfigFromProfile({ ...current, servers }, activeProfile)
+}
+
+function mergedServerProfile(current, serverOrigin, profile) {
   const servers = persistedServerProfiles(current.servers)
   const definedProfile = persistedServerProfile(profile)
   const nextProfile = {
@@ -176,8 +194,7 @@ export function withServerProfile(current, serverOrigin, profile) {
     ...definedProfile
   }
   servers[serverOrigin] = nextProfile
-
-  return rootConfigFromProfile({ ...current, activeServer: serverOrigin, servers }, nextProfile)
+  return { servers, nextProfile }
 }
 
 function withoutUndefinedFields(value) {

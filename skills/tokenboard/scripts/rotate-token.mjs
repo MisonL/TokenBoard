@@ -6,7 +6,7 @@ import {
   parseArgs,
   readConfig,
   serverOriginFromEndpoint,
-  withServerProfile,
+  withUpdatedServerProfile,
   writeConfig
 } from './config.mjs'
 import { writeDeviceLink } from './device-link.mjs'
@@ -22,7 +22,7 @@ export function applyRotatedToken({
   writeDeviceLinkFn = writeDeviceLink
 }) {
   const currentProfile = readCurrentServerProfile(currentConfig, serverOrigin)
-  const nextConfig = withServerProfile(currentConfig, serverOrigin, {
+  const nextConfig = withUpdatedServerProfile(currentConfig, serverOrigin, {
     ...currentProfile,
     uploadToken,
     deviceId,

@@ -48,6 +48,52 @@ test('applies a rotated token to the matching server profile only', () => {
   ])
 })
 
+test('keeps the active server when rotating a saved inactive profile', () => {
+  const writes = []
+  const nextConfig = applyRotatedToken({
+    currentConfig: {
+      activeServer: 'https://prod.example.com',
+      endpoint: 'https://prod.example.com/api/v1/ingest',
+      uploadToken: 'prod-old',
+      deviceId: 'dev_prod',
+      installationId: 'inst_prod',
+      timezone: 'UTC',
+      servers: {
+        'https://prod.example.com': {
+          endpoint: 'https://prod.example.com/api/v1/ingest',
+          uploadToken: 'prod-old',
+          deviceId: 'dev_prod',
+          installationId: 'inst_prod',
+          timezone: 'UTC'
+        },
+        'https://private.example.com': {
+          endpoint: 'https://private.example.com/api/v1/ingest',
+          uploadToken: 'private-old',
+          deviceId: 'dev_private',
+          installationId: 'inst_private',
+          timezone: 'Asia/Shanghai'
+        }
+      }
+    },
+    serverOrigin: 'https://private.example.com',
+    uploadToken: 'private-new',
+    deviceId: 'dev_private',
+    installationId: 'inst_private',
+    installClaim: null,
+    writeConfigFn: (config) => writes.push(config),
+    writeDeviceLinkFn: () => {}
+  })
+
+  assert.equal(nextConfig.activeServer, 'https://prod.example.com')
+  assert.equal(nextConfig.endpoint, 'https://prod.example.com/api/v1/ingest')
+  assert.equal(nextConfig.uploadToken, 'prod-old')
+  assert.equal(nextConfig.deviceId, 'dev_prod')
+  assert.equal(nextConfig.installationId, 'inst_prod')
+  assert.equal(nextConfig.servers['https://private.example.com'].uploadToken, 'private-new')
+  assert.equal(nextConfig.servers['https://prod.example.com'].uploadToken, 'prod-old')
+  assert.deepEqual(writes, [nextConfig])
+})
+
 test('rejects a server origin that is not present in config', () => {
   assert.throws(
     () =>
