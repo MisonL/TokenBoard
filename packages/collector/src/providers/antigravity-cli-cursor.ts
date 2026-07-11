@@ -21,6 +21,10 @@ export function pushCliUsageEvent(input: {
   timezone: string
   collectedAt: string
 }) {
+  if (!input.event.eventHash) {
+    pushStatuslineUsageEvent(input)
+    return
+  }
   const eventKeys = usageEventKeys(input.event)
   const primaryKey = eventKeys[0]
   const existingKey = findExistingEventKey(input.event, eventKeys, input.cursor)
@@ -57,6 +61,66 @@ export function pushCliUsageEvent(input: {
   }
   input.snapshots.push(snapshot)
   input.emittedKeys.add(primaryKey)
+}
+
+function pushStatuslineUsageEvent(input: {
+  event: StatuslineEvent
+  cursor: AntigravityCliCursor
+  snapshots: UsageSnapshot[]
+  emittedKeys: Set<string>
+  timezone: string
+  collectedAt: string
+}) {
+  const legacyKeys = usageEventKeys(input.event)
+  const coveredKey = legacyKeys.find((key) => {
+    const entry = input.cursor.files[key]
+    return entry && !isStatuslineAlias(entry, key)
+  })
+  if (coveredKey) {
+    const covered = input.cursor.files[coveredKey]
+    if (covered?.pendingUpload) {
+      pushCachedSnapshots(input.snapshots, covered, input.collectedAt, input.emittedKeys, coveredKey)
+    }
+    return
+  }
+  const occurrenceKey = statuslineOccurrenceKey(input.event)
+  const existing = input.cursor.files[occurrenceKey]
+  if (existing) {
+    if (existing.pendingUpload) {
+      pushCachedSnapshots(input.snapshots, existing, input.collectedAt, input.emittedKeys, occurrenceKey)
+    }
+    return
+  }
+
+  const signature = statuslineEventKey(input.event, input.event.conversationHash)
+  const headKeys = statuslineHeadKeys(input.event)
+  if (headKeys.some((key) => input.cursor.files[key]?.sha256 === hash(signature))) return
+
+  const snapshot = buildSnapshot(input)
+  input.cursor.files[occurrenceKey] = newCursorEntry({
+    snapshots: [stripCollectedAt(snapshot)],
+    marker: occurrenceKey,
+    mtimeMs: Date.parse(input.event.capturedAt),
+    pendingUpload: true
+  })
+  for (const aliasKey of legacyKeys) {
+    input.cursor.files[aliasKey] ??= newCursorEntry({
+      snapshots: [],
+      marker: statuslineAliasMarker(aliasKey),
+      mtimeMs: Date.parse(input.event.capturedAt),
+      pendingUpload: false
+    })
+  }
+  for (const headKey of headKeys) {
+    input.cursor.files[headKey] = newCursorEntry({
+      snapshots: [],
+      marker: signature,
+      mtimeMs: Date.parse(input.event.capturedAt),
+      pendingUpload: false
+    })
+  }
+  input.snapshots.push(snapshot)
+  input.emittedKeys.add(occurrenceKey)
 }
 
 export function pushCompleteCliCursorSnapshots(
@@ -166,7 +230,10 @@ function findExistingEventKey(
     const entry = cursor.files[key]
     if (!entry) continue
     if (!event.eventHash) return key
-    if (entry.snapshots.length > 0 && !cursor.files[historyStatuslineClaimKey(key)]) return key
+    if (
+      (entry.snapshots.length > 0 || isStatuslineAlias(entry, key)) &&
+      !cursor.files[historyStatuslineClaimKey(key)]
+    ) return key
   }
   return undefined
 }
@@ -244,6 +311,23 @@ function statuslineEventKey(event: StatuslineEvent, conversationHash: string) {
     event.cacheCreationTokens,
     event.cacheReadTokens
   ].join('\0')
+}
+
+function statuslineOccurrenceKey(event: StatuslineEvent) {
+  return ['statusline-occurrence', statuslineEventKey(event, event.conversationHash), event.capturedAt].join('\0')
+}
+
+function statuslineHeadKeys(event: StatuslineEvent) {
+  return [event.conversationHash, ...(event.conversationHashAliases ?? [])]
+    .map((conversationHash) => ['statusline-head', conversationHash].join('\0'))
+}
+
+function statuslineAliasMarker(key: string) {
+  return ['statusline-alias', key].join('\0')
+}
+
+function isStatuslineAlias(entry: CursorEntry, key: string) {
+  return entry.sha256 === hash(statuslineAliasMarker(key))
 }
 
 function usageSessionKeys(event: StatuslineEvent, usageDate: string) {

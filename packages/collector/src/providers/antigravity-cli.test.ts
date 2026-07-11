@@ -50,6 +50,38 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('counts an identical statusline usage again after the conversation usage changes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-repeated-call-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      await writeEvents(eventPath, [
+        event({ capturedAt: '2026-06-23T10:00:00.000Z', usage: { inputTokens: 100, outputTokens: 10 } }),
+        event({ capturedAt: '2026-06-23T10:00:01.000Z', usage: { inputTokens: 100, outputTokens: 10 } }),
+        event({ capturedAt: '2026-06-23T10:01:00.000Z', usage: { inputTokens: 20, outputTokens: 5 } }),
+        event({ capturedAt: '2026-06-23T10:02:00.000Z', usage: { inputTokens: 100, outputTokens: 10 } })
+      ])
+
+      const snapshots = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'UTC',
+        collectedAt: '2026-06-23T10:03:00.000Z',
+        readDbUsageEvents: emptyDbUsage
+      })
+
+      expect(snapshots).toEqual([
+        expect.objectContaining({
+          inputTokens: 220,
+          outputTokens: 25,
+          totalTokens: 245,
+          sessionCount: 1
+        })
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('retries pending snapshots until the cursor is acknowledged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-'))
     try {
