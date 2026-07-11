@@ -12,6 +12,9 @@ export function isUnavailableLanguageServerError(error: unknown) {
   if (!(error instanceof Error)) return false
   return error.message.includes('Antigravity language server exited before it was ready') ||
     error.message.includes('Timed out starting Antigravity language server') ||
+    error.message.startsWith('Antigravity metadata request failed for ') ||
+    error.message.startsWith('Antigravity metadata request timed out for ') ||
+    error.message.startsWith('Antigravity metadata request returned invalid JSON for ') ||
     error.message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null
 }
 
