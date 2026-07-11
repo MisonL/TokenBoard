@@ -226,9 +226,12 @@ function findExistingEventKey(
 ) {
   const primaryKey = eventKeys[0]
   if (cursor.files[primaryKey]) return primaryKey
+  const occurrenceKey = findUnclaimedStatuslineOccurrence(event, eventKeys.slice(1), cursor)
+  if (occurrenceKey) return occurrenceKey
   for (const key of eventKeys.slice(1)) {
     const entry = cursor.files[key]
     if (!entry) continue
+    if (hasStatuslineOccurrences(key, cursor)) continue
     if (!event.eventHash) return key
     if (
       (entry.snapshots.length > 0 || isStatuslineAlias(entry, key)) &&
@@ -236,6 +239,31 @@ function findExistingEventKey(
     ) return key
   }
   return undefined
+}
+
+function hasStatuslineOccurrences(statuslineKey: string, cursor: AntigravityCliCursor) {
+  const prefix = `statusline-occurrence\0${statuslineKey}\0`
+  return Object.keys(cursor.files).some((key) => key.startsWith(prefix))
+}
+
+function findUnclaimedStatuslineOccurrence(
+  event: StatuslineEvent,
+  statuslineKeys: string[],
+  cursor: AntigravityCliCursor
+) {
+  const candidates = statuslineKeys.flatMap((statuslineKey) => {
+    const prefix = `statusline-occurrence\0${statuslineKey}\0`
+    return Object.entries(cursor.files)
+      .filter(([key, entry]) => (
+        key.startsWith(prefix) &&
+        entry.snapshots.length > 0 &&
+        !cursor.files[historyStatuslineClaimKey(key)]
+      ))
+  })
+  const exact = candidates.find(([key]) => key.endsWith(`\0${event.capturedAt}`))
+  if (exact) return exact[0]
+  candidates.sort((left, right) => left[1].mtimeMs - right[1].mtimeMs || left[0].localeCompare(right[0]))
+  return candidates[0]?.[0]
 }
 
 function markHistoryEventCoveredByStatusline(input: {

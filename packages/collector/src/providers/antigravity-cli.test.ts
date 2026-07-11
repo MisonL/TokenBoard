@@ -639,6 +639,54 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('dedupes each repeated statusline occurrence against matching history events', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-repeated-history-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      const repeatedUsage = {
+        inputTokens: 100,
+        outputTokens: 12,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 50
+      }
+      await writeEvents(eventPath, [
+        event({ conversationHash: conversationA, capturedAt: '2026-06-23T16:30:00.000Z', usage: repeatedUsage }),
+        event({ conversationHash: conversationA, capturedAt: '2026-06-23T16:31:00.000Z', usage: { inputTokens: 20 } }),
+        event({ conversationHash: conversationA, capturedAt: '2026-06-23T16:32:00.000Z', usage: repeatedUsage })
+      ])
+
+      const first = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'UTC',
+        collectedAt: '2026-06-23T16:33:00.000Z',
+        readDbUsageEvents: emptyDbUsage
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      const second = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'UTC',
+        collectedAt: '2026-06-23T16:34:00.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-a']),
+          events: [
+            historyEvent({ eventHash: 'd'.repeat(64), createdAt: '2026-06-23T16:30:00.000Z', ...repeatedUsage }),
+            historyEvent({ eventHash: 'e'.repeat(64), createdAt: '2026-06-23T16:31:00.000Z', inputTokens: 20 }),
+            historyEvent({ eventHash: 'f'.repeat(64), createdAt: '2026-06-23T16:32:00.000Z', ...repeatedUsage })
+          ]
+        })
+      })
+
+      expect(first).toEqual([
+        expect.objectContaining({ inputTokens: 220, outputTokens: 26, cacheReadTokens: 100 })
+      ])
+      expect(second).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('dedupes statusline events after matching DB history alias cursor entries exist', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-after-history-'))
     try {
@@ -1121,6 +1169,27 @@ function baseEvent() {
       cacheCreationTokens: 0,
       cacheReadTokens: 0
     }
+  }
+}
+
+function historyEvent(overrides: Partial<{
+  eventHash: string
+  createdAt: string
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+}> = {}) {
+  return {
+    cascadeHash: conversationA,
+    eventHash: 'e'.repeat(64),
+    createdAt: '2026-06-23T10:00:00.000Z',
+    model: 'Gemini 3.5 Flash (Medium)',
+    inputTokens: 100,
+    outputTokens: 2,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    ...overrides
   }
 }
 
