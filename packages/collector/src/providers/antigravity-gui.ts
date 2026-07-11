@@ -1,4 +1,3 @@
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import {
@@ -24,6 +23,10 @@ import {
   pushGuiUsageEvent,
   shouldRequestCascade
 } from './antigravity-gui-cursor'
+import {
+  defaultConversationDir, errorMessage, isUnavailableDbError,
+  isUnavailableLanguageServerError, readStateDir
+} from './antigravity-gui-environment'
 
 export type AntigravityGuiSource = 'antigravity' | 'antigravity-ide'
 
@@ -292,29 +295,4 @@ function resolveMaxDbFiles(value: number | null | undefined) {
 function defaultMaxDbFilesForCurrentRun() {
   const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
   return since === 'all' ? null : undefined
-}
-
-function isUnavailableDbError(error: unknown) {
-  if (!(error instanceof Error)) return false
-  return error.message.startsWith('Antigravity SQLite reader unavailable:') ||
-    error.message.startsWith('Antigravity conversations directory not found:')
-}
-
-function isUnavailableLanguageServerError(error: unknown) {
-  if (!(error instanceof Error)) return false
-  return error.message.includes('Antigravity language server exited before it was ready') ||
-    error.message.includes('Timed out starting Antigravity language server') ||
-    error.message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function readStateDir() {
-  return process.env.TOKENBOARD_STATE_DIR || process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
-}
-
-function defaultConversationDir(source: AntigravityGuiSource) {
-  return join(homedir(), '.gemini', source, 'conversations')
 }
