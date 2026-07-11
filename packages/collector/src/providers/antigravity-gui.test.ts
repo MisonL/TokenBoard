@@ -614,6 +614,50 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
+  test('preserves partial DB snapshots when cursor cleanup also fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-partial-cleanup-'))
+    const dbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-06-23T16:30:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      let thrown: unknown
+      try {
+        await collectAntigravityGuiUsage({
+          source: 'antigravity',
+          stateDir: root,
+          timezone: 'UTC',
+          collectedAt: '2026-06-24T02:00:00.000Z',
+          listCascades: async () => [{ id: 'conversation-a', mtimeMs: 2000, size: 20 }],
+          readDbUsageEvents: async () => ({ cascadeIds: new Set(['conversation-db']), events: [dbEvent] }),
+          requestGeneratorMetadata: async () => {
+            await rm(root, { recursive: true, force: true })
+            await writeFile(root, 'block cursor directory recreation')
+            const error = new Error('spawn /missing/tokenboard-antigravity-language-server ENOENT')
+            throw error
+          }
+        })
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(isAntigravityPartialUsageError(thrown)).toBe(true)
+      if (!isAntigravityPartialUsageError(thrown)) throw thrown
+      expect(thrown.snapshots).toEqual([
+        expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
+      ])
+      expect((thrown as Error & { cause?: unknown }).cause).toBeInstanceOf(Error)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('does not treat empty DB history as already covered when language server data remains available', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-gating-'))
     try {

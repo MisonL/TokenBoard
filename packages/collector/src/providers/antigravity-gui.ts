@@ -55,10 +55,13 @@ const defaultMaxLanguageServerCascades = 12
 export class AntigravityPartialUsageError extends Error {
   readonly snapshots: UsageSnapshot[]
 
-  constructor(message: string, snapshots: UsageSnapshot[]) {
+  constructor(message: string, snapshots: UsageSnapshot[], cause?: unknown) {
     super(message)
     this.name = 'AntigravityPartialUsageError'
     this.snapshots = snapshots
+    if (cause !== undefined) {
+      Object.defineProperty(this, 'cause', { value: cause, configurable: true })
+    }
   }
 }
 
@@ -96,39 +99,10 @@ export async function collectAntigravityGuiUsage(
 
   const uncapturedCascades = await listUncapturedLanguageServerCascades({ options, cursor, localDbUsage })
   if (uncapturedCascades.length > 0) {
-    let request
-    try {
-      request = await createRequestContext(options)
-      for (const cascade of uncapturedCascades) {
-        const response = await request.requestGeneratorMetadata({ source: options.source, cascadeId: cascade.id })
-        let hasUsableEvents = false
-        for (const event of parseGeneratorMetadata(response, cascade.id)) {
-          hasUsableEvents = true
-          pushGuiUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt, source: options.source })
-        }
-        if (hasUsableEvents) {
-          markCascadeProcessed({ cascade, cursor, source: options.source })
-          await writeCursor(cursorPath, cursor)
-        }
-      }
-    } catch (error) {
-      markDbCascadeRowsProcessed({
-        cursor,
-        source: options.source,
-        lastReadRowIndexByCascade: localDbUsage.lastReadRowIndexByCascade
-      })
-      pushCompleteGuiCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
-      await writeCursor(cursorPath, cursor)
-      if (snapshots.length > 0 && isUnavailableLanguageServerError(error)) {
-        throw new AntigravityPartialUsageError(
-          `Antigravity language server unavailable after DB history was collected: ${errorMessage(error)}`,
-          mergeSnapshots(snapshots)
-        )
-      }
-      throw error
-    } finally {
-      await request?.close()
-    }
+    await collectLanguageServerUsage({
+      options, cursor, cursorPath, snapshots, emittedKeys, timezone, collectedAt,
+      localDbUsage, uncapturedCascades
+    })
   }
 
   markDbCascadeRowsProcessed({
@@ -139,6 +113,119 @@ export async function collectAntigravityGuiUsage(
   pushCompleteGuiCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
   await writeCursor(cursorPath, cursor)
   return mergeSnapshots(snapshots)
+}
+
+async function collectLanguageServerUsage(input: {
+  options: CollectAntigravityGuiUsageOptions
+  cursor: Awaited<ReturnType<typeof readCursor>>
+  cursorPath: string
+  snapshots: UsageSnapshot[]
+  emittedKeys: Set<string>
+  timezone: string
+  collectedAt: string
+  localDbUsage: AntigravityDbUsageResult
+  uncapturedCascades: AntigravityCascadeRef[]
+}) {
+  let request
+  let collectionFailed = false
+  let collectionError: unknown
+  const cleanupErrors: unknown[] = []
+  try {
+    request = await createRequestContext(input.options)
+    await requestLanguageServerUsage(input, request)
+  } catch (error) {
+    collectionFailed = true
+    collectionError = error
+    await preservePartialGuiUsage(input, cleanupErrors)
+  } finally {
+    try {
+      await request?.close()
+    } catch (closeError) {
+      cleanupErrors.push(closeError)
+    }
+  }
+  if (collectionFailed) {
+    throw guiCollectionError(collectionError, input.snapshots, cleanupErrors)
+  }
+  if (cleanupErrors.length > 0) throw cleanupErrors[0]
+}
+
+async function requestLanguageServerUsage(
+  input: Parameters<typeof collectLanguageServerUsage>[0],
+  request: Awaited<ReturnType<typeof createRequestContext>>
+) {
+  for (const cascade of input.uncapturedCascades) {
+    const response = await request.requestGeneratorMetadata({ source: input.options.source, cascadeId: cascade.id })
+    let hasUsableEvents = false
+    for (const event of parseGeneratorMetadata(response, cascade.id)) {
+      hasUsableEvents = true
+      pushGuiUsageEvent({
+        event,
+        cursor: input.cursor,
+        snapshots: input.snapshots,
+        emittedKeys: input.emittedKeys,
+        timezone: input.timezone,
+        collectedAt: input.collectedAt,
+        source: input.options.source
+      })
+    }
+    if (!hasUsableEvents) continue
+    markCascadeProcessed({ cascade, cursor: input.cursor, source: input.options.source })
+    await writeCursor(input.cursorPath, input.cursor)
+  }
+}
+
+async function preservePartialGuiUsage(
+  input: Parameters<typeof collectLanguageServerUsage>[0],
+  cleanupErrors: unknown[]
+) {
+  try {
+    markDbCascadeRowsProcessed({
+      cursor: input.cursor,
+      source: input.options.source,
+      lastReadRowIndexByCascade: input.localDbUsage.lastReadRowIndexByCascade
+    })
+    pushCompleteGuiCursorSnapshots(input.snapshots, input.cursor, input.collectedAt, input.emittedKeys)
+    await writeCursor(input.cursorPath, input.cursor)
+  } catch (cleanupError) {
+    cleanupErrors.push(cleanupError)
+  }
+}
+
+function guiCollectionError(
+  error: unknown,
+  snapshots: UsageSnapshot[],
+  cleanupErrors: unknown[]
+) {
+  const cause = cleanupErrorCause(cleanupErrors)
+  if (snapshots.length > 0 && isUnavailableLanguageServerError(error)) {
+    return new AntigravityPartialUsageError(
+      `Antigravity language server unavailable after DB history was collected: ${errorMessage(error)}`,
+      mergeSnapshots(snapshots),
+      cause
+    )
+  }
+  if (!(error instanceof Error) || cause === undefined) return error
+  attachCleanupCause(error, cause)
+  return error
+}
+
+function attachCleanupCause(error: Error, cause: unknown) {
+  const existingCause = (error as Error & { cause?: unknown }).cause
+  const combinedCause = existingCause === undefined
+    ? cause
+    : new AggregateError([existingCause, cause], 'Antigravity collection cleanup failed')
+  try {
+    Object.defineProperty(error, 'cause', { value: combinedCause, configurable: true })
+  } catch {
+    // Preserve the primary error even if a third-party error object is immutable.
+  }
+}
+
+function cleanupErrorCause(errors: unknown[]) {
+  if (errors.length === 0) return undefined
+  if (errors.length === 1) return errors[0]
+  return new AggregateError(errors, 'Antigravity collection cleanup failed')
 }
 
 async function createRequestContext(options: CollectAntigravityGuiUsageOptions) {
