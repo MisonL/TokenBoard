@@ -51,6 +51,8 @@ export type DevicePairingRepository = {
     installClaimHash: string
   }): Promise<DeviceInstallationClaimRecord | null>
   createUploadTokenAndDevice(input: {
+    pairingCodeId: string
+    consumedAt: string
     uploadTokenId: string
     uploadTokenHash: string
     deviceId: string
@@ -65,6 +67,8 @@ export type DevicePairingRepository = {
     createdAt: string
   }): Promise<void>
   createUploadTokenAndInstallation(input: {
+    pairingCodeId: string
+    consumedAt: string
     uploadTokenId: string
     uploadTokenHash: string
     deviceId: string
@@ -90,16 +94,6 @@ export type DevicePairingRepository = {
     targetId: string | null
     metadata?: string | null
     createdAt: string
-  }): Promise<void>
-  consumePairingCode(pairingCodeId: string, consumedAt: string): Promise<boolean>
-  restoreConsumedPairingCode(pairingCodeId: string, consumedAt: string): Promise<void>
-  restoreConsumedInstallClaim(input: {
-    userId: string
-    deviceId: string
-    sourceInstallationId: string
-    sourceInstallClaimHash: string
-    consumedInstallClaimHash: string
-    restoredAt: string
   }): Promise<void>
 }
 
@@ -1552,48 +1546,6 @@ function isInactiveReconnectTargetError(error: unknown) {
   )
 }
 
-function isUnchangedSourceClaimError(error: unknown) {
-  return error instanceof Error && error.message === 'Reconnect source installation is no longer current'
-}
-
-async function restorePairingAttempt(input: {
-  repository: DevicePairingRepository
-  pairingCodeId: string
-  consumedAt: string
-  shouldRestoreInstallClaim: boolean
-  userId: string
-  deviceId: string
-  sourceInstallationId?: string | null
-  sourceInstallClaimHash?: string | null
-  consumedInstallClaimHash?: string | null
-}) {
-  if (
-    input.shouldRestoreInstallClaim &&
-    input.sourceInstallationId &&
-    input.sourceInstallClaimHash &&
-    input.consumedInstallClaimHash
-  ) {
-    try {
-      await input.repository.restoreConsumedInstallClaim({
-        userId: input.userId,
-        deviceId: input.deviceId,
-        sourceInstallationId: input.sourceInstallationId,
-        sourceInstallClaimHash: input.sourceInstallClaimHash,
-        consumedInstallClaimHash: input.consumedInstallClaimHash,
-        restoredAt: input.consumedAt
-      })
-    } catch (error) {
-      console.error(`TokenBoard install claim restore failed: ${errorMessage(error)}`)
-    }
-  }
-
-  try {
-    await input.repository.restoreConsumedPairingCode(input.pairingCodeId, input.consumedAt)
-  } catch (error) {
-    console.error(`TokenBoard pairing code restore failed: ${errorMessage(error)}`)
-  }
-}
-
 export async function pairDevice(
   repository: DevicePairingRepository,
   request: DevicePairRequest,
@@ -1633,14 +1585,11 @@ export async function pairDevice(
   const consumedInstallClaimHash = shouldConsumeSourceClaim
     ? await deps.hash(deps.randomInstallClaim())
     : null
-  const consumed = await repository.consumePairingCode(pairingCode.id, now)
-  if (!consumed) {
-    throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
-  }
-
   const deviceName = request.deviceName ?? 'TokenBoard device'
   const platform = request.platform ?? 'unknown'
   const input = {
+    pairingCodeId: pairingCode.id,
+    consumedAt: now,
     uploadTokenId,
     uploadTokenHash,
     deviceId,
@@ -1665,18 +1614,6 @@ export async function pairDevice(
       await repository.createUploadTokenAndDevice(input)
     }
   } catch (error) {
-    await restorePairingAttempt({
-      repository,
-      pairingCodeId: pairingCode.id,
-      consumedAt: now,
-      shouldRestoreInstallClaim: shouldConsumeSourceClaim && !isUnchangedSourceClaimError(error),
-      userId: pairingCode.userId,
-      deviceId,
-      sourceInstallationId: reconnectMetadata?.sourceInstallationId ?? null,
-      sourceInstallClaimHash: reconnectMetadata?.sourceInstallClaimHash ?? null,
-      consumedInstallClaimHash
-    })
-
     if (pairingCode.pairingType === 'reconnect_device') {
       if (isInactiveReconnectTargetError(error)) {
         throw new ApiError('NOT_FOUND', 'Device has no active installation', 404)

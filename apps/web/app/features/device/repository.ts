@@ -5,6 +5,8 @@ import type {
 } from './service'
 
 type InstallationInput = {
+  pairingCodeId: string
+  consumedAt: string
   uploadTokenId: string
   uploadTokenHash: string
   deviceId: string
@@ -362,6 +364,8 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
   }
 
   async createUploadTokenAndDevice(input: {
+    pairingCodeId: string
+    consumedAt: string
     uploadTokenId: string
     uploadTokenHash: string
     deviceId: string
@@ -379,13 +383,15 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       this.deviceInsertStatement(input),
       this.installationInsertStatement(input),
       this.uploadTokenInsertStatement(input),
-      this.devicePairAuditLogInsertStatement(input)
+      this.devicePairAuditLogInsertStatement(input),
+      this.pairingCodeConsumeStatement(input)
     ])
-    assertBatchSucceeded(results, 4)
+    assertBatchSucceeded(results, 5)
     assertStatementChanged(results[0], 'Device was not created')
     assertStatementChanged(results[1], 'Installation was not created')
     assertStatementChanged(results[2], 'Upload token was not created')
     assertStatementChanged(results[3], 'Device pairing was not recorded')
+    assertStatementChanged(results[4], 'Pairing code is no longer current')
   }
 
   async createUploadTokenAndInstallation(input: ReconnectInstallationInput) {
@@ -409,7 +415,8 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     statements.push(
       this.reconnectInstallationInsertStatement(input),
       this.reconnectUploadTokenInsertStatement(input),
-      this.reconnectDevicePairAuditLogInsertStatement(input)
+      this.reconnectDevicePairAuditLogInsertStatement(input),
+      this.pairingCodeConsumeStatement(input)
     )
 
     const results = await this.db.batch(statements)
@@ -422,6 +429,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     assertStatementChanged(results[offset], 'Reconnect target is no longer active')
     assertStatementChanged(results[offset + 1], 'Upload token was not created')
     assertStatementChanged(results[offset + 2], 'Device pairing was not recorded')
+    assertStatementChanged(results[offset + 3], 'Pairing code is no longer current')
   }
 
   private reconnectSourceClaimConsumeStatement(input: ReconnectInstallationInput) {
@@ -463,21 +471,39 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             created_at,
             updated_at
           )
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-          WHERE EXISTS (
-            SELECT 1
-            FROM device_installations source
-            WHERE source.user_id = ?
-              AND source.device_id = ?
-              AND source.revoked_at IS NULL
-              AND (? IS NULL OR source.id = ?)
-              AND (? IS NULL OR source.install_claim_hash = ?)
+          VALUES (
+            ?,
+            (
+              SELECT source.user_id
+              FROM device_installations source
+              JOIN pairing_codes pairing
+                ON pairing.id = ?
+                AND pairing.user_id = source.user_id
+                AND pairing.pairing_type = 'reconnect_device'
+                AND pairing.target_device_id = source.device_id
+                AND pairing.consumed_at IS NULL
+                AND pairing.expires_at > ?
+              WHERE source.user_id = ?
+                AND source.device_id = ?
+                AND source.revoked_at IS NULL
+                AND (? IS NULL OR source.id = ?)
+                AND (? IS NULL OR source.install_claim_hash = ?)
+              LIMIT 1
+            ),
+            ?, ?, ?, ?, ?, ?, ?, ?
           )
         `
       )
       .bind(
         input.installationId,
+        input.pairingCodeId,
+        input.consumedAt,
         input.userId,
+        input.deviceId,
+        input.sourceInstallationId ?? null,
+        input.sourceInstallationId ?? null,
+        input.consumedInstallClaimHash ?? null,
+        input.consumedInstallClaimHash ?? null,
         input.deviceId,
         input.platform,
         input.deviceName,
@@ -485,13 +511,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
         input.createdAt,
         input.createdAt,
         input.createdAt,
-        input.createdAt,
-        input.userId,
-        input.deviceId,
-        input.sourceInstallationId ?? null,
-        input.sourceInstallationId ?? null,
-        input.consumedInstallClaimHash ?? null,
-        input.consumedInstallClaimHash ?? null
+        input.createdAt
       )
   }
 
@@ -578,12 +598,27 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       .prepare(
         `
           INSERT INTO devices (id, user_id, name, platform, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          VALUES (
+            ?,
+            (
+              SELECT user_id
+              FROM pairing_codes
+              WHERE id = ?
+                AND user_id = ?
+                AND pairing_type = 'new_device'
+                AND consumed_at IS NULL
+                AND expires_at > ?
+              LIMIT 1
+            ),
+            ?, ?, ?, ?
+          )
         `
       )
       .bind(
         input.deviceId,
+        input.pairingCodeId,
         input.userId,
+        input.consumedAt,
         input.deviceName,
         input.platform,
         input.createdAt,
@@ -664,6 +699,47 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     })
   }
 
+  private pairingCodeConsumeStatement(input: InstallationInput) {
+    return this.db
+      .prepare(
+        `
+          UPDATE pairing_codes
+          SET consumed_at = ?
+          WHERE id = ?
+            AND user_id = ?
+            AND consumed_at IS NULL
+            AND expires_at > ?
+            AND EXISTS (
+              SELECT 1
+              FROM upload_tokens
+              WHERE id = ?
+                AND user_id = ?
+                AND device_id = ?
+                AND installation_id = ?
+                AND revoked_at IS NULL
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM audit_logs
+              WHERE id = ?
+                AND user_id = ?
+            )
+        `
+      )
+      .bind(
+        input.consumedAt,
+        input.pairingCodeId,
+        input.userId,
+        input.consumedAt,
+        input.uploadTokenId,
+        input.userId,
+        input.deviceId,
+        input.installationId,
+        input.auditLogId,
+        input.userId
+      )
+  }
+
   async createAuditLog(input: {
     auditLogId: string
     userId: string
@@ -716,53 +792,6 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       )
   }
 
-  async consumePairingCode(pairingCodeId: string, consumedAt: string) {
-    const result = await this.db
-      .prepare('UPDATE pairing_codes SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL')
-      .bind(consumedAt, pairingCodeId)
-      .run()
-    return (result.meta.changes ?? 0) > 0
-  }
-
-  async restoreConsumedPairingCode(pairingCodeId: string, consumedAt: string) {
-    const result = await this.db
-      .prepare('UPDATE pairing_codes SET consumed_at = NULL WHERE id = ? AND consumed_at = ?')
-      .bind(pairingCodeId, consumedAt)
-      .run()
-    assertStatementChanged(result, 'Consumed pairing code was not restored')
-  }
-
-  async restoreConsumedInstallClaim(input: {
-    userId: string
-    deviceId: string
-    sourceInstallationId: string
-    sourceInstallClaimHash: string
-    consumedInstallClaimHash: string
-    restoredAt: string
-  }) {
-    const result = await this.db
-      .prepare(
-        `
-          UPDATE device_installations
-          SET install_claim_hash = ?, updated_at = ?
-          WHERE id = ?
-            AND user_id = ?
-            AND device_id = ?
-            AND install_claim_hash = ?
-            AND revoked_at IS NULL
-        `
-      )
-      .bind(
-        input.sourceInstallClaimHash,
-        input.restoredAt,
-        input.sourceInstallationId,
-        input.userId,
-        input.deviceId,
-        input.consumedInstallClaimHash
-      )
-      .run()
-    assertStatementChanged(result, 'Reconnect source installation was not restored')
-  }
 }
 
 function assertBatchSucceeded(results: D1Result<unknown>[], expectedStatements: number) {

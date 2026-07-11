@@ -268,6 +268,8 @@ describe('D1DevicePairingRepository', () => {
     const repository = new D1DevicePairingRepository(db)
 
     await repository.createUploadTokenAndDevice({
+      pairingCodeId: 'pair_1',
+      consumedAt: '2026-06-30T10:00:00.000Z',
       uploadTokenId: 'ut_1',
       uploadTokenHash: 'hash:upload',
       deviceId: 'dev_1',
@@ -288,11 +290,14 @@ describe('D1DevicePairingRepository', () => {
     expect(sqlStatements[2]).toContain('INSERT INTO upload_tokens')
     expect(sqlStatements[2]).toContain('installation_id')
     expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[4]).toContain('UPDATE pairing_codes')
     expect(batches).toHaveLength(1)
-    expect(batches[0]).toHaveLength(4)
+    expect(batches[0]).toHaveLength(5)
     expect(bindings[0]).toEqual([
       'dev_1',
+      'pair_1',
       'user_1',
+      '2026-06-30T10:00:00.000Z',
       'Workstation',
       'darwin',
       '2026-06-30T10:00:00.000Z',
@@ -320,6 +325,18 @@ describe('D1DevicePairingRepository', () => {
       '{"installationId":"inst_1","platform":"darwin"}',
       '2026-06-30T10:00:00.000Z'
     ])
+    expect(bindings[4]).toEqual([
+      '2026-06-30T10:00:00.000Z',
+      'pair_1',
+      'user_1',
+      '2026-06-30T10:00:00.000Z',
+      'ut_1',
+      'user_1',
+      'dev_1',
+      'inst_1',
+      'audit_1',
+      'user_1'
+    ])
   })
 
   test('surfaces a failed new-device credential batch before returning success', async () => {
@@ -336,6 +353,8 @@ describe('D1DevicePairingRepository', () => {
 
     await expect(
       repository.createUploadTokenAndDevice({
+        pairingCodeId: 'pair_1',
+        consumedAt: '2026-06-30T10:00:00.000Z',
         uploadTokenId: 'ut_1',
         uploadTokenHash: 'hash:upload',
         deviceId: 'dev_1',
@@ -364,6 +383,8 @@ describe('D1DevicePairingRepository', () => {
 
     await expect(
       repository.createUploadTokenAndDevice({
+        pairingCodeId: 'pair_1',
+        consumedAt: '2026-06-30T10:00:00.000Z',
         uploadTokenId: 'ut_1',
         uploadTokenHash: 'hash:upload',
         deviceId: 'dev_1',
@@ -376,7 +397,7 @@ describe('D1DevicePairingRepository', () => {
         auditAction: 'device.pair',
         createdAt: '2026-06-30T10:00:00.000Z'
       })
-    ).rejects.toThrow('D1 batch statement 4 failed: expected 4 results, received 3')
+    ).rejects.toThrow('D1 batch statement 4 failed: expected 5 results, received 3')
   })
 
   test('rejects a new-device pairing batch when audit insert reports no changes', async () => {
@@ -386,13 +407,16 @@ describe('D1DevicePairingRepository', () => {
         { success: true, meta: { changes: 1 } },
         { success: true, meta: { changes: 1 } },
         { success: true, meta: { changes: 1 } },
-        { success: true, meta: { changes: 0 } }
+        { success: true, meta: { changes: 0 } },
+        { success: true, meta: { changes: 1 } }
       ]
     )
     const repository = new D1DevicePairingRepository(db)
 
     await expect(
       repository.createUploadTokenAndDevice({
+        pairingCodeId: 'pair_1',
+        consumedAt: '2026-06-30T10:00:00.000Z',
         uploadTokenId: 'ut_1',
         uploadTokenHash: 'hash:upload',
         deviceId: 'dev_1',
@@ -413,6 +437,8 @@ describe('D1DevicePairingRepository', () => {
     const repository = new D1DevicePairingRepository(db)
 
     await repository.createUploadTokenAndInstallation({
+      pairingCodeId: 'pair_1',
+      consumedAt: '2026-06-30T10:00:00.000Z',
       uploadTokenId: 'ut_1',
       uploadTokenHash: 'hash:upload',
       deviceId: 'dev_old',
@@ -434,14 +460,14 @@ describe('D1DevicePairingRepository', () => {
     expect(sqlStatements[0]).toContain('UPDATE device_installations')
     expect(sqlStatements[0]).toContain('install_claim_hash = ?')
     expect(sqlStatements[1]).toContain('INSERT INTO device_installations')
-    expect(sqlStatements[1]).toContain('WHERE EXISTS')
+    expect(sqlStatements[1]).toContain('JOIN pairing_codes pairing')
     expect(sqlStatements[1]).toContain('source.install_claim_hash = ?')
     expect(sqlStatements[2]).toContain('INSERT INTO upload_tokens')
     expect(sqlStatements[2]).toContain('WHERE EXISTS')
     expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
     expect(sqlStatements[3]).toContain('WHERE EXISTS')
     expect(batches).toHaveLength(1)
-    expect(batches[0]).toHaveLength(4)
+    expect(batches[0]).toHaveLength(5)
     expect(bindings[0]).toEqual([
       'hash:claim-consumed',
       '2026-06-30T10:00:00.000Z',
@@ -452,7 +478,14 @@ describe('D1DevicePairingRepository', () => {
     ])
     expect(bindings[1]).toEqual([
       'inst_1',
+      'pair_1',
+      '2026-06-30T10:00:00.000Z',
       'user_1',
+      'dev_old',
+      'inst_old',
+      'inst_old',
+      'hash:claim-consumed',
+      'hash:claim-consumed',
       'dev_old',
       'linux',
       'Reinstalled',
@@ -460,13 +493,7 @@ describe('D1DevicePairingRepository', () => {
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
-      '2026-06-30T10:00:00.000Z',
-      'user_1',
-      'dev_old',
-      'inst_old',
-      'inst_old',
-      'hash:claim-consumed',
-      'hash:claim-consumed'
+      '2026-06-30T10:00:00.000Z'
     ])
   })
 
@@ -476,6 +503,8 @@ describe('D1DevicePairingRepository', () => {
 
     await expect(
       repository.createUploadTokenAndInstallation({
+        pairingCodeId: 'pair_1',
+        consumedAt: '2026-06-30T10:00:00.000Z',
         uploadTokenId: 'ut_1',
         uploadTokenHash: 'hash:upload',
         deviceId: 'dev_old',
@@ -498,6 +527,8 @@ describe('D1DevicePairingRepository', () => {
     const repository = new D1DevicePairingRepository(db)
 
     await repository.createUploadTokenAndInstallation({
+      pairingCodeId: 'pair_1',
+      consumedAt: '2026-06-30T10:00:00.000Z',
       uploadTokenId: 'ut_1',
       uploadTokenHash: 'hash:upload',
       deviceId: 'dev_old',
@@ -517,10 +548,8 @@ describe('D1DevicePairingRepository', () => {
     expect(sqlStatements[0]).toContain('source.revoked_at IS NULL')
     expect(sqlStatements[0]).toContain('(? IS NULL OR source.id = ?)')
     expect(batches).toHaveLength(1)
-    expect(batches[0]).toHaveLength(3)
-    expect(bindings[0]?.slice(10)).toEqual([
-      'user_1',
-      'dev_old',
+    expect(batches[0]).toHaveLength(4)
+    expect(bindings[0]?.slice(5, 9)).toEqual([
       null,
       null,
       null,
@@ -534,6 +563,7 @@ describe('D1DevicePairingRepository', () => {
       [
         { success: true, meta: { changes: 1 } },
         { success: false, error: 'constraint failed' },
+        { success: true, meta: { changes: 1 } },
         { success: true, meta: { changes: 1 } }
       ]
     )
@@ -541,6 +571,8 @@ describe('D1DevicePairingRepository', () => {
 
     await expect(
       repository.createUploadTokenAndInstallation({
+        pairingCodeId: 'pair_1',
+        consumedAt: '2026-06-30T10:00:00.000Z',
         uploadTokenId: 'ut_1',
         uploadTokenHash: 'hash:upload',
         deviceId: 'dev_old',
@@ -563,6 +595,7 @@ describe('D1DevicePairingRepository', () => {
         { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } },
+        { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } }
       ]
     )
@@ -570,6 +603,8 @@ describe('D1DevicePairingRepository', () => {
 
     await expect(
       repository.createUploadTokenAndInstallation({
+        pairingCodeId: 'pair_1',
+        consumedAt: '2026-06-30T10:00:00.000Z',
         uploadTokenId: 'ut_1',
         uploadTokenHash: 'hash:upload',
         deviceId: 'dev_old',
@@ -594,6 +629,7 @@ describe('D1DevicePairingRepository', () => {
       [
         { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } },
+        { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } }
       ]
     )
@@ -601,6 +637,8 @@ describe('D1DevicePairingRepository', () => {
 
     await expect(
       repository.createUploadTokenAndInstallation({
+        pairingCodeId: 'pair_1',
+        consumedAt: '2026-06-30T10:00:00.000Z',
         uploadTokenId: 'ut_1',
         uploadTokenHash: 'hash:upload',
         deviceId: 'dev_old',
@@ -661,44 +699,6 @@ describe('D1DevicePairingRepository', () => {
     expect(sqlStatements[0]).toContain('FROM device_installations')
     expect(sqlStatements[0]).toContain('install_claim_hash = ?')
     expect(bindings[0]).toEqual(['inst_1', 'dev_1', 'hash:claim'])
-  })
-
-  test('restores only the pairing code consumed by this attempt', async () => {
-    const { db, sqlStatements, bindings } = createRecordingDb()
-    const repository = new D1DevicePairingRepository(db)
-
-    await repository.restoreConsumedPairingCode('pair_1', '2026-06-30T10:00:00.000Z')
-
-    expect(sqlStatements[0]).toContain('UPDATE pairing_codes')
-    expect(sqlStatements[0]).toContain('consumed_at = NULL')
-    expect(sqlStatements[0]).toContain('consumed_at = ?')
-    expect(bindings[0]).toEqual(['pair_1', '2026-06-30T10:00:00.000Z'])
-  })
-
-  test('restores only the source install claim consumed by this attempt', async () => {
-    const { db, sqlStatements, bindings } = createRecordingDb()
-    const repository = new D1DevicePairingRepository(db)
-
-    await repository.restoreConsumedInstallClaim({
-      userId: 'user_1',
-      deviceId: 'dev_old',
-      sourceInstallationId: 'inst_old',
-      sourceInstallClaimHash: 'hash:old-claim',
-      consumedInstallClaimHash: 'hash:claim-consumed',
-      restoredAt: '2026-06-30T10:00:00.000Z'
-    })
-
-    expect(sqlStatements[0]).toContain('UPDATE device_installations')
-    expect(sqlStatements[0]).toContain('install_claim_hash = ?')
-    expect(sqlStatements[0]).toContain('revoked_at IS NULL')
-    expect(bindings[0]).toEqual([
-      'hash:old-claim',
-      '2026-06-30T10:00:00.000Z',
-      'inst_old',
-      'user_1',
-      'dev_old',
-      'hash:claim-consumed'
-    ])
   })
 
   test('records device pairing audit logs', async () => {

@@ -61,28 +61,16 @@ function createRepository(overrides: Partial<DevicePairingRepository> = {}) {
     },
     async createUploadTokenAndDevice(input) {
       calls.push(
-        `create:${input.userId}:${input.deviceId}:${input.installationId}:${input.installClaimHash}:${input.deviceName}:${input.uploadTokenHash}:${input.auditLogId}:${input.auditAction}:${input.auditMetadata}`
+        `create:${input.pairingCodeId}:${input.consumedAt}:${input.userId}:${input.deviceId}:${input.installationId}:${input.installClaimHash}:${input.deviceName}:${input.uploadTokenHash}:${input.auditLogId}:${input.auditAction}:${input.auditMetadata}`
       )
     },
     async createUploadTokenAndInstallation(input) {
       calls.push(
-        `install:${input.userId}:${input.deviceId}:${input.installationId}:${input.installClaimHash}:${input.deviceName}:${input.uploadTokenHash}:${input.auditLogId}:${input.auditAction}:${input.auditMetadata}:${input.sourceInstallationId ?? 'none'}:${input.sourceInstallClaimHash ?? 'none'}:${input.consumedInstallClaimHash ?? 'none'}`
+        `install:${input.pairingCodeId}:${input.consumedAt}:${input.userId}:${input.deviceId}:${input.installationId}:${input.installClaimHash}:${input.deviceName}:${input.uploadTokenHash}:${input.auditLogId}:${input.auditAction}:${input.auditMetadata}:${input.sourceInstallationId ?? 'none'}:${input.sourceInstallClaimHash ?? 'none'}:${input.consumedInstallClaimHash ?? 'none'}`
       )
     },
     async createAuditLog(input) {
       calls.push(`audit:${input.action}:${input.targetId}`)
-    },
-    async consumePairingCode(pairingCodeId, consumedAt) {
-      calls.push(`consume:${pairingCodeId}:${consumedAt}`)
-      return true
-    },
-    async restoreConsumedPairingCode(pairingCodeId, consumedAt) {
-      calls.push(`restore-pair:${pairingCodeId}:${consumedAt}`)
-    },
-    async restoreConsumedInstallClaim(input) {
-      calls.push(
-        `restore-claim:${input.userId}:${input.deviceId}:${input.sourceInstallationId}:${input.sourceInstallClaimHash}:${input.consumedInstallClaimHash}:${input.restoredAt}`
-      )
     },
     ...overrides
   }
@@ -329,8 +317,7 @@ describe('pairDevice', () => {
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-      'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'create:seed-user:dev_device-fixture:inst_device-fixture:hash:install-claim-fixture:Codex Desktop:hash:upload-token-fixture:audit_device-fixture:device.pair:{"installationId":"inst_device-fixture","platform":"windows"}'
+      'create:pair_1:2026-04-28T10:00:00.000Z:seed-user:dev_device-fixture:inst_device-fixture:hash:install-claim-fixture:Codex Desktop:hash:upload-token-fixture:audit_device-fixture:device.pair:{"installationId":"inst_device-fixture","platform":"windows"}'
     ])
   })
 
@@ -378,8 +365,7 @@ describe('pairDevice', () => {
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-      'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'install:seed-user:dev_old:inst_install-fixture:hash:install-claim-fixture:Reinstalled Desktop:hash:upload-token-fixture:audit_install-fixture:device.reconnect:{"installationId":"inst_install-fixture","platform":"linux"}:none:none:none'
+      'install:pair_1:2026-04-28T10:00:00.000Z:seed-user:dev_old:inst_install-fixture:hash:install-claim-fixture:Reinstalled Desktop:hash:upload-token-fixture:audit_install-fixture:device.reconnect:{"installationId":"inst_install-fixture","platform":"linux"}:none:none:none'
     ])
   })
 
@@ -426,7 +412,7 @@ describe('pairDevice', () => {
     ])
   })
 
-  test('restores the pairing code when new-device credential creation fails', async () => {
+  test('propagates new-device credential creation failure without a separate consume step', async () => {
     const { repository, calls } = createRepository({
       async createUploadTokenAndDevice(input) {
         calls.push(`create:${input.userId}:${input.deviceId}:${input.installationId}`)
@@ -455,9 +441,7 @@ describe('pairDevice', () => {
     ).rejects.toThrow('insert failed')
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-      'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'create:seed-user:dev_device-fixture:inst_device-fixture',
-      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+      'create:seed-user:dev_device-fixture:inst_device-fixture'
     ])
   })
 
@@ -498,8 +482,7 @@ describe('pairDevice', () => {
     expect(result.installClaim).toBe('install-claim-fixture')
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-      'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'install:seed-user:dev_old:inst_install-fixture:hash:install-claim-fixture:Reinstalled Desktop:hash:upload-token-fixture:audit_install-fixture:device.reconnect:{"installationId":"inst_install-fixture","platform":"linux"}:inst_old:hash:old-claim:hash:source-claim-consumed'
+      'install:pair_1:2026-04-28T10:00:00.000Z:seed-user:dev_old:inst_install-fixture:hash:install-claim-fixture:Reinstalled Desktop:hash:upload-token-fixture:audit_install-fixture:device.reconnect:{"installationId":"inst_install-fixture","platform":"linux"}:inst_old:hash:old-claim:hash:source-claim-consumed'
     ])
   })
 
@@ -590,13 +573,11 @@ describe('pairDevice', () => {
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-      'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'install:seed-user:dev_old:inst_install-fixture',
-      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+      'install:seed-user:dev_old:inst_install-fixture'
     ])
   })
 
-  test('restores source claim and pairing code when device-link reconnect credentials fail', async () => {
+  test('maps device-link reconnect credential failures without compensation writes', async () => {
     const { repository, calls } = createRepository({
       async findUsablePairingCode(codeHash, now) {
         calls.push(`find:${codeHash}:${now}`)
@@ -646,14 +627,11 @@ describe('pairDevice', () => {
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-      'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'install:seed-user:dev_old:inst_install-fixture:inst_old:hash:old-claim:hash:claim-consumed-fixture',
-      'restore-claim:seed-user:dev_old:inst_old:hash:old-claim:hash:claim-consumed-fixture:2026-04-28T10:00:00.000Z',
-      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+      'install:seed-user:dev_old:inst_install-fixture:inst_old:hash:old-claim:hash:claim-consumed-fixture'
     ])
   })
 
-  test('skips source claim restore when the source claim was already changed', async () => {
+  test('maps a changed source claim without compensation writes', async () => {
     const { repository, calls } = createRepository({
       async findUsablePairingCode(codeHash, now) {
         calls.push(`find:${codeHash}:${now}`)
@@ -703,55 +681,8 @@ describe('pairDevice', () => {
     })
     expect(calls).toEqual([
       'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-      'consume:pair_1:2026-04-28T10:00:00.000Z',
-      'install:seed-user:dev_old:inst_install-fixture:inst_old:hash:old-claim:hash:claim-consumed-fixture',
-      'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
+      'install:seed-user:dev_old:inst_install-fixture:inst_old:hash:old-claim:hash:claim-consumed-fixture'
     ])
-  })
-
-  test('preserves the original credential error when pairing restore fails', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const { repository, calls } = createRepository({
-      async createUploadTokenAndDevice(input) {
-        calls.push(`create:${input.userId}:${input.deviceId}:${input.installationId}`)
-        throw new Error('insert failed')
-      },
-      async restoreConsumedPairingCode(pairingCodeId, consumedAt) {
-        calls.push(`restore-pair:${pairingCodeId}:${consumedAt}`)
-        throw new Error('restore failed')
-      }
-    })
-
-    try {
-      await expect(
-        pairDevice(
-          repository,
-          {
-            pairingCode: 'dev-pairing-code',
-            deviceName: 'Desktop',
-            platform: 'darwin',
-            timezone: 'Asia/Shanghai'
-          },
-          {
-            now: () => '2026-04-28T10:00:00.000Z',
-            endpoint: 'https://tokenboard.example.com/api/v1/ingest',
-            randomId: () => 'device-fixture',
-            randomToken: () => 'upload-token-fixture',
-            randomInstallClaim: () => 'install-claim-fixture',
-            hash: async (value) => `hash:${value}`
-          }
-        )
-      ).rejects.toThrow('insert failed')
-      expect(calls).toEqual([
-        'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
-        'consume:pair_1:2026-04-28T10:00:00.000Z',
-        'create:seed-user:dev_device-fixture:inst_device-fixture',
-        'restore-pair:pair_1:2026-04-28T10:00:00.000Z'
-      ])
-      expect(consoleError).toHaveBeenCalledWith('TokenBoard pairing code restore failed: restore failed')
-    } finally {
-      consoleError.mockRestore()
-    }
   })
 
   test('rejects an invalid or expired pairing code', async () => {
@@ -802,8 +733,8 @@ describe('pairDevice', () => {
 
   test('rejects a pairing code that was consumed by another request', async () => {
     const { repository } = createRepository({
-      async consumePairingCode() {
-        return false
+      async createUploadTokenAndDevice() {
+        throw new Error('Pairing code is no longer current')
       }
     })
 
@@ -820,7 +751,7 @@ describe('pairDevice', () => {
           hash: async (value) => `hash:${value}`
         }
       )
-    ).rejects.toBeInstanceOf(ApiError)
+    ).rejects.toThrow('Pairing code is no longer current')
   })
 })
 
