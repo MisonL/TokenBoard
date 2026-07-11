@@ -499,43 +499,15 @@ export async function revokeDevice(
   }
 ) {
   const now = input.now ?? new Date().toISOString()
-
-  await revokeDeviceTokens(db, {
-    userId: input.userId,
-    deviceId: input.deviceId,
-    now
-  })
-
-  await db
-    .prepare(
-      `
-        UPDATE device_installations
-        SET revoked_at = ?, updated_at = ?
-        WHERE user_id = ?
-          AND device_id = ?
-          AND revoked_at IS NULL
-      `
-    )
-    .bind(now, now, input.userId, input.deviceId)
-    .run()
-
-  const result = await db
-    .prepare('UPDATE devices SET updated_at = ? WHERE id = ? AND user_id = ?')
-    .bind(now, input.deviceId, input.userId)
-    .run()
-
-  if ((result.meta.changes ?? 0) === 0) {
-    throw new ApiError('NOT_FOUND', 'Device not found', 404)
-  }
-
-  await createDeviceAuditLog(db, {
-    userId: input.userId,
-    action: 'device.revoke',
-    targetType: 'device',
-    targetId: input.deviceId,
-    metadata: { deviceId: input.deviceId },
-    now
-  })
+  const results = await db.batch([
+    createDeviceTokenRevokeStatement(db, { ...input, now }),
+    createDeviceInstallationRevokeStatement(db, { ...input, now }),
+    createDeviceTouchStatement(db, { ...input, now }),
+    createDeviceRevokeAuditStatement(db, { ...input, now })
+  ])
+  assertDeviceBatchSucceeded(results)
+  assertChangedResult(results[2], 'Device not found')
+  assertChangedResult(results[3], 'Device revocation was not recorded')
 }
 
 export async function revokeInstallation(
@@ -547,49 +519,97 @@ export async function revokeInstallation(
   }
 ) {
   const now = input.now ?? new Date().toISOString()
-  const installation = await findInstallationForUser(db, input.userId, input.installationId)
-  if (!installation) {
-    throw new ApiError('NOT_FOUND', 'Installation not found', 404)
-  }
+  const results = await db.batch([
+    createInstallationTokenRevokeStatement(db, { ...input, now }),
+    createInstallationRevokeStatement(db, { ...input, now }),
+    createInstallationRevokeAuditStatement(db, { ...input, now })
+  ])
+  assertDeviceBatchSucceeded(results)
+  assertChangedResult(results[1], 'Installation not found')
+  assertChangedResult(results[2], 'Installation revocation was not recorded')
+}
 
-  await db
-    .prepare(
-      `
-        UPDATE upload_tokens
-        SET revoked_at = ?
-        WHERE user_id = ?
-          AND installation_id = ?
-          AND revoked_at IS NULL
-      `
+function createDeviceTokenRevokeStatement(
+  db: D1Database,
+  input: { userId: string; deviceId: string; now: string }
+) {
+  return db.prepare(`
+    UPDATE upload_tokens SET revoked_at = ?
+    WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
+  `).bind(input.now, input.userId, input.deviceId)
+}
+
+function createDeviceInstallationRevokeStatement(
+  db: D1Database,
+  input: { userId: string; deviceId: string; now: string }
+) {
+  return db.prepare(`
+    UPDATE device_installations SET revoked_at = ?, updated_at = ?
+    WHERE user_id = ? AND device_id = ? AND revoked_at IS NULL
+  `).bind(input.now, input.now, input.userId, input.deviceId)
+}
+
+function createDeviceTouchStatement(
+  db: D1Database,
+  input: { userId: string; deviceId: string; now: string }
+) {
+  return db.prepare(
+    'UPDATE devices SET updated_at = ? WHERE id = ? AND user_id = ?'
+  ).bind(input.now, input.deviceId, input.userId)
+}
+
+function createDeviceRevokeAuditStatement(
+  db: D1Database,
+  input: { userId: string; deviceId: string; now: string }
+) {
+  return db.prepare(`
+    INSERT INTO audit_logs (
+      id, user_id, actor_type, action, target_type, target_id, metadata, created_at
     )
-    .bind(now, input.userId, input.installationId)
-    .run()
-
-  const result = await db
-    .prepare(
-      `
-        UPDATE device_installations
-        SET revoked_at = ?, updated_at = ?
-        WHERE id = ?
-          AND user_id = ?
-          AND revoked_at IS NULL
-      `
+    SELECT ?, ?, 'user', 'device.revoke', 'device', ?, ?, ?
+    WHERE EXISTS (
+      SELECT 1 FROM devices WHERE id = ? AND user_id = ? AND updated_at = ?
     )
-    .bind(now, now, input.installationId, input.userId)
-    .run()
+  `).bind(
+    randomId('audit'), input.userId, input.deviceId,
+    JSON.stringify({ deviceId: input.deviceId }), input.now,
+    input.deviceId, input.userId, input.now
+  )
+}
 
-  if ((result.meta.changes ?? 0) === 0) {
-    throw new ApiError('NOT_FOUND', 'Installation not found', 404)
-  }
+function createInstallationTokenRevokeStatement(
+  db: D1Database,
+  input: { userId: string; installationId: string; now: string }
+) {
+  return db.prepare(`
+    UPDATE upload_tokens SET revoked_at = ?
+    WHERE user_id = ? AND installation_id = ? AND revoked_at IS NULL
+  `).bind(input.now, input.userId, input.installationId)
+}
 
-  await createDeviceAuditLog(db, {
-    userId: input.userId,
-    action: 'installation.revoke',
-    targetType: 'device_installation',
-    targetId: input.installationId,
-    metadata: { deviceId: installation.deviceId },
-    now
-  })
+function createInstallationRevokeStatement(
+  db: D1Database,
+  input: { userId: string; installationId: string; now: string }
+) {
+  return db.prepare(`
+    UPDATE device_installations SET revoked_at = ?, updated_at = ?
+    WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+  `).bind(input.now, input.now, input.installationId, input.userId)
+}
+
+function createInstallationRevokeAuditStatement(
+  db: D1Database,
+  input: { userId: string; installationId: string; now: string }
+) {
+  return db.prepare(`
+    INSERT INTO audit_logs (
+      id, user_id, actor_type, action, target_type, target_id, metadata, created_at
+    )
+    SELECT ?, ?, 'user', 'installation.revoke', 'device_installation', id,
+      json_object('deviceId', device_id), ?
+    FROM device_installations
+    WHERE id = ? AND user_id = ? AND revoked_at = ?
+  `).bind(randomId('audit'), input.userId, input.now, input.installationId, input.userId, input.now)
 }
 
 export async function revokeUploadToken(
@@ -839,21 +859,6 @@ type ExistingUploadToken = {
   installationId: string | null
   installClaimHash: string | null
   revokedAt: string | null
-}
-
-async function findInstallationForUser(db: D1Database, userId: string, installationId: string) {
-  return await db
-    .prepare(
-      `
-        SELECT device_id as deviceId
-        FROM device_installations
-        WHERE id = ?
-          AND user_id = ?
-        LIMIT 1
-      `
-    )
-    .bind(installationId, userId)
-    .first<{ deviceId: string }>()
 }
 
 function createRotatedUploadTokenInsert(
@@ -1323,28 +1328,6 @@ async function createDeviceAuditLog(
       JSON.stringify(input.metadata),
       input.now
     )
-    .run()
-}
-
-async function revokeDeviceTokens(
-  db: D1Database,
-  input: {
-    userId: string
-    deviceId: string
-    now: string
-  }
-) {
-  await db
-    .prepare(
-      `
-        UPDATE upload_tokens
-        SET revoked_at = ?
-        WHERE user_id = ?
-          AND device_id = ?
-          AND revoked_at IS NULL
-      `
-    )
-    .bind(input.now, input.userId, input.deviceId)
     .run()
 }
 

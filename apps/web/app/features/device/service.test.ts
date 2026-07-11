@@ -1109,21 +1109,8 @@ describe('device management', () => {
   test('revokes active upload tokens for a device owned by the current user', async () => {
     const sqlStatements: string[] = []
     const bindings: unknown[][] = []
-    const db = {
-      prepare(sql: string) {
-        sqlStatements.push(sql)
-        return {
-          bind(...values: unknown[]) {
-            bindings.push(values)
-            return {
-              async run() {
-                return { meta: { changes: 1 } }
-              }
-            }
-          }
-        }
-      }
-    } as unknown as D1Database
+    const batchStatements: unknown[] = []
+    const db = createRunDb(sqlStatements, bindings, { batchStatements })
 
     await revokeDevice(db, {
       userId: 'user_1',
@@ -1136,6 +1123,8 @@ describe('device management', () => {
     expect(sqlStatements[1]).toContain('UPDATE device_installations')
     expect(sqlStatements[2]).toContain('UPDATE devices')
     expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[3]).toContain('device.revoke')
+    expect(batchStatements).toHaveLength(4)
     expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
     expect(bindings[1]).toEqual([
       '2026-04-29T09:00:00.000Z',
@@ -1146,11 +1135,11 @@ describe('device management', () => {
     expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
     expect(bindings[3]?.slice(1)).toEqual([
       'user_1',
-      'user',
-      'device.revoke',
-      'device',
       'dev_1',
       '{"deviceId":"dev_1"}',
+      '2026-04-29T09:00:00.000Z',
+      'dev_1',
+      'user_1',
       '2026-04-29T09:00:00.000Z'
     ])
   })
@@ -1158,9 +1147,8 @@ describe('device management', () => {
   test('revokes active upload tokens for one installation', async () => {
     const sqlStatements: string[] = []
     const bindings: unknown[][] = []
-    const db = createRunDb(sqlStatements, bindings, {
-      firstResults: [{ deviceId: 'dev_1' }]
-    })
+    const batchStatements: unknown[] = []
+    const db = createRunDb(sqlStatements, bindings, { batchStatements })
 
     await revokeInstallation(db, {
       userId: 'user_1',
@@ -1168,26 +1156,24 @@ describe('device management', () => {
       now: '2026-04-29T09:00:00.000Z'
     })
 
-    expect(sqlStatements[0]).toContain('FROM device_installations')
-    expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[1]).toContain('installation_id = ?')
-    expect(sqlStatements[2]).toContain('UPDATE device_installations')
-    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
-    expect(bindings[0]).toEqual(['inst_1', 'user_1'])
-    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
-    expect(bindings[2]).toEqual([
+    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[0]).toContain('installation_id = ?')
+    expect(sqlStatements[1]).toContain('UPDATE device_installations')
+    expect(sqlStatements[2]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[2]).toContain('installation.revoke')
+    expect(batchStatements).toHaveLength(3)
+    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
+    expect(bindings[1]).toEqual([
       '2026-04-29T09:00:00.000Z',
       '2026-04-29T09:00:00.000Z',
       'inst_1',
       'user_1'
     ])
-    expect(bindings[3]?.slice(1)).toEqual([
+    expect(bindings[2]?.slice(1)).toEqual([
       'user_1',
-      'user',
-      'installation.revoke',
-      'device_installation',
+      '2026-04-29T09:00:00.000Z',
       'inst_1',
-      '{"deviceId":"dev_1"}',
+      'user_1',
       '2026-04-29T09:00:00.000Z'
     ])
   })
