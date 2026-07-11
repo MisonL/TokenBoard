@@ -99,11 +99,12 @@ git diff --check HEAD
 结果摘要：
 
 - Web device/API/settings 相关测试覆盖新设备 pairing、device-link reconnect、stale code 拒绝、安装命令生成、详情页和撤销路径。
-- TokenBoard skill 脚本测试：235 个测试通过。
-- Workspace 测试：`packages/usage-core` 7 个、`packages/collector` 236 个、`apps/web` 516 个测试通过。
+- TokenBoard skill 脚本测试：248 个测试通过。
+- Workspace 测试：`packages/usage-core` 7 个、`packages/collector` 255 个、`apps/web` 547 个测试通过，共 809 个。
 - Workspace typecheck：全部通过。
 - Web build：通过。
-- `git diff --check HEAD`：无 whitespace 错误。
+- `pnpm audit --audit-level low`：未发现已知漏洞。
+- `git diff --check`：无 whitespace 错误。
 
 已知 warning：
 
