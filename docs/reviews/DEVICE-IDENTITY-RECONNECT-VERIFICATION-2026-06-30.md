@@ -4,6 +4,23 @@
 
 本记录覆盖 PR #19 中与设备身份、重新连接、多 server client profile、device-link 恢复、Antigravity 三类来源适配相关的验收结论。
 
+## 2026-07-11 复核补充
+
+- pairing code 消费、设备或安装实例创建、upload token 创建和审计日志写入已合并为同一个 D1 batch；任一语句失败时整体回滚，不再依赖事务外的补偿恢复。
+- device revoke 与 installation revoke 已分别合并为单个 D1 batch；审计写入失败时 token、installation 和 device 更新整体回滚。
+- Antigravity CLI status line 锁增加目录 identity 校验、缺失或损坏 PID grace period、陈旧 lease 回收和旧版 Windows Node 兼容判断，避免替换锁被旧 owner 删除或 PID 复用导致永久阻塞。
+- 已补 SQLite 真实事务契约测试，覆盖凭据创建前进程崩溃、审计插入失败和撤销回滚；纯 Fake 测试不作为 D1 原子性通过证据。
+
+### 复杂度豁免
+
+以下文件暂时超过全局 800 行强制治理阈值，本轮记录明确豁免：
+
+- `apps/web/app/features/device/service.ts`：设备查询、凭据轮换、撤销和 pairing 流程共享同一组事务断言与错误语义。刚完成原子性修复后立即跨文件搬运会扩大事务回归面。解除条件：按 `queries`、`credentials`、`pairing` 三个领域模块拆分，并保持 `service.ts` 兼容导出。
+- `apps/web/app/routes/settings/devices.tsx`：同一路由同时提供列表、详情 fragment 和表单响应，组件共享完整页面状态。解除条件：先稳定 details fragment 契约，再拆为 `device-list`、`device-details`、`device-actions` 三组组件。
+- `apps/web/app/features/device/repository.ts`：当前 815 行，主要由 D1 参数化 SQL statement builder 构成；拆分收益低于导入和事务顺序漂移风险。解除条件：新增 repository 职责或文件继续增长时，将 reconnect 与 new-device statements 分离。
+
+豁免不覆盖安全、事务原子性、外部输入校验、Schema 契约和测试要求。其余 300-500 行且职责内聚的文件不再仅为满足行数进行机械拆分。
+
 主要交付项：
 
 - `devices` 表示用户视角的逻辑设备。
