@@ -56,12 +56,22 @@ describe('collectAntigravityCliUsage', () => {
       const eventPath = join(root, 'events.jsonl')
       await writeEvents(eventPath, [
         event({ capturedAt: '2026-06-23T10:00:00.000Z', usage: { inputTokens: 100, outputTokens: 10 } }),
-        event({ capturedAt: '2026-06-23T10:00:01.000Z', usage: { inputTokens: 100, outputTokens: 10 } }),
+        event({ capturedAt: '2026-06-23T10:00:01.000Z', usage: { inputTokens: 100, outputTokens: 10 } })
+      ])
+      const first = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'UTC',
+        collectedAt: '2026-06-23T10:00:30.000Z',
+        readDbUsageEvents: emptyDbUsage
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      await appendFile(eventPath, [
         event({ capturedAt: '2026-06-23T10:01:00.000Z', usage: { inputTokens: 20, outputTokens: 5 } }),
         event({ capturedAt: '2026-06-23T10:02:00.000Z', usage: { inputTokens: 100, outputTokens: 10 } })
-      ])
+      ].map((item) => `${JSON.stringify(item)}\n`).join(''))
 
-      const snapshots = await collectAntigravityCliUsage({
+      const second = await collectAntigravityCliUsage({
         stateDir: root,
         eventPath,
         timezone: 'UTC',
@@ -69,7 +79,10 @@ describe('collectAntigravityCliUsage', () => {
         readDbUsageEvents: emptyDbUsage
       })
 
-      expect(snapshots).toEqual([
+      expect(first).toEqual([
+        expect.objectContaining({ inputTokens: 100, outputTokens: 10, totalTokens: 110 })
+      ])
+      expect(second).toEqual([
         expect.objectContaining({
           inputTokens: 220,
           outputTokens: 25,
