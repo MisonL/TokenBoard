@@ -92,7 +92,7 @@ describe('Wrangler deploy config', () => {
   })
 
   test('Drizzle schema declares webhook migration indexes', () => {
-    const schema = readPackageFile('app/db/schema.ts')
+    const schema = readDrizzleSchema()
 
     expect(schema).toContain("index('webhook_subscriptions_user_idx')")
     expect(schema).toContain("index('webhook_subscriptions_due_idx')")
@@ -106,7 +106,7 @@ describe('Wrangler deploy config', () => {
   })
 
   test('Drizzle schema declares daily report history table and indexes', () => {
-    const schema = readPackageFile('app/db/schema.ts')
+    const schema = readDrizzleSchema()
 
     expect(schema).toContain("'daily_report_history'")
     expect(schema).toContain('dailyReportShareEnabled')
@@ -118,7 +118,7 @@ describe('Wrangler deploy config', () => {
   })
 
   test('Drizzle schema declares usage summary cache tables', () => {
-    const schema = readPackageFile('app/db/schema.ts')
+    const schema = readDrizzleSchema()
 
     expect(schema).toContain("'daily_usage_summary'")
     expect(schema).toContain("'user_usage_totals'")
@@ -202,7 +202,7 @@ describe('Wrangler deploy config', () => {
   })
 
   test('device token rotation migration prevents duplicate active successors', () => {
-    const schema = readPackageFile('app/db/schema.ts')
+    const schema = readDrizzleSchema()
     const migration = readPackageFile('db/migrations/0024_upload_token_active_successor.sql')
 
     expect(schema).toContain("uniqueIndex('upload_tokens_active_successor_idx')")
@@ -689,6 +689,13 @@ describe('Wrangler deploy config', () => {
 
 function readPackageFile(relativePath: string): string {
   return readFileSync(resolve(packageDir, relativePath), 'utf8')
+}
+
+function readDrizzleSchema() {
+  return [
+    readPackageFile('app/db/schema.ts'),
+    readPackageFile('app/db/schema-identity.ts')
+  ].join('\n')
 }
 
 function filledProductionExample() {
