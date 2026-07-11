@@ -16,18 +16,21 @@ import {
 import { dirname, join } from 'node:path'
 
 const logSchemaVersion = 'antigravity-statusline-log/v1'
-const lockRetryDelayMs = 10
-const orphanLockGraceMs = 250
-const lockRetryCount = Math.ceil(orphanLockGraceMs / lockRetryDelayMs) + 2
+const lockRetryDelayMs = 20
+const lockWaitTimeoutMs = 2_000
+const orphanLockGraceMs = 500
+const staleLockMs = 30_000
+const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
+const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
 export function appendBoundedStatuslineEvent(filePath, value, maxBytes) {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
   const lockPath = `${filePath}.lock`
-  acquireLock(lockPath)
+  const lease = acquireLock(lockPath)
   try {
     appendWithinLock(filePath, value, maxBytes)
   } finally {
-    releaseLock(lockPath)
+    releaseLock(lease)
   }
 }
 
@@ -102,8 +105,9 @@ function acquireLock(lockPath) {
   for (let attempt = 0; attempt < lockRetryCount; attempt += 1) {
     try {
       mkdirSync(lockPath, { mode: 0o700 })
-      writeLockOwner(lockPath)
-      return
+      const identity = readLockIdentity(lockPath)
+      writeLockOwner(lockPath, identity)
+      return { lockPath, identity }
     } catch (error) {
       if (!isLockExistsError(error)) throw error
       recoverOrphanedLock(lockPath)
@@ -113,22 +117,27 @@ function acquireLock(lockPath) {
   throw new Error('Timed out waiting for Antigravity statusline log lock')
 }
 
-function writeLockOwner(lockPath) {
+function writeLockOwner(lockPath, identity) {
   try {
-    writeFileSync(join(lockPath, 'pid'), String(process.pid), { mode: 0o600 })
+    writeFileSync(join(lockPath, 'pid'), String(process.pid), { flag: 'wx', mode: 0o600 })
   } catch (error) {
-    try {
-      rmSync(lockPath, { recursive: true, force: true })
-    } catch {}
+    if (!isLockExistsError(error)) removeLockWithIdentity(lockPath, identity)
     throw error
   }
 }
 
-function releaseLock(lockPath) {
+function releaseLock(lease) {
+  if (!sameLockIdentity(lease.lockPath, lease.identity)) {
+    throw new Error('Antigravity statusline log lock ownership changed')
+  }
+  const pid = readLockPid(lease.lockPath)
+  if (pid !== process.pid) {
+    throw new Error('Antigravity statusline log lock owner changed')
+  }
   try {
-    rmSync(lockPath, { recursive: true, force: true })
+    rmSync(lease.lockPath, { recursive: true, force: true })
   } catch (error) {
-    if (existsSync(lockPath)) throw error
+    if (existsSync(lease.lockPath)) throw error
   }
 }
 
@@ -137,21 +146,33 @@ function isLockExistsError(error) {
 }
 
 function recoverOrphanedLock(lockPath) {
-  const pidPath = join(lockPath, 'pid')
-  try {
-    const pid = Number.parseInt(readFileSync(pidPath, 'utf8'), 10)
-    if (Number.isSafeInteger(pid) && pid > 0 && isProcessAlive(pid)) return
-  } catch {
-    try {
-      if (Date.now() - statSync(lockPath).mtimeMs < orphanLockGraceMs) return
-    } catch {
-      return
-    }
+  const identity = readLockIdentityOrNull(lockPath)
+  if (!identity) return
+  const ageMs = readLockAgeMs(lockPath)
+  if (ageMs === null) return
+  const pid = readLockPid(lockPath)
+  if (pid === null) {
+    if (ageMs < orphanLockGraceMs) return
+    removeLockWithIdentity(lockPath, identity)
+    return
   }
-  rmSync(lockPath, { recursive: true, force: true })
+  if (ageMs < staleLockMs && isProcessAlive(pid)) return
+  removeLockWithIdentity(lockPath, identity)
+}
+
+function readLockPid(lockPath) {
+  try {
+    const raw = readFileSync(join(lockPath, 'pid'), 'utf8').trim()
+    if (!/^\d+$/.test(raw)) return null
+    const pid = Number(raw)
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
 }
 
 function isProcessAlive(pid) {
+  if (!supportsReliableSignalZero(process.platform, process.versions.node)) return true
   try {
     process.kill(pid, 0)
     return true
@@ -160,7 +181,47 @@ function isProcessAlive(pid) {
   }
 }
 
+export function supportsReliableSignalZero(platform, nodeVersion) {
+  if (platform !== 'win32') return true
+  const [major, minor] = nodeVersion.split('.').map(Number)
+  return major > 23 || (major === 22 && minor >= 16)
+}
+
+function readLockIdentity(lockPath) {
+  const stats = statSync(lockPath, { bigint: true })
+  return { dev: stats.dev, ino: stats.ino }
+}
+
+function readLockIdentityOrNull(lockPath) {
+  try {
+    return readLockIdentity(lockPath)
+  } catch {
+    return null
+  }
+}
+
+function sameLockIdentity(lockPath, expected) {
+  const current = readLockIdentityOrNull(lockPath)
+  return current !== null && current.dev === expected.dev && current.ino === expected.ino
+}
+
+function removeLockWithIdentity(lockPath, identity) {
+  if (!sameLockIdentity(lockPath, identity)) return
+  try {
+    rmSync(lockPath, { recursive: true, force: true })
+  } catch (error) {
+    if (sameLockIdentity(lockPath, identity)) throw error
+  }
+}
+
+function readLockAgeMs(lockPath) {
+  try {
+    return Math.max(0, Date.now() - statSync(lockPath).mtimeMs)
+  } catch {
+    return null
+  }
+}
+
 function sleep(milliseconds) {
-  const deadline = Date.now() + milliseconds
-  while (Date.now() < deadline) {}
+  Atomics.wait(sleepState, 0, 0, milliseconds)
 }

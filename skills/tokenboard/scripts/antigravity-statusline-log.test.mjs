@@ -2,15 +2,26 @@ import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import {
+  appendBoundedStatuslineEvent,
+  supportsReliableSignalZero
+} from './antigravity-statusline-log.mjs'
 
 const scriptPath = fileURLToPath(new URL('./antigravity-statusline.mjs', import.meta.url))
+
+test('statusline lock avoids broken Windows signal-zero Node releases', () => {
+  assert.equal(supportsReliableSignalZero('darwin', '22.12.0'), true)
+  assert.equal(supportsReliableSignalZero('win32', '22.12.0'), false)
+  assert.equal(supportsReliableSignalZero('win32', '22.16.0'), true)
+  assert.equal(supportsReliableSignalZero('win32', '23.11.0'), false)
+  assert.equal(supportsReliableSignalZero('win32', '24.0.0'), true)
+})
 
 test('statusline CLI compacts its private JSONL within the configured byte limit', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-bounded-'))
@@ -93,12 +104,95 @@ test('statusline log retry budget covers orphan lock recovery grace', async () =
 
     const logPath = join(root, 'events.jsonl')
     await mkdir(`${logPath}.lock`)
-    const module = await import(`${new URL(`file://${modulePath}`).href}?grace-test`)
+    const module = await import(`${pathToFileURL(modulePath).href}?grace-test`)
 
     module.appendBoundedStatuslineEvent(logPath, { value: 'recovered-after-grace' }, 1024)
 
     assert.match(await readFile(logPath, 'utf8'), /recovered-after-grace/)
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline log keeps a fresh malformed lock until its recovery grace expires', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-malformed-lock-'))
+  try {
+    const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
+    const modulePath = join(root, 'antigravity-statusline-log.mjs')
+    const source = (await readFile(sourcePath, 'utf8'))
+      .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 600')
+    await writeFile(modulePath, source)
+
+    const logPath = join(root, 'events.jsonl')
+    const lockPath = `${logPath}.lock`
+    await mkdir(lockPath)
+    await writeFile(join(lockPath, 'pid'), 'invalid')
+    const module = await import(`${pathToFileURL(modulePath).href}?malformed-lock-test`)
+    const startedAt = Date.now()
+
+    module.appendBoundedStatuslineEvent(logPath, { value: 'recovered-after-malformed-lock' }, 1024)
+
+    assert.ok(Date.now() - startedAt >= 500)
+    assert.match(await readFile(logPath, 'utf8'), /recovered-after-malformed-lock/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline log recovers an expired lease even when its pid was reused', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-reused-pid-'))
+  try {
+    const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
+    const modulePath = join(root, 'antigravity-statusline-log.mjs')
+    const source = (await readFile(sourcePath, 'utf8'))
+      .replace(/const lockWaitTimeoutMs = [^\n]+/, 'const lockWaitTimeoutMs = 500')
+      .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 20')
+      .replace(/const staleLockMs = [^\n]+/, 'const staleLockMs = 100')
+    await writeFile(modulePath, source)
+
+    const logPath = join(root, 'events.jsonl')
+    const lockPath = `${logPath}.lock`
+    await mkdir(lockPath)
+    await writeFile(join(lockPath, 'pid'), String(process.pid))
+    const expiredAt = new Date(Date.now() - 1_000)
+    await utimes(lockPath, expiredAt, expiredAt)
+    const module = await import(`${pathToFileURL(modulePath).href}?reused-pid-test`)
+
+    module.appendBoundedStatuslineEvent(logPath, { value: 'recovered-after-pid-reuse' }, 1024)
+
+    assert.match(await readFile(logPath, 'utf8'), /recovered-after-pid-reuse/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline log does not overwrite or remove a replacement lock owner', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-replaced-lock-'))
+  const logPath = join(root, 'events.jsonl')
+  const lockPath = `${logPath}.lock`
+  const originalWriteFileSync = fs.writeFileSync
+  let replaced = false
+  try {
+    fs.writeFileSync = (path, ...args) => {
+      if (!replaced && basename(String(path)) === 'pid') {
+        replaced = true
+        fs.rmSync(lockPath, { recursive: true, force: true })
+        fs.mkdirSync(lockPath, { mode: 0o700 })
+        originalWriteFileSync(join(lockPath, 'pid'), String(process.pid), { mode: 0o600 })
+      }
+      return originalWriteFileSync(path, ...args)
+    }
+    syncBuiltinESMExports()
+
+    assert.throws(
+      () => appendBoundedStatuslineEvent(logPath, { value: 'not-written' }, 1024),
+      /Timed out waiting for Antigravity statusline log lock/
+    )
+    assert.equal(await readFile(join(lockPath, 'pid'), 'utf8'), String(process.pid))
+    await assert.rejects(stat(logPath), { code: 'ENOENT' })
+  } finally {
+    fs.writeFileSync = originalWriteFileSync
+    syncBuiltinESMExports()
     await rm(root, { recursive: true, force: true })
   }
 })
@@ -109,7 +203,7 @@ test('statusline log removes a partial lock when pid write fails', async () => {
   const originalWriteFileSync = fs.writeFileSync
   try {
     fs.writeFileSync = (path, ...args) => {
-      if (String(path).endsWith('/pid')) {
+      if (basename(String(path)) === 'pid') {
         const error = new Error('pid write failed')
         error.code = 'EIO'
         throw error
