@@ -66,7 +66,8 @@ export async function getDailyTokenReport(input: {
         totalTokens: row.totalTokens,
         totalTokensWithoutCacheRead: row.totalTokensWithoutCacheRead
       }),
-      costUsd: row.costUsd
+      costUsd: row.costUsd,
+      sourceSplit: row.sourceSplit
     }))
   }
 }
@@ -111,7 +112,8 @@ function readReportTotals(input: {
             model,
             COALESCE(SUM(total_tokens), 0) as total_tokens,
             COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read,
-            COALESCE(SUM(cost_usd), 0) as cost_usd
+            COALESCE(SUM(cost_usd), 0) as cost_usd,
+            json_group_array(json_object('source', source)) as source_split
           FROM aggregate_usage
           GROUP BY model
         )
@@ -140,14 +142,16 @@ function readReportTotals(input: {
               'model', ordered_models.model,
               'totalTokens', ordered_models.total_tokens,
               'totalTokensWithoutCacheRead', ordered_models.total_tokens_without_cache_read,
-              'costUsd', ordered_models.cost_usd
+              'costUsd', ordered_models.cost_usd,
+              'sourceSplit', json(ordered_models.source_split)
             )), '[]')
             FROM (
               SELECT
                 model,
                 total_tokens,
                 total_tokens_without_cache_read,
-                cost_usd
+                cost_usd,
+                source_split
               FROM model_usage
               ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
               LIMIT 5
@@ -205,8 +209,17 @@ function parseTopModelItem(value: unknown, column: string) {
     model: reportString(item.model, column),
     totalTokens: reportNumber(item.totalTokens, column),
     totalTokensWithoutCacheRead: reportNumber(item.totalTokensWithoutCacheRead, column),
-    costUsd: reportNumber(item.costUsd, column)
+    costUsd: reportNumber(item.costUsd, column),
+    sourceSplit: reportModelSourceSplit(item.sourceSplit, column)
   }
+}
+
+function reportModelSourceSplit(value: unknown, column: string) {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error(`Invalid daily token report ${column}`)
+  return value.map((source) => ({
+    source: reportString(reportRecord(source, column).source, column)
+  }))
 }
 
 function reportRecord(value: unknown, column: string): Record<string, unknown> {

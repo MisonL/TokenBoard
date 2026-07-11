@@ -90,6 +90,36 @@ describe('notification adapters', () => {
     expect(feishuText).toContain('$0.00 (Antigravity CLI 费用不可用)')
   })
 
+  test('keeps valid model costs available in mixed-source reports', async () => {
+    const mixedReport: DailyTokenReport = {
+      ...report,
+      sourceSplit: [
+        ...report.sourceSplit,
+        { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
+      ],
+      topModels: [
+        { ...report.topModels[0], sourceSplit: [{ source: 'codex' }] },
+        {
+          model: 'Gemini 3.5 Flash (Medium)',
+          totalTokens: 300,
+          totalTokensWithoutCacheRead: 260,
+          costUsd: 0,
+          sourceSplit: [{ source: 'antigravity-cli' }]
+        }
+      ]
+    }
+
+    const text = formatDailyReport(mixedReport)
+    const wecomText = formatWeComDailyReport(mixedReport)
+    const dingtalkText = formatDingTalkDailyReport(mixedReport)
+
+    expect(text).toContain('gpt-5：620 token，缓存率 23%，$0.80')
+    expect(text).not.toContain('gpt-5：620 token，缓存率 23%，$0.80 (Antigravity')
+    expect(text).toContain('Gemini 3.5 Flash (Medium)：260 token，缓存率 13%，$0.00 (Antigravity CLI 费用不可用)')
+    expect(wecomText).toContain('**gpt-5**：620 token / <font color="warning">$0.80</font>')
+    expect(dingtalkText).toContain('**gpt\\-5**：620 token / $0.80')
+  })
+
   test('falls back to the public leaderboards when no shared report URL exists', () => {
     const text = formatDailyReport({ ...report, reportUrl: undefined })
     const wecomText = formatWeComDailyReport({ ...report, reportUrl: undefined })

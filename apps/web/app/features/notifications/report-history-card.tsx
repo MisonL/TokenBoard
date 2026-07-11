@@ -142,7 +142,7 @@ function HistoryDetails(props: { item: DailyReportHistoryItem }) {
         <HistoryList
           title="主要模型"
           items={props.item.topModels.map((model) => (
-            `${model.model}: ${formatInteger(model.totalTokensWithoutCacheRead)} / ${formatInteger(model.totalTokens)} tokens, ${formatCostWithAvailability(model.costUsd, props.item.sourceSplit)}`
+            `${model.model}: ${formatInteger(model.totalTokensWithoutCacheRead)} / ${formatInteger(model.totalTokens)} tokens, ${formatCostWithAvailability(model.costUsd, model.sourceSplit ?? props.item.sourceSplit)}`
           ))}
         />
       </div>

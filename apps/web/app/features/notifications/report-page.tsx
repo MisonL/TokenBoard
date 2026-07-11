@@ -61,7 +61,7 @@ export function SharedDailyReportPage(props: {
             items={props.report.topModels.map((item) => ({
               name: item.model,
               value: `${formatInteger(item.totalTokensWithoutCacheRead)} / ${formatInteger(item.totalTokens)} tokens`,
-              meta: `${formatCostWithAvailability(item.costUsd, props.report.sourceSplit)} / 缓存率 ${formatPercentRate(item.cacheReadRate ?? 0)}`
+              meta: `${formatCostWithAvailability(item.costUsd, item.sourceSplit ?? props.report.sourceSplit)} / 缓存率 ${formatPercentRate(item.cacheReadRate ?? 0)}`
             }))}
           />
         </div>

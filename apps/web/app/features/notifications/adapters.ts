@@ -37,6 +37,7 @@ export type DailyTokenReport = {
     totalTokensWithoutCacheRead: number
     cacheReadRate?: number
     costUsd: number
+    sourceSplit?: Array<{ source: string }>
   }>
 }
 
@@ -248,7 +249,7 @@ function formatWeComSourceSplit(report: DailyTokenReport) {
 function formatWeComTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   const items = report.topModels.slice(0, wecomListLimit).flatMap((item) => [
-    `- **${escapeWeComMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / <font color="warning">${escapeWeComMarkdownText(formatCostWithAvailability(item.costUsd, report.sourceSplit))}</font>`,
+    `- **${escapeWeComMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / <font color="warning">${escapeWeComMarkdownText(formatModelCost(item, report))}</font>`,
     `  <font color="comment">缓存率 ${formatReportCacheRate(item)}</font>`
   ])
   return appendHiddenCount(items, report.topModels.length)
@@ -286,7 +287,7 @@ function formatDingTalkSourceSplit(report: DailyTokenReport) {
 function formatDingTalkTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   const items = report.topModels.slice(0, dingtalkListLimit).flatMap((item) => [
-    `- **${escapeDingTalkMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatCostWithAvailability(item.costUsd, report.sourceSplit)}`,
+    `- **${escapeDingTalkMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatModelCost(item, report)}`,
     `  - 缓存率 ${formatReportCacheRate(item)}`
   ])
   return appendDingTalkHiddenCount(items, report.topModels.length)
@@ -304,7 +305,7 @@ function formatFeishuSourceSplit(report: DailyTokenReport) {
 function formatFeishuTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   const items = report.topModels.slice(0, wecomListLimit).flatMap((item) => [
-    `- **${item.model}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatCostWithAvailability(item.costUsd, report.sourceSplit)}`,
+    `- **${item.model}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatModelCost(item, report)}`,
     `  - 缓存率 ${formatReportCacheRate(item)}`
   ])
   return appendFeishuHiddenCount(items, report.topModels.length)
@@ -327,8 +328,15 @@ function formatSourceSplit(report: DailyTokenReport) {
 function formatTopModels(report: DailyTokenReport) {
   if (report.topModels.length === 0) return ['暂无数据']
   return report.topModels.map((item) => (
-    `- ${item.model}：${formatInteger(item.totalTokensWithoutCacheRead)} token，缓存率 ${formatReportCacheRate(item)}，${formatCostWithAvailability(item.costUsd, report.sourceSplit)}`
+    `- ${item.model}：${formatInteger(item.totalTokensWithoutCacheRead)} token，缓存率 ${formatReportCacheRate(item)}，${formatModelCost(item, report)}`
   ))
+}
+
+function formatModelCost(
+  item: DailyTokenReport['topModels'][number],
+  report: DailyTokenReport
+) {
+  return formatCostWithAvailability(item.costUsd, item.sourceSplit ?? report.sourceSplit)
 }
 
 function formatSourceCostSuffix(source: string) {
