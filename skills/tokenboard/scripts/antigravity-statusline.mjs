@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   appendFileSync,
   chmodSync,
@@ -29,7 +29,11 @@ export function runStatuslineCli(argv = process.argv.slice(2), env = process.env
   let raw = ''
   try {
     raw = readStdinLimited(options.maxInputBytes)
-    const event = extractStatuslineEvent(raw, new Date().toISOString())
+    const event = extractStatuslineEvent(
+      raw,
+      new Date().toISOString(),
+      randomBytes(16).toString('hex')
+    )
     if (event) {
       appendBoundedStatuslineEvent(options.logPath, event, options.maxLogBytes)
     }
@@ -49,7 +53,7 @@ export function runStatuslineCli(argv = process.argv.slice(2), env = process.env
   }
 }
 
-export function extractStatuslineEvent(raw, capturedAt) {
+export function extractStatuslineEvent(raw, capturedAt, captureId) {
   const payload = parsePayload(raw)
   const contextWindow = readObject(payload.context_window)
   const usage = readObject(contextWindow.current_usage)
@@ -69,6 +73,7 @@ export function extractStatuslineEvent(raw, capturedAt) {
   return {
     schemaVersion,
     capturedAt,
+    ...(captureId ? { captureId } : {}),
     conversationHash,
     conversationHashAliases: conversationHashAliases && conversationHashAliases !== conversationHash
       ? [conversationHashAliases]

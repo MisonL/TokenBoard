@@ -40,6 +40,7 @@ const sensitiveKeys = new Set([
 
 export type StatuslineEvent = {
   capturedAt: string
+  captureId?: string
   conversationHash: string
   conversationHashAliases?: string[]
   eventHash?: string
@@ -73,6 +74,7 @@ export function parseStatuslineEvent(line: string, lineNumber: number): Statusli
   }
   const event = {
     capturedAt: readIsoDateTime(parsed.capturedAt, lineNumber),
+    captureId: readOptionalCaptureId(parsed.captureId, lineNumber),
     conversationHash: readHash(parsed.conversationHash, 'conversationHash', lineNumber),
     conversationHashAliases: readHashArray(parsed.conversationHashAliases, 'conversationHashAliases', lineNumber),
     eventHash: readOptionalHash(parsed.eventHash, 'eventHash', lineNumber),
@@ -87,6 +89,14 @@ export function parseStatuslineEvent(line: string, lineNumber: number): Statusli
     throw new Error(`Invalid Antigravity statusline event at line ${lineNumber}: usage is empty`)
   }
   return event
+}
+
+function readOptionalCaptureId(value: unknown, lineNumber: number): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !/^[a-f0-9]{32}$/.test(value)) {
+    throw new Error(`Invalid Antigravity statusline event at line ${lineNumber}: captureId must be a local capture id`)
+  }
+  return value
 }
 
 function readIsoDateTime(value: unknown, lineNumber: number): string {

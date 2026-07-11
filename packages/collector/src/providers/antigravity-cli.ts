@@ -13,6 +13,7 @@ import { mergeSnapshots } from './session-cursor'
 import { readAntigravityDbUsageEvents, type AntigravityDbUsageResult } from './antigravity-history-db'
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseStatuslineEvent, type StatuslineEvent } from './antigravity-cli-statusline'
+import { buildCliStatuslineOccurrenceIndex } from './antigravity-cli-occurrence-index'
 import {
   lastSeenCliDbRowIndexByCascadeHash,
   markCliDbRowsProcessed,
@@ -68,9 +69,10 @@ export async function collectAntigravityCliUsage(
     cursor.lastScanGeneration = generation
   }
 
+  const occurrenceIndex = buildCliStatuslineOccurrenceIndex(cursor)
   const localDbUsage = await readOptionalLocalDbUsage(options, Boolean(eventStats), cursor)
   for (const event of localDbUsage.events.map(historyEvent)) {
-    pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt })
+    pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt, occurrenceIndex })
   }
   markCliDbRowsProcessed({
     cursor,

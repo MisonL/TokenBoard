@@ -31,6 +31,13 @@ test('extracts only sanitized Antigravity statusline usage fields', () => {
   assert.deepEqual(Object.keys(event).sort(), ['capturedAt', 'conversationHash', 'conversationHashAliases', 'model', 'schemaVersion', 'usage'])
 })
 
+test('preserves a local capture id for distinct statusline calls', () => {
+  const raw = JSON.stringify(statuslinePayload({ conversation_id: 'capture-id-session' }))
+  const event = extractStatuslineEvent(raw, '2026-06-23T10:00:00.000Z', 'a'.repeat(32))
+
+  assert.equal(event.captureId, 'a'.repeat(32))
+})
+
 test('statusline CLI writes sanitized JSONL and preserves original command output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-'))
   try {
@@ -63,6 +70,7 @@ test('statusline CLI writes sanitized JSONL and preserves original command outpu
     const event = JSON.parse(await readFile(logPath, 'utf8'))
     assert.equal(event.schemaVersion, 'antigravity-statusline/v1')
     assert.equal(event.model, 'Gemini 3.5 Flash (Medium)')
+    assert.match(event.captureId, /^[a-f0-9]{32}$/)
     assert.notEqual(event.conversationHash, 'raw-session-id')
     assert.equal(event.conversationHash, legacyHash('raw-session-id'))
     assert.deepEqual(event.conversationHashAliases, [plainHash('raw-session-id')])

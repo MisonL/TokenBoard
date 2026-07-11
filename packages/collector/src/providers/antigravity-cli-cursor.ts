@@ -8,6 +8,12 @@ import {
   type CursorSnapshot
 } from './session-cursor-store'
 import type { StatuslineEvent } from './antigravity-cli-statusline'
+import {
+  hasIndexedStatuslineOccurrences,
+  historyStatuslineClaimKey,
+  takeIndexedStatuslineOccurrence,
+  type CliStatuslineOccurrenceIndex
+} from './antigravity-cli-occurrence-index'
 
 const source = 'antigravity-cli'
 
@@ -20,6 +26,7 @@ export function pushCliUsageEvent(input: {
   emittedKeys: Set<string>
   timezone: string
   collectedAt: string
+  occurrenceIndex?: CliStatuslineOccurrenceIndex
 }) {
   if (!input.event.eventHash) {
     pushStatuslineUsageEvent(input)
@@ -27,7 +34,7 @@ export function pushCliUsageEvent(input: {
   }
   const eventKeys = usageEventKeys(input.event)
   const primaryKey = eventKeys[0]
-  const existingKey = findExistingEventKey(input.event, eventKeys, input.cursor)
+  const existingKey = findExistingEventKey(input.event, eventKeys, input.cursor, input.occurrenceIndex)
   const existing = existingKey ? input.cursor.files[existingKey] : undefined
   if (existing && existingKey) {
     if (existing.pendingUpload) {
@@ -72,9 +79,10 @@ function pushStatuslineUsageEvent(input: {
   collectedAt: string
 }) {
   const legacyKeys = usageEventKeys(input.event)
+  const capturedAtMs = Date.parse(input.event.capturedAt)
   const coveredKey = legacyKeys.find((key) => {
     const entry = input.cursor.files[key]
-    return entry && !isStatuslineAlias(entry, key)
+    return entry && entry.mtimeMs === capturedAtMs && !isStatuslineAlias(entry, key)
   })
   if (coveredKey) {
     const covered = input.cursor.files[coveredKey]
@@ -222,16 +230,19 @@ function buildSnapshot(input: {
 function findExistingEventKey(
   event: StatuslineEvent,
   eventKeys: string[],
-  cursor: AntigravityCliCursor
+  cursor: AntigravityCliCursor,
+  occurrenceIndex?: CliStatuslineOccurrenceIndex
 ) {
   const primaryKey = eventKeys[0]
   if (cursor.files[primaryKey]) return primaryKey
-  const occurrenceKey = findUnclaimedStatuslineOccurrence(event, eventKeys.slice(1), cursor)
+  const occurrenceKey = occurrenceIndex
+    ? takeIndexedStatuslineOccurrence(event, eventKeys.slice(1), occurrenceIndex)
+    : findUnclaimedStatuslineOccurrence(event, eventKeys.slice(1), cursor)
   if (occurrenceKey) return occurrenceKey
   for (const key of eventKeys.slice(1)) {
     const entry = cursor.files[key]
     if (!entry) continue
-    if (hasStatuslineOccurrences(key, cursor)) continue
+    if (hasStatuslineOccurrences(key, cursor, occurrenceIndex)) continue
     if (!event.eventHash) return key
     if (
       (entry.snapshots.length > 0 || isStatuslineAlias(entry, key)) &&
@@ -241,7 +252,12 @@ function findExistingEventKey(
   return undefined
 }
 
-function hasStatuslineOccurrences(statuslineKey: string, cursor: AntigravityCliCursor) {
+function hasStatuslineOccurrences(
+  statuslineKey: string,
+  cursor: AntigravityCliCursor,
+  occurrenceIndex?: CliStatuslineOccurrenceIndex
+) {
+  if (occurrenceIndex) return hasIndexedStatuslineOccurrences(occurrenceIndex, statuslineKey)
   const prefix = `statusline-occurrence\0${statuslineKey}\0`
   return Object.keys(cursor.files).some((key) => key.startsWith(prefix))
 }
@@ -342,7 +358,11 @@ function statuslineEventKey(event: StatuslineEvent, conversationHash: string) {
 }
 
 function statuslineOccurrenceKey(event: StatuslineEvent) {
-  return ['statusline-occurrence', statuslineEventKey(event, event.conversationHash), event.capturedAt].join('\0')
+  return [
+    'statusline-occurrence',
+    statuslineEventKey(event, event.conversationHash),
+    event.captureId ?? event.capturedAt
+  ].join('\0')
 }
 
 function statuslineHeadKeys(event: StatuslineEvent) {
@@ -368,10 +388,6 @@ function usageSessionKeys(event: StatuslineEvent, usageDate: string) {
 
 function usageSessionKey(event: StatuslineEvent, usageDate: string, conversationHash: string) {
   return ['session', usageDate, event.model, conversationHash].join('\0')
-}
-
-function historyStatuslineClaimKey(statuslineKey: string) {
-  return ['history-statusline-claim', statuslineKey].join('\0')
 }
 
 const cliDbCascadeCursorPrefix = ['db-row', source, ''].join('\0')
