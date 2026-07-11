@@ -9,6 +9,8 @@
 - pairing code 消费、设备或安装实例创建、upload token 创建和审计日志写入已合并为同一个 D1 batch；任一语句失败时整体回滚，不再依赖事务外的补偿恢复。
 - device revoke 与 installation revoke 已分别合并为单个 D1 batch；审计写入失败时 token、installation 和 device 更新整体回滚。
 - Antigravity CLI status line 锁增加目录 identity 校验、缺失或损坏 PID grace period、陈旧 lease 回收和旧版 Windows Node 兼容判断，避免替换锁被旧 owner 删除或 PID 复用导致永久阻塞。
+- Antigravity CLI statusline cursor 以 conversation 的连续状态段去重：周期性 A→A 重绘只计一次，状态变化后的 A→B→A 会把第二次 A 作为独立调用；该状态跨 upload ack 持久化，并保留与 SQLite history 的 alias 去重。
+- 日报 `topModels` 现在携带模型自身的 source 列表；纯 Codex/Claude 模型在 mixed-source 日报中保留有效费用，只有包含 Antigravity 的模型标注费用不可用。新历史保存该字段，旧历史缺字段时保守回退到 report-wide source split。
 - 已补 SQLite 真实事务契约测试，覆盖凭据创建前进程崩溃、审计插入失败和撤销回滚；纯 Fake 测试不作为 D1 原子性通过证据。
 
 ### 复杂度豁免
@@ -100,7 +102,7 @@ git diff --check HEAD
 
 - Web device/API/settings 相关测试覆盖新设备 pairing、device-link reconnect、stale code 拒绝、安装命令生成、详情页和撤销路径。
 - TokenBoard skill 脚本测试：248 个测试通过。
-- Workspace 测试：`packages/usage-core` 7 个、`packages/collector` 255 个、`apps/web` 547 个测试通过，共 809 个。
+- Workspace 测试：`packages/usage-core` 7 个、`packages/collector` 256 个、`apps/web` 548 个测试通过，共 811 个。
 - Workspace typecheck：全部通过。
 - Web build：通过。
 - `pnpm audit --audit-level low`：未发现已知漏洞。
