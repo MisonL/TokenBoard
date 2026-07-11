@@ -16,9 +16,9 @@ import {
 import { dirname, join } from 'node:path'
 
 const logSchemaVersion = 'antigravity-statusline-log/v1'
-const lockRetryCount = 50
 const lockRetryDelayMs = 10
-const orphanLockGraceMs = 5_000
+const orphanLockGraceMs = 250
+const lockRetryCount = Math.ceil(orphanLockGraceMs / lockRetryDelayMs) + 2
 
 export function appendBoundedStatuslineEvent(filePath, value, maxBytes) {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
@@ -102,7 +102,7 @@ function acquireLock(lockPath) {
   for (let attempt = 0; attempt < lockRetryCount; attempt += 1) {
     try {
       mkdirSync(lockPath, { mode: 0o700 })
-      writeFileSync(join(lockPath, 'pid'), String(process.pid), { mode: 0o600 })
+      writeLockOwner(lockPath)
       return
     } catch (error) {
       if (!isLockExistsError(error)) throw error
@@ -111,6 +111,17 @@ function acquireLock(lockPath) {
     }
   }
   throw new Error('Timed out waiting for Antigravity statusline log lock')
+}
+
+function writeLockOwner(lockPath) {
+  try {
+    writeFileSync(join(lockPath, 'pid'), String(process.pid), { mode: 0o600 })
+  } catch (error) {
+    try {
+      rmSync(lockPath, { recursive: true, force: true })
+    } catch {}
+    throw error
+  }
 }
 
 function releaseLock(lockPath) {

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -76,6 +78,54 @@ test('statusline log recovers a lock owned by a stopped process', async () => {
     assert.match(await readFile(logPath, 'utf8'), /recovered/)
     await assert.rejects(stat(lockPath), { code: 'ENOENT' })
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline log retry budget covers orphan lock recovery grace', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-orphan-grace-'))
+  try {
+    const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
+    const modulePath = join(root, 'antigravity-statusline-log.mjs')
+    const source = (await readFile(sourcePath, 'utf8'))
+      .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 600')
+    await writeFile(modulePath, source)
+
+    const logPath = join(root, 'events.jsonl')
+    await mkdir(`${logPath}.lock`)
+    const module = await import(`${new URL(`file://${modulePath}`).href}?grace-test`)
+
+    module.appendBoundedStatuslineEvent(logPath, { value: 'recovered-after-grace' }, 1024)
+
+    assert.match(await readFile(logPath, 'utf8'), /recovered-after-grace/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline log removes a partial lock when pid write fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-pid-failure-'))
+  const logPath = join(root, 'events.jsonl')
+  const originalWriteFileSync = fs.writeFileSync
+  try {
+    fs.writeFileSync = (path, ...args) => {
+      if (String(path).endsWith('/pid')) {
+        const error = new Error('pid write failed')
+        error.code = 'EIO'
+        throw error
+      }
+      return originalWriteFileSync(path, ...args)
+    }
+    syncBuiltinESMExports()
+
+    assert.throws(
+      () => appendBoundedStatuslineEvent(logPath, { value: 'not-written' }, 1024),
+      /pid write failed/
+    )
+    await assert.rejects(stat(`${logPath}.lock`), { code: 'ENOENT' })
+  } finally {
+    fs.writeFileSync = originalWriteFileSync
+    syncBuiltinESMExports()
     await rm(root, { recursive: true, force: true })
   }
 })
