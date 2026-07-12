@@ -49,7 +49,7 @@ export function renderUsageCardSvg(input: UsageCardInput, configInput?: Partial<
 
 function buildMetricBlocks(input: UsageCardInput, config: PublicCardConfig) {
   const slots = metricSlots(config)
-  return config.metrics.slice(0, slots.length).map((metric, index) => {
+  return visibleMetrics(config).map((metric, index) => {
     const slot = slots[index]
     return metricBlock({
       ...slot,
@@ -59,6 +59,10 @@ function buildMetricBlocks(input: UsageCardInput, config: PublicCardConfig) {
       palette: palettes[config.theme]
     })
   })
+}
+
+function visibleMetrics(config: PublicCardConfig) {
+  return config.metrics.slice(0, metricSlots(config).length)
 }
 
 function metricSlots(config: PublicCardConfig) {
@@ -137,7 +141,7 @@ function metricLabel(metric: PublicCardMetric, config: PublicCardConfig, marksUn
 }
 
 function buildUnavailableCostNote(input: UsageCardInput, config: PublicCardConfig) {
-  return config.metrics.some((metric) => isCostMetric(metric) && !costAvailabilityForMetric(input, metric))
+  return visibleMetrics(config).some((metric) => isCostMetric(metric) && !costAvailabilityForMetric(input, metric))
     ? labels(config.language).costUnavailableNote
     : ''
 }

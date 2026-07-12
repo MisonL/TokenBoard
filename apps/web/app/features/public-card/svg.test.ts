@@ -120,4 +120,17 @@ describe('public card svg renderer', () => {
     expect(svg).not.toContain('Antigravity 费用不可用')
     expect(svg).not.toContain('总 token*')
   })
+
+  test('does not add unavailable-cost notes for metrics truncated by the layout', () => {
+    const svg = renderUsageCardSvg({
+      ...input,
+      todayCostAvailable: false
+    }, {
+      layout: 'wide',
+      metrics: ['totalTokens', 'monthTokens', 'todayTokens', 'todayCost']
+    })
+
+    expect(svg).not.toContain('今日额度')
+    expect(svg).not.toContain('Antigravity 费用不可用')
+  })
 })
