@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process'
 
+const tasklistTimeoutMs = 2_000
+
 export function isProcessAlive(pid, options = {}) {
   const platform = options.platform || process.platform
   const nodeVersion = options.nodeVersion || process.versions.node
@@ -32,7 +34,8 @@ export function tasklistContainsPid(output, pid) {
 function isWindowsProcessAlive(pid, runTasklist) {
   const result = runTasklist('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
     encoding: 'utf8',
-    windowsHide: true
+    windowsHide: true,
+    timeout: tasklistTimeoutMs
   })
   if (result.error || result.status !== 0) return true
   return tasklistContainsPid(result.stdout, pid)

@@ -130,7 +130,7 @@ test('statusline log keeps a fresh malformed lock until its recovery grace expir
   }
 })
 
-test('statusline log does not evict an expired lock while its pid is alive', async () => {
+test('statusline log recovers an abandoned lock after its maximum lease even when the pid was reused', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-reused-pid-'))
   try {
     const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
@@ -138,6 +138,7 @@ test('statusline log does not evict an expired lock while its pid is alive', asy
     const source = (await readFile(sourcePath, 'utf8'))
       .replace(/const lockWaitTimeoutMs = [^\n]+/, 'const lockWaitTimeoutMs = 100')
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 20')
+      .replace(/const lockMaxLeaseMs = [^\n]+/, 'const lockMaxLeaseMs = 20')
     await writeFile(modulePath, source)
     await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
 
@@ -149,12 +150,10 @@ test('statusline log does not evict an expired lock while its pid is alive', asy
     await utimes(lockPath, expiredAt, expiredAt)
     const module = await import(`${pathToFileURL(modulePath).href}?reused-pid-test`)
 
-    assert.throws(
-      () => module.appendBoundedStatuslineEvent(logPath, { value: 'not-written' }, 1024),
-      /Timed out waiting for Antigravity statusline log lock/
-    )
-    assert.equal(await readFile(join(lockPath, 'pid'), 'utf8'), String(process.pid))
-    await assert.rejects(stat(logPath), { code: 'ENOENT' })
+    module.appendBoundedStatuslineEvent(logPath, { value: 'recovered-after-pid-reuse' }, 1024)
+
+    assert.match(await readFile(logPath, 'utf8'), /recovered-after-pid-reuse/)
+    await assert.rejects(stat(lockPath), { code: 'ENOENT' })
   } finally {
     await rm(root, { recursive: true, force: true })
   }

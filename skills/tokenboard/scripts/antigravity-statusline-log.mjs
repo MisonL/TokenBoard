@@ -22,6 +22,7 @@ const logSchemaVersion = 'antigravity-statusline-log/v1'
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const orphanLockGraceMs = 500
+const lockMaxLeaseMs = 120_000
 const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
@@ -169,7 +170,7 @@ function recoverOrphanedLock(lockPath) {
     removeLockWithIdentity(lockPath, identity)
     return
   }
-  if (isProcessAlive(pid)) return
+  if (isProcessAlive(pid) && ageMs < lockMaxLeaseMs) return
   removeLockWithIdentity(lockPath, identity)
 }
 
@@ -204,10 +205,25 @@ function sameLockIdentity(lockPath, expected) {
 
 function removeLockWithIdentity(lockPath, identity) {
   if (!sameLockIdentity(lockPath, identity)) return
+  const quarantinePath = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
-    rmSync(lockPath, { recursive: true, force: true })
+    renameSync(lockPath, quarantinePath)
   } catch (error) {
-    if (sameLockIdentity(lockPath, identity)) throw error
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
+  if (!sameLockIdentity(quarantinePath, identity)) {
+    restoreQuarantinedLock(lockPath, quarantinePath)
+    return
+  }
+  rmSync(quarantinePath, { recursive: true, force: true })
+}
+
+function restoreQuarantinedLock(lockPath, quarantinePath) {
+  try {
+    renameSync(quarantinePath, lockPath)
+  } catch (error) {
+    throw new Error('Antigravity statusline replacement lock could not be restored', { cause: error })
   }
 }
 

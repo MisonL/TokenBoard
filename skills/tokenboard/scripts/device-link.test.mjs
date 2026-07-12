@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import test from 'node:test'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deviceLinkPath, deviceLinkStatus, readDeviceLink, writeDeviceLink } from './device-link.mjs'
@@ -160,6 +160,27 @@ test('preserves all server links across concurrent writers', async () => {
     for (let index = 0; index < 12; index += 1) {
       assert.equal(raw.servers[`https://server-${index}.example.com`].installClaim, `claim_${index}`)
     }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('recovers an abandoned device-link lock after its maximum lease when the pid was reused', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-device-link-reused-pid-'))
+  const lockPath = join(root, 'device-link.json.lock')
+  try {
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, token: 'stale-owner' }))
+    const expiredAt = new Date(Date.now() - 120_000)
+    await utimes(lockPath, expiredAt, expiredAt)
+
+    writeDeviceLink({
+      serverOrigin: 'https://tokenboard.example',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'claim-new'
+    }, { configDir: root })
+
+    assert.equal(readDeviceLink({ configDir: root }).installClaim, 'claim-new')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -19,6 +19,7 @@ const deviceLinkStoreVersion = 2
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const malformedLockGraceMs = 500
+const lockMaxLeaseMs = 120_000
 const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 const defaultFs = {
@@ -159,21 +160,50 @@ function acquireDeviceLinkLock(lockPath) {
 }
 
 function releaseDeviceLinkLock(lockPath, owner) {
-  if (!sameDeviceLinkLockOwner(lockPath, owner)) {
+  const identity = readLockIdentity(lockPath)
+  if (!identity || !sameDeviceLinkLockOwner(lockPath, owner)) {
     throw new Error('TokenBoard device link lock ownership changed')
   }
-  rmSync(lockPath, { force: true })
+  removeDeviceLinkLock(lockPath, identity, owner)
 }
 
 function recoverDeviceLinkLock(lockPath) {
+  const identity = readLockIdentity(lockPath)
+  if (!identity) return
   const owner = readDeviceLinkLockOwner(lockPath)
   if (!owner) {
     if (readLockAgeMs(lockPath) < malformedLockGraceMs) return
-    rmSync(lockPath, { force: true })
+    removeDeviceLinkLock(lockPath, identity)
     return
   }
-  if (isProcessAlive(owner.pid)) return
-  if (sameDeviceLinkLockOwner(lockPath, owner)) rmSync(lockPath, { force: true })
+  if (isProcessAlive(owner.pid) && readLockAgeMs(lockPath) < lockMaxLeaseMs) return
+  removeDeviceLinkLock(lockPath, identity, owner)
+}
+
+function removeDeviceLinkLock(lockPath, identity, owner) {
+  if (!sameLockIdentity(lockPath, identity)) return
+  if (owner && !sameDeviceLinkLockOwner(lockPath, owner)) return
+  const quarantinePath = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString('hex')}`
+  try {
+    renameSync(lockPath, quarantinePath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
+  if (!sameLockIdentity(quarantinePath, identity) ||
+      (owner && !sameDeviceLinkLockOwner(quarantinePath, owner))) {
+    restoreDeviceLinkLock(lockPath, quarantinePath)
+    return
+  }
+  rmSync(quarantinePath, { force: true })
+}
+
+function restoreDeviceLinkLock(lockPath, quarantinePath) {
+  try {
+    renameSync(quarantinePath, lockPath)
+  } catch (error) {
+    throw new Error('TokenBoard replacement device link lock could not be restored', { cause: error })
+  }
 }
 
 function readDeviceLinkLockOwner(lockPath) {
@@ -190,6 +220,20 @@ function readDeviceLinkLockOwner(lockPath) {
 function sameDeviceLinkLockOwner(lockPath, expected) {
   const current = readDeviceLinkLockOwner(lockPath)
   return current?.pid === expected.pid && current.token === expected.token
+}
+
+function readLockIdentity(lockPath) {
+  try {
+    const stats = statSync(lockPath, { bigint: true })
+    return { dev: stats.dev, ino: stats.ino }
+  } catch {
+    return null
+  }
+}
+
+function sameLockIdentity(lockPath, expected) {
+  const current = readLockIdentity(lockPath)
+  return current?.dev === expected.dev && current.ino === expected.ino
 }
 
 function readLockAgeMs(lockPath) {

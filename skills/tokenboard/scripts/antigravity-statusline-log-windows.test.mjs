@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { supportsReliableSignalZero } from './antigravity-statusline-log.mjs'
-import { tasklistContainsPid } from './process-liveness.mjs'
+import { isProcessAlive, tasklistContainsPid } from './process-liveness.mjs'
 
 test('statusline lock avoids broken Windows signal-zero Node releases', () => {
   assert.equal(supportsReliableSignalZero('darwin', '22.12.0'), true)
@@ -19,6 +19,21 @@ test('parses Windows tasklist CSV without depending on localized no-match text',
   assert.equal(tasklistContainsPid('"node.exe","123","Console","1","10,000 K"\r\n', 123), true)
   assert.equal(tasklistContainsPid('INFO: No tasks are running which match the specified criteria.', 123), false)
   assert.equal(tasklistContainsPid('信息: 没有运行的任务匹配指定标准。', 123), false)
+})
+
+test('bounds legacy Windows tasklist liveness probes', () => {
+  let options
+  const alive = isProcessAlive(123, {
+    platform: 'win32',
+    nodeVersion: '22.12.0',
+    runTasklist(_command, _args, input) {
+      options = input
+      return { error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }
+    }
+  })
+
+  assert.equal(alive, true)
+  assert.equal(options.timeout, 2_000)
 })
 
 test('statusline log recovers a lock when legacy Windows reports the pid missing', async () => {
