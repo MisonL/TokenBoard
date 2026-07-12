@@ -1505,14 +1505,19 @@ function parseReconnectPairingMetadata(metadata: string | null): ReconnectPairin
 }
 
 function parseReconnectMetadataJson(metadata: string) {
+  let parsed: unknown
   try {
-    return JSON.parse(metadata) as {
-      method?: unknown
-      installationId?: unknown
-      installClaimHash?: unknown
-    }
+    parsed = JSON.parse(metadata)
   } catch {
     throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
+  }
+  return parsed as {
+    method?: unknown
+    installationId?: unknown
+    installClaimHash?: unknown
   }
 }
 

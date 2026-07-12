@@ -529,6 +529,43 @@ describe('pairDevice', () => {
     ])
   })
 
+  test.each(['null', '[]', '"invalid"'])('rejects non-object reconnect metadata %s', async (metadata) => {
+    const { repository } = createRepository({
+      async findUsablePairingCode() {
+        return {
+          id: 'pair_1',
+          userId: 'seed-user',
+          pairingType: 'reconnect_device',
+          targetDeviceId: 'dev_old',
+          metadata,
+          expiresAt: '2026-04-28T10:10:00.000Z',
+          consumedAt: null
+        }
+      }
+    })
+
+    await expect(pairDevice(
+      repository,
+      {
+        pairingCode: 'dev-pairing-code',
+        deviceName: 'Reinstalled Desktop',
+        platform: 'linux',
+        timezone: 'Asia/Shanghai'
+      },
+      {
+        now: () => '2026-04-28T10:00:00.000Z',
+        endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+        randomId: () => 'install-fixture',
+        randomToken: () => 'upload-token-fixture',
+        randomInstallClaim: () => 'install-claim-fixture',
+        hash: async (value) => `hash:${value}`
+      }
+    )).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+      message: 'Invalid or expired pairing code'
+    })
+  })
+
   test('maps inactive reconnect targets during pairing to an API error', async () => {
     const { repository, calls } = createRepository({
       async findUsablePairingCode(codeHash, now) {
