@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest'
 import {
   createAntigravityLanguageServerClient,
   formatMetadataRequestHttpError,
+  formatMetadataRequestTransportError,
   listAntigravityCascades,
   type AntigravityCascadeFileSystem
 } from './antigravity-gui-client'
@@ -23,6 +24,11 @@ describe('createAntigravityLanguageServerClient', () => {
     expect(message).not.toContain('/Users/test/private/project/file.ts')
     expect(message).not.toContain('user@example.com')
     expect(message).not.toContain('raw local content')
+  })
+
+  test('formats metadata transport errors with a stable source prefix', () => {
+    expect(formatMetadataRequestTransportError('antigravity', new Error('socket hang up')))
+      .toBe('Antigravity metadata request transport failed for antigravity: socket hang up')
   })
 
   test.skipIf(process.platform === 'win32')('closes the language server process when startup times out', async () => {

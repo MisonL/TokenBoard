@@ -693,6 +693,41 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
+  test('preserves partial DB snapshots when the metadata transport disconnects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-partial-transport-'))
+    try {
+      const snapshots = await expectPartialAntigravitySnapshots(collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        listCascades: async () => [{ id: 'conversation-a', mtimeMs: 2000, size: 20 }],
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-db']),
+          events: [{
+            cascadeHash: 'c'.repeat(64),
+            eventHash: 'e'.repeat(64),
+            createdAt: '2026-06-23T16:30:00.000Z',
+            model: 'gemini-3-flash-a',
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 30
+          }]
+        }),
+        requestGeneratorMetadata: async () => {
+          throw new Error('Antigravity metadata request transport failed for antigravity: ECONNRESET')
+        }
+      }))
+
+      expect(snapshots).toEqual([
+        expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('does not treat empty DB history as already covered when language server data remains available', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-gating-'))
     try {

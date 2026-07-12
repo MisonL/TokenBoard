@@ -278,13 +278,18 @@ function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & {
       })
     })
     req.on('timeout', () => req.destroy(new Error(`Antigravity metadata request timed out for ${input.source}`)))
-    req.on('error', reject)
+    req.on('error', (error) => reject(new Error(formatMetadataRequestTransportError(input.source, error))))
     req.end(body)
   })
 }
 
 export function formatMetadataRequestHttpError(source: AntigravityGuiSource, statusCode?: number) {
   return `Antigravity metadata request failed for ${source}: HTTP ${statusCode ?? 'unknown'}`
+}
+
+export function formatMetadataRequestTransportError(source: AntigravityGuiSource, error: unknown) {
+  const detail = error instanceof Error ? error.message : String(error)
+  return `Antigravity metadata request transport failed for ${source}: ${detail}`
 }
 
 async function closeLanguageServer(server: LanguageServerProcess) {
