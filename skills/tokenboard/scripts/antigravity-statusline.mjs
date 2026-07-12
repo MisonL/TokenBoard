@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto'
 import {
-  appendFileSync,
-  chmodSync,
-  mkdirSync,
   readFileSync,
   readSync,
   realpathSync
 } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
+import {
+  appendBoundedStatuslineError,
+  appendBoundedStatuslineEvent
+} from './antigravity-statusline-log.mjs'
 
 const defaultMaxInputBytes = 256 * 1024
 const maxTokenValue = 1_000_000_000
@@ -38,7 +38,7 @@ export function runStatuslineCli(argv = process.argv.slice(2), env = process.env
       appendBoundedStatuslineEvent(options.logPath, event, options.maxLogBytes)
     }
   } catch (error) {
-    recordStatuslineError(options.errorPath, 'capture', error)
+    recordStatuslineError(options.errorPath, 'capture', error, options.maxLogBytes)
   }
 
   try {
@@ -49,7 +49,7 @@ export function runStatuslineCli(argv = process.argv.slice(2), env = process.env
     })
     if (output) process.stdout.write(output)
   } catch (error) {
-    recordStatuslineError(options.errorPath, 'original', error)
+    recordStatuslineError(options.errorPath, 'original', error, options.maxLogBytes)
   }
 }
 
@@ -184,12 +184,6 @@ function hashLegacyIdentifier(value) {
     .digest('hex')
 }
 
-function appendJsonLine(filePath, value) {
-  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
-  appendFileSync(filePath, `${JSON.stringify(value)}\n`, { mode: 0o600 })
-  chmodSync(filePath, 0o600)
-}
-
 function readMaxLogBytes(value) {
   if (value === undefined || value === null || value === '') return defaultMaxLogBytes
   const parsed = Number(value)
@@ -199,13 +193,13 @@ function readMaxLogBytes(value) {
   return parsed
 }
 
-function recordStatuslineError(filePath, stage, error) {
+function recordStatuslineError(filePath, stage, error, maxBytes) {
   try {
-    appendJsonLine(filePath, {
+    appendBoundedStatuslineError(filePath, {
       stage,
       message: error instanceof Error ? error.message : String(error),
       capturedAt: new Date().toISOString()
-    })
+    }, maxBytes)
   } catch (_) {}
 }
 

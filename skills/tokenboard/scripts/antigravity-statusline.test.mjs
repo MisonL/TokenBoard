@@ -180,6 +180,30 @@ test('statusline CLI records malformed payload errors outside the usage JSONL', 
   }
 })
 
+test('statusline CLI bounds repeated error records', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-bounded-errors-'))
+  try {
+    const errorPath = join(root, 'errors.log')
+    for (let index = 0; index < 40; index += 1) {
+      const result = spawnSync(process.execPath, [
+        scriptPath,
+        '--state-dir', root,
+        '--error-path', errorPath,
+        '--max-log-bytes', '1024'
+      ], {
+        input: '{bad json',
+        encoding: 'utf8'
+      })
+      assert.equal(result.status, 0)
+    }
+
+    assert.ok((await stat(errorPath)).size <= 1024)
+    for (const line of (await readFile(errorPath, 'utf8')).trim().split('\n')) JSON.parse(line)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('statusline CLI defaults missing cache token fields to zero', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-'))
   try {

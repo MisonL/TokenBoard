@@ -23,17 +23,25 @@ const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
 export function appendBoundedStatuslineEvent(filePath, value, maxBytes) {
+  appendBoundedJsonLine(filePath, value, maxBytes, buildUsageLogHeader)
+}
+
+export function appendBoundedStatuslineError(filePath, value, maxBytes) {
+  appendBoundedJsonLine(filePath, value, maxBytes)
+}
+
+function appendBoundedJsonLine(filePath, value, maxBytes, buildHeader) {
   mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
   const lockPath = `${filePath}.lock`
   const lease = acquireLock(lockPath)
   try {
-    appendWithinLock(filePath, value, maxBytes)
+    appendWithinLock(filePath, value, maxBytes, buildHeader)
   } finally {
     releaseLock(lease)
   }
 }
 
-function appendWithinLock(filePath, value, maxBytes) {
+function appendWithinLock(filePath, value, maxBytes, buildHeader) {
   const line = `${JSON.stringify(value)}\n`
   const currentSize = readFileSize(filePath)
   if (currentSize + Buffer.byteLength(line) <= maxBytes) {
@@ -41,14 +49,17 @@ function appendWithinLock(filePath, value, maxBytes) {
     chmodSync(filePath, 0o600)
     return
   }
-  compactUsageLog(filePath, line, maxBytes, currentSize)
+  compactJsonl(filePath, line, maxBytes, currentSize, buildHeader?.() ?? '')
 }
 
-function compactUsageLog(filePath, line, maxBytes, currentSize) {
-  const header = `${JSON.stringify({
+function buildUsageLogHeader() {
+  return `${JSON.stringify({
     schemaVersion: logSchemaVersion,
     generation: randomBytes(16).toString('hex')
   })}\n`
+}
+
+function compactJsonl(filePath, line, maxBytes, currentSize, header) {
   const availableBytes = maxBytes - Buffer.byteLength(header) - Buffer.byteLength(line)
   if (availableBytes < 0) {
     throw new Error('Antigravity statusline log limit is too small for one event')
