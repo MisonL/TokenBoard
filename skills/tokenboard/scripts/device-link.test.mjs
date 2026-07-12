@@ -65,3 +65,60 @@ test('reports only device link presence and path', () => {
 test('builds device link path under config directory', () => {
   assert.equal(deviceLinkPath('/tmp/tokenboard'), '/tmp/tokenboard/device-link.json')
 })
+
+test('preserves and selects device links by server origin', () => {
+  const files = new Map()
+  const fs = {
+    mkdirSync() {},
+    writeFileSync(path, value) {
+      files.set(path, value)
+    },
+    chmodSync() {},
+    existsSync(path) {
+      return files.has(path)
+    },
+    readFileSync(path) {
+      return files.get(path)
+    }
+  }
+  const path = '/home/user/.tokenboard/device-link.json'
+  files.set(path, `${JSON.stringify({
+    version: 1,
+    serverOrigin: 'https://prod.example.com',
+    deviceId: 'dev_prod',
+    installationId: 'inst_prod',
+    installClaim: 'claim-prod'
+  })}\n`)
+
+  writeDeviceLink(
+    {
+      serverOrigin: 'https://private.example.com',
+      deviceId: 'dev_private',
+      installationId: 'inst_private',
+      installClaim: 'claim-private'
+    },
+    { configDir: '/home/user/.tokenboard', path, fs }
+  )
+
+  const stored = JSON.parse(files.get(path))
+  assert.equal(stored.version, 2)
+  assert.deepEqual(Object.keys(stored.servers).sort(), [
+    'https://private.example.com',
+    'https://prod.example.com'
+  ])
+
+  assert.deepEqual(readDeviceLink({ path, fs, serverOrigin: 'https://prod.example.com' }), {
+    version: 1,
+    serverOrigin: 'https://prod.example.com',
+    deviceId: 'dev_prod',
+    installationId: 'inst_prod',
+    installClaim: 'claim-prod'
+  })
+  assert.deepEqual(readDeviceLink({ path, fs, serverOrigin: 'https://private.example.com' }), {
+    version: 1,
+    serverOrigin: 'https://private.example.com',
+    deviceId: 'dev_private',
+    installationId: 'inst_private',
+    installClaim: 'claim-private'
+  })
+})

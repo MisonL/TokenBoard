@@ -69,14 +69,18 @@ test('device-link reconnect setup is explicit opt-in', () => {
 test('device-link reconnect exchanges local claim for a pairing code', async () => {
   const requests = []
   const writes = []
+  let requestedServerOrigin = null
   const pairingCode = await createPairingCodeFromDeviceLink({
     baseUrl: 'https://tokenboard.example.com',
-    readDeviceLink: () => ({
-      serverOrigin: 'https://tokenboard.example.com',
-      deviceId: 'dev_1',
-      installationId: 'inst_1',
-      installClaim: 'claim-secret'
-    }),
+    readDeviceLink: (options) => {
+      requestedServerOrigin = options?.serverOrigin
+      return {
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }
+    },
     writeDeviceLink: (link) => writes.push(link),
     fetcher: async (url, init) => {
       requests.push({ url, init })
@@ -85,6 +89,7 @@ test('device-link reconnect exchanges local claim for a pairing code', async () 
   })
 
   assert.equal(pairingCode, 'pairing-code')
+  assert.equal(requestedServerOrigin, 'https://tokenboard.example.com')
   assert.deepEqual(writes, [])
   assert.equal(requests[0].url, 'https://tokenboard.example.com/api/v1/device/reconnect-pairing-codes')
   assert.deepEqual(JSON.parse(requests[0].init.body), {

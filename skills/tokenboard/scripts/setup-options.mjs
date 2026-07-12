@@ -66,12 +66,15 @@ export async function createPairingCodeFromDeviceLink({
   if (!baseUrl) {
     throw new Error('Missing --base-url or TOKENBOARD_BASE_URL')
   }
-  const deviceLink = readDeviceLink()
+  const baseOrigin = serverOriginFromUrl(baseUrl)
+  if (!baseOrigin) {
+    throw new Error('TokenBoard device link belongs to a different server')
+  }
+  const deviceLink = readDeviceLink({ serverOrigin: baseOrigin })
   if (!deviceLink) {
     throw new Error('TokenBoard device link not found')
   }
-  const baseOrigin = serverOriginFromUrl(baseUrl)
-  if (!baseOrigin || deviceLink.serverOrigin !== baseOrigin) {
+  if (deviceLink.serverOrigin !== baseOrigin) {
     throw new Error('TokenBoard device link belongs to a different server')
   }
   const response = await fetcher(`${baseOrigin}/api/v1/device/reconnect-pairing-codes`, {
