@@ -19,7 +19,6 @@ const logSchemaVersion = 'antigravity-statusline-log/v1'
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const orphanLockGraceMs = 500
-const staleLockMs = 30_000
 const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
@@ -156,7 +155,7 @@ function recoverOrphanedLock(lockPath) {
     removeLockWithIdentity(lockPath, identity)
     return
   }
-  if (ageMs < staleLockMs && isProcessAlive(pid)) return
+  if (isProcessAlive(pid)) return
   removeLockWithIdentity(lockPath, identity)
 }
 
