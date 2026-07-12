@@ -73,6 +73,7 @@ export const uploadTokens = sqliteTable('upload_tokens', {
   createdAt: text('created_at').notNull(),
   revokedAt: text('revoked_at')
 }, (table) => [
+  index('upload_tokens_user_id_idx').on(table.userId),
   uniqueIndex('upload_tokens_active_successor_idx')
     .on(table.supersedesTokenId)
     .where(sql`${table.supersedesTokenId} IS NOT NULL AND ${table.revokedAt} IS NULL`)

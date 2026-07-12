@@ -214,6 +214,15 @@ describe('Wrangler deploy config', () => {
     expect(migration).toContain('revoked_at IS NULL')
   })
 
+  test('upload token user lookup migration adds the matching schema index', () => {
+    const schema = readDrizzleSchema()
+    const migration = readPackageFile('db/migrations/0026_upload_tokens_user_id.sql')
+
+    expect(schema).toContain("index('upload_tokens_user_id_idx').on(table.userId)")
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS upload_tokens_user_id_idx')
+    expect(migration).toContain('ON upload_tokens(user_id)')
+  })
+
   test('usage summary migration creates cache tables without blocking backfill work', () => {
     const migration = readPackageFile('db/migrations/0016_usage_summary_cache.sql')
     const refreshMigration = readPackageFile('db/migrations/0017_refresh_usage_summary_cache.sql')
