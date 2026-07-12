@@ -375,6 +375,8 @@ describe('upsertUsageSnapshots', () => {
   test('marks the upload token and device as synced after ingest', async () => {
     const bindings: unknown[][] = []
     const sqlStatements: string[] = []
+    const batches: unknown[][] = []
+    let runCount = 0
     const db = {
       prepare(sql: string) {
         sqlStatements.push(sql)
@@ -383,11 +385,16 @@ describe('upsertUsageSnapshots', () => {
             bindings.push(values)
             return {
               async run() {
+                runCount += 1
                 return { success: true }
               }
             }
           }
         }
+      },
+      async batch(statements: unknown[]) {
+        batches.push(statements)
+        return statements.map(() => ({ success: true }))
       }
     } as unknown as D1Database
 
@@ -416,6 +423,8 @@ describe('upsertUsageSnapshots', () => {
       'inst_123',
       'hash:upload-token'
     ])
+    expect(runCount).toBe(0)
+    expect(batches).toEqual([[expect.any(Object), expect.any(Object), expect.any(Object)]])
   })
 })
 

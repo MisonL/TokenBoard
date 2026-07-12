@@ -1,3 +1,5 @@
+import { runStatementBatches } from './types'
+
 export async function markIngestSynced(
   db: D1Database,
   input: {
@@ -7,20 +9,20 @@ export async function markIngestSynced(
     syncedAt: string
   }
 ) {
-  await db
+  const statements: D1PreparedStatement[] = [db
     .prepare('UPDATE upload_tokens SET last_used_at = ? WHERE token_hash = ?')
     .bind(input.syncedAt, input.uploadTokenHash)
-    .run()
+  ]
 
   if (input.deviceId) {
-    await db
+    statements.push(db
       .prepare('UPDATE devices SET last_synced_at = ?, updated_at = ? WHERE id = ?')
       .bind(input.syncedAt, input.syncedAt, input.deviceId)
-      .run()
+    )
   }
 
   if (input.installationId) {
-    await db
+    statements.push(db
       .prepare(
         `
           UPDATE device_installations
@@ -32,6 +34,7 @@ export async function markIngestSynced(
         `
       )
       .bind(input.syncedAt, input.syncedAt, input.installationId, input.uploadTokenHash)
-      .run()
+    )
   }
+  await runStatementBatches(db, statements)
 }
