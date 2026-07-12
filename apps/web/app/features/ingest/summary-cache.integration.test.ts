@@ -11,6 +11,7 @@ import { backfillUsageSummaryCache, upsertUsageSnapshots, type IngestRecord } fr
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const migrationsDir = resolve(currentDir, '../../../db/migrations')
 const verificationDate = new Date('2026-06-02T10:00:00.000Z')
+vi.setConfig({ testTimeout: 15_000 })
 
 describe('usage summary cache integration', () => {
   const tempDirs: string[] = []

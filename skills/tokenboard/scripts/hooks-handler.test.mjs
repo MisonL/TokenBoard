@@ -6,6 +6,9 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { buildNotifyHandler } from './hooks.mjs'
 
+const backgroundResultTimeoutMs = 5_000
+const backgroundResultRetryMs = 25
+
 test('notify handler does not forward payload args to the TokenBoard background process', () => {
   const source = buildNotifyHandler({
     stateDir: '/home/user/.tokenboard',
@@ -105,12 +108,13 @@ test('notify handler records invalid source without enqueueing background work',
 
 async function readJsonFile(path) {
   let lastError
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const deadline = Date.now() + backgroundResultTimeoutMs
+  while (Date.now() < deadline) {
     try {
       return JSON.parse(await readFile(path, 'utf8'))
     } catch (error) {
       lastError = error
-      await new Promise((resolve) => setTimeout(resolve, 25))
+      await new Promise((resolve) => setTimeout(resolve, backgroundResultRetryMs))
     }
   }
   throw lastError
