@@ -471,23 +471,36 @@ export async function renameDevice(
 ) {
   const now = input.now ?? new Date().toISOString()
   const name = parseDeviceNameForm({ name: input.name })
-  const result = await db
-    .prepare('UPDATE devices SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?')
-    .bind(name, now, input.deviceId, input.userId)
-    .run()
+  const results = await db.batch([
+    db.prepare('UPDATE devices SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+      .bind(name, now, input.deviceId, input.userId),
+    createDeviceRenameAuditStatement(db, {
+      userId: input.userId,
+      deviceId: input.deviceId,
+      name,
+      now
+    })
+  ])
+  assertDeviceBatchSucceeded(results)
+  assertChangedResult(results[0], 'Device not found')
+  assertChangedResult(results[1], 'Device rename was not recorded')
+}
 
-  if ((result.meta.changes ?? 0) === 0) {
-    throw new ApiError('NOT_FOUND', 'Device not found', 404)
-  }
-
-  await createDeviceAuditLog(db, {
-    userId: input.userId,
-    action: 'device.rename',
-    targetType: 'device',
-    targetId: input.deviceId,
-    metadata: { name },
-    now
-  })
+function createDeviceRenameAuditStatement(
+  db: D1Database,
+  input: { userId: string; deviceId: string; name: string; now: string }
+) {
+  return db.prepare(`
+    INSERT INTO audit_logs (
+      id, user_id, actor_type, action, target_type, target_id, metadata, created_at
+    )
+    SELECT ?, ?, 'user', 'device.rename', 'device', id, ?, ?
+    FROM devices
+    WHERE id = ? AND user_id = ? AND name = ? AND updated_at = ?
+  `).bind(
+    randomId('audit'), input.userId, JSON.stringify({ name: input.name }), input.now,
+    input.deviceId, input.userId, input.name, input.now
+  )
 }
 
 export async function revokeDevice(
@@ -520,13 +533,13 @@ export async function revokeInstallation(
 ) {
   const now = input.now ?? new Date().toISOString()
   const results = await db.batch([
+    createInstallationRevokeAuditStatement(db, { ...input, now }),
     createInstallationTokenRevokeStatement(db, { ...input, now }),
-    createInstallationRevokeStatement(db, { ...input, now }),
-    createInstallationRevokeAuditStatement(db, { ...input, now })
+    createInstallationRevokeStatement(db, { ...input, now })
   ])
   assertDeviceBatchSucceeded(results)
-  assertChangedResult(results[1], 'Installation not found')
-  assertChangedResult(results[2], 'Installation revocation was not recorded')
+  assertChangedResult(results[2], 'Installation not found')
+  assertChangedResult(results[0], 'Installation revocation was not recorded')
 }
 
 function createDeviceTokenRevokeStatement(
@@ -608,8 +621,8 @@ function createInstallationRevokeAuditStatement(
     SELECT ?, ?, 'user', 'installation.revoke', 'device_installation', id,
       json_object('deviceId', device_id), ?
     FROM device_installations
-    WHERE id = ? AND user_id = ? AND revoked_at = ?
-  `).bind(randomId('audit'), input.userId, input.now, input.installationId, input.userId, input.now)
+    WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+  `).bind(randomId('audit'), input.userId, input.now, input.installationId, input.userId)
 }
 
 export async function revokeUploadToken(
@@ -626,13 +639,19 @@ export async function revokeUploadToken(
     throw new ApiError('NOT_FOUND', 'Upload token not found', 404)
   }
 
-  const statements = [
-    createUploadTokenRevokeOnlyStatement(db, {
-      userId: input.userId,
-      uploadTokenId: input.uploadTokenId,
-      now
-    })
-  ]
+  const statements = [createUploadTokenRevokeAuditStatement(db, {
+    userId: input.userId,
+    uploadTokenId: input.uploadTokenId,
+    metadata: {
+      deviceId: token.deviceId,
+      installationId: token.installationId
+    },
+    now
+  }), createUploadTokenRevokeOnlyStatement(db, {
+    userId: input.userId,
+    uploadTokenId: input.uploadTokenId,
+    now
+  })]
   if (token.installationId) {
     statements.push(createInstallationClaimClearForRevokedTokenStatement(db, {
       userId: input.userId,
@@ -641,20 +660,10 @@ export async function revokeUploadToken(
       now
     }))
   }
-  statements.push(createUploadTokenRevokeAuditStatement(db, {
-    userId: input.userId,
-    uploadTokenId: input.uploadTokenId,
-    metadata: {
-      deviceId: token.deviceId,
-      installationId: token.installationId
-    },
-    now
-  }))
-
   const results = await db.batch(statements)
   assertDeviceBatchSucceeded(results)
-  assertChangedResult(results[0], 'Upload token not found')
-  assertChangedResult(results[results.length - 1], 'Upload token revocation was not recorded')
+  assertChangedResult(results[1], 'Upload token not found')
+  assertChangedResult(results[0], 'Upload token revocation was not recorded')
 }
 
 function createUploadTokenRevokeOnlyStatement(
@@ -737,7 +746,7 @@ function createUploadTokenRevokeAuditStatement(
           FROM upload_tokens
           WHERE user_id = ?
             AND id = ?
-            AND revoked_at = ?
+            AND revoked_at IS NULL
         )
       `
     )
@@ -751,8 +760,7 @@ function createUploadTokenRevokeAuditStatement(
       JSON.stringify(input.metadata),
       input.now,
       input.userId,
-      input.uploadTokenId,
-      input.now
+      input.uploadTokenId
     )
 }
 
@@ -1289,46 +1297,6 @@ function createDeleteFailedRotationAuditStatement(
       input.uploadTokenId,
       input.now
     )
-}
-
-async function createDeviceAuditLog(
-  db: D1Database,
-  input: {
-    userId: string
-    action: string
-    targetType: string
-    targetId: string | null
-    metadata: Record<string, unknown>
-    now: string
-  }
-) {
-  await db
-    .prepare(
-      `
-        INSERT INTO audit_logs (
-          id,
-          user_id,
-          actor_type,
-          action,
-          target_type,
-          target_id,
-          metadata,
-          created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `
-    )
-    .bind(
-      randomId('audit'),
-      input.userId,
-      'user',
-      input.action,
-      input.targetType,
-      input.targetId,
-      JSON.stringify(input.metadata),
-      input.now
-    )
-    .run()
 }
 
 export async function createPairingCode(

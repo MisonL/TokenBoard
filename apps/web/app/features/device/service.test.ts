@@ -1106,21 +1106,8 @@ describe('device management', () => {
   test('renames a device owned by the current user', async () => {
     const sqlStatements: string[] = []
     const bindings: unknown[][] = []
-    const db = {
-      prepare(sql: string) {
-        sqlStatements.push(sql)
-        return {
-          bind(...values: unknown[]) {
-            bindings.push(values)
-            return {
-              async run() {
-                return { meta: { changes: 1 } }
-              }
-            }
-          }
-        }
-      }
-    } as unknown as D1Database
+    const batchStatements: unknown[] = []
+    const db = createRunDb(sqlStatements, bindings, { batchStatements })
 
     await renameDevice(db, {
       userId: 'user_1',
@@ -1132,13 +1119,14 @@ describe('device management', () => {
     expect(sqlStatements[0]).toContain('UPDATE devices')
     expect(bindings[0]).toEqual(['Laptop', '2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
     expect(sqlStatements[1]).toContain('INSERT INTO audit_logs')
+    expect(batchStatements).toHaveLength(2)
     expect(bindings[1]?.slice(1)).toEqual([
       'user_1',
-      'user',
-      'device.rename',
-      'device',
-      'dev_1',
       '{"name":"Laptop"}',
+      '2026-04-29T09:00:00.000Z',
+      'dev_1',
+      'user_1',
+      'Laptop',
       '2026-04-29T09:00:00.000Z'
     ])
   })
@@ -1193,25 +1181,24 @@ describe('device management', () => {
       now: '2026-04-29T09:00:00.000Z'
     })
 
-    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[0]).toContain('installation_id = ?')
-    expect(sqlStatements[1]).toContain('UPDATE device_installations')
-    expect(sqlStatements[2]).toContain('INSERT INTO audit_logs')
-    expect(sqlStatements[2]).toContain('installation.revoke')
+    expect(sqlStatements[0]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[0]).toContain('installation.revoke')
+    expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[1]).toContain('installation_id = ?')
+    expect(sqlStatements[2]).toContain('UPDATE device_installations')
     expect(batchStatements).toHaveLength(3)
-    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
-    expect(bindings[1]).toEqual([
+    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
+    expect(bindings[2]).toEqual([
       '2026-04-29T09:00:00.000Z',
       '2026-04-29T09:00:00.000Z',
       'inst_1',
       'user_1'
     ])
-    expect(bindings[2]?.slice(1)).toEqual([
+    expect(bindings[0]?.slice(1)).toEqual([
       'user_1',
       '2026-04-29T09:00:00.000Z',
       'inst_1',
-      'user_1',
-      '2026-04-29T09:00:00.000Z'
+      'user_1'
     ])
   })
 
@@ -1232,24 +1219,24 @@ describe('device management', () => {
 
     expect(sqlStatements).toHaveLength(4)
     expect(sqlStatements[0]).toContain('FROM upload_tokens')
-    expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[1]).toContain('AND id = ?')
-    expect(sqlStatements[2]).toContain('UPDATE device_installations')
-    expect(sqlStatements[2]).toContain('install_claim_hash = NULL')
-    expect(sqlStatements[2]).toContain('upload_tokens.revoked_at = ?')
-    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
-    expect(sqlStatements[3]).toContain('WHERE EXISTS')
+    expect(sqlStatements[1]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[1]).toContain('WHERE EXISTS')
+    expect(sqlStatements[2]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[2]).toContain('AND id = ?')
+    expect(sqlStatements[3]).toContain('UPDATE device_installations')
+    expect(sqlStatements[3]).toContain('install_claim_hash = NULL')
+    expect(sqlStatements[3]).toContain('upload_tokens.revoked_at = ?')
     expect(batchStatements).toHaveLength(3)
     expect(bindings[0]).toEqual(['ut_1', 'user_1'])
-    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
-    expect(bindings[2]).toEqual([
+    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
+    expect(bindings[3]).toEqual([
       '2026-04-29T09:00:00.000Z',
       'user_1',
       'inst_1',
       'ut_1',
       '2026-04-29T09:00:00.000Z'
     ])
-    expect(bindings[3]?.slice(1)).toEqual([
+    expect(bindings[1]?.slice(1)).toEqual([
       'user_1',
       'user',
       'token.revoke',
@@ -1258,8 +1245,7 @@ describe('device management', () => {
       '{"deviceId":"dev_1","installationId":"inst_1"}',
       '2026-04-29T09:00:00.000Z',
       'user_1',
-      'ut_1',
-      '2026-04-29T09:00:00.000Z'
+      'ut_1'
     ])
   })
 
@@ -1271,8 +1257,8 @@ describe('device management', () => {
       firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }],
       batchStatements,
       batchResults: [
-        { meta: { changes: 0 } },
         { meta: { changes: 1 } },
+        { meta: { changes: 0 } },
         { meta: { changes: 1 } }
       ]
     })
@@ -1307,11 +1293,11 @@ describe('device management', () => {
 
     expect(sqlStatements).toHaveLength(3)
     expect(sqlStatements[0]).toContain('FROM upload_tokens')
-    expect(sqlStatements[1]).toContain('UPDATE upload_tokens')
-    expect(sqlStatements[2]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[1]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[2]).toContain('UPDATE upload_tokens')
     expect(sqlStatements.join('\n')).not.toContain('UPDATE device_installations')
     expect(batchStatements).toHaveLength(2)
-    expect(bindings[2]?.slice(1)).toEqual([
+    expect(bindings[1]?.slice(1)).toEqual([
       'user_1',
       'user',
       'token.revoke',
@@ -1320,8 +1306,7 @@ describe('device management', () => {
       '{"deviceId":"dev_1","installationId":null}',
       '2026-04-29T09:00:00.000Z',
       'user_1',
-      'ut_1',
-      '2026-04-29T09:00:00.000Z'
+      'ut_1'
     ])
   })
 
@@ -1334,8 +1319,8 @@ describe('device management', () => {
       batchStatements,
       batchResults: [
         { meta: { changes: 1 } },
-        { meta: { changes: 0 } },
-        { meta: { changes: 1 } }
+        { meta: { changes: 1 } },
+        { meta: { changes: 0 } }
       ]
     })
 
@@ -1345,8 +1330,8 @@ describe('device management', () => {
       now: '2026-04-29T09:00:00.000Z'
     })
 
-    expect(sqlStatements[2]).toContain('install_claim_hash IS NOT NULL')
-    expect(sqlStatements[2]).toContain('revoked_at IS NULL')
+    expect(sqlStatements[3]).toContain('install_claim_hash IS NOT NULL')
+    expect(sqlStatements[3]).toContain('revoked_at IS NULL')
     expect(batchStatements).toHaveLength(3)
   })
 
@@ -1359,8 +1344,8 @@ describe('device management', () => {
       batchStatements,
       batchResults: [
         { meta: { changes: 1 } },
-        { success: false, error: 'claim update failed' },
-        { meta: { changes: 1 } }
+        { meta: { changes: 1 } },
+        { success: false, error: 'claim update failed' }
       ]
     })
 
@@ -1370,7 +1355,7 @@ describe('device management', () => {
         uploadTokenId: 'ut_1',
         now: '2026-04-29T09:00:00.000Z'
       })
-    ).rejects.toThrow('D1 batch statement 2 failed: claim update failed')
+    ).rejects.toThrow('D1 batch statement 3 failed: claim update failed')
     expect(batchStatements).toHaveLength(3)
   })
 

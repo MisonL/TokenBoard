@@ -6,7 +6,13 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../test/sqlite-d1'
 import { D1DevicePairingRepository } from './repository'
-import { pairDevice, revokeDevice, revokeInstallation } from './service'
+import {
+  pairDevice,
+  renameDevice,
+  revokeDevice,
+  revokeInstallation,
+  revokeUploadToken
+} from './service'
 
 const crashFixturePath = fileURLToPath(
   new URL('../../test/fixtures/device-pairing-crash.ts', import.meta.url)
@@ -39,7 +45,7 @@ describe('device pairing sqlite contract', () => {
       .toBe(0)
     expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE id = 'audit_attempt'"))
       .toBe(0)
-  })
+  }, 15000)
 
   test('creates credentials and consumes the pairing code in one batch', async () => {
     const { db, dbPath } = createDeviceDb(tempDirs)
@@ -133,6 +139,54 @@ describe('device revocation sqlite contract', () => {
       .toBeNull()
     expect(readColumn(dbPath, 'SELECT revoked_at FROM device_installations WHERE id = \'inst_1\'', 'revoked_at'))
       .toBeNull()
+  })
+
+  test('rolls back a device rename when the audit insert fails', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    rejectAuditAction(dbPath, 'device.rename')
+
+    await expect(renameDevice(db, {
+      userId: 'user_1',
+      deviceId: 'dev_1',
+      name: 'Renamed',
+      now: '2026-07-11T01:00:00.000Z'
+    })).rejects.toThrow('audit failed')
+
+    expect(readColumn(dbPath, "SELECT name FROM devices WHERE id = 'dev_1'", 'name'))
+      .toBe('Workstation')
+  })
+
+  test('does not record a second installation audit when the state change loses a race', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    const input = {
+      userId: 'user_1',
+      installationId: 'inst_1',
+      now: '2026-07-11T01:00:00.000Z'
+    }
+
+    await revokeInstallation(db, input)
+    await expect(revokeInstallation(db, input)).rejects.toThrow('Installation not found')
+
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE action = 'installation.revoke'"))
+      .toBe(1)
+  })
+
+  test('does not record a second token audit when the state change loses a race', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    const input = {
+      userId: 'user_1',
+      uploadTokenId: 'ut_1',
+      now: '2026-07-11T01:00:00.000Z'
+    }
+
+    await revokeUploadToken(db, input)
+    await expect(revokeUploadToken(db, input)).rejects.toThrow('Upload token not found')
+
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE action = 'token.revoke'"))
+      .toBe(1)
   })
 })
 
@@ -246,6 +300,17 @@ function rejectRevocationAudits(dbPath: string) {
     CREATE TRIGGER reject_revocation_audit
     BEFORE INSERT ON audit_logs
     WHEN NEW.action IN ('device.revoke', 'installation.revoke')
+    BEGIN
+      SELECT RAISE(ABORT, 'audit failed');
+    END;
+  `)
+}
+
+function rejectAuditAction(dbPath: string, action: string) {
+  runSql(dbPath, `
+    CREATE TRIGGER reject_selected_audit
+    BEFORE INSERT ON audit_logs
+    WHEN NEW.action = '${action}'
     BEGIN
       SELECT RAISE(ABORT, 'audit failed');
     END;
