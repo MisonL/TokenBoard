@@ -198,7 +198,7 @@ function validateCollectorRepoUrl(value) {
     fail('TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.')
   }
 
-  if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.port || url.username || url.password) {
     fail('TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.')
   }
   if (!/^\/[^/]+\/[^/]+(?:\.git)?$/.test(url.pathname) || url.search || url.hash) {

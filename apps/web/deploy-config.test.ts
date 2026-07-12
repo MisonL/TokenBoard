@@ -352,6 +352,8 @@ describe('Wrangler deploy config', () => {
         ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
         ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
         ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://secret@github.com/MisonL/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://github.com:8443/MisonL/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
         ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
@@ -384,7 +386,7 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 15000)
 
   test('production config checker rejects unreplaced resource control placeholders', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-retention-placeholder-config-'))
@@ -426,6 +428,8 @@ describe('Wrangler deploy config', () => {
         ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
         ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
         ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://secret@github.com/MisonL/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://github.com:8443/MisonL/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
         ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'vars.TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
@@ -448,7 +452,7 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 15000)
 
   test('deploy helper generates production config for clean Cloudflare builds', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-clean-deploy-'))
