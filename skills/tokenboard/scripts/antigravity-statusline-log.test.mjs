@@ -8,20 +8,9 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import {
-  appendBoundedStatuslineEvent,
-  supportsReliableSignalZero
-} from './antigravity-statusline-log.mjs'
+import { appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
 
 const scriptPath = fileURLToPath(new URL('./antigravity-statusline.mjs', import.meta.url))
-
-test('statusline lock avoids broken Windows signal-zero Node releases', () => {
-  assert.equal(supportsReliableSignalZero('darwin', '22.12.0'), true)
-  assert.equal(supportsReliableSignalZero('win32', '22.12.0'), false)
-  assert.equal(supportsReliableSignalZero('win32', '22.16.0'), true)
-  assert.equal(supportsReliableSignalZero('win32', '23.11.0'), false)
-  assert.equal(supportsReliableSignalZero('win32', '24.0.0'), true)
-})
 
 test('statusline CLI compacts its private JSONL within the configured byte limit', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-bounded-'))

@@ -19,6 +19,7 @@ const logSchemaVersion = 'antigravity-statusline-log/v1'
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const orphanLockGraceMs = 500
+const unreliableSignalZeroLeaseMs = 30_000
 const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
@@ -166,6 +167,13 @@ function recoverOrphanedLock(lockPath) {
     removeLockWithIdentity(lockPath, identity)
     return
   }
+  const reliableSignalZero = supportsReliableSignalZero(process.platform, process.versions.node)
+  if (!reliableSignalZero) {
+    // Older Windows Node cannot distinguish a live owner, so retain a conservative lease.
+    if (ageMs < unreliableSignalZeroLeaseMs) return
+    removeLockWithIdentity(lockPath, identity)
+    return
+  }
   if (isProcessAlive(pid)) return
   removeLockWithIdentity(lockPath, identity)
 }
@@ -182,7 +190,6 @@ function readLockPid(lockPath) {
 }
 
 function isProcessAlive(pid) {
-  if (!supportsReliableSignalZero(process.platform, process.versions.node)) return true
   try {
     process.kill(pid, 0)
     return true
