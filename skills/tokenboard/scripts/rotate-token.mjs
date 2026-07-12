@@ -26,7 +26,8 @@ export function applyRotatedToken({
     ...currentProfile,
     uploadToken,
     deviceId,
-    installationId
+    installationId,
+    ...(installClaim ? { installClaim } : {})
   })
   writeConfigFn(nextConfig)
   if (installClaim) {

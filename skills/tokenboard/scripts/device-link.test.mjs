@@ -4,6 +4,7 @@ import test from 'node:test'
 import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { readConfig, writeConfig } from './config.mjs'
 import { deviceLinkPath, deviceLinkStatus, readDeviceLink, writeDeviceLink } from './device-link.mjs'
 
 test('writes device-link.json with private file mode', () => {
@@ -182,6 +183,85 @@ test('recovers an abandoned device-link lock after its maximum lease when the pi
 
     assert.equal(readDeviceLink({ configDir: root }).installClaim, 'claim-new')
   } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('uses config profile as the canonical recovery credential', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-device-link-canonical-'))
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  process.env.TOKENBOARD_CONFIG_DIR = root
+  try {
+    writeConfig({
+      activeServer: 'https://prod.example.com',
+      servers: {
+        'https://prod.example.com': {
+          endpoint: 'https://prod.example.com/api/v1/ingest',
+          uploadToken: 'token-new',
+          deviceId: 'device-new',
+          installationId: 'installation-new',
+          installClaim: 'claim-new'
+        }
+      }
+    })
+    await writeFile(deviceLinkPath(root), `${JSON.stringify({
+      version: 2,
+      servers: {
+        'https://prod.example.com': {
+          version: 1,
+          deviceId: 'device-old',
+          installationId: 'installation-old',
+          installClaim: 'claim-old'
+        }
+      }
+    })}\n`, { mode: 0o600 })
+
+    assert.deepEqual(readDeviceLink({ serverOrigin: 'https://prod.example.com' }), {
+      version: 1,
+      serverOrigin: 'https://prod.example.com',
+      deviceId: 'device-new',
+      installationId: 'installation-new',
+      installClaim: 'claim-new'
+    })
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('updates the canonical config together with the compatibility mirror', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-device-link-config-'))
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  process.env.TOKENBOARD_CONFIG_DIR = root
+  try {
+    writeConfig({
+      activeServer: 'https://prod.example.com',
+      servers: {
+        'https://prod.example.com': {
+          endpoint: 'https://prod.example.com/api/v1/ingest',
+          uploadToken: 'token-new',
+          deviceId: 'device-old',
+          installationId: 'installation-old',
+          installClaim: 'claim-old'
+        }
+      }
+    })
+
+    writeDeviceLink({
+      serverOrigin: 'https://prod.example.com',
+      deviceId: 'device-new',
+      installationId: 'installation-new',
+      installClaim: 'claim-new'
+    })
+
+    const profile = readConfig().servers['https://prod.example.com']
+    assert.equal(profile.deviceId, 'device-new')
+    assert.equal(profile.installationId, 'installation-new')
+    assert.equal(profile.installClaim, 'claim-new')
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
     await rm(root, { recursive: true, force: true })
   }
 })

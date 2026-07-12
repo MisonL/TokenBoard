@@ -36,6 +36,7 @@ test('applies a rotated token to the matching server profile only', () => {
 
   assert.equal(nextConfig.uploadToken, 'prod-new')
   assert.equal(nextConfig.servers['https://prod.example.com'].uploadToken, 'prod-new')
+  assert.equal(nextConfig.servers['https://prod.example.com'].installClaim, 'claim-new')
   assert.equal(nextConfig.servers['https://private.example.com'].uploadToken, 'private-token')
   assert.equal(writes.length, 1)
   assert.deepEqual(deviceLinks, [

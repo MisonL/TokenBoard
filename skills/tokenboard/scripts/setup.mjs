@@ -93,6 +93,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
     uploadToken: paired.uploadToken,
     deviceId: paired.deviceId,
     installationId: paired.installationId,
+    ...(paired.installClaim ? { installClaim: paired.installClaim } : {}),
     timezone: paired.timezone,
     source: 'all',
     repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,

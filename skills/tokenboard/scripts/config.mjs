@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -64,8 +65,15 @@ function readRawConfig() {
 export function writeConfig(config) {
   mkdirSync(configDir(), { recursive: true })
   const file = configPath()
-  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-  chmodSync(file, 0o600)
+  const tempFile = `${file}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
+  try {
+    writeFileSync(tempFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
+    renameSync(tempFile, file)
+    chmodSync(file, 0o600)
+  } catch (error) {
+    rmSync(tempFile, { force: true })
+    throw error
+  }
 }
 
 export function stripUtf8Bom(value) {

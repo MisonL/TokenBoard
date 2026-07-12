@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { configDir } from './config.mjs'
+import { readCanonicalDeviceLink, syncDeviceLinkToConfig } from './device-link-config.mjs'
 import { isProcessAlive } from './process-liveness.mjs'
 
 const deviceLinkStoreVersion = 2
@@ -43,6 +44,7 @@ export function writeDeviceLink(link, options = {}) {
   const normalized = normalizeDeviceLink(link)
   fs.mkdirSync(root, { recursive: true })
   const update = () => {
+    syncDeviceLinkToConfig(normalized, root, options)
     const store = readDeviceLinkStore(path, fs)
     store.servers[normalized.serverOrigin] = storedDeviceLink(normalized)
     writeDeviceLinkStore(path, store, fs)
@@ -55,11 +57,14 @@ export function writeDeviceLink(link, options = {}) {
 export function readDeviceLink(options = {}) {
   const path = options.path || deviceLinkPath(options.configDir || configDir())
   const fs = options.fs || { existsSync, readFileSync }
-  if (!fs.existsSync(path)) return null
-  const store = normalizeDeviceLinkStore(JSON.parse(fs.readFileSync(path, 'utf8')))
+  const root = options.configDir || configDir()
   const requestedOrigin = options.serverOrigin
     ? normalizeServerOrigin(options.serverOrigin)
     : null
+  const configLink = readCanonicalDeviceLink(root, requestedOrigin, options)
+  if (configLink) return configLink
+  if (!fs.existsSync(path)) return null
+  const store = normalizeDeviceLinkStore(JSON.parse(fs.readFileSync(path, 'utf8')))
   if (requestedOrigin) {
     return store.servers[requestedOrigin]
       ? deviceLinkFromStored(requestedOrigin, store.servers[requestedOrigin])
