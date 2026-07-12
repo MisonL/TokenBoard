@@ -147,7 +147,6 @@ test('statusline log does not evict an expired lock while its pid is alive', asy
     const source = (await readFile(sourcePath, 'utf8'))
       .replace(/const lockWaitTimeoutMs = [^\n]+/, 'const lockWaitTimeoutMs = 100')
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 20')
-      .replace(/const staleLockMs = [^\n]+/, 'const staleLockMs = 20')
     await writeFile(modulePath, source)
 
     const logPath = join(root, 'events.jsonl')
