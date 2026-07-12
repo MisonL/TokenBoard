@@ -14,12 +14,14 @@ import {
   writeFileSync
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { isProcessAlive, supportsReliableSignalZero } from './process-liveness.mjs'
+
+export { supportsReliableSignalZero } from './process-liveness.mjs'
 
 const logSchemaVersion = 'antigravity-statusline-log/v1'
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const orphanLockGraceMs = 500
-const unreliableSignalZeroLeaseMs = 30_000
 const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
@@ -167,13 +169,6 @@ function recoverOrphanedLock(lockPath) {
     removeLockWithIdentity(lockPath, identity)
     return
   }
-  const reliableSignalZero = supportsReliableSignalZero(process.platform, process.versions.node)
-  if (!reliableSignalZero) {
-    // Older Windows Node cannot distinguish a live owner, so retain a conservative lease.
-    if (ageMs < unreliableSignalZeroLeaseMs) return
-    removeLockWithIdentity(lockPath, identity)
-    return
-  }
   if (isProcessAlive(pid)) return
   removeLockWithIdentity(lockPath, identity)
 }
@@ -187,21 +182,6 @@ function readLockPid(lockPath) {
   } catch {
     return null
   }
-}
-
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error && typeof error === 'object' && error.code === 'EPERM'
-  }
-}
-
-export function supportsReliableSignalZero(platform, nodeVersion) {
-  if (platform !== 'win32') return true
-  const [major, minor] = nodeVersion.split('.').map(Number)
-  return major > 23 || (major === 22 && minor >= 16)
 }
 
 function readLockIdentity(lockPath) {

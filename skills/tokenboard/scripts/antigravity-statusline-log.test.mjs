@@ -90,6 +90,7 @@ test('statusline log retry budget covers orphan lock recovery grace', async () =
     const source = (await readFile(sourcePath, 'utf8'))
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 600')
     await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
 
     const logPath = join(root, 'events.jsonl')
     await mkdir(`${logPath}.lock`)
@@ -111,6 +112,7 @@ test('statusline log keeps a fresh malformed lock until its recovery grace expir
     const source = (await readFile(sourcePath, 'utf8'))
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 600')
     await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
 
     const logPath = join(root, 'events.jsonl')
     const lockPath = `${logPath}.lock`
@@ -137,6 +139,7 @@ test('statusline log does not evict an expired lock while its pid is alive', asy
       .replace(/const lockWaitTimeoutMs = [^\n]+/, 'const lockWaitTimeoutMs = 100')
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 20')
     await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
 
     const logPath = join(root, 'events.jsonl')
     const lockPath = `${logPath}.lock`
