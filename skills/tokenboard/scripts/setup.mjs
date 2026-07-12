@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { hostname, platform } from 'node:os'
 import {
+  configDir,
   configPath,
   parseArgs,
   readConfig,
@@ -11,6 +12,7 @@ import {
   withServerProfile,
   writeConfig
 } from './config.mjs'
+import { withCredentialsLock } from './credentials-lock.mjs'
 import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
@@ -46,7 +48,10 @@ const savedProfile = reusableServerProfile(currentConfig, serverOrigin)
 const useDeviceLink = shouldUseDeviceLink(flags)
 
 if (!pairingCode && !useDeviceLink && savedProfile) {
-  writeConfig(withServerProfile(currentConfig, serverOrigin, savedProfile))
+  withCredentialsLock(configDir(), () => {
+    const latestConfig = existsSync(configPath()) ? readConfig() : {}
+    writeConfig(withServerProfile(latestConfig, serverOrigin, savedProfile))
+  })
   console.log('TokenBoard server profile activated.')
 } else {
   if (!pairingCode && useDeviceLink) {
@@ -88,29 +93,32 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
     console.error('Pairing response did not include a valid endpoint.')
     process.exit(1)
   }
-  const nextConfig = withServerProfile(currentConfig, pairedServerOrigin, {
-    endpoint: paired.endpoint,
-    uploadToken: paired.uploadToken,
-    deviceId: paired.deviceId,
-    installationId: paired.installationId,
-    ...(paired.installClaim ? { installClaim: paired.installClaim } : {}),
-    timezone: paired.timezone,
-    source: 'all',
-    repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,
-    repoRef: flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF,
-    packageManager,
-    scheduleTimes,
-    createdAt: new Date().toISOString()
-  })
-  writeConfig(nextConfig)
-  if (paired.installClaim) {
-    writeDeviceLink({
-      serverOrigin: pairedServerOrigin,
+  withCredentialsLock(configDir(), () => {
+    const latestConfig = existsSync(configPath()) ? readConfig() : {}
+    const nextConfig = withServerProfile(latestConfig, pairedServerOrigin, {
+      endpoint: paired.endpoint,
+      uploadToken: paired.uploadToken,
       deviceId: paired.deviceId,
       installationId: paired.installationId,
-      installClaim: paired.installClaim
+      ...(paired.installClaim ? { installClaim: paired.installClaim } : {}),
+      timezone: paired.timezone,
+      source: 'all',
+      repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,
+      repoRef: flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF,
+      packageManager,
+      scheduleTimes,
+      createdAt: new Date().toISOString()
     })
-  }
+    writeConfig(nextConfig)
+    if (paired.installClaim) {
+      writeDeviceLink({
+        serverOrigin: pairedServerOrigin,
+        deviceId: paired.deviceId,
+        installationId: paired.installationId,
+        installClaim: paired.installClaim
+      }, { lockHeld: true })
+    }
+  })
   console.log('TokenBoard config written.')
 }
 

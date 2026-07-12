@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import test from 'node:test'
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -535,3 +536,62 @@ test('writeConfig re-tightens existing config file permissions', { skip: process
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('mergeConfig preserves concurrent server profile updates across processes', async () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-concurrent-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    writeConfig({
+      activeServer: 'https://base.example.com',
+      servers: {
+        'https://base.example.com': {
+          endpoint: 'https://base.example.com/api/v1/ingest',
+          uploadToken: 'base-token'
+        }
+      }
+    })
+    const script = [
+      "import { mergeConfig } from './config.mjs'",
+      'mergeConfig(JSON.parse(process.env.TOKENBOARD_CONFIG_PATCH))'
+    ].join('\n')
+    const writers = Array.from({ length: 12 }, (_, index) => spawn(process.execPath, [
+      '--input-type=module',
+      '-e',
+      script
+    ], {
+      cwd: new URL('.', import.meta.url),
+      env: {
+        ...process.env,
+        TOKENBOARD_CONFIG_DIR: directory,
+        TOKENBOARD_CONFIG_PATCH: JSON.stringify({
+          servers: {
+            [`https://server-${index}.example.com`]: {
+              endpoint: `https://server-${index}.example.com/api/v1/ingest`,
+              uploadToken: `token-${index}`
+            }
+          }
+        })
+      },
+      stdio: ['ignore', 'ignore', 'pipe']
+    }))
+    const errors = await Promise.all(writers.map(collectChildExit))
+    assert.deepEqual(errors, Array(12).fill(''))
+
+    const config = readConfig()
+    assert.equal(Object.keys(config.servers).length, 13)
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+function collectChildExit(child) {
+  return new Promise((resolve, reject) => {
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (status) => resolve(status === 0 ? '' : stderr || `exit ${status}`))
+  })
+}

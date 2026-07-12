@@ -2,6 +2,7 @@
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
+  configDir,
   configPath,
   parseArgs,
   readConfig,
@@ -9,6 +10,7 @@ import {
   withUpdatedServerProfile,
   writeConfig
 } from './config.mjs'
+import { withCredentialsLock } from './credentials-lock.mjs'
 import { writeDeviceLink } from './device-link.mjs'
 
 export function applyRotatedToken({
@@ -76,13 +78,16 @@ function runCli() {
       throw new Error(`TokenBoard config not found: ${configPath()}`)
     }
     const flags = parseArgs(process.argv.slice(2))
-    applyRotatedToken({
-      currentConfig: readConfig(),
-      serverOrigin: readServerOrigin(flags),
-      uploadToken: requiredFlag(flags, 'upload-token'),
-      deviceId: requiredFlag(flags, 'device-id'),
-      installationId: requiredFlag(flags, 'installation-id'),
-      installClaim: flags['install-claim'] ? String(flags['install-claim']) : null
+    withCredentialsLock(configDir(), () => {
+      applyRotatedToken({
+        currentConfig: readConfig(),
+        serverOrigin: readServerOrigin(flags),
+        uploadToken: requiredFlag(flags, 'upload-token'),
+        deviceId: requiredFlag(flags, 'device-id'),
+        installationId: requiredFlag(flags, 'installation-id'),
+        installClaim: flags['install-claim'] ? String(flags['install-claim']) : null,
+        writeDeviceLinkFn: (link) => writeDeviceLink(link, { lockHeld: true })
+      })
     })
     console.log('TokenBoard rotated token written.')
   } catch (error) {

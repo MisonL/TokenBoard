@@ -11,7 +11,7 @@ export function syncDeviceLinkToConfig(link, root, options = {}) {
         installClaim: link.installClaim
       }
     }
-  })
+  }, { lockHeld: options.lockHeld })
 }
 
 export function readCanonicalDeviceLink(root, requestedOrigin, options = {}) {

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { withCredentialsLock } from './credentials-lock.mjs'
 
 export function configDir() {
   return process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
@@ -82,9 +83,24 @@ export function stripUtf8Bom(value) {
   return value
 }
 
-export function mergeConfig(patch) {
-  const current = existsSync(configPath()) ? readRawConfig() : {}
-  writeConfig(mergeConfigPatch(current, patch))
+export function mergeConfig(patch, options = {}) {
+  const transform = (current) => mergeConfigPatch(current, patch)
+  if (options.lockHeld) {
+    const current = existsSync(configPath()) ? readRawConfig() : {}
+    const next = transform(current)
+    writeConfig(next)
+    return next
+  }
+  return updateConfig(transform)
+}
+
+export function updateConfig(transform) {
+  return withCredentialsLock(configDir(), () => {
+    const current = existsSync(configPath()) ? readRawConfig() : {}
+    const next = transform(current)
+    writeConfig(next)
+    return next
+  })
 }
 
 export function serverOriginFromEndpoint(value) {
