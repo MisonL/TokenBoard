@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { link, mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
 
@@ -25,7 +25,7 @@ export type CursorState = {
 }
 
 const cursorLockRetryMs = 25
-const cursorLockTimeoutMs = 30_000
+const cursorLockTimeoutMs = 35_000
 const cursorLockStaleMs = 30_000
 const cursorLockHeartbeatMs = 5_000
 
@@ -71,11 +71,19 @@ export async function withCursorLock<T>(cursorPath: string, callback: () => Prom
     void refreshCursorLock(lockPath, owner)
   }, cursorLockHeartbeatMs)
   heartbeat.unref()
+  let callbackFailed = false
   try {
     return await callback()
+  } catch (error) {
+    callbackFailed = true
+    throw error
   } finally {
     clearInterval(heartbeat)
-    await releaseCursorLock(lockPath, owner)
+    try {
+      await releaseCursorLock(lockPath, owner)
+    } catch (error) {
+      if (!callbackFailed) throw error
+    }
   }
 }
 
@@ -103,8 +111,40 @@ async function recoverStaleCursorLock(lockPath: string) {
   const lockStat = await stat(lockPath).catch(() => null)
   if (!lockStat || Date.now() - lockStat.mtimeMs < cursorLockStaleMs) return
   const owner = await readCursorLockOwner(lockPath)
-  if (owner && !await sameCursorLockOwner(lockPath, owner)) return
-  await rm(lockPath, { force: true })
+  if (!await sameCursorLockSnapshot(lockPath, lockStat, owner)) return
+  const quarantinePath = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString('hex')}`
+  try {
+    await rename(lockPath, quarantinePath)
+  } catch (error) {
+    if (isMissingFileError(error)) return
+    throw error
+  }
+  const quarantinedStat = await stat(quarantinePath).catch(() => null)
+  if (!quarantinedStat || !sameFileStat(lockStat, quarantinedStat)) {
+    await restoreCursorLock(lockPath, quarantinePath)
+    return
+  }
+  await rm(quarantinePath, { force: true })
+}
+
+async function sameCursorLockSnapshot(lockPath: string, expectedStat: Awaited<ReturnType<typeof stat>>, owner: CursorLockOwner | null) {
+  const currentStat = await stat(lockPath).catch(() => null)
+  if (!currentStat || !sameFileStat(expectedStat, currentStat)) return false
+  return !owner || await sameCursorLockOwner(lockPath, owner)
+}
+
+function sameFileStat(expected: Awaited<ReturnType<typeof stat>>, current: Awaited<ReturnType<typeof stat>>) {
+  return expected.dev === current.dev && expected.ino === current.ino && expected.mtimeMs === current.mtimeMs
+}
+
+async function restoreCursorLock(lockPath: string, quarantinePath: string) {
+  try {
+    await link(quarantinePath, lockPath)
+    await rm(quarantinePath, { force: true })
+  } catch (error) {
+    if (!isFileExistsError(error)) throw error
+    await rm(quarantinePath, { force: true })
+  }
 }
 
 async function refreshCursorLock(lockPath: string, owner: CursorLockOwner) {

@@ -129,10 +129,18 @@ function writeDeviceLinkStore(path, store, fs) {
 function withDeviceLinkLock(path, callback) {
   const lockPath = `${path}.lock`
   const owner = acquireDeviceLinkLock(lockPath)
+  let callbackFailed = false
   try {
     return callback()
+  } catch (error) {
+    callbackFailed = true
+    throw error
   } finally {
-    releaseDeviceLinkLock(lockPath, owner)
+    try {
+      releaseDeviceLinkLock(lockPath, owner)
+    } catch (error) {
+      if (!callbackFailed) throw error
+    }
   }
 }
 
@@ -301,5 +309,5 @@ function requiredString(value, name) {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new Error(`Invalid TokenBoard device link: missing ${name}`)
   }
-  return value
+  return value.trim()
 }

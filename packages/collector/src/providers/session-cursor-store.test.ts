@@ -32,4 +32,21 @@ describe('session cursor store concurrency', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test('preserves callback errors when lock ownership changes during cleanup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-lock-error-'))
+    const cursorPath = join(root, 'codex-cursor.json')
+    try {
+      await expect(withCursorLock(cursorPath, async () => {
+        await writeCursor(`${cursorPath}.lock`, {
+          version: 1,
+          source: 'codex',
+          files: {}
+        })
+        throw new Error('callback failed')
+      })).rejects.toThrow('callback failed')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })

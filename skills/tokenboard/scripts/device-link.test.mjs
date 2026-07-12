@@ -54,6 +54,31 @@ test('writes device-link.json with private file mode', () => {
   })
 })
 
+test('trims device link identity fields before persistence', () => {
+  const files = new Map()
+  const fs = {
+    mkdirSync() {},
+    writeFileSync(path, value) { files.set(path, value) },
+    chmodSync() {},
+    existsSync(path) { return files.has(path) },
+    readFileSync(path) { return files.get(path) }
+  }
+  const path = writeDeviceLink({
+    serverOrigin: ' https://tokenboard.example/path ',
+    deviceId: ' device-1 ',
+    installationId: ' installation-1 ',
+    installClaim: ' claim-1 '
+  }, { configDir: '/home/user/.tokenboard', fs })
+
+  assert.deepEqual(readDeviceLink({ path, fs }), {
+    version: 1,
+    serverOrigin: 'https://tokenboard.example',
+    deviceId: 'device-1',
+    installationId: 'installation-1',
+    installClaim: 'claim-1'
+  })
+})
+
 test('reports only device link presence and path', () => {
   assert.deepEqual(
     deviceLinkStatus({
