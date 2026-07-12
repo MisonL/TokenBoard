@@ -59,7 +59,10 @@ describe('public card service', () => {
                     { source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240 }
                   ]),
                   topModels: JSON.stringify([
-                    { model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, costUsd: 1.5 }
+                    {
+                      model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410,
+                      costUsd: 1.5, costAvailable: 0
+                    }
                   ])
                 }
               },
@@ -82,7 +85,10 @@ describe('public card service', () => {
       total: { tokens: 1200, tokensWithoutCacheRead: 900, cacheReadRate: 0.25, costUsd: 3.75, costAvailable: false },
       month: { tokens: 500, tokensWithoutCacheRead: 380, cacheReadRate: 0.24, costUsd: 1.5, costAvailable: false },
       sourceSplit: [{ source: 'codex', totalTokens: 300, totalTokensWithoutCacheRead: 240, cacheReadRate: 0.2 }],
-      topModels: [{ model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410, cacheReadRate: 0.18, costUsd: 1.5 }]
+      topModels: [{
+        model: 'gpt-5.4', totalTokens: 500, totalTokensWithoutCacheRead: 410,
+        cacheReadRate: 0.18, costUsd: 1.5, costAvailable: false
+      }]
     })
     expect(JSON.stringify(result)).not.toContain('internal-user-id')
     expect(bindings[0]).toEqual(['eve'])
@@ -99,6 +105,8 @@ describe('public card service', () => {
     expect(sqlStatements[1]).toContain('month_usage AS')
     expect(sqlStatements[1]).toContain('source_usage AS')
     expect(sqlStatements[1]).toContain('model_usage AS')
+    expect(sqlStatements[1]).toContain("source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')")
+    expect(sqlStatements[1]).toContain("'costAvailable'")
     expect(sqlStatements[1]).toContain('effective_daily_usage_summary.usage_date >= params.month_start')
     expect(sqlStatements[1]).toContain("effective_daily_usage_summary.usage_date < date(params.month_start, '+1 month')")
     expect(sqlStatements[1]).not.toContain('CASE WHEN daily_usage_summary.usage_date')

@@ -799,7 +799,8 @@ describe('usage summary cache integration', () => {
             '2026-06-02T10:00:00.000Z'
           );
       `,
-      `.read ${quoteSqlitePath(join(migrationsDir, '0025_antigravity_costs_unavailable.sql'))}`
+      `.read ${quoteSqlitePath(join(migrationsDir, '0025_antigravity_costs_unavailable.sql'))}`,
+      `.read ${quoteSqlitePath(join(migrationsDir, '0027_daily_report_model_sources.sql'))}`
     ].join('\n'))
     const db = createSqliteD1(dbPath)
 
@@ -855,6 +856,19 @@ describe('usage summary cache integration', () => {
     )
     await expectScalar(
       db,
+      `SELECT COUNT(*) AS value
+       FROM daily_report_history, json_each(top_models, '$[0].sourceSplit') AS source_item
+       WHERE daily_report_history.id = 'drr_agy_costs'
+         AND json_extract(source_item.value, '$.source') = 'antigravity-cli'`,
+      1
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[1].sourceSplit[0].source') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
+      'codex'
+    )
+    await expectScalar(
+      db,
       "SELECT cost_usd AS value FROM daily_report_history WHERE id = 'drr_codex_costs'",
       1.25
     )
@@ -872,6 +886,11 @@ describe('usage summary cache integration', () => {
       db,
       "SELECT json_extract(top_models, '$[0].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
       18.25
+    )
+    await expectScalar(
+      db,
+      "SELECT json_type(top_models, '$[0].sourceSplit') AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
+      null
     )
   })
 

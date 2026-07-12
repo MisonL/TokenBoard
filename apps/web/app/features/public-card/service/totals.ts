@@ -138,7 +138,11 @@ function modelBreakdownCte() {
             model,
             COALESCE(SUM(total_tokens), 0) as total_tokens,
             COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read,
-            COALESCE(SUM(cost_usd), 0) as cost_usd
+            COALESCE(SUM(cost_usd), 0) as cost_usd,
+            MIN(CASE
+              WHEN source IN ('antigravity-cli', 'antigravity', 'antigravity-ide') THEN 0
+              ELSE 1
+            END) as cost_available
           FROM month_usage
           GROUP BY model
         )`
@@ -172,14 +176,16 @@ function publicBreakdownSelect(includeBreakdown: boolean, includeSourceSplit: bo
               'model', ordered_models.model,
               'totalTokens', ordered_models.total_tokens,
               'totalTokensWithoutCacheRead', ordered_models.total_tokens_without_cache_read,
-              'costUsd', ordered_models.cost_usd
+              'costUsd', ordered_models.cost_usd,
+              'costAvailable', ordered_models.cost_available
             )), '[]')
             FROM (
               SELECT
                 model,
                 total_tokens,
                 total_tokens_without_cache_read,
-                cost_usd
+                cost_usd,
+                cost_available
               FROM model_usage
               ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
               LIMIT 5
@@ -206,14 +212,16 @@ function publicBreakdownSelect(includeBreakdown: boolean, includeSourceSplit: bo
               'model', ordered_models.model,
               'totalTokens', ordered_models.total_tokens,
               'totalTokensWithoutCacheRead', ordered_models.total_tokens_without_cache_read,
-              'costUsd', ordered_models.cost_usd
+              'costUsd', ordered_models.cost_usd,
+              'costAvailable', ordered_models.cost_available
             )), '[]')
             FROM (
               SELECT
                 model,
                 total_tokens,
                 total_tokens_without_cache_read,
-                cost_usd
+                cost_usd,
+                cost_available
               FROM model_usage
               ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC
               LIMIT 5

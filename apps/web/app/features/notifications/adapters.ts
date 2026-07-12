@@ -1,5 +1,11 @@
 import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metrics'
-import { formatCostWithAvailability, formatSource, formatSourceCostNote } from '../usage/source-format'
+import { formatUsd } from '../../lib/money'
+import {
+  formatCostWithAvailability,
+  formatSource,
+  formatSourceCostNote,
+  hasUnavailableCostSource
+} from '../usage/source-format'
 import type { WebhookProvider } from './schema'
 
 const wecomMarkdownMaxBytes = 4096
@@ -336,7 +342,10 @@ function formatModelCost(
   item: DailyTokenReport['topModels'][number],
   report: DailyTokenReport
 ) {
-  return formatCostWithAvailability(item.costUsd, item.sourceSplit ?? report.sourceSplit)
+  if (item.sourceSplit) return formatCostWithAvailability(item.costUsd, item.sourceSplit)
+  return hasUnavailableCostSource(report.sourceSplit)
+    ? `${formatUsd(item.costUsd)} (费用可用性未知)`
+    : formatUsd(item.costUsd)
 }
 
 function formatSourceCostSuffix(source: string) {

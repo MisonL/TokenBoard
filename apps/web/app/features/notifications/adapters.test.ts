@@ -52,7 +52,11 @@ describe('notification adapters', () => {
       ],
       topModels: [
         ...report.topModels,
-        { model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300, totalTokensWithoutCacheRead: 260, costUsd: 0 }
+        {
+          model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300,
+          totalTokensWithoutCacheRead: 260, costUsd: 0,
+          sourceSplit: [{ source: 'antigravity-cli' }]
+        }
       ]
     })
 
@@ -70,7 +74,11 @@ describe('notification adapters', () => {
         { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
       ],
       topModels: [
-        { model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300, totalTokensWithoutCacheRead: 260, costUsd: 0 }
+        {
+          model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300,
+          totalTokensWithoutCacheRead: 260, costUsd: 0,
+          sourceSplit: [{ source: 'antigravity-cli' }]
+        }
       ]
     }
     const wecomText = formatWeComDailyReport(antigravityReport)
@@ -118,6 +126,20 @@ describe('notification adapters', () => {
     expect(text).toContain('Gemini 3.5 Flash (Medium)：260 token，缓存率 13%，$0.00 (Antigravity CLI 费用不可用)')
     expect(wecomText).toContain('**gpt-5**：620 token / <font color="warning">$0.80</font>')
     expect(dingtalkText).toContain('**gpt\\-5**：620 token / $0.80')
+  })
+
+  test('marks legacy model cost availability as unknown instead of using report-wide sources', () => {
+    const text = formatDailyReport({
+      ...report,
+      sourceSplit: [
+        ...report.sourceSplit,
+        { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
+      ],
+      topModels: [{ ...report.topModels[0], sourceSplit: undefined }]
+    })
+
+    expect(text).toContain('gpt-5：620 token，缓存率 23%，$0.80 (费用可用性未知)')
+    expect(text).not.toContain('gpt-5：620 token，缓存率 23%，$0.80 (Antigravity')
   })
 
   test('falls back to the public leaderboards when no shared report URL exists', () => {
