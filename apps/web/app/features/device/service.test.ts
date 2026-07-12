@@ -1558,8 +1558,7 @@ describe('device management', () => {
     ])
   })
 
-  test('preserves the original token rotation error when cleanup fails', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+  test('reports both token rotation and cleanup errors when compensation fails', async () => {
     const db = createRotateTokenDb({
       batchResults: [
         { meta: { changes: 1 } },
@@ -1570,17 +1569,15 @@ describe('device management', () => {
       failCleanupRun: true
     })
 
-    try {
-      await expect(
-        rotateUploadToken(db, { userId: 'user_1', uploadTokenId: 'ut_old' }, rotateDeps())
-      ).rejects.toMatchObject({
-        code: 'NOT_FOUND',
-        message: 'Previous upload token is no longer current'
-      })
-      expect(consoleError).toHaveBeenCalledWith('TokenBoard token rotation cleanup failed: cleanup failed')
-    } finally {
-      consoleError.mockRestore()
-    }
+    await expect(
+      rotateUploadToken(db, { userId: 'user_1', uploadTokenId: 'ut_old' }, rotateDeps())
+    ).rejects.toMatchObject({
+      message: 'Token rotation failed and cleanup also failed',
+      errors: [
+        expect.objectContaining({ message: 'Previous upload token is no longer current' }),
+        expect.objectContaining({ message: 'cleanup failed' })
+      ]
+    })
   })
 
   test('rejects blank device names from forms', () => {

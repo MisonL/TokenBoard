@@ -828,7 +828,7 @@ export async function rotateUploadToken(
         nextInstallClaimHash: installClaimHash,
         auditId,
         now
-      })
+      }, error)
     }
     throw error
   }
@@ -844,12 +844,16 @@ export async function rotateUploadToken(
 
 async function cleanupFailedRotationAfterError(
   db: D1Database,
-  input: Parameters<typeof cleanupFailedRotation>[1]
+  input: Parameters<typeof cleanupFailedRotation>[1],
+  rotationError: unknown
 ) {
   try {
     await cleanupFailedRotation(db, input)
   } catch (cleanupError) {
-    console.error(`TokenBoard token rotation cleanup failed: ${errorMessage(cleanupError)}`)
+    throw new AggregateError(
+      [rotationError, cleanupError],
+      'Token rotation failed and cleanup also failed'
+    )
   }
 }
 
@@ -1109,10 +1113,6 @@ function mayHaveChanged(result: D1Result<unknown> | undefined) {
   if (result?.meta?.changes === undefined) return true
   const changes = Number(result.meta.changes)
   return !Number.isFinite(changes) || changes > 0
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 async function findUploadTokenForUser(db: D1Database, userId: string, uploadTokenId: string) {
