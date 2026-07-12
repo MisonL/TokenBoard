@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes } from 'node:crypto'
+import { mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
 
@@ -24,6 +24,11 @@ export type CursorState = {
   files: Record<string, CursorEntry>
 }
 
+const cursorLockRetryMs = 25
+const cursorLockTimeoutMs = 30_000
+const cursorLockStaleMs = 30_000
+const cursorLockHeartbeatMs = 5_000
+
 export async function readCursor(cursorPath: string, source: UsageSource): Promise<CursorState> {
   const empty: CursorState = { version: 1, source, files: {} }
   try {
@@ -47,10 +52,104 @@ function isMissingFileError(error: unknown) {
 
 export async function writeCursor(cursorPath: string, cursor: CursorState) {
   await mkdir(dirname(cursorPath), { recursive: true })
-  const tempPath = `${cursorPath}.tmp`
-  await writeFile(tempPath, `${JSON.stringify(cursor, null, 2)}\n`, { mode: 0o600 })
-  await rename(tempPath, cursorPath)
+  const tempPath = `${cursorPath}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
+  try {
+    await writeFile(tempPath, `${JSON.stringify(cursor, null, 2)}\n`, { mode: 0o600 })
+    await rename(tempPath, cursorPath)
+  } catch (error) {
+    await rm(tempPath, { force: true })
+    throw error
+  }
 }
+
+export async function withCursorLock<T>(cursorPath: string, callback: () => Promise<T>) {
+  await mkdir(dirname(cursorPath), { recursive: true })
+  const lockPath = `${cursorPath}.lock`
+  const owner = { pid: process.pid, token: randomBytes(16).toString('hex') }
+  await acquireCursorLock(lockPath, owner)
+  const heartbeat = setInterval(() => {
+    void refreshCursorLock(lockPath, owner)
+  }, cursorLockHeartbeatMs)
+  heartbeat.unref()
+  try {
+    return await callback()
+  } finally {
+    clearInterval(heartbeat)
+    await releaseCursorLock(lockPath, owner)
+  }
+}
+
+async function acquireCursorLock(lockPath: string, owner: CursorLockOwner) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < cursorLockTimeoutMs) {
+    try {
+      const handle = await open(lockPath, 'wx', 0o600)
+      try {
+        await handle.writeFile(JSON.stringify(owner))
+      } finally {
+        await handle.close()
+      }
+      return
+    } catch (error) {
+      if (!isFileExistsError(error)) throw error
+      await recoverStaleCursorLock(lockPath)
+      await delay(cursorLockRetryMs)
+    }
+  }
+  throw new Error(`Timed out waiting for cursor lock: ${lockPath}`)
+}
+
+async function recoverStaleCursorLock(lockPath: string) {
+  const lockStat = await stat(lockPath).catch(() => null)
+  if (!lockStat || Date.now() - lockStat.mtimeMs < cursorLockStaleMs) return
+  const owner = await readCursorLockOwner(lockPath)
+  if (owner && !await sameCursorLockOwner(lockPath, owner)) return
+  await rm(lockPath, { force: true })
+}
+
+async function refreshCursorLock(lockPath: string, owner: CursorLockOwner) {
+  if (!await sameCursorLockOwner(lockPath, owner)) return
+  const now = new Date()
+  await utimes(lockPath, now, now).catch(() => undefined)
+}
+
+async function releaseCursorLock(lockPath: string, owner: CursorLockOwner) {
+  if (!await fileExists(lockPath)) return
+  if (!await sameCursorLockOwner(lockPath, owner)) {
+    throw new Error(`Cursor lock ownership changed: ${lockPath}`)
+  }
+  await rm(lockPath, { force: true })
+}
+
+async function fileExists(path: string) {
+  return stat(path).then(() => true).catch(() => false)
+}
+
+async function sameCursorLockOwner(lockPath: string, expected: CursorLockOwner) {
+  const current = await readCursorLockOwner(lockPath)
+  return current?.pid === expected.pid && current.token === expected.token
+}
+
+async function readCursorLockOwner(lockPath: string): Promise<CursorLockOwner | null> {
+  try {
+    const value = JSON.parse(await readFile(lockPath, 'utf8')) as Partial<CursorLockOwner>
+    if (!Number.isSafeInteger(value.pid) || Number(value.pid) <= 0) return null
+    if (typeof value.token !== 'string' || !value.token) return null
+    return { pid: Number(value.pid), token: value.token }
+  } catch {
+    return null
+  }
+}
+
+function isFileExistsError(error: unknown) {
+  return error instanceof Error && 'code' in error && error.code === 'EEXIST'
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+type CursorLockOwner = { pid: number; token: string }
 
 export function stripCollectedAt(snapshot: UsageSnapshot): CursorSnapshot {
   return {

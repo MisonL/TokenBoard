@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { usageSnapshotSchema, type UsageSnapshot } from '@tokenboard/usage-core'
+import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { formatDate } from './session-jsonl-parser-utils'
 import {
   readCursor,
@@ -211,7 +211,7 @@ function buildSnapshot(input: {
     }
   }
 
-  return usageSnapshotSchema.parse({
+  return {
     source,
     usageDate,
     timezone: input.timezone,
@@ -224,7 +224,7 @@ function buildSnapshot(input: {
     costUsd: 0,
     sessionCount: sessionEntry ? 0 : 1,
     collectedAt: input.collectedAt
-  })
+  } satisfies UsageSnapshot
 }
 
 function findExistingEventKey(

@@ -3,6 +3,7 @@ import type { UsageSnapshot } from '@tokenboard/usage-core'
 import {
   cursorFileName,
   readCursor,
+  withCursorLock,
   writeCursor
 } from './session-cursor-store'
 import { mergeSnapshots } from './session-cursor'
@@ -84,6 +85,18 @@ export async function collectAntigravityGuiUsage(
   const collectedAt = options.collectedAt ?? new Date().toISOString()
   const stateDir = options.stateDir ?? readStateDir()
   const cursorPath = join(stateDir, cursorFileName(options.source, options.cursorScope))
+  return withCursorLock(cursorPath, () => collectAntigravityGuiUsageLocked({
+    options, timezone, collectedAt, cursorPath
+  }))
+}
+
+async function collectAntigravityGuiUsageLocked(input: {
+  options: CollectAntigravityGuiUsageOptions
+  timezone: string
+  collectedAt: string
+  cursorPath: string
+}) {
+  const { options, timezone, collectedAt, cursorPath } = input
   const cursor = await readCursor(cursorPath, options.source)
   const snapshots: UsageSnapshot[] = []
   const emittedKeys = new Set<string>()

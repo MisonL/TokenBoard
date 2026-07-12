@@ -12,6 +12,7 @@ import {
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
+import { withCursorLock } from './providers/session-cursor-store'
 import { uploadSnapshots } from './upload'
 
 type CliCommand = 'preview' | 'sync' | 'warm-hooks'
@@ -48,6 +49,7 @@ type CliDeps = {
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
+  withCursorLock?: typeof withCursorLock
 }
 
 const defaultDeps: CliDeps = {
@@ -60,16 +62,23 @@ const defaultDeps: CliDeps = {
   collectAntigravityIdeUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
-  warmHookCursorHighWater
+  warmHookCursorHighWater,
+  withCursorLock
 }
 
 export async function runCollectorCli(
   args: string[],
   env: CliEnv = process.env,
   deps: CliDeps = defaultDeps
-) {
+): Promise<number> {
   try {
     const options = parseArgs(args, env)
+    if (deps.withCursorLock && env.TOKENBOARD_COLLECTOR_LOCK_HELD !== '1') {
+      return await deps.withCursorLock(
+        join(resolveStateDir(env), 'collector-run'),
+        () => runCollectorCli(args, { ...env, TOKENBOARD_COLLECTOR_LOCK_HELD: '1' }, deps)
+      )
+    }
     const startedAtMs = Date.now()
 
     if (options.command === 'warm-hooks') {

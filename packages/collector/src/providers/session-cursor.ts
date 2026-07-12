@@ -8,6 +8,7 @@ import {
   cursorFileName,
   readCursor,
   stripCollectedAt,
+  withCursorLock,
   writeCursor,
   type CursorEntry,
   type CursorSnapshot,
@@ -201,16 +202,16 @@ export async function clearPendingUploadCursors(input: {
   cursorScope?: string
 }) {
   const cursorPath = join(input.stateDir, cursorFileName(input.source, input.cursorScope))
-  const cursor = await readCursor(cursorPath, input.source)
-  let changed = false
-  for (const entry of Object.values(cursor.files)) {
-    if (!entry.pendingUpload) continue
-    entry.pendingUpload = false
-    changed = true
-  }
-  if (changed) {
-    await writeCursor(cursorPath, cursor)
-  }
+  await withCursorLock(cursorPath, async () => {
+    const cursor = await readCursor(cursorPath, input.source)
+    let changed = false
+    for (const entry of Object.values(cursor.files)) {
+      if (!entry.pendingUpload) continue
+      entry.pendingUpload = false
+      changed = true
+    }
+    if (changed) await writeCursor(cursorPath, cursor)
+  })
 }
 
 export async function warmHookCursorHighWater(input: {
@@ -220,13 +221,13 @@ export async function warmHookCursorHighWater(input: {
   highWaterMs: number
 }) {
   const cursorPath = join(input.stateDir, cursorFileName(input.source))
-  const cursor = await readCursor(cursorPath, input.source)
-  const highWaterMs = Math.max(cursor.lastScanHighWaterMs ?? 0, input.highWaterMs)
-
-  if (highWaterMs !== cursor.lastScanHighWaterMs) {
+  await withCursorLock(cursorPath, async () => {
+    const cursor = await readCursor(cursorPath, input.source)
+    const highWaterMs = Math.max(cursor.lastScanHighWaterMs ?? 0, input.highWaterMs)
+    if (highWaterMs === cursor.lastScanHighWaterMs) return
     cursor.lastScanHighWaterMs = highWaterMs
     await writeCursor(cursorPath, cursor)
-  }
+  })
 }
 
 export function mergeSnapshots(snapshots: UsageSnapshot[]) {

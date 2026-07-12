@@ -5,6 +5,7 @@ export const antigravityUsageSources = ['antigravity-cli', 'antigravity', 'antig
 export const usageSourceSchema = z.enum(usageSources)
 export const maxUsageTimezoneLength = 80
 export const maxUsageModelNameLength = 160
+const validTimezoneCache = new Map<string, boolean>()
 
 export const usageTimezoneSchema = z
   .string()
@@ -79,11 +80,15 @@ export function isValidTimezone(value: unknown): value is string {
 
   const timezone = value.trim()
   if (!timezone || timezone !== value || timezone.length > maxUsageTimezoneLength) return false
+  const cached = validTimezoneCache.get(timezone)
+  if (cached !== undefined) return cached
 
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date(0))
+    validTimezoneCache.set(timezone, true)
     return true
   } catch (_) {
+    validTimezoneCache.set(timezone, false)
     return false
   }
 }

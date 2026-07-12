@@ -276,6 +276,50 @@ describe('runCollectorCli', () => {
     expect(acks).toEqual(['/state:codex'])
   })
 
+  test('holds the collector run lock through collection, upload, and acknowledgement', async () => {
+    const events: string[] = []
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_HOOK_MODE: '1',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        withCursorLock: async (path, callback) => {
+          events.push(`lock:${path}`)
+          const value = await callback()
+          events.push('unlock')
+          return value
+        },
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => {
+          events.push('collect')
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          events.push('upload')
+          return { upserted: 1 }
+        },
+        clearPendingUploadCursors: async () => {
+          events.push('ack')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(events).toEqual([
+      'lock:/state/collector-run',
+      'collect',
+      'upload',
+      'ack',
+      'unlock'
+    ])
+  })
+
   test('acks hook cursor in configured config dir when state dir is unset', async () => {
     const acks: string[] = []
 

@@ -1,5 +1,7 @@
 export type UnknownRecord = Record<string, unknown>
 
+const dateFormatterByTimezone = new Map<string, Intl.DateTimeFormat>()
+
 export function readTimestamp(record: UnknownRecord) {
   const value = readString(record, ['timestamp', 'createdAt', 'created_at'])
   if (!value) return null
@@ -39,12 +41,7 @@ export function readRecord(value: unknown): UnknownRecord | null {
 export function formatDate(date: Date, timezone: string) {
   let parts: Intl.DateTimeFormatPart[]
   try {
-    parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).formatToParts(date)
+    parts = dateFormatter(timezone).formatToParts(date)
   } catch (error) {
     if (error instanceof RangeError) {
       throw new Error(`Invalid timezone for session JSONL formatDate: ${timezone}`)
@@ -55,4 +52,17 @@ export function formatDate(date: Date, timezone: string) {
     parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value])
   )
   return `${values.year}-${values.month}-${values.day}`
+}
+
+function dateFormatter(timezone: string) {
+  const existing = dateFormatterByTimezone.get(timezone)
+  if (existing) return existing
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  })
+  dateFormatterByTimezone.set(timezone, formatter)
+  return formatter
 }

@@ -3,10 +3,11 @@ import { open, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import type { UsageSnapshot } from '@tokenboard/usage-core'
+import { usageSnapshotSchema, type UsageSnapshot } from '@tokenboard/usage-core'
 import {
   cursorFileName,
   readCursor,
+  withCursorLock,
   writeCursor
 } from './session-cursor-store'
 import { mergeSnapshots } from './session-cursor'
@@ -47,9 +48,21 @@ export async function collectAntigravityCliUsage(
   const collectedAt = options.collectedAt ?? new Date().toISOString()
   const stateDir = options.stateDir ?? readStateDir()
   const eventPath = options.eventPath ?? process.env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_LOG ?? join(stateDir, statuslineFileName)
-  const eventStats = await readEventStats(eventPath)
-
   const cursorPath = join(stateDir, cursorFileName(source, options.cursorScope))
+  return withCursorLock(cursorPath, () => collectAntigravityCliUsageLocked({
+    options, timezone, collectedAt, eventPath, cursorPath
+  }))
+}
+
+async function collectAntigravityCliUsageLocked(input: {
+  options: CollectAntigravityCliUsageOptions
+  timezone: string
+  collectedAt: string
+  eventPath: string
+  cursorPath: string
+}) {
+  const { options, timezone, collectedAt, eventPath, cursorPath } = input
+  const eventStats = await readEventStats(eventPath)
   const cursor = await readCursor(cursorPath, source)
   const emittedKeys = new Set<string>()
   const snapshots: UsageSnapshot[] = []
@@ -80,8 +93,9 @@ export async function collectAntigravityCliUsage(
   })
 
   pushCompleteCliCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
+  const merged = mergeSnapshots(snapshots).map((snapshot) => usageSnapshotSchema.parse(snapshot))
   await writeCursor(cursorPath, cursor)
-  return mergeSnapshots(snapshots)
+  return merged
 }
 
 async function readEventStats(eventPath: string) {
