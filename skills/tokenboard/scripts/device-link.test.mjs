@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import test from 'node:test'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { deviceLinkPath, deviceLinkStatus, readDeviceLink, writeDeviceLink } from './device-link.mjs'
 
 test('writes device-link.json with private file mode', () => {
@@ -122,3 +126,50 @@ test('preserves and selects device links by server origin', () => {
     installClaim: 'claim-private'
   })
 })
+
+test('preserves all server links across concurrent writers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-device-link-concurrent-'))
+  try {
+    const script = [
+      "import { writeDeviceLink } from './device-link.mjs'",
+      'writeDeviceLink(JSON.parse(process.env.TOKENBOARD_DEVICE_LINK), { configDir: process.env.TOKENBOARD_DEVICE_ROOT })'
+    ].join('\n')
+    const writers = Array.from({ length: 12 }, (_, index) => spawn(process.execPath, [
+      '--input-type=module',
+      '-e',
+      script
+    ], {
+      cwd: new URL('.', import.meta.url),
+      env: {
+        ...process.env,
+        TOKENBOARD_DEVICE_ROOT: root,
+        TOKENBOARD_DEVICE_LINK: JSON.stringify({
+          serverOrigin: `https://server-${index}.example.com`,
+          deviceId: `dev_${index}`,
+          installationId: `inst_${index}`,
+          installClaim: `claim_${index}`
+        })
+      },
+      stdio: ['ignore', 'ignore', 'pipe']
+    }))
+    const errors = await Promise.all(writers.map((writer) => collectExit(writer)))
+    assert.deepEqual(errors, Array(12).fill(''))
+
+    const raw = JSON.parse(await readFile(join(root, 'device-link.json'), 'utf8'))
+    assert.equal(Object.keys(raw.servers).length, 12)
+    for (let index = 0; index < 12; index += 1) {
+      assert.equal(raw.servers[`https://server-${index}.example.com`].installClaim, `claim_${index}`)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+function collectExit(child) {
+  return new Promise((resolve, reject) => {
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (status) => resolve(status === 0 ? '' : stderr || `exit ${status}`))
+  })
+}

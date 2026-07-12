@@ -1,8 +1,35 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { join } from 'node:path'
 import { configDir } from './config.mjs'
+import { isProcessAlive } from './process-liveness.mjs'
 
 const deviceLinkStoreVersion = 2
+const lockRetryDelayMs = 20
+const lockWaitTimeoutMs = 2_000
+const malformedLockGraceMs = 500
+const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
+const sleepState = new Int32Array(new SharedArrayBuffer(4))
+const defaultFs = {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+}
 
 export function deviceLinkPath(root = configDir()) {
   return join(root, 'device-link.json')
@@ -11,13 +38,16 @@ export function deviceLinkPath(root = configDir()) {
 export function writeDeviceLink(link, options = {}) {
   const root = options.configDir || configDir()
   const path = options.path || deviceLinkPath(root)
-  const fs = options.fs || { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync }
+  const fs = options.fs || defaultFs
   const normalized = normalizeDeviceLink(link)
-  const store = readDeviceLinkStore(path, fs)
-  store.servers[normalized.serverOrigin] = storedDeviceLink(normalized)
   fs.mkdirSync(root, { recursive: true })
-  fs.writeFileSync(path, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 })
-  fs.chmodSync?.(path, 0o600)
+  const update = () => {
+    const store = readDeviceLinkStore(path, fs)
+    store.servers[normalized.serverOrigin] = storedDeviceLink(normalized)
+    writeDeviceLinkStore(path, store, fs)
+  }
+  if (options.fs) update()
+  else withDeviceLinkLock(path, update)
   return path
 }
 
@@ -70,6 +100,112 @@ function readDeviceLinkStore(path, fs) {
     return { version: deviceLinkStoreVersion, servers: {} }
   }
   return normalizeDeviceLinkStore(JSON.parse(fs.readFileSync(path, 'utf8')))
+}
+
+function writeDeviceLinkStore(path, store, fs) {
+  const content = `${JSON.stringify(store, null, 2)}\n`
+  if (!fs.renameSync || !fs.rmSync) {
+    fs.writeFileSync(path, content, { mode: 0o600 })
+    fs.chmodSync?.(path, 0o600)
+    return
+  }
+  const tempPath = `${path}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
+  try {
+    fs.writeFileSync(tempPath, content, { mode: 0o600 })
+    fs.renameSync(tempPath, path)
+    fs.chmodSync?.(path, 0o600)
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true })
+    throw error
+  }
+}
+
+function withDeviceLinkLock(path, callback) {
+  const lockPath = `${path}.lock`
+  const owner = acquireDeviceLinkLock(lockPath)
+  try {
+    return callback()
+  } finally {
+    releaseDeviceLinkLock(lockPath, owner)
+  }
+}
+
+function acquireDeviceLinkLock(lockPath) {
+  for (let attempt = 0; attempt < lockRetryCount; attempt += 1) {
+    const owner = { pid: process.pid, token: randomBytes(16).toString('hex') }
+    let file = null
+    let created = false
+    try {
+      file = openSync(lockPath, 'wx', 0o600)
+      created = true
+      try {
+        writeFileSync(file, JSON.stringify(owner))
+      } finally {
+        closeSync(file)
+        file = null
+      }
+      return owner
+    } catch (error) {
+      if (file !== null) closeSync(file)
+      if (!isLockExistsError(error)) {
+        if (created) rmSync(lockPath, { force: true })
+        throw error
+      }
+      recoverDeviceLinkLock(lockPath)
+      sleep(lockRetryDelayMs)
+    }
+  }
+  throw new Error('Timed out waiting for TokenBoard device link lock')
+}
+
+function releaseDeviceLinkLock(lockPath, owner) {
+  if (!sameDeviceLinkLockOwner(lockPath, owner)) {
+    throw new Error('TokenBoard device link lock ownership changed')
+  }
+  rmSync(lockPath, { force: true })
+}
+
+function recoverDeviceLinkLock(lockPath) {
+  const owner = readDeviceLinkLockOwner(lockPath)
+  if (!owner) {
+    if (readLockAgeMs(lockPath) < malformedLockGraceMs) return
+    rmSync(lockPath, { force: true })
+    return
+  }
+  if (isProcessAlive(owner.pid)) return
+  if (sameDeviceLinkLockOwner(lockPath, owner)) rmSync(lockPath, { force: true })
+}
+
+function readDeviceLinkLockOwner(lockPath) {
+  try {
+    const owner = JSON.parse(readFileSync(lockPath, 'utf8'))
+    if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0) return null
+    if (typeof owner.token !== 'string' || !owner.token) return null
+    return owner
+  } catch {
+    return null
+  }
+}
+
+function sameDeviceLinkLockOwner(lockPath, expected) {
+  const current = readDeviceLinkLockOwner(lockPath)
+  return current?.pid === expected.pid && current.token === expected.token
+}
+
+function readLockAgeMs(lockPath) {
+  try {
+    return Math.max(0, Date.now() - statSync(lockPath).mtimeMs)
+  } catch {
+    return 0
+  }
+}
+
+function isLockExistsError(error) {
+  return error?.code === 'EEXIST'
+}
+
+function sleep(milliseconds) {
+  Atomics.wait(sleepState, 0, 0, milliseconds)
 }
 
 function normalizeDeviceLinkStore(value) {
