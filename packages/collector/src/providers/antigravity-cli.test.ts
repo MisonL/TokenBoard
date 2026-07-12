@@ -1291,6 +1291,11 @@ describe('collectAntigravityCliUsage', () => {
       await writeFile(looseDatePath, `${JSON.stringify(event({ capturedAt: 'June 23, 2026 10:00:00' }))}\n`)
       await expect(collectAntigravityCliUsage({ stateDir: root, eventPath: looseDatePath, readDbUsageEvents: emptyDbUsage }))
         .rejects.toThrow('capturedAt must be an ISO datetime')
+
+      const nullCaptureIdPath = join(root, 'null-capture-id.jsonl')
+      await writeEvents(nullCaptureIdPath, [event({ captureId: null as unknown as string })])
+      await expect(collectAntigravityCliUsage({ stateDir: root, eventPath: nullCaptureIdPath, readDbUsageEvents: emptyDbUsage }))
+        .resolves.toEqual([expect.objectContaining({ totalTokens: 12 })])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
