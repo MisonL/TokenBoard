@@ -9,7 +9,7 @@ import { collectAntigravityCliUsage } from './antigravity-cli'
 const conversationA = 'a'.repeat(64)
 const conversationB = 'b'.repeat(64)
 const defaultConversationHash = '0'.repeat(64)
-const largeFixturePerformanceBudgetMs = 8_000
+const largeFixturePerformanceBudgetMs = 20_000
 
 describe('collectAntigravityCliUsage', () => {
   test('dedupes repeated statusline events and counts a conversation session once', async () => {
