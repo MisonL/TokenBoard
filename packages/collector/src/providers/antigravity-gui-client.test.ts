@@ -314,7 +314,7 @@ describe('listAntigravityCascades', () => {
     }
     let foundMiddle = false
 
-    for (let run = 0; run < 4; run += 1) {
+    for (let run = 0; run < 6; run += 1) {
       statCount = 0
       const cascades = await listAntigravityCascades({
         source: 'antigravity',
@@ -329,6 +329,50 @@ describe('listAntigravityCascades', () => {
 
     expect(Object.keys(scanState.files)).toHaveLength(200)
     expect(foundMiddle).toBe(true)
+  })
+
+  test('refreshes known cascades while unseen files fill the discovery budget', async () => {
+    const scanState: AntigravityFileScanState = { nextSequence: 0, files: {} }
+    const knownId = cascadeId(0)
+    let includeUnseen = false
+    const statPaths: string[] = []
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        yield { name: `${knownId}.pb`, isFile: () => true }
+        if (!includeUnseen) return
+        for (let index = 1; index <= 100; index += 1) {
+          yield { name: `${cascadeId(index)}.pb`, isFile: () => true }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        const index = Number(id?.slice(-12) ?? 0)
+        return { mtimeMs: id === knownId && includeUnseen ? 10_000 : index, size: 20 }
+      }
+    }
+
+    await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-refresh-cascades',
+      limit: 2,
+      fileSystem,
+      scanState
+    })
+    includeUnseen = true
+    statPaths.length = 0
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-refresh-cascades',
+      limit: 2,
+      fileSystem,
+      scanState
+    })
+
+    expect(statPaths).toContain(`/tmp/tokenboard-antigravity-refresh-cascades/${knownId}.pb`)
+    expect(cascades[0]?.id).toBe(knownId)
   })
 
   test('fails visibly instead of truncating directories beyond the safety bound', async () => {

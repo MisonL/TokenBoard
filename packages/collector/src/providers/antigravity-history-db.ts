@@ -10,6 +10,7 @@ import {
   listAntigravityDirectoryFileNames,
   markAntigravityFileScanned,
   pruneAntigravityFileScanState,
+  readAntigravityFileScanEntry,
   removeAntigravityFileScanEntry,
   selectAntigravityFileScanIds,
   type AntigravityDirectoryEntry,
@@ -153,18 +154,33 @@ async function listDbFiles(input: {
   }
   const candidates = ids
     .map((id) => {
-      const entry = scanState.files[hash(id)]
+      const entry = readAntigravityFileScanEntry(scanState, id)
       return entry ? { filePath: join(input.conversationDir, `${id}.db`), mtimeMs: entry.mtimeMs, size: entry.size } : null
     })
     .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => candidate !== null)
   const sorted = sortDbCandidates(candidates)
   const unread = sorted.filter((candidate) => !hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
   const processed = sorted.filter((candidate) => hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
-  return [...unread, ...processed].slice(0, input.maxDbFiles)
+  return selectDbReadCandidates(unread, processed, input.maxDbFiles, checkedSequence)
 }
 
 function sortDbCandidates(candidates: Array<{ filePath: string; mtimeMs: number; size: number }>) {
   return candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath))
+}
+
+function selectDbReadCandidates<T>(unread: T[], processed: T[], limit: number, sequence: number) {
+  if (unread.length === 0) return processed.slice(0, limit)
+  if (processed.length === 0) return unread.slice(0, limit)
+  if (limit === 1) return sequence % 2 === 0 ? unread.slice(0, 1) : processed.slice(0, 1)
+
+  let unreadCapacity = Math.min(unread.length, Math.ceil(limit / 2))
+  let processedCapacity = Math.min(processed.length, limit - unreadCapacity)
+  let remaining = limit - unreadCapacity - processedCapacity
+  const extraUnread = Math.min(unread.length - unreadCapacity, remaining)
+  unreadCapacity += extraUnread
+  remaining -= extraUnread
+  processedCapacity += Math.min(processed.length - processedCapacity, remaining)
+  return [...unread.slice(0, unreadCapacity), ...processed.slice(0, processedCapacity)]
 }
 
 function hasDbRowCursor(filePath: string, lastSeenRowIndexByCascadeHash: Map<string, number>) {

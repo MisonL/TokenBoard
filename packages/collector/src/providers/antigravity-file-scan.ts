@@ -52,18 +52,33 @@ export function selectAntigravityFileScanIds(
   limit: number
 ) {
   if (limit === Number.POSITIVE_INFINITY) return [...ids]
-  const unseen = ids.filter((id) => !state.files[antigravityFileScanKey(id)])
-  const selected = selectFromBothEnds(unseen, limit)
-  if (selected.length === limit) return selected
-  const selectedIds = new Set(selected)
-  const known = ids
-    .filter((id) => !selectedIds.has(id) && state.files[antigravityFileScanKey(id)])
-    .sort((left, right) => {
-      const leftEntry = state.files[antigravityFileScanKey(left)]
-      const rightEntry = state.files[antigravityFileScanKey(right)]
-      return leftEntry.checkedSequence - rightEntry.checkedSequence || left.localeCompare(right)
-    })
-  return [...selected, ...known.slice(0, limit - selected.length)]
+  const capacity = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0
+  if (capacity === 0) return []
+  const candidates = Array.from(new Set(ids), (id) => ({
+    id,
+    entry: state.files[antigravityFileScanKey(id)]
+  }))
+  const unseen = candidates.filter((candidate) => !candidate.entry).map((candidate) => candidate.id)
+  const known = candidates.filter((candidate): candidate is KnownScanCandidate => Boolean(candidate.entry))
+  if (unseen.length === 0) return selectKnownScanIds(known, capacity)
+  if (known.length === 0) return selectFromBothEnds(unseen, capacity)
+  if (capacity === 1) {
+    return state.nextSequence % 2 === 0
+      ? selectKnownScanIds(known, 1)
+      : selectFromBothEnds(unseen, 1)
+  }
+
+  let discoveryCapacity = Math.min(unseen.length, Math.ceil(capacity / 2))
+  let refreshCapacity = Math.min(known.length, capacity - discoveryCapacity)
+  let remaining = capacity - discoveryCapacity - refreshCapacity
+  const extraDiscovery = Math.min(unseen.length - discoveryCapacity, remaining)
+  discoveryCapacity += extraDiscovery
+  remaining -= extraDiscovery
+  refreshCapacity += Math.min(known.length - refreshCapacity, remaining)
+  return [
+    ...selectFromBothEnds(unseen, discoveryCapacity),
+    ...selectKnownScanIds(known, refreshCapacity)
+  ]
 }
 
 export function markAntigravityFileScanned(
@@ -111,6 +126,27 @@ function selectFromBothEnds(ids: string[], limit: number) {
     }
   }
   return selected
+}
+
+type KnownScanCandidate = {
+  id: string
+  entry: AntigravityFileScanEntry
+}
+
+function selectKnownScanIds(candidates: KnownScanCandidate[], limit: number) {
+  if (candidates.length <= limit) return candidates.map((candidate) => candidate.id)
+  const hotLimit = Math.floor(limit / 2)
+  const hot = [...candidates]
+    .sort((left, right) => right.entry.mtimeMs - left.entry.mtimeMs ||
+      right.entry.size - left.entry.size || left.id.localeCompare(right.id))
+    .slice(0, hotLimit)
+  const hotIds = new Set(hot.map((candidate) => candidate.id))
+  const stale = [...candidates]
+    .sort((left, right) => left.entry.checkedSequence - right.entry.checkedSequence ||
+      left.id.localeCompare(right.id))
+    .filter((candidate) => !hotIds.has(candidate.id))
+    .slice(0, limit - hot.length)
+  return [...hot, ...stale].map((candidate) => candidate.id)
 }
 
 function antigravityFileScanKey(id: string) {

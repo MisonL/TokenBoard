@@ -241,6 +241,45 @@ describe('readAntigravityDbUsageEvents', () => {
     }
   })
 
+  test('reserves read capacity for processed databases while unread files remain', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-read-fairness-'))
+    try {
+      const dir = join(root, 'conversations')
+      const sqliteBin = join(root, 'sqlite3-read-fairness.sh')
+      const callsPath = join(root, 'calls.txt')
+      const unreadOldId = cascadeId(1)
+      const unreadNewId = cascadeId(2)
+      const processedId = cascadeId(3)
+      await mkdir(dir, { recursive: true })
+      for (const id of [unreadOldId, unreadNewId, processedId]) {
+        await writeFile(join(dir, `${id}.db`), '')
+      }
+      await writeFile(sqliteBin, [
+        '#!/bin/sh',
+        `printf '%s\n' "$2" >> ${JSON.stringify(callsPath)}`,
+        'printf ""'
+      ].join('\n'))
+      await chmod(sqliteBin, 0o755)
+
+      await readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        sqliteBin,
+        maxDbFiles: 2,
+        lastSeenRowIndexByCascadeHash: new Map([[hash(processedId), 0]]),
+        statFile: async (filePath) => ({
+          mtimeMs: Number(basename(filePath, '.db').slice(-12))
+        })
+      })
+
+      expect((await readFile(callsPath, 'utf8')).trim().split('\n')).toEqual([
+        join(dir, `${unreadNewId}.db`),
+        join(dir, `${processedId}.db`)
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('bounds db metadata stats while selecting recent files from a large directory', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-bounded-stat-'))
     try {
@@ -295,7 +334,7 @@ describe('readAntigravityDbUsageEvents', () => {
       ].join('\n'))
       await chmod(sqliteBin, 0o755)
 
-      for (let run = 0; run < 13; run += 1) {
+      for (let run = 0; run < 24; run += 1) {
         let statCount = 0
         await readAntigravityDbUsageEvents({
           conversationDir: '/tmp/tokenboard-antigravity-rotating-databases',
