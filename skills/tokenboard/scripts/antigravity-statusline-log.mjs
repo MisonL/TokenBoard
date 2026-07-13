@@ -14,7 +14,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { isProcessAlive, supportsReliableSignalZero } from './process-liveness.mjs'
+import { probeProcessLiveness, supportsReliableSignalZero } from './process-liveness.mjs'
 
 export { supportsReliableSignalZero } from './process-liveness.mjs'
 
@@ -23,7 +23,6 @@ const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const orphanLockGraceMs = 500
 const lockMaxLeaseMs = 120_000
-const lockRetryCount = Math.ceil(lockWaitTimeoutMs / lockRetryDelayMs) + 1
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
 export function appendBoundedStatuslineEvent(filePath, value, maxBytes) {
@@ -116,7 +115,8 @@ function readFileSize(filePath) {
 }
 
 function acquireLock(lockPath) {
-  for (let attempt = 0; attempt < lockRetryCount; attempt += 1) {
+  const deadline = Date.now() + lockWaitTimeoutMs
+  while (Date.now() < deadline) {
     try {
       mkdirSync(lockPath, { mode: 0o700 })
       const identity = readLockIdentity(lockPath)
@@ -170,7 +170,8 @@ function recoverOrphanedLock(lockPath) {
     removeLockWithIdentity(lockPath, identity)
     return
   }
-  if (isProcessAlive(pid) && ageMs < lockMaxLeaseMs) return
+  const liveness = probeProcessLiveness(pid)
+  if (liveness === 'unknown' || (liveness === 'alive' && ageMs < lockMaxLeaseMs)) return
   removeLockWithIdentity(lockPath, identity)
 }
 

@@ -3,6 +3,10 @@ import { spawnSync } from 'node:child_process'
 const tasklistTimeoutMs = 2_000
 
 export function isProcessAlive(pid, options = {}) {
+  return probeProcessLiveness(pid, options) !== 'dead'
+}
+
+export function probeProcessLiveness(pid, options = {}) {
   const platform = options.platform || process.platform
   const nodeVersion = options.nodeVersion || process.versions.node
   if (platform === 'win32' && !supportsReliableSignalZero(platform, nodeVersion)) {
@@ -12,9 +16,10 @@ export function isProcessAlive(pid, options = {}) {
   const kill = options.kill || process.kill.bind(process)
   try {
     kill(pid, 0)
-    return true
+    return 'alive'
   } catch (error) {
-    return error?.code === 'EPERM'
+    if (error?.code === 'EPERM') return 'alive'
+    return 'dead'
   }
 }
 
@@ -37,6 +42,6 @@ function isWindowsProcessAlive(pid, runTasklist) {
     windowsHide: true,
     timeout: tasklistTimeoutMs
   })
-  if (result.error || result.status !== 0) return true
-  return tasklistContainsPid(result.stdout, pid)
+  if (result.error || result.status !== 0) return 'unknown'
+  return tasklistContainsPid(result.stdout, pid) ? 'alive' : 'dead'
 }

@@ -10,7 +10,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { join } from 'node:path'
-import { isProcessAlive } from './process-liveness.mjs'
+import { probeProcessLiveness } from './process-liveness.mjs'
 
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
@@ -87,7 +87,8 @@ function recoverCredentialsLock(lockPath) {
     removeCredentialsLock(lockPath, identity)
     return
   }
-  if (isProcessAlive(owner.pid) && ageMs < lockMaxLeaseMs) return
+  const liveness = probeProcessLiveness(owner.pid)
+  if (liveness === 'unknown' || (liveness === 'alive' && ageMs < lockMaxLeaseMs)) return
   removeCredentialsLock(lockPath, identity, owner)
 }
 

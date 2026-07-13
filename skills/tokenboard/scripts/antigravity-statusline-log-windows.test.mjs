@@ -47,7 +47,7 @@ test('statusline log recovers a lock when legacy Windows reports the pid missing
     const liveness = (await readFile(livenessPath, 'utf8'))
       .replace("const platform = options.platform || process.platform", "const platform = 'win32'")
       .replace("const nodeVersion = options.nodeVersion || process.versions.node", "const nodeVersion = '22.12.0'")
-      .replace('return isWindowsProcessAlive(pid, runTasklist)', 'return false')
+      .replace('return isWindowsProcessAlive(pid, runTasklist)', "return 'dead'")
     await writeFile(modulePath, source)
     await writeFile(join(root, 'process-liveness.mjs'), liveness)
 
@@ -76,7 +76,7 @@ test('statusline log keeps an expired lock when legacy Windows liveness is posit
     const liveness = (await readFile(livenessPath, 'utf8'))
       .replace("const platform = options.platform || process.platform", "const platform = 'win32'")
       .replace("const nodeVersion = options.nodeVersion || process.versions.node", "const nodeVersion = '22.12.0'")
-      .replace('return isWindowsProcessAlive(pid, runTasklist)', 'return true')
+      .replace('return isWindowsProcessAlive(pid, runTasklist)', "return 'alive'")
     await writeFile(modulePath, source)
     await writeFile(join(root, 'process-liveness.mjs'), liveness)
 
@@ -87,6 +87,41 @@ test('statusline log keeps an expired lock when legacy Windows liveness is posit
     const expiredAt = new Date(Date.now() - 60_000)
     await utimes(lockPath, expiredAt, expiredAt)
     const module = await import(`${pathToFileURL(modulePath).href}?windows-live-test`)
+
+    assert.throws(
+      () => module.appendBoundedStatuslineEvent(logPath, { value: 'not-written' }, 1024),
+      /Timed out waiting for Antigravity statusline log lock/
+    )
+    assert.equal(await readFile(join(lockPath, 'pid'), 'utf8'), String(process.pid))
+    await assert.rejects(stat(logPath), { code: 'ENOENT' })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline log never evicts an old lock when legacy Windows liveness is unknown', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-windows-unknown-'))
+  try {
+    const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
+    const livenessPath = fileURLToPath(new URL('./process-liveness.mjs', import.meta.url))
+    const modulePath = join(root, 'antigravity-statusline-log.mjs')
+    const source = (await readFile(sourcePath, 'utf8'))
+      .replace(/const lockWaitTimeoutMs = [^\n]+/, 'const lockWaitTimeoutMs = 100')
+      .replace(/const lockMaxLeaseMs = [^\n]+/, 'const lockMaxLeaseMs = 20')
+    const liveness = (await readFile(livenessPath, 'utf8'))
+      .replace("const platform = options.platform || process.platform", "const platform = 'win32'")
+      .replace("const nodeVersion = options.nodeVersion || process.versions.node", "const nodeVersion = '22.12.0'")
+      .replace('const runTasklist = options.runTasklist || spawnSync', "const runTasklist = () => ({ error: new Error('timed out') })")
+    await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), liveness)
+
+    const logPath = join(root, 'events.jsonl')
+    const lockPath = `${logPath}.lock`
+    await mkdir(lockPath)
+    await writeFile(join(lockPath, 'pid'), String(process.pid))
+    const expiredAt = new Date(Date.now() - 60_000)
+    await utimes(lockPath, expiredAt, expiredAt)
+    const module = await import(`${pathToFileURL(modulePath).href}?windows-unknown-test`)
 
     assert.throws(
       () => module.appendBoundedStatuslineEvent(logPath, { value: 'not-written' }, 1024),
