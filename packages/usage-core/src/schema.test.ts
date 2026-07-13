@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'vitest'
-import { usageSnapshotSchema, usageSourceSchema, type UsageSnapshot } from './schema'
+import { describe, expect, test, vi } from 'vitest'
+import { isValidTimezone, usageSnapshotSchema, usageSourceSchema, type UsageSnapshot } from './schema'
 
 const baseSnapshot: UsageSnapshot = {
   source: 'codex',
@@ -51,6 +51,18 @@ describe('usage snapshot schema', () => {
         timezone: 'Mars/Base'
       })
     ).toThrow()
+  })
+
+  test('does not retain attacker-controlled invalid timezone keys', () => {
+    const formatter = Intl.DateTimeFormat
+    const constructor = vi.spyOn(Intl, 'DateTimeFormat')
+      .mockImplementation(function (...args) { return new formatter(...args) })
+
+    expect(isValidTimezone('Invalid/NegativeCacheProbe')).toBe(false)
+    expect(isValidTimezone('Invalid/NegativeCacheProbe')).toBe(false)
+    expect(constructor).toHaveBeenCalledTimes(2)
+
+    constructor.mockRestore()
   })
 
   test('rejects oversized timezone and model fields', () => {
