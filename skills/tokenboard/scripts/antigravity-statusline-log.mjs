@@ -22,7 +22,6 @@ const logSchemaVersion = 'antigravity-statusline-log/v1'
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const orphanLockGraceMs = 500
-const lockMaxLeaseMs = 120_000
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
 export function appendBoundedStatuslineEvent(filePath, value, maxBytes) {
@@ -117,27 +116,21 @@ function readFileSize(filePath) {
 function acquireLock(lockPath) {
   const deadline = Date.now() + lockWaitTimeoutMs
   while (Date.now() < deadline) {
+    const pendingPath = `${lockPath}.pending-${process.pid}-${randomBytes(8).toString('hex')}`
     try {
-      mkdirSync(lockPath, { mode: 0o700 })
-      const identity = readLockIdentity(lockPath)
-      writeLockOwner(lockPath, identity)
+      mkdirSync(pendingPath, { mode: 0o700 })
+      writeFileSync(join(pendingPath, 'pid'), String(process.pid), { flag: 'wx', mode: 0o600 })
+      const identity = readLockIdentity(pendingPath)
+      renameSync(pendingPath, lockPath)
       return { lockPath, identity }
     } catch (error) {
-      if (!isLockExistsError(error)) throw error
+      rmSync(pendingPath, { recursive: true, force: true })
+      if (!isLockExistsError(error, lockPath)) throw error
       recoverOrphanedLock(lockPath)
       sleep(lockRetryDelayMs)
     }
   }
   throw new Error('Timed out waiting for Antigravity statusline log lock')
-}
-
-function writeLockOwner(lockPath, identity) {
-  try {
-    writeFileSync(join(lockPath, 'pid'), String(process.pid), { flag: 'wx', mode: 0o600 })
-  } catch (error) {
-    if (!isLockExistsError(error)) removeLockWithIdentity(lockPath, identity)
-    throw error
-  }
 }
 
 function releaseLock(lease) {
@@ -148,15 +141,13 @@ function releaseLock(lease) {
   if (pid !== process.pid) {
     throw new Error('Antigravity statusline log lock owner changed')
   }
-  try {
-    rmSync(lease.lockPath, { recursive: true, force: true })
-  } catch (error) {
-    if (existsSync(lease.lockPath)) throw error
-  }
+  removeLockWithIdentity(lease.lockPath, lease.identity)
 }
 
-function isLockExistsError(error) {
-  return error && typeof error === 'object' && error.code === 'EEXIST'
+function isLockExistsError(error, lockPath) {
+  if (!error || typeof error !== 'object') return false
+  if (error.code === 'EEXIST' || error.code === 'ENOTEMPTY') return true
+  return error.code === 'EPERM' && existsSync(lockPath)
 }
 
 function recoverOrphanedLock(lockPath) {
@@ -171,7 +162,7 @@ function recoverOrphanedLock(lockPath) {
     return
   }
   const liveness = probeProcessLiveness(pid)
-  if (liveness === 'unknown' || (liveness === 'alive' && ageMs < lockMaxLeaseMs)) return
+  if (liveness !== 'dead') return
   removeLockWithIdentity(lockPath, identity)
 }
 

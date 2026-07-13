@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile as writeRawFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
@@ -45,6 +45,20 @@ describe('session cursor store concurrency', () => {
         })
         throw new Error('callback failed')
       })).rejects.toThrow('callback failed')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects a cursor write after lock ownership is lost', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-lock-fence-'))
+    const cursorPath = join(root, 'codex-cursor.json')
+    try {
+      await expect(withCursorLock(cursorPath, async () => {
+        await writeRawFile(`${cursorPath}.lock`, JSON.stringify({ pid: process.pid, token: 'replacement' }))
+        await writeCursor(cursorPath, { version: 1, source: 'codex', files: {} })
+      })).rejects.toThrow('Cursor lock ownership changed before write')
+      await expect(readFile(cursorPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

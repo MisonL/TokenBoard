@@ -153,6 +153,30 @@ test('preserves and selects device links by server origin', () => {
   })
 })
 
+test('rejects unsupported device-link store versions without overwriting them', () => {
+  const path = '/home/user/.tokenboard/device-link.json'
+  const futureStore = `${JSON.stringify({ version: 3, servers: {} })}\n`
+  const files = new Map([[path, futureStore]])
+  const fs = {
+    mkdirSync() {},
+    writeFileSync(filePath, value) { files.set(filePath, value) },
+    chmodSync() {},
+    existsSync(filePath) { return files.has(filePath) },
+    readFileSync(filePath) { return files.get(filePath) }
+  }
+
+  assert.throws(
+    () => writeDeviceLink({
+      serverOrigin: 'https://tokenboard.example',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'claim-new'
+    }, { configDir: '/home/user/.tokenboard', path, fs }),
+    /unsupported store version 3/
+  )
+  assert.equal(files.get(path), futureStore)
+})
+
 test('preserves all server links across concurrent writers', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-device-link-concurrent-'))
   try {
@@ -191,7 +215,7 @@ test('preserves all server links across concurrent writers', async () => {
   }
 })
 
-test('recovers an abandoned device-link lock after its maximum lease when the pid was reused', async () => {
+test('does not reclaim an old device-link lock while its owner pid is alive', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-device-link-reused-pid-'))
   const lockPath = join(root, 'device-link.json.lock')
   try {
@@ -199,14 +223,16 @@ test('recovers an abandoned device-link lock after its maximum lease when the pi
     const expiredAt = new Date(Date.now() - 120_000)
     await utimes(lockPath, expiredAt, expiredAt)
 
-    writeDeviceLink({
+    assert.throws(() => writeDeviceLink({
       serverOrigin: 'https://tokenboard.example',
       deviceId: 'dev_1',
       installationId: 'inst_1',
       installClaim: 'claim-new'
-    }, { configDir: root })
-
-    assert.equal(readDeviceLink({ configDir: root }).installClaim, 'claim-new')
+    }, { configDir: root }), /Timed out waiting for TokenBoard credentials lock/)
+    assert.deepEqual(JSON.parse(await readFile(lockPath, 'utf8')), {
+      pid: process.pid,
+      token: 'stale-owner'
+    })
   } finally {
     await rm(root, { recursive: true, force: true })
   }

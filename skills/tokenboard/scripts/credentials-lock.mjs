@@ -1,9 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import {
-  closeSync,
   linkSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -16,8 +14,8 @@ import { probeProcessLiveness } from './process-liveness.mjs'
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const malformedLockGraceMs = 500
-const lockMaxLeaseMs = 120_000
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
+let activeLease = null
 
 export function credentialsLockPath(root) {
   return join(root, 'device-link.json.lock')
@@ -27,6 +25,8 @@ export function withCredentialsLock(root, callback) {
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const lockPath = credentialsLockPath(root)
   const owner = acquireCredentialsLock(lockPath)
+  const previousLease = activeLease
+  activeLease = { root, lockPath, owner }
   let callbackFailed = false
   try {
     return callback()
@@ -34,6 +34,7 @@ export function withCredentialsLock(root, callback) {
     callbackFailed = true
     throw error
   } finally {
+    activeLease = previousLease
     try {
       releaseCredentialsLock(lockPath, owner)
     } catch (error) {
@@ -46,24 +47,20 @@ function acquireCredentialsLock(lockPath) {
   const deadline = Date.now() + lockWaitTimeoutMs
   while (Date.now() < deadline) {
     const owner = { pid: process.pid, token: randomBytes(16).toString('hex') }
-    let file = null
-    let created = false
+    const pendingPath = `${lockPath}.pending-${process.pid}-${owner.token}`
     try {
-      file = openSync(lockPath, 'wx', 0o600)
-      created = true
+      writeFileSync(pendingPath, JSON.stringify(owner), { flag: 'wx', mode: 0o600 })
+      linkSync(pendingPath, lockPath)
       try {
-        writeFileSync(file, JSON.stringify(owner))
-      } finally {
-        closeSync(file)
-        file = null
+        rmSync(pendingPath, { force: true })
+      } catch (error) {
+        releaseCredentialsLock(lockPath, owner)
+        throw new Error('TokenBoard credentials lock pending file could not be removed', { cause: error })
       }
       return owner
     } catch (error) {
-      if (file !== null) closeSync(file)
-      if (!isFileExistsError(error)) {
-        if (created) rmSync(lockPath, { force: true })
-        throw error
-      }
+      rmSync(pendingPath, { force: true })
+      if (!isFileExistsError(error)) throw error
       recoverCredentialsLock(lockPath)
       sleep(lockRetryDelayMs)
     }
@@ -90,7 +87,7 @@ function recoverCredentialsLock(lockPath) {
     return
   }
   const liveness = probeProcessLiveness(owner.pid)
-  if (liveness === 'unknown' || (liveness === 'alive' && ageMs < lockMaxLeaseMs)) return
+  if (liveness !== 'dead') return
   removeCredentialsLock(lockPath, identity, owner)
 }
 
@@ -117,12 +114,18 @@ export function restoreCredentialsLock(lockPath, quarantinePath) {
     linkSync(quarantinePath, lockPath)
   } catch (error) {
     if (isFileExistsError(error)) {
-      rmSync(quarantinePath, { force: true })
-      return
+      throw new Error('TokenBoard replacement credentials lock could not be restored because another owner exists', { cause: error })
     }
     throw new Error('TokenBoard replacement credentials lock could not be restored', { cause: error })
   }
   rmSync(quarantinePath, { force: true })
+}
+
+export function assertCredentialsLockOwnership(root) {
+  if (!activeLease || activeLease.root !== root) return
+  if (!sameLockOwner(activeLease.lockPath, activeLease.owner)) {
+    throw new Error('TokenBoard credentials lock ownership changed before write')
+  }
 }
 
 function readLockOwner(lockPath) {

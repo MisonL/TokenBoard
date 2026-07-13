@@ -10,7 +10,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { configDir } from './config.mjs'
-import { withCredentialsLock } from './credentials-lock.mjs'
+import { assertCredentialsLockOwnership, withCredentialsLock } from './credentials-lock.mjs'
 import { readCanonicalDeviceLink, syncDeviceLinkToConfig } from './device-link-config.mjs'
 
 const deviceLinkStoreVersion = 2
@@ -38,7 +38,7 @@ export function writeDeviceLink(link, options = {}) {
     syncDeviceLinkToConfig(normalized, root, { ...options, lockHeld: true })
     const store = readDeviceLinkStore(path, fs)
     store.servers[normalized.serverOrigin] = storedDeviceLink(normalized)
-    writeDeviceLinkStore(path, store, fs)
+    writeDeviceLinkStore(path, store, fs, root)
   }
   if (options.fs || options.lockHeld) update()
   else withCredentialsLock(root, update)
@@ -99,7 +99,7 @@ function readDeviceLinkStore(path, fs) {
   return normalizeDeviceLinkStore(JSON.parse(fs.readFileSync(path, 'utf8')))
 }
 
-function writeDeviceLinkStore(path, store, fs) {
+function writeDeviceLinkStore(path, store, fs, root) {
   const content = `${JSON.stringify(store, null, 2)}\n`
   if (!fs.renameSync || !fs.rmSync) {
     fs.writeFileSync(path, content, { mode: 0o600 })
@@ -109,6 +109,7 @@ function writeDeviceLinkStore(path, store, fs) {
   const tempPath = `${path}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
     fs.writeFileSync(tempPath, content, { mode: 0o600 })
+    assertCredentialsLockOwnership(root)
     fs.renameSync(tempPath, path)
     fs.chmodSync?.(path, 0o600)
   } catch (error) {
@@ -118,12 +119,15 @@ function writeDeviceLinkStore(path, store, fs) {
 }
 
 function normalizeDeviceLinkStore(value) {
-  if (value?.version !== deviceLinkStoreVersion) {
+  if (value?.version === 1) {
     const legacy = normalizeDeviceLink(value)
     return {
       version: deviceLinkStoreVersion,
       servers: { [legacy.serverOrigin]: storedDeviceLink(legacy) }
     }
+  }
+  if (value?.version !== deviceLinkStoreVersion) {
+    throw new Error(`Invalid TokenBoard device link: unsupported store version ${String(value?.version)}`)
   }
   if (!value.servers || typeof value.servers !== 'object' || Array.isArray(value.servers)) {
     throw new Error('Invalid TokenBoard device link: expected servers object')

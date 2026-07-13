@@ -103,10 +103,14 @@ export async function listAntigravityCascades(input: {
       if (input.includeCascade && !input.includeCascade(cascade)) continue
       pushRecentCascade(cascades, cascade, limit)
     }
-    for await (const entry of entries) {
-      if (!entry.isFile()) continue
-      const id = cascadeIdFromFile(entry.name)
-      if (!id || seenIds.has(id)) continue
+    const candidateLimit = directoryCandidateLimit(limit)
+    const directoryIds = await selectDirectoryCascadeIds(
+      entries,
+      seenIds,
+      candidateLimit,
+      directoryEntryLimit(candidateLimit)
+    )
+    for (const id of directoryIds) {
       seenIds.add(id)
       const cascade = await cascadeRef(fileSystem, dir, id)
       if (!cascade) continue
@@ -129,6 +133,49 @@ export async function listAntigravityCascades(input: {
     throw new Error(`No Antigravity conversations found in ${dir}`)
   }
   return cascades
+}
+
+async function selectDirectoryCascadeIds(
+  entries: AsyncIterable<{ name: string; isFile: () => boolean }>,
+  excludedIds: ReadonlySet<string>,
+  candidateLimit: number,
+  entryLimit: number
+) {
+  const first: string[] = []
+  const last: string[] = []
+  const listedIds = new Set<string>()
+  const firstLimit = candidateLimit === Number.POSITIVE_INFINITY
+    ? candidateLimit
+    : Math.ceil(candidateLimit / 2)
+  const lastLimit = candidateLimit === Number.POSITIVE_INFINITY
+    ? 0
+    : Math.floor(candidateLimit / 2)
+  let entriesRead = 0
+  for await (const entry of entries) {
+    entriesRead += 1
+    if (entriesRead > entryLimit) break
+    if (!entry.isFile()) continue
+    const id = cascadeIdFromFile(entry.name)
+    if (!id || excludedIds.has(id) || listedIds.has(id)) continue
+    listedIds.add(id)
+    if (first.length < firstLimit) {
+      first.push(id)
+      continue
+    }
+    last.push(id)
+    if (last.length > lastLimit) last.shift()
+  }
+  return [...first, ...last]
+}
+
+function directoryCandidateLimit(limit: number) {
+  if (limit === Number.POSITIVE_INFINITY) return limit
+  return Math.max(64, limit * 20)
+}
+
+function directoryEntryLimit(candidateLimit: number) {
+  if (candidateLimit === Number.POSITIVE_INFINITY) return candidateLimit
+  return Math.max(512, candidateLimit * 4)
 }
 
 function pushRecentCascade(

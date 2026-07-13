@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { link, mkdir, open, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { link, mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
 
@@ -28,6 +29,7 @@ const cursorLockRetryMs = 25
 const cursorLockTimeoutMs = 35_000
 const cursorLockStaleMs = 30_000
 const cursorLockHeartbeatMs = 5_000
+const cursorLockContext = new AsyncLocalStorage<CursorLockLease>()
 
 export async function readCursor(cursorPath: string, source: UsageSource): Promise<CursorState> {
   const empty: CursorState = { version: 1, source, files: {} }
@@ -55,6 +57,7 @@ export async function writeCursor(cursorPath: string, cursor: CursorState) {
   const tempPath = `${cursorPath}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
     await writeFile(tempPath, `${JSON.stringify(cursor, null, 2)}\n`, { mode: 0o600 })
+    await assertCursorWriteOwnership(cursorPath)
     await rename(tempPath, cursorPath)
   } catch (error) {
     await rm(tempPath, { force: true })
@@ -73,7 +76,7 @@ export async function withCursorLock<T>(cursorPath: string, callback: () => Prom
   heartbeat.unref()
   let callbackFailed = false
   try {
-    return await callback()
+    return await cursorLockContext.run({ cursorPath, lockPath, owner }, callback)
   } catch (error) {
     callbackFailed = true
     throw error
@@ -90,18 +93,19 @@ export async function withCursorLock<T>(cursorPath: string, callback: () => Prom
 async function acquireCursorLock(lockPath: string, owner: CursorLockOwner) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < cursorLockTimeoutMs) {
-    let created = false
+    const pendingPath = `${lockPath}.pending-${process.pid}-${owner.token}`
     try {
-      const handle = await open(lockPath, 'wx', 0o600)
-      created = true
+      await writeFile(pendingPath, JSON.stringify(owner), { flag: 'wx', mode: 0o600 })
+      await link(pendingPath, lockPath)
       try {
-        await handle.writeFile(JSON.stringify(owner))
-      } finally {
-        await handle.close()
+        await rm(pendingPath, { force: true })
+      } catch (error) {
+        await releaseCursorLock(lockPath, owner)
+        throw new Error(`Cursor lock pending file could not be removed: ${pendingPath}`, { cause: error })
       }
       return
     } catch (error) {
-      if (created) await rm(lockPath, { force: true })
+      await rm(pendingPath, { force: true })
       if (!isFileExistsError(error)) throw error
       await recoverStaleCursorLock(lockPath)
       await delay(cursorLockRetryMs)
@@ -114,6 +118,7 @@ async function recoverStaleCursorLock(lockPath: string) {
   const lockStat = await stat(lockPath).catch(() => null)
   if (!lockStat || Date.now() - lockStat.mtimeMs < cursorLockStaleMs) return
   const owner = await readCursorLockOwner(lockPath)
+  if (owner && isCursorOwnerAlive(owner.pid)) return
   if (!await sameCursorLockSnapshot(lockPath, lockStat, owner)) return
   const quarantinePath = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
@@ -128,6 +133,15 @@ async function recoverStaleCursorLock(lockPath: string) {
     return
   }
   await rm(quarantinePath, { force: true })
+}
+
+function isCursorOwnerAlive(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'EPERM'
+  }
 }
 
 async function sameCursorLockSnapshot(lockPath: string, expectedStat: Awaited<ReturnType<typeof stat>>, owner: CursorLockOwner | null) {
@@ -146,7 +160,7 @@ async function restoreCursorLock(lockPath: string, quarantinePath: string) {
     await rm(quarantinePath, { force: true })
   } catch (error) {
     if (!isFileExistsError(error)) throw error
-    await rm(quarantinePath, { force: true })
+    throw new Error(`Cursor replacement lock could not be restored because another owner exists: ${lockPath}`, { cause: error })
   }
 }
 
@@ -157,20 +171,38 @@ async function refreshCursorLock(lockPath: string, owner: CursorLockOwner) {
 }
 
 async function releaseCursorLock(lockPath: string, owner: CursorLockOwner) {
-  if (!await fileExists(lockPath)) return
+  const expectedStat = await stat(lockPath).catch(() => null)
+  if (!expectedStat) return
   if (!await sameCursorLockOwner(lockPath, owner)) {
     throw new Error(`Cursor lock ownership changed: ${lockPath}`)
   }
-  await rm(lockPath, { force: true })
-}
-
-async function fileExists(path: string) {
-  return stat(path).then(() => true).catch(() => false)
+  const quarantinePath = `${lockPath}.release-${process.pid}-${randomBytes(8).toString('hex')}`
+  try {
+    await rename(lockPath, quarantinePath)
+  } catch (error) {
+    if (isMissingFileError(error)) return
+    throw error
+  }
+  const quarantinedStat = await stat(quarantinePath).catch(() => null)
+  if (!quarantinedStat || !sameFileStat(expectedStat, quarantinedStat) ||
+      !await sameCursorLockOwner(quarantinePath, owner)) {
+    await restoreCursorLock(lockPath, quarantinePath)
+    return
+  }
+  await rm(quarantinePath, { force: true })
 }
 
 async function sameCursorLockOwner(lockPath: string, expected: CursorLockOwner) {
   const current = await readCursorLockOwner(lockPath)
   return current?.pid === expected.pid && current.token === expected.token
+}
+
+async function assertCursorWriteOwnership(cursorPath: string) {
+  const lease = cursorLockContext.getStore()
+  if (!lease || lease.cursorPath !== cursorPath) return
+  if (!await sameCursorLockOwner(lease.lockPath, lease.owner)) {
+    throw new Error(`Cursor lock ownership changed before write: ${lease.lockPath}`)
+  }
 }
 
 async function readCursorLockOwner(lockPath: string): Promise<CursorLockOwner | null> {
@@ -193,6 +225,7 @@ function delay(milliseconds: number) {
 }
 
 type CursorLockOwner = { pid: number; token: string }
+type CursorLockLease = { cursorPath: string; lockPath: string; owner: CursorLockOwner }
 
 export function stripCollectedAt(snapshot: UsageSnapshot): CursorSnapshot {
   return {

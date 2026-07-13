@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import test from 'node:test'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -14,6 +14,7 @@ import {
   withServerProfile,
   writeConfig
 } from './config.mjs'
+import { credentialsLockPath, withCredentialsLock } from './credentials-lock.mjs'
 
 test('strips UTF-8 BOM before parsing config content', () => {
   const parsed = JSON.parse(stripUtf8Bom('\ufeff{"configured":true}'))
@@ -25,6 +26,23 @@ test('leaves non-BOM config content unchanged', () => {
   const config = '{"configured":true}'
 
   assert.equal(stripUtf8Bom(config), config)
+})
+
+test('rejects config replacement after credentials lock ownership is lost', () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-lock-fence-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    assert.throws(() => withCredentialsLock(directory, () => {
+      writeFileSync(credentialsLockPath(directory), JSON.stringify({ pid: process.pid, token: 'replacement' }))
+      writeConfig({ activeServer: 'https://tokenboard.example', servers: {} })
+    }), /credentials lock ownership changed before write/)
+    assert.equal(statSync(join(directory, 'config.json'), { throwIfNoEntry: false }), undefined)
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('uses bun.exe on Windows package manager commands', () => {

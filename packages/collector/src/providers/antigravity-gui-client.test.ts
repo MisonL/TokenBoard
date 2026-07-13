@@ -156,7 +156,7 @@ describe('listAntigravityCascades', () => {
     expect(statPaths.some((path) => path.includes(cascadeId(2)))).toBe(true)
   })
 
-  test('selects newest cascades from the full directory before applying the request limit', async () => {
+  test('bounds metadata stats while retaining candidates from both ends of the directory', async () => {
     const listed: string[] = []
     const statPaths: string[] = []
     const fileSystem: AntigravityCascadeFileSystem = {
@@ -188,7 +188,7 @@ describe('listAntigravityCascades', () => {
     })
 
     expect(listed).toHaveLength(500)
-    expect(statPaths).toHaveLength(1000)
+    expect(statPaths.length).toBeLessThanOrEqual(130)
     expect(cascades).toHaveLength(2)
     expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(499), cascadeId(498)])
   })
@@ -258,8 +258,38 @@ describe('listAntigravityCascades', () => {
     })
 
     expect(listed).toHaveLength(500)
+    expect(statPaths.length).toBeLessThanOrEqual(130)
     expect(cascades.map((cascade) => cascade.id)).toEqual([requiredId])
     expect(statPaths.some((path) => path.includes(requiredId))).toBe(true)
+  })
+
+  test('bounds directory enumeration for very large histories', async () => {
+    const listed: string[] = []
+    const statPaths: string[] = []
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 2_000; index += 1) {
+          const name = `${cascadeId(index)}.pb`
+          listed.push(name)
+          yield { name, isFile: () => true }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        return { mtimeMs: 1, size: 20 }
+      }
+    }
+
+    await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-bounded-cascades',
+      limit: 2,
+      fileSystem
+    })
+
+    expect(listed.length).toBeLessThanOrEqual(513)
+    expect(statPaths).toHaveLength(128)
   })
 })
 

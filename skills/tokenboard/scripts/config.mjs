@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { withCredentialsLock } from './credentials-lock.mjs'
+import { assertCredentialsLockOwnership, withCredentialsLock } from './credentials-lock.mjs'
 
 export function configDir() {
   return process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
@@ -69,6 +69,7 @@ export function writeConfig(config) {
   const tempFile = `${file}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
     writeFileSync(tempFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
+    assertCredentialsLockOwnership(configDir())
     renameSync(tempFile, file)
   } catch (error) {
     rmSync(tempFile, { force: true })
