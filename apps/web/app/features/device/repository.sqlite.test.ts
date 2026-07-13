@@ -94,6 +94,42 @@ describe('device pairing sqlite contract', () => {
     expect(readCount(dbPath, "SELECT COUNT(*) FROM upload_tokens WHERE id = 'ut_attempt'"))
       .toBe(0)
   })
+
+  test('reports an inactive reconnect target when it is revoked after pairing-code lookup', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedReconnectPairing(dbPath)
+    const repository = new D1DevicePairingRepository(db)
+    expect(await repository.findUsablePairingCode(
+      'hash:reconnect-pairing',
+      '2026-07-11T01:00:00.000Z'
+    )).not.toBeNull()
+    runSql(dbPath, `
+      UPDATE device_installations
+      SET revoked_at = '2026-07-11T01:00:01.000Z'
+      WHERE id = 'inst_old';
+    `)
+
+    await expect(repository.createUploadTokenAndInstallation({
+      pairingCodeId: 'pair_reconnect',
+      consumedAt: '2026-07-11T01:00:02.000Z',
+      uploadTokenId: 'ut_reconnect',
+      uploadTokenHash: 'hash:reconnect-upload',
+      deviceId: 'dev_old',
+      installationId: 'inst_reconnect',
+      installClaimHash: 'hash:reconnect-claim',
+      userId: 'user_1',
+      deviceName: 'Reinstalled',
+      platform: 'linux',
+      auditLogId: 'audit_reconnect',
+      auditAction: 'device.reconnect',
+      createdAt: '2026-07-11T01:00:02.000Z'
+    })).rejects.toThrow('Reconnect target is no longer active')
+
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM device_installations WHERE id = 'inst_reconnect'"))
+      .toBe(0)
+    expect(readScalar(dbPath, "SELECT consumed_at FROM pairing_codes WHERE id = 'pair_reconnect'"))
+      .toBeNull()
+  })
 })
 
 describe('device revocation sqlite contract', () => {
@@ -291,6 +327,33 @@ function seedRevocationTarget(dbPath: string) {
     ) VALUES (
       'ut_1', 'user_1', 'Workstation', 'hash:upload', 'dev_1', 'inst_1',
       '2026-07-11T00:00:00.000Z'
+    );
+  `)
+}
+
+function seedReconnectPairing(dbPath: string) {
+  runSql(dbPath, `
+    INSERT INTO users (id) VALUES ('user_1');
+    INSERT INTO devices (
+      id, user_id, name, platform, created_at, updated_at
+    ) VALUES (
+      'dev_old', 'user_1', 'Workstation', 'linux',
+      '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z'
+    );
+    INSERT INTO device_installations (
+      id, user_id, device_id, platform, install_claim_hash,
+      first_seen_at, created_at, updated_at
+    ) VALUES (
+      'inst_old', 'user_1', 'dev_old', 'linux', 'hash:old-claim',
+      '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z',
+      '2026-07-11T00:00:00.000Z'
+    );
+    INSERT INTO pairing_codes (
+      id, user_id, code_hash, pairing_type, target_device_id,
+      expires_at, created_at
+    ) VALUES (
+      'pair_reconnect', 'user_1', 'hash:reconnect-pairing', 'reconnect_device',
+      'dev_old', '2026-07-11T02:00:00.000Z', '2026-07-11T00:00:00.000Z'
     );
   `)
 }

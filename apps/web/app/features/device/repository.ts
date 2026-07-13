@@ -471,39 +471,26 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             created_at,
             updated_at
           )
-          VALUES (
-            ?,
-            (
-              SELECT source.user_id
-              FROM device_installations source
-              JOIN pairing_codes pairing
-                ON pairing.id = ?
-                AND pairing.user_id = source.user_id
-                AND pairing.pairing_type = 'reconnect_device'
-                AND pairing.target_device_id = source.device_id
-                AND pairing.consumed_at IS NULL
-                AND pairing.expires_at > ?
-              WHERE source.user_id = ?
-                AND source.device_id = ?
-                AND source.revoked_at IS NULL
-                AND (? IS NULL OR source.id = ?)
-                AND (? IS NULL OR source.install_claim_hash = ?)
-              LIMIT 1
-            ),
-            ?, ?, ?, ?, ?, ?, ?, ?
-          )
+          SELECT
+            ?, source.user_id, ?, ?, ?, ?, ?, ?, ?, ?
+          FROM device_installations source
+          JOIN pairing_codes pairing
+            ON pairing.id = ?
+            AND pairing.user_id = source.user_id
+            AND pairing.pairing_type = 'reconnect_device'
+            AND pairing.target_device_id = source.device_id
+            AND pairing.consumed_at IS NULL
+            AND pairing.expires_at > ?
+          WHERE source.user_id = ?
+            AND source.device_id = ?
+            AND source.revoked_at IS NULL
+            AND (? IS NULL OR source.id = ?)
+            AND (? IS NULL OR source.install_claim_hash = ?)
+          LIMIT 1
         `
       )
       .bind(
         input.installationId,
-        input.pairingCodeId,
-        input.consumedAt,
-        input.userId,
-        input.deviceId,
-        input.sourceInstallationId ?? null,
-        input.sourceInstallationId ?? null,
-        input.consumedInstallClaimHash ?? null,
-        input.consumedInstallClaimHash ?? null,
         input.deviceId,
         input.platform,
         input.deviceName,
@@ -511,7 +498,15 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
         input.createdAt,
         input.createdAt,
         input.createdAt,
-        input.createdAt
+        input.createdAt,
+        input.pairingCodeId,
+        input.consumedAt,
+        input.userId,
+        input.deviceId,
+        input.sourceInstallationId ?? null,
+        input.sourceInstallationId ?? null,
+        input.consumedInstallClaimHash ?? null,
+        input.consumedInstallClaimHash ?? null
       )
   }
 

@@ -478,14 +478,6 @@ describe('D1DevicePairingRepository', () => {
     ])
     expect(bindings[1]).toEqual([
       'inst_1',
-      'pair_1',
-      '2026-06-30T10:00:00.000Z',
-      'user_1',
-      'dev_old',
-      'inst_old',
-      'inst_old',
-      'hash:claim-consumed',
-      'hash:claim-consumed',
       'dev_old',
       'linux',
       'Reinstalled',
@@ -493,7 +485,15 @@ describe('D1DevicePairingRepository', () => {
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
-      '2026-06-30T10:00:00.000Z'
+      '2026-06-30T10:00:00.000Z',
+      'pair_1',
+      '2026-06-30T10:00:00.000Z',
+      'user_1',
+      'dev_old',
+      'inst_old',
+      'inst_old',
+      'hash:claim-consumed',
+      'hash:claim-consumed'
     ])
   })
 
@@ -549,7 +549,7 @@ describe('D1DevicePairingRepository', () => {
     expect(sqlStatements[0]).toContain('(? IS NULL OR source.id = ?)')
     expect(batches).toHaveLength(1)
     expect(batches[0]).toHaveLength(4)
-    expect(bindings[0]?.slice(5, 9)).toEqual([
+    expect(bindings[0]?.slice(13, 17)).toEqual([
       null,
       null,
       null,
