@@ -614,6 +614,54 @@ describe('pairDevice', () => {
     ])
   })
 
+  test('maps a reconnect pairing consumed after lookup to an API error', async () => {
+    const { repository, calls } = createRepository({
+      async findUsablePairingCode(codeHash, now) {
+        calls.push(`find:${codeHash}:${now}`)
+        return {
+          id: 'pair_1',
+          userId: 'seed-user',
+          pairingType: 'reconnect_device',
+          targetDeviceId: 'dev_old',
+          metadata: null,
+          expiresAt: '2026-04-28T10:10:00.000Z',
+          consumedAt: null
+        }
+      },
+      async createUploadTokenAndInstallation(input) {
+        calls.push(`install:${input.userId}:${input.deviceId}:${input.installationId}`)
+        throw new Error('Reconnect pairing code is no longer current')
+      }
+    })
+
+    await expect(
+      pairDevice(
+        repository,
+        {
+          pairingCode: 'dev-pairing-code',
+          deviceName: 'Reinstalled Desktop',
+          platform: 'linux',
+          timezone: 'Asia/Shanghai'
+        },
+        {
+          now: () => '2026-04-28T10:00:00.000Z',
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          randomId: () => 'install-fixture',
+          randomToken: () => 'upload-token-fixture',
+          randomInstallClaim: () => 'install-claim-fixture',
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+      message: 'Invalid or expired pairing code'
+    })
+    expect(calls).toEqual([
+      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z',
+      'install:seed-user:dev_old:inst_install-fixture'
+    ])
+  })
+
   test('maps device-link reconnect credential failures without compensation writes', async () => {
     const { repository, calls } = createRepository({
       async findUsablePairingCode(codeHash, now) {

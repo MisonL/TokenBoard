@@ -130,6 +130,48 @@ describe('device pairing sqlite contract', () => {
     expect(readScalar(dbPath, "SELECT consumed_at FROM pairing_codes WHERE id = 'pair_reconnect'"))
       .toBeNull()
   })
+
+  test('preserves a device-link claim when the pairing code is consumed after lookup', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedReconnectPairing(dbPath)
+    const repository = new D1DevicePairingRepository(db)
+    expect(await repository.findUsablePairingCode(
+      'hash:reconnect-pairing',
+      '2026-07-11T01:00:00.000Z'
+    )).not.toBeNull()
+    runSql(dbPath, `
+      UPDATE pairing_codes
+      SET consumed_at = '2026-07-11T01:00:01.000Z'
+      WHERE id = 'pair_reconnect';
+    `)
+
+    await expect(repository.createUploadTokenAndInstallation({
+      pairingCodeId: 'pair_reconnect',
+      consumedAt: '2026-07-11T01:00:02.000Z',
+      uploadTokenId: 'ut_reconnect',
+      uploadTokenHash: 'hash:reconnect-upload',
+      deviceId: 'dev_old',
+      installationId: 'inst_reconnect',
+      installClaimHash: 'hash:reconnect-claim',
+      userId: 'user_1',
+      deviceName: 'Reinstalled',
+      platform: 'linux',
+      auditLogId: 'audit_reconnect',
+      auditAction: 'device.reconnect',
+      createdAt: '2026-07-11T01:00:02.000Z',
+      sourceInstallationId: 'inst_old',
+      sourceInstallClaimHash: 'hash:old-claim',
+      consumedInstallClaimHash: 'hash:consumed-claim'
+    })).rejects.toThrow('Reconnect pairing code is no longer current')
+
+    expect(readColumn(
+      dbPath,
+      "SELECT install_claim_hash FROM device_installations WHERE id = 'inst_old'",
+      'install_claim_hash'
+    )).toBe('hash:old-claim')
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM device_installations WHERE id = 'inst_reconnect'"))
+      .toBe(0)
+  })
 })
 
 describe('device revocation sqlite contract', () => {
