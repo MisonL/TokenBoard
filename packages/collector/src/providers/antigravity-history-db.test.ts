@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { readAntigravityDbUsageEvents } from './antigravity-history-db'
+import type { AntigravityFileScanState } from './antigravity-file-scan'
 
 describe('readAntigravityDbUsageEvents', () => {
   test('fails visibly when the conversations directory is missing', async () => {
@@ -15,6 +16,23 @@ describe('readAntigravityDbUsageEvents', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  test('fails visibly instead of truncating database directories beyond the safety bound', async () => {
+    let listed = 0
+
+    await expect(readAntigravityDbUsageEvents({
+      conversationDir: '/tmp/tokenboard-antigravity-overflow-databases',
+      maxDbFiles: 2,
+      listFiles: async function * () {
+        for (let index = 0; index <= 10_000; index += 1) {
+          listed += 1
+          yield { name: `${cascadeId(index)}.db`, isFile: () => true }
+        }
+      },
+      statFile: async () => ({ mtimeMs: 1 })
+    })).rejects.toThrow('Antigravity conversations directory exceeds the 10000-entry scan limit')
+    expect(listed).toBe(10_001)
   })
 
   test('does not mark cascades as covered when no usable events are parsed', async () => {
@@ -223,7 +241,91 @@ describe('readAntigravityDbUsageEvents', () => {
     }
   })
 
-  test('skips db files that cannot be statted', async () => {
+  test('bounds db metadata stats while selecting recent files from a large directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-bounded-stat-'))
+    try {
+      const dir = join(root, 'conversations')
+      const sqliteBin = join(root, 'sqlite3-bounded-stat.sh')
+      const callsPath = join(root, 'calls.txt')
+      const scanState: AntigravityFileScanState = { nextSequence: 0, files: {} }
+      await mkdir(dir, { recursive: true })
+      for (let index = 0; index < 200; index += 1) {
+        await writeFile(join(dir, `${cascadeId(index)}.db`), '')
+      }
+      await writeFile(sqliteBin, [
+        '#!/bin/sh',
+        `printf '%s\n' "$2" >> ${JSON.stringify(callsPath)}`,
+        'printf ""'
+      ].join('\n'))
+      await chmod(sqliteBin, 0o755)
+      let statCount = 0
+
+      await readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        sqliteBin,
+        maxDbFiles: 2,
+        statFile: async (filePath) => {
+          statCount += 1
+          return { mtimeMs: Number(basename(filePath, '.db').slice(-12)) }
+        },
+        scanState
+      })
+
+      expect(statCount).toBeLessThanOrEqual(16)
+      expect((await readFile(callsPath, 'utf8')).trim().split('\n')).toEqual([
+        join(dir, `${cascadeId(199)}.db`),
+        join(dir, `${cascadeId(198)}.db`)
+      ])
+      expect(Object.keys(scanState.files)).toHaveLength(16)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rotates bounded db metadata scans until middle files are selected', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-rotating-stat-'))
+    try {
+      const sqliteBin = join(root, 'sqlite3-rotating-stat.sh')
+      const callsPath = join(root, 'calls.txt')
+      const scanState: AntigravityFileScanState = { nextSequence: 0, files: {} }
+      await writeFile(sqliteBin, [
+        '#!/bin/sh',
+        `printf '%s\n' "$2" >> ${JSON.stringify(callsPath)}`,
+        'printf ""'
+      ].join('\n'))
+      await chmod(sqliteBin, 0o755)
+
+      for (let run = 0; run < 13; run += 1) {
+        let statCount = 0
+        await readAntigravityDbUsageEvents({
+          conversationDir: '/tmp/tokenboard-antigravity-rotating-databases',
+          sqliteBin,
+          maxDbFiles: 2,
+          listFiles: async function * () {
+            for (let index = 0; index < 200; index += 1) {
+              yield { name: `${cascadeId(index)}.db`, isFile: () => true }
+            }
+          },
+          statFile: async (filePath) => {
+            statCount += 1
+            const index = Number(basename(filePath, '.db').slice(-12))
+            return { mtimeMs: index === 100 ? 10_000 : index }
+          },
+          scanState
+        })
+        expect(statCount).toBeLessThanOrEqual(16)
+      }
+
+      expect(Object.keys(scanState.files)).toHaveLength(200)
+      expect((await readFile(callsPath, 'utf8')).split('\n')).toContain(
+        join('/tmp/tokenboard-antigravity-rotating-databases', `${cascadeId(100)}.db`)
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('skips db files that disappear before stat', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-stat-race-'))
     try {
       const dir = join(root, 'conversations')
@@ -247,7 +349,9 @@ describe('readAntigravityDbUsageEvents', () => {
         conversationDir: dir,
         sqliteBin,
         statFile: async (filePath) => {
-          if (filePath === skippedDb) throw new Error('file disappeared')
+          if (filePath === skippedDb) {
+            throw Object.assign(new Error('file disappeared'), { code: 'ENOENT' })
+          }
           return { mtimeMs: filePath === keptDb ? 2000 : 1000 }
         }
       })
@@ -258,8 +362,31 @@ describe('readAntigravityDbUsageEvents', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test('fails visibly when db file metadata cannot be read', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-stat-error-'))
+    try {
+      const dir = join(root, 'conversations')
+      const cascade = cascadeId(6)
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `${cascade}.db`), '')
+
+      await expect(readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        statFile: async () => {
+          throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+        }
+      })).rejects.toThrow('permission denied')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 function hash(value: string) {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function cascadeId(index: number) {
+  return `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`
 }

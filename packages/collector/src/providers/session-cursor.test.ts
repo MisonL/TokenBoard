@@ -174,6 +174,37 @@ describe('collectChangedSessionFiles', () => {
     }
   })
 
+  test('fails visibly when Antigravity file scan state is invalid', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
+    const sessionsDir = join(root, 'sessions')
+    const cursorPath = join(root, 'codex-cursor.json')
+    try {
+      await writeFile(cursorPath, JSON.stringify({
+        version: 1,
+        source: 'codex',
+        antigravityDbFileScan: {
+          nextSequence: 1,
+          files: {
+            'raw-conversation-id': {
+              mtimeMs: 1,
+              size: 1,
+              hasDatabaseFile: false,
+              checkedSequence: 0
+            }
+          }
+        },
+        files: {}
+      }))
+      await expect(collectChangedSessionFiles({
+        source: 'codex',
+        sessionsDir,
+        cursorPath
+      })).rejects.toThrow('Invalid codex cursor file')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('fails visibly when cursor path is not readable as a file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
     const sessionsDir = join(root, 'sessions')

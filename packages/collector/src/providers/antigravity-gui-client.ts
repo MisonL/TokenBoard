@@ -6,6 +6,16 @@ import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import type { Readable } from 'node:stream'
+import {
+  beginAntigravityFileScan,
+  listAntigravityDirectoryFileNames,
+  markAntigravityFileScanned,
+  pruneAntigravityFileScanState,
+  readAntigravityFileScanEntry,
+  removeAntigravityFileScanEntry,
+  selectAntigravityFileScanIds,
+  type AntigravityFileScanState
+} from './antigravity-file-scan'
 import type { AntigravityGuiSource } from './antigravity-gui'
 
 const defaultLanguageServerPath = '/Applications/Antigravity.app/Contents/Resources/bin/language_server'
@@ -74,11 +84,14 @@ export async function listAntigravityCascades(input: {
   requiredCascadeIds?: Iterable<string>
   includeCascade?: (cascade: AntigravityCascadeRef) => boolean
   fileSystem?: AntigravityCascadeFileSystem
+  scanState?: AntigravityFileScanState
 }) {
   const dir = input.conversationDir ?? defaultConversationDir(input.source)
   const fileSystem = input.fileSystem ?? nodeCascadeFileSystem
   const limit = normalizeCascadeLimit(input.limit)
   if (limit === 0) return []
+  const scanState = input.scanState ?? { nextSequence: 0, files: {} }
+  const checkedSequence = beginAntigravityFileScan(scanState)
 
   let entries
   try {
@@ -92,29 +105,32 @@ export async function listAntigravityCascades(input: {
 
   const cascades: AntigravityCascadeRef[] = []
   const seenIds = new Set<string>()
-  let foundCascade = false
+  const requiredCascades = new Map<string, AntigravityCascadeRef>()
   try {
     for (const id of input.requiredCascadeIds ?? []) {
       if (!cascadeIdPattern.test(id) || seenIds.has(id)) continue
       seenIds.add(id)
       const cascade = await cascadeRef(fileSystem, dir, id)
       if (!cascade) continue
-      foundCascade = true
-      if (input.includeCascade && !input.includeCascade(cascade)) continue
-      pushRecentCascade(cascades, cascade, limit)
+      requiredCascades.set(id, cascade)
+      markScanEntry(scanState, cascade, checkedSequence)
     }
     const candidateLimit = directoryCandidateLimit(limit)
-    const directoryIds = await selectDirectoryCascadeIds(
-      entries,
-      seenIds,
-      candidateLimit,
-      directoryEntryLimit(candidateLimit)
-    )
-    for (const id of directoryIds) {
-      seenIds.add(id)
+    const directoryIds = await listDirectoryCascadeIds(entries, seenIds)
+    pruneAntigravityFileScanState(scanState, [...directoryIds, ...requiredCascades.keys()])
+    const scanIds = selectAntigravityFileScanIds(directoryIds, scanState, candidateLimit)
+    for (const id of scanIds) {
       const cascade = await cascadeRef(fileSystem, dir, id)
-      if (!cascade) continue
-      foundCascade = true
+      if (cascade) markScanEntry(scanState, cascade, checkedSequence)
+      else removeAntigravityFileScanEntry(scanState, id)
+    }
+    for (const id of directoryIds) {
+      const cascade = cachedCascadeRef(scanState, id)
+      if (!cascade || (input.includeCascade && !input.includeCascade(cascade))) continue
+      pushRecentCascade(cascades, cascade, limit)
+    }
+    for (const [id, cascade] of requiredCascades) {
+      if (directoryIds.includes(id)) continue
       if (input.includeCascade && !input.includeCascade(cascade)) continue
       pushRecentCascade(cascades, cascade, limit)
     }
@@ -129,43 +145,25 @@ export async function listAntigravityCascades(input: {
     return left.id.localeCompare(right.id)
   })
 
-  if (!foundCascade) {
+  if (cascades.length === 0 && Object.keys(scanState.files).length === 0) {
     throw new Error(`No Antigravity conversations found in ${dir}`)
   }
   return cascades
 }
 
-async function selectDirectoryCascadeIds(
+async function listDirectoryCascadeIds(
   entries: AsyncIterable<{ name: string; isFile: () => boolean }>,
-  excludedIds: ReadonlySet<string>,
-  candidateLimit: number,
-  entryLimit: number
+  excludedIds: ReadonlySet<string>
 ) {
-  const first: string[] = []
-  const last: string[] = []
+  const ids: string[] = []
   const listedIds = new Set<string>()
-  const firstLimit = candidateLimit === Number.POSITIVE_INFINITY
-    ? candidateLimit
-    : Math.ceil(candidateLimit / 2)
-  const lastLimit = candidateLimit === Number.POSITIVE_INFINITY
-    ? 0
-    : Math.floor(candidateLimit / 2)
-  let entriesRead = 0
-  for await (const entry of entries) {
-    entriesRead += 1
-    if (entriesRead > entryLimit) break
-    if (!entry.isFile()) continue
-    const id = cascadeIdFromFile(entry.name)
+  for (const name of await listAntigravityDirectoryFileNames(entries)) {
+    const id = cascadeIdFromFile(name)
     if (!id || excludedIds.has(id) || listedIds.has(id)) continue
     listedIds.add(id)
-    if (first.length < firstLimit) {
-      first.push(id)
-      continue
-    }
-    last.push(id)
-    if (last.length > lastLimit) last.shift()
+    ids.push(id)
   }
-  return [...first, ...last]
+  return ids
 }
 
 function directoryCandidateLimit(limit: number) {
@@ -173,9 +171,27 @@ function directoryCandidateLimit(limit: number) {
   return Math.max(64, limit * 20)
 }
 
-function directoryEntryLimit(candidateLimit: number) {
-  if (candidateLimit === Number.POSITIVE_INFINITY) return candidateLimit
-  return Math.max(512, candidateLimit * 4)
+function markScanEntry(
+  state: AntigravityFileScanState,
+  cascade: AntigravityCascadeRef,
+  checkedSequence: number
+) {
+  markAntigravityFileScanned(state, cascade.id, {
+    mtimeMs: cascade.mtimeMs,
+    size: cascade.size,
+    hasDatabaseFile: cascade.hasDatabaseFile === true
+  }, checkedSequence)
+}
+
+function cachedCascadeRef(state: AntigravityFileScanState, id: string): AntigravityCascadeRef | null {
+  const entry = readAntigravityFileScanEntry(state, id)
+  if (!entry) return null
+  return {
+    id,
+    mtimeMs: entry.mtimeMs,
+    size: entry.size,
+    hasDatabaseFile: entry.hasDatabaseFile
+  }
 }
 
 function pushRecentCascade(

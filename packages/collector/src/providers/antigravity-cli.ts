@@ -64,6 +64,7 @@ async function collectAntigravityCliUsageLocked(input: {
   const { options, timezone, collectedAt, eventPath, cursorPath } = input
   const eventStats = await readEventStats(eventPath)
   const cursor = await readCursor(cursorPath, source)
+  cursor.antigravityDbFileScan ??= { nextSequence: 0, files: {} }
   const emittedKeys = new Set<string>()
   const snapshots: UsageSnapshot[] = []
 
@@ -123,7 +124,8 @@ async function readLocalDbUsage(
   return readAntigravityDbUsageEvents({
     conversationDir: options.conversationDir ?? defaultConversationDir(),
     lastSeenRowIndexByCascadeHash,
-    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
+    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles),
+    scanState: cursor.antigravityDbFileScan
   })
 }
 

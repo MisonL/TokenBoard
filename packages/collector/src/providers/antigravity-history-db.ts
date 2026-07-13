@@ -1,10 +1,20 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readdir, stat } from 'node:fs/promises'
+import { opendir, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseAntigravityGeneratorMetadataBlobEvents } from './antigravity-history-protobuf'
+import {
+  beginAntigravityFileScan,
+  listAntigravityDirectoryFileNames,
+  markAntigravityFileScanned,
+  pruneAntigravityFileScanState,
+  removeAntigravityFileScanEntry,
+  selectAntigravityFileScanIds,
+  type AntigravityDirectoryEntry,
+  type AntigravityFileScanState
+} from './antigravity-file-scan'
 
 const execFileAsync = promisify(execFile)
 const maxSqliteOutputBytes = 128 * 1024 * 1024
@@ -12,7 +22,21 @@ const sqliteTimeoutMs = 15_000
 const defaultMaxDbFiles = 64
 const generatorMetadataRowsPageSize = 500
 const cascadeIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-type StatFile = (filePath: string) => Promise<{ mtimeMs: number }>
+type StatFile = (filePath: string) => Promise<{ mtimeMs: number; size?: number }>
+type ListFiles = (directoryPath: string) => AsyncIterable<AntigravityDirectoryEntry>
+
+const nodeListFiles: ListFiles = async function * (directoryPath) {
+  const directory = await opendir(directoryPath)
+  try {
+    while (true) {
+      const entry = await directory.read()
+      if (!entry) break
+      yield entry
+    }
+  } finally {
+    await directory.close()
+  }
+}
 
 export type AntigravityDbUsageResult = {
   cascadeIds: Set<string>
@@ -26,12 +50,16 @@ export async function readAntigravityDbUsageEvents(input: {
   lastSeenRowIndexByCascadeHash?: Map<string, number>
   maxDbFiles?: number | null
   statFile?: StatFile
+  listFiles?: ListFiles
+  scanState?: AntigravityFileScanState
 }): Promise<AntigravityDbUsageResult> {
   const dbFiles = await listDbFiles({
     conversationDir: input.conversationDir,
     maxDbFiles: normalizeMaxDbFiles(input.maxDbFiles),
     statFile: input.statFile ?? stat,
-    lastSeenRowIndexByCascadeHash: input.lastSeenRowIndexByCascadeHash ?? new Map()
+    listFiles: input.listFiles ?? nodeListFiles,
+    lastSeenRowIndexByCascadeHash: input.lastSeenRowIndexByCascadeHash ?? new Map(),
+    scanState: input.scanState
   })
   const result: AntigravityDbUsageResult = {
     cascadeIds: new Set(),
@@ -84,28 +112,59 @@ async function listDbFiles(input: {
   conversationDir: string
   maxDbFiles: number | null
   statFile: StatFile
+  listFiles: ListFiles
   lastSeenRowIndexByCascadeHash: Map<string, number>
+  scanState?: AntigravityFileScanState
 }) {
-  let entries
+  let names
   try {
-    entries = await readdir(input.conversationDir, { withFileTypes: true })
+    names = (await listAntigravityDirectoryFileNames(input.listFiles(input.conversationDir)))
+      .filter((name) => extname(name) === '.db' && cascadeIdPattern.test(basename(name, '.db')))
   } catch (error) {
     if (isMissingFileError(error)) {
       throw new Error(`Antigravity conversations directory not found: ${input.conversationDir}`)
     }
     throw error
   }
-  const candidates = (await Promise.all(entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .filter((name) => extname(name) === '.db' && cascadeIdPattern.test(basename(name, '.db')))
-    .map((name) => readDbFileCandidate(join(input.conversationDir, name), input.statFile))))
-    .filter((candidate): candidate is { filePath: string; mtimeMs: number } => candidate !== null)
-  const sorted = candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath))
-  if (input.maxDbFiles === null) return sorted
+  if (input.maxDbFiles === null) {
+    const candidates = (await Promise.all(names
+      .map((name) => readDbFileCandidate(join(input.conversationDir, name), input.statFile))))
+      .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => candidate !== null)
+    return sortDbCandidates(candidates)
+  }
+  const scanState = input.scanState ?? { nextSequence: 0, files: {} }
+  const checkedSequence = beginAntigravityFileScan(scanState)
+  const scanLimit = Math.min(512, Math.max(16, input.maxDbFiles * 8))
+  const ids = names.map((name) => basename(name, '.db'))
+  pruneAntigravityFileScanState(scanState, ids)
+  const scanIds = selectAntigravityFileScanIds(ids, scanState, scanLimit)
+  for (const id of scanIds) {
+    const filePath = join(input.conversationDir, `${id}.db`)
+    const candidate = await readDbFileCandidate(filePath, input.statFile)
+    if (!candidate) {
+      removeAntigravityFileScanEntry(scanState, id)
+      continue
+    }
+    markAntigravityFileScanned(scanState, id, {
+      mtimeMs: candidate.mtimeMs,
+      size: candidate.size,
+      hasDatabaseFile: true
+    }, checkedSequence)
+  }
+  const candidates = ids
+    .map((id) => {
+      const entry = scanState.files[hash(id)]
+      return entry ? { filePath: join(input.conversationDir, `${id}.db`), mtimeMs: entry.mtimeMs, size: entry.size } : null
+    })
+    .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => candidate !== null)
+  const sorted = sortDbCandidates(candidates)
   const unread = sorted.filter((candidate) => !hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
   const processed = sorted.filter((candidate) => hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
   return [...unread, ...processed].slice(0, input.maxDbFiles)
+}
+
+function sortDbCandidates(candidates: Array<{ filePath: string; mtimeMs: number; size: number }>) {
+  return candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath))
 }
 
 function hasDbRowCursor(filePath: string, lastSeenRowIndexByCascadeHash: Map<string, number>) {
@@ -114,9 +173,11 @@ function hasDbRowCursor(filePath: string, lastSeenRowIndexByCascadeHash: Map<str
 
 async function readDbFileCandidate(filePath: string, statFile: StatFile) {
   try {
-    return { filePath, mtimeMs: (await statFile(filePath)).mtimeMs }
-  } catch {
-    return null
+    const info = await statFile(filePath)
+    return { filePath, mtimeMs: info.mtimeMs, size: info.size ?? 0 }
+  } catch (error) {
+    if (isMissingFileError(error)) return null
+    throw error
   }
 }
 

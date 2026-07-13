@@ -3,6 +3,11 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { link, mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
+import {
+  isValidAntigravityFileScanState,
+  type AntigravityFileScanState
+} from './antigravity-file-scan'
+import { probeCursorProcessLiveness } from './cursor-process-liveness'
 
 export type CursorSnapshot = Omit<UsageSnapshot, 'collectedAt'>
 
@@ -22,6 +27,8 @@ export type CursorState = {
   lastScanHighWaterMs?: number
   lastScanOffsetBytes?: number
   lastScanGeneration?: string
+  antigravityDbFileScan?: AntigravityFileScanState
+  antigravityCascadeFileScan?: AntigravityFileScanState
   files: Record<string, CursorEntry>
 }
 
@@ -118,7 +125,7 @@ async function recoverStaleCursorLock(lockPath: string) {
   const lockStat = await stat(lockPath).catch(() => null)
   if (!lockStat || Date.now() - lockStat.mtimeMs < cursorLockStaleMs) return
   const owner = await readCursorLockOwner(lockPath)
-  if (owner && isCursorOwnerAlive(owner.pid)) return
+  if (owner && probeCursorProcessLiveness(owner.pid) !== 'dead') return
   if (!await sameCursorLockSnapshot(lockPath, lockStat, owner)) return
   const quarantinePath = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
@@ -133,15 +140,6 @@ async function recoverStaleCursorLock(lockPath: string) {
     return
   }
   await rm(quarantinePath, { force: true })
-}
-
-function isCursorOwnerAlive(pid: number) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error instanceof Error && 'code' in error && error.code === 'EPERM'
-  }
 }
 
 async function sameCursorLockSnapshot(lockPath: string, expectedStat: Awaited<ReturnType<typeof stat>>, owner: CursorLockOwner | null) {
@@ -266,6 +264,10 @@ function isValidCursor(value: unknown, source: UsageSource): value is CursorStat
     (candidate.lastScanHighWaterMs === undefined || isFiniteTimestampMs(candidate.lastScanHighWaterMs)) &&
     (candidate.lastScanOffsetBytes === undefined || isFiniteTimestampMs(candidate.lastScanOffsetBytes)) &&
     (candidate.lastScanGeneration === undefined || isValidScanGeneration(candidate.lastScanGeneration)) &&
+    (candidate.antigravityDbFileScan === undefined ||
+      isValidAntigravityFileScanState(candidate.antigravityDbFileScan)) &&
+    (candidate.antigravityCascadeFileScan === undefined ||
+      isValidAntigravityFileScanState(candidate.antigravityCascadeFileScan)) &&
     candidate.files !== null &&
     typeof candidate.files === 'object' &&
     !Array.isArray(candidate.files) &&

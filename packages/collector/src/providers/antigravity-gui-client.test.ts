@@ -9,6 +9,7 @@ import {
   listAntigravityCascades,
   type AntigravityCascadeFileSystem
 } from './antigravity-gui-client'
+import type { AntigravityFileScanState } from './antigravity-file-scan'
 
 describe('createAntigravityLanguageServerClient', () => {
   test('does not include raw response bodies in metadata HTTP errors', () => {
@@ -263,7 +264,7 @@ describe('listAntigravityCascades', () => {
     expect(statPaths.some((path) => path.includes(requiredId))).toBe(true)
   })
 
-  test('bounds directory enumeration for very large histories', async () => {
+  test('keeps metadata stats bounded without truncating newer directory entries', async () => {
     const listed: string[] = []
     const statPaths: string[] = []
     const fileSystem: AntigravityCascadeFileSystem = {
@@ -277,19 +278,78 @@ describe('listAntigravityCascades', () => {
       stat: async (path) => {
         statPaths.push(path)
         if (path.endsWith('.db')) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
-        return { mtimeMs: 1, size: 20 }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        return { mtimeMs: Number(id?.slice(-12) ?? 0), size: 20 }
       }
     }
 
-    await listAntigravityCascades({
+    const cascades = await listAntigravityCascades({
       source: 'antigravity',
       conversationDir: '/tmp/tokenboard-antigravity-bounded-cascades',
       limit: 2,
       fileSystem
     })
 
-    expect(listed.length).toBeLessThanOrEqual(513)
+    expect(listed).toHaveLength(2_000)
     expect(statPaths).toHaveLength(128)
+    expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(1_999), cascadeId(1_998)])
+  })
+
+  test('rotates bounded metadata scans until middle cascades are indexed', async () => {
+    const scanState: AntigravityFileScanState = { nextSequence: 0, files: {} }
+    let statCount = 0
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 200; index += 1) {
+          yield { name: `${cascadeId(index)}.pb`, isFile: () => true }
+        }
+      },
+      stat: async (path) => {
+        statCount += 1
+        if (path.endsWith('.db')) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        const index = Number(id?.slice(-12) ?? 0)
+        return { mtimeMs: index === 100 ? 10_000 : index, size: 20 }
+      }
+    }
+    let foundMiddle = false
+
+    for (let run = 0; run < 4; run += 1) {
+      statCount = 0
+      const cascades = await listAntigravityCascades({
+        source: 'antigravity',
+        conversationDir: '/tmp/tokenboard-antigravity-rotating-cascades',
+        limit: 2,
+        fileSystem,
+        scanState
+      })
+      expect(statCount).toBeLessThanOrEqual(128)
+      foundMiddle ||= cascades.some((cascade) => cascade.id === cascadeId(100))
+    }
+
+    expect(Object.keys(scanState.files)).toHaveLength(200)
+    expect(foundMiddle).toBe(true)
+  })
+
+  test('fails visibly instead of truncating directories beyond the safety bound', async () => {
+    let listed = 0
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index <= 10_000; index += 1) {
+          listed += 1
+          yield { name: `${cascadeId(index)}.pb`, isFile: () => true }
+        }
+      },
+      stat: async () => ({ mtimeMs: 1, size: 1 })
+    }
+
+    await expect(listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-overflow-cascades',
+      limit: 2,
+      fileSystem
+    })).rejects.toThrow('Antigravity conversations directory exceeds the 10000-entry scan limit')
+    expect(listed).toBe(10_001)
   })
 })
 

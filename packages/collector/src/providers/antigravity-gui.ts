@@ -98,6 +98,8 @@ async function collectAntigravityGuiUsageLocked(input: {
 }) {
   const { options, timezone, collectedAt, cursorPath } = input
   const cursor = await readCursor(cursorPath, options.source)
+  cursor.antigravityDbFileScan ??= { nextSequence: 0, files: {} }
+  cursor.antigravityCascadeFileScan ??= { nextSequence: 0, files: {} }
   const snapshots: UsageSnapshot[] = []
   const emittedKeys = new Set<string>()
 
@@ -296,6 +298,7 @@ async function readLanguageServerCascadeRefs(input: {
   return listAntigravityCascades({
     ...options,
     limit: input.maxCascades,
+    scanState: input.cursor.antigravityCascadeFileScan,
     requiredCascadeIds: requiredLanguageServerCascadeIds({
       cursor: input.cursor,
       localDbUsage: input.localDbUsage,
@@ -384,7 +387,8 @@ async function readLocalDbUsageOrThrow(
   return readAntigravityDbUsageEvents({
     conversationDir: options.conversationDir ?? defaultConversationDir(options.source),
     lastSeenRowIndexByCascadeHash: lastSeenDbRowIndexByCascadeHash({ cursor, source: options.source }),
-    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
+    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles),
+    scanState: cursor.antigravityDbFileScan
   })
 }
 

@@ -50,6 +50,32 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
+  test('persists hashed file scan state without raw cascade ids', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-scan-state-'))
+    const conversationDir = join(root, 'conversations')
+    const cascadeId = '11111111-1111-1111-1111-111111111111'
+    try {
+      await mkdir(conversationDir)
+      await writeFile(join(conversationDir, `${cascadeId}.pb`), 'cascade')
+      await collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        conversationDir,
+        timezone: 'UTC',
+        requestGeneratorMetadata: async () => generatorMetadataResponse()
+      })
+
+      const cursorText = await readFile(join(root, 'antigravity-cursor.json'), 'utf8')
+      expect(cursorText).not.toContain(cascadeId)
+      const cursor = JSON.parse(cursorText)
+      expect(Object.keys(cursor.antigravityCascadeFileScan.files)).toEqual([
+        expect.stringMatching(/^[a-f0-9]{64}$/)
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('retries pending Antigravity IDE snapshots until acknowledged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ide-'))
     try {
