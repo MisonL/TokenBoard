@@ -106,7 +106,7 @@ describe('daily report share route', () => {
     const response = await GET[0](pageContext('drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') as never, async () => undefined) as Response
     const html = await response.text()
 
-    expect(html).toContain('$0.00 (Antigravity CLI 费用不可用)')
+    expect(html).toContain('$0.00 (费用可用性未知)')
   })
 
   test('returns 404 for invalid report ids without touching auth or the database', async () => {
