@@ -193,6 +193,44 @@ describe('parseAntigravityGeneratorMetadataBlob', () => {
     })).toThrow('createdAt is invalid')
   })
 
+  test('rejects truncated nested timestamps instead of falling back to file mtime', () => {
+    const blob = message([
+      fieldMessage(1, message([
+        fieldMessage(4, usageMessage({
+          inputTokens: 10,
+          outputTokens: 2,
+          responseId: 'response-a'
+        })),
+        fieldMessage(9, message([
+          fieldMessage(4, Buffer.from([0x08, 0x80]))
+        ])),
+        fieldString(19, 'gemini-3-flash-c')
+      ])),
+      fieldString(4, 'execution-a')
+    ])
+
+    expect(() => parseAntigravityGeneratorMetadataBlob(blob, {
+      cascadeId: 'conversation-a',
+      rowIndex: 0,
+      fallbackCreatedAt: '2026-06-24T00:00:00.000Z'
+    })).toThrow('Truncated protobuf varint')
+  })
+
+  test.each([
+    ['an empty timestamp', fieldMessage(4, Buffer.alloc(0))],
+    ['a timestamp with the wrong wire type', fieldVarint(4, 1)],
+    ['timestamp seconds with the wrong wire type', fieldMessage(4, message([fieldString(1, 'invalid')]))],
+    ['a timestamp with nanos but no seconds', fieldMessage(4, message([fieldVarint(2, 1)]))]
+  ])('rejects %s instead of falling back to file mtime', (_name, timestampField) => {
+    const blob = metadataBlobWithTimestampField(timestampField)
+
+    expect(() => parseAntigravityGeneratorMetadataBlob(blob, {
+      cascadeId: 'conversation-a',
+      rowIndex: 0,
+      fallbackCreatedAt: '2026-06-24T00:00:00.000Z'
+    })).toThrow()
+  })
+
   test('rejects invalid timestamp nanos', () => {
     const blob = message([
       fieldMessage(1, message([
@@ -235,6 +273,21 @@ function usageMessage(input: {
     ...(input.thinkingOutputTokens ? [fieldVarint(9, input.thinkingOutputTokens)] : []),
     ...(input.responseOutputTokens ? [fieldVarint(10, input.responseOutputTokens)] : []),
     ...(input.responseId ? [fieldString(11, input.responseId)] : [])
+  ])
+}
+
+function metadataBlobWithTimestampField(timestampField: Buffer) {
+  return message([
+    fieldMessage(1, message([
+      fieldMessage(4, usageMessage({
+        inputTokens: 10,
+        outputTokens: 2,
+        responseId: 'response-a'
+      })),
+      fieldMessage(9, message([timestampField])),
+      fieldString(19, 'gemini-3-flash-c')
+    ])),
+    fieldString(4, 'execution-a')
   ])
 }
 

@@ -105,10 +105,13 @@ function readUsage(message: ProtoMessage | null): AntigravityRawUsage | null {
 }
 
 function readCreatedAt(chatModel: ProtoMessage, fallback: string | undefined) {
-  const timestamp = readNestedMessage(chatModel, [9, 4])
-  const seconds = readOptionalNumber(timestamp, 1)
-  const nanos = readOptionalNumber(timestamp, 2)
-  if (seconds !== undefined) {
+  const timestamp = readTimestamp(chatModel)
+  if (timestamp) {
+    const seconds = readTimestampNumber(timestamp, 1)
+    const nanos = readTimestampNumber(timestamp, 2)
+    if (seconds === undefined) {
+      throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
+    }
     if (nanos !== undefined && nanos >= 1_000_000_000) {
       throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
     }
@@ -120,6 +123,21 @@ function readCreatedAt(chatModel: ProtoMessage, fallback: string | undefined) {
   }
   if (fallback && Number.isFinite(Date.parse(fallback))) return fallback
   throw new Error('Invalid Antigravity generator metadata blob: createdAt is required')
+}
+
+function readTimestamp(chatModel: ProtoMessage) {
+  const startMetadata = readTimestampPathMessage(chatModel, 9)
+  return startMetadata ? readTimestampPathMessage(startMetadata, 4) : null
+}
+
+function readTimestampPathMessage(message: ProtoMessage, field: number) {
+  const fields = message.get(field)
+  if (!fields) return null
+  const value = fields.find((item): item is Extract<ProtoField, { wireType: 2 }> => item.wireType === 2)
+  if (!value) {
+    throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
+  }
+  return parseProtoMessage(value.bytes)
 }
 
 function readModel(chatModel: ProtoMessage) {
@@ -149,9 +167,13 @@ function readOptionalToken(message: ProtoMessage, field: number) {
   return Number(value.value)
 }
 
-function readOptionalNumber(message: ProtoMessage | null, field: number) {
-  const value = message?.get(field)?.find((item): item is Extract<ProtoField, { wireType: 0 }> => item.wireType === 0)
-  if (!value) return undefined
+function readTimestampNumber(message: ProtoMessage, field: number) {
+  const fields = message.get(field)
+  if (!fields) return undefined
+  const value = fields.find((item): item is Extract<ProtoField, { wireType: 0 }> => item.wireType === 0)
+  if (!value) {
+    throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
+  }
   if (value.value > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
   }
@@ -168,11 +190,7 @@ function readNestedMessage(message: ProtoMessage, path: number[]) {
 function readMessage(message: ProtoMessage, field: number) {
   const bytes = message.get(field)?.find((item): item is Extract<ProtoField, { wireType: 2 }> => item.wireType === 2)?.bytes
   if (!bytes) return null
-  try {
-    return parseProtoMessage(bytes)
-  } catch {
-    return null
-  }
+  return parseProtoMessage(bytes)
 }
 
 function readString(message: ProtoMessage, field: number) {
