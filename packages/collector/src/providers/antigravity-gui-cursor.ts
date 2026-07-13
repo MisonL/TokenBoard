@@ -12,6 +12,11 @@ import type { AntigravityGuiSource } from './antigravity-gui'
 
 type AntigravityGuiCursor = Awaited<ReturnType<typeof readCursor>>
 
+export type EmptyCascadeFrontier = {
+  mtimeMs: number
+  cascadeHash: string
+}
+
 export function pushGuiUsageEvent(input: {
   event: AntigravityUsageEvent
   cursor: AntigravityGuiCursor
@@ -70,6 +75,29 @@ export function shouldRequestCascade(input: {
 }) {
   const entry = input.cursor.files[cascadeCursorKey(input.source, input.cascade.id)]
   return !entry || entry.mtimeMs !== input.cascade.mtimeMs || entry.size !== input.cascade.size
+}
+
+export function readEmptyCascadeFrontier(input: {
+  cursor: AntigravityGuiCursor
+  source: AntigravityGuiSource
+}): EmptyCascadeFrontier | null {
+  const entry = input.cursor.files[emptyCascadeFrontierCursorKey(input.source)]
+  return entry ? { mtimeMs: entry.mtimeMs, cascadeHash: entry.sha256 } : null
+}
+
+export function markEmptyCascadeAttempted(input: {
+  cascade: AntigravityCascadeRef
+  cursor: AntigravityGuiCursor
+  source: AntigravityGuiSource
+}) {
+  const key = emptyCascadeFrontierCursorKey(input.source)
+  input.cursor.files[key] = newCursorEntry({
+    snapshots: [],
+    marker: input.cascade.id,
+    mtimeMs: input.cascade.mtimeMs,
+    pendingUpload: false,
+    size: input.cascade.size
+  })
 }
 
 export function markCascadeProcessed(input: {
@@ -211,6 +239,10 @@ function usageEventKey(event: AntigravityUsageEvent) {
 
 function cascadeCursorKey(source: AntigravityGuiSource, cascadeId: string) {
   return ['cascade', source, hash(cascadeId)].join('\0')
+}
+
+function emptyCascadeFrontierCursorKey(source: AntigravityGuiSource) {
+  return ['cascade-empty-frontier', source].join('\0')
 }
 
 function dbCascadeCursorKey(source: AntigravityGuiSource, cascadeId: string) {

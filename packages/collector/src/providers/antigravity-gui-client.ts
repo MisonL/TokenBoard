@@ -83,6 +83,7 @@ export async function listAntigravityCascades(input: {
   limit?: number
   requiredCascadeIds?: Iterable<string>
   includeCascade?: (cascade: AntigravityCascadeRef) => boolean
+  compareCascades?: (left: AntigravityCascadeRef, right: AntigravityCascadeRef) => number
   fileSystem?: AntigravityCascadeFileSystem
   scanState?: AntigravityFileScanState
 }) {
@@ -90,6 +91,7 @@ export async function listAntigravityCascades(input: {
   const fileSystem = input.fileSystem ?? nodeCascadeFileSystem
   const limit = normalizeCascadeLimit(input.limit)
   if (limit === 0) return []
+  const compareCascades = input.compareCascades ?? compareRecentCascades
   const scanState = input.scanState ?? { nextSequence: 0, files: {} }
   const checkedSequence = beginAntigravityFileScan(scanState)
 
@@ -127,12 +129,12 @@ export async function listAntigravityCascades(input: {
     for (const id of directoryIds) {
       const cascade = cachedCascadeRef(scanState, id)
       if (!cascade || (input.includeCascade && !input.includeCascade(cascade))) continue
-      pushRecentCascade(cascades, cascade, limit)
+      pushPreferredCascade(cascades, cascade, limit, compareCascades)
     }
     for (const [id, cascade] of requiredCascades) {
       if (directoryIds.includes(id)) continue
       if (input.includeCascade && !input.includeCascade(cascade)) continue
-      pushRecentCascade(cascades, cascade, limit)
+      pushPreferredCascade(cascades, cascade, limit, compareCascades)
     }
   } catch (error) {
     if (isMissingFileError(error)) {
@@ -140,10 +142,7 @@ export async function listAntigravityCascades(input: {
     }
     throw error
   }
-  cascades.sort((left, right) => {
-    if (right.mtimeMs !== left.mtimeMs) return right.mtimeMs - left.mtimeMs
-    return left.id.localeCompare(right.id)
-  })
+  cascades.sort(compareCascades)
 
   if (cascades.length === 0 && Object.keys(scanState.files).length === 0) {
     throw new Error(`No Antigravity conversations found in ${dir}`)
@@ -194,23 +193,27 @@ function cachedCascadeRef(state: AntigravityFileScanState, id: string): Antigrav
   }
 }
 
-function pushRecentCascade(
+function compareRecentCascades(left: AntigravityCascadeRef, right: AntigravityCascadeRef) {
+  if (right.mtimeMs !== left.mtimeMs) return right.mtimeMs - left.mtimeMs
+  return left.id.localeCompare(right.id)
+}
+
+function pushPreferredCascade(
   cascades: AntigravityCascadeRef[],
   cascade: AntigravityCascadeRef,
-  limit: number
+  limit: number,
+  compareCascades: (left: AntigravityCascadeRef, right: AntigravityCascadeRef) => number
 ) {
   if (limit === Number.POSITIVE_INFINITY || cascades.length < limit) {
     cascades.push(cascade)
     return
   }
-  const oldestIndex = cascades.reduce((selected, current, index) => {
-    const oldest = cascades[selected]
-    if (current.mtimeMs !== oldest.mtimeMs) return current.mtimeMs < oldest.mtimeMs ? index : selected
-    return current.id > oldest.id ? index : selected
+  const lowestPriorityIndex = cascades.reduce((selected, current, index) => {
+    const lowestPriority = cascades[selected]
+    return compareCascades(current, lowestPriority) > 0 ? index : selected
   }, 0)
-  const oldest = cascades[oldestIndex]
-  if (cascade.mtimeMs > oldest.mtimeMs || (cascade.mtimeMs === oldest.mtimeMs && cascade.id < oldest.id)) {
-    cascades[oldestIndex] = cascade
+  if (compareCascades(cascade, cascades[lowestPriorityIndex]) < 0) {
+    cascades[lowestPriorityIndex] = cascade
   }
 }
 

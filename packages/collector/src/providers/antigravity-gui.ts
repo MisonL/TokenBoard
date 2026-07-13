@@ -13,15 +13,18 @@ import {
   type AntigravityCascadeRef,
   type AntigravityGeneratorMetadataRequest
 } from './antigravity-gui-client'
-import { parseGeneratorMetadata } from './antigravity-gui-parser'
+import { hash, parseGeneratorMetadata } from './antigravity-gui-parser'
 import { readAntigravityDbUsageEvents, type AntigravityDbUsageResult } from './antigravity-history-db'
 import {
   hasDbCascadeRowsProcessed,
   lastSeenDbRowIndexByCascadeHash,
   markDbCascadeRowsProcessed,
   markCascadeProcessed,
+  markEmptyCascadeAttempted,
   pushCompleteGuiCursorSnapshots,
   pushGuiUsageEvent,
+  readEmptyCascadeFrontier,
+  type EmptyCascadeFrontier,
   shouldRequestCascade
 } from './antigravity-gui-cursor'
 import {
@@ -184,7 +187,11 @@ async function requestLanguageServerUsage(
         source: input.options.source
       })
     }
-    if (!hasUsableEvents) continue
+    if (!hasUsableEvents) {
+      markEmptyCascadeAttempted({ cascade, cursor: input.cursor, source: input.options.source })
+      await writeCursor(input.cursorPath, input.cursor)
+      continue
+    }
     markCascadeProcessed({ cascade, cursor: input.cursor, source: input.options.source })
     await writeCursor(input.cursorPath, input.cursor)
   }
@@ -260,7 +267,11 @@ async function listUncapturedLanguageServerCascades(input: {
   localDbUsage: AntigravityDbUsageResult
 }) {
   const maxCascades = normalizeMaxLanguageServerCascades(input.options.maxLanguageServerCascades)
-  const cascades = await readLanguageServerCascadeRefs({ ...input, maxCascades })
+  const emptyCascadeFrontier = readEmptyCascadeFrontier({
+    cursor: input.cursor,
+    source: input.options.source
+  })
+  const cascades = await readLanguageServerCascadeRefs({ ...input, maxCascades, emptyCascadeFrontier })
   markDbCascadeRowsProcessed({
     coveredCascadeIds: input.localDbUsage.cascadeIds,
     coveredCascades: cascades,
@@ -274,7 +285,35 @@ async function listUncapturedLanguageServerCascades(input: {
       localDbUsage: input.localDbUsage,
       source: input.options.source
     }))
+    .sort((left, right) => compareLanguageServerCascadePriority(
+      left,
+      right,
+      emptyCascadeFrontier
+    ))
     .slice(0, maxCascades)
+}
+
+function compareLanguageServerCascadePriority(
+  left: AntigravityCascadeRef,
+  right: AntigravityCascadeRef,
+  frontier: EmptyCascadeFrontier | null
+) {
+  if (frontier) {
+    const leftAfterFrontier = isCascadeAfterFrontier(left, frontier)
+    const rightAfterFrontier = isCascadeAfterFrontier(right, frontier)
+    if (leftAfterFrontier !== rightAfterFrontier) return leftAfterFrontier ? -1 : 1
+  }
+  return compareCascadeRecency(left, right)
+}
+
+function isCascadeAfterFrontier(cascade: AntigravityCascadeRef, frontier: EmptyCascadeFrontier) {
+  if (cascade.mtimeMs !== frontier.mtimeMs) return cascade.mtimeMs < frontier.mtimeMs
+  return hash(cascade.id).localeCompare(frontier.cascadeHash) > 0
+}
+
+function compareCascadeRecency(left: AntigravityCascadeRef, right: AntigravityCascadeRef) {
+  if (right.mtimeMs !== left.mtimeMs) return right.mtimeMs - left.mtimeMs
+  return hash(left.id).localeCompare(hash(right.id))
 }
 
 function normalizeMaxLanguageServerCascades(value: number | undefined) {
@@ -288,6 +327,7 @@ async function readLanguageServerCascadeRefs(input: {
   cursor: Awaited<ReturnType<typeof readCursor>>
   localDbUsage: AntigravityDbUsageResult
   maxCascades: number
+  emptyCascadeFrontier: EmptyCascadeFrontier | null
 }) {
   const { options } = input
   if (options.listCascades) return options.listCascades()
@@ -304,6 +344,11 @@ async function readLanguageServerCascadeRefs(input: {
       localDbUsage: input.localDbUsage,
       source: options.source
     }),
+    compareCascades: (left, right) => compareLanguageServerCascadePriority(
+      left,
+      right,
+      input.emptyCascadeFrontier
+    ),
     includeCascade: (cascade) => {
       if (input.localDbUsage.cascadeIds.has(cascade.id)) {
         markDbCascadeRowsProcessed({
