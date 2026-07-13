@@ -90,8 +90,10 @@ export async function withCursorLock<T>(cursorPath: string, callback: () => Prom
 async function acquireCursorLock(lockPath: string, owner: CursorLockOwner) {
   const startedAt = Date.now()
   while (Date.now() - startedAt < cursorLockTimeoutMs) {
+    let created = false
     try {
       const handle = await open(lockPath, 'wx', 0o600)
+      created = true
       try {
         await handle.writeFile(JSON.stringify(owner))
       } finally {
@@ -99,6 +101,7 @@ async function acquireCursorLock(lockPath: string, owner: CursorLockOwner) {
       }
       return
     } catch (error) {
+      if (created) await rm(lockPath, { force: true })
       if (!isFileExistsError(error)) throw error
       await recoverStaleCursorLock(lockPath)
       await delay(cursorLockRetryMs)

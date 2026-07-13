@@ -3,7 +3,7 @@ import { Badge } from '../../components/ui/badge'
 import { LinkButton } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { formatPercentRate } from '../../lib/usage-metrics'
-import { formatCostWithAvailability, formatSource, hasUnavailableCostSource } from '../usage/source-format'
+import { formatModelCostWithAvailability, formatSource, hasUnavailableCostSource } from '../usage/source-format'
 import { UsageMetricCard, UsageMetricGrid } from '../usage/components/usage-metric-card'
 import { formatUsageMetricInteger, formatUsageMetricUsdWithAvailability } from '../usage/components/usage-metric-format'
 import type { DailyReportHistoryItem } from './report-history-item'
@@ -61,7 +61,7 @@ export function SharedDailyReportPage(props: {
             items={props.report.topModels.map((item) => ({
               name: item.model,
               value: `${formatInteger(item.totalTokensWithoutCacheRead)} / ${formatInteger(item.totalTokens)} tokens`,
-              meta: `${formatCostWithAvailability(item.costUsd, item.sourceSplit ?? props.report.sourceSplit)} / 缓存率 ${formatPercentRate(item.cacheReadRate ?? 0)}`
+              meta: `${formatModelCostWithAvailability(item.costUsd, item.sourceSplit, props.report.sourceSplit)} / 缓存率 ${formatPercentRate(item.cacheReadRate ?? 0)}`
             }))}
           />
         </div>

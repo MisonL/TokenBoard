@@ -1,5 +1,11 @@
 import { describe, expect, test, vi } from 'vitest'
-import { isValidTimezone, usageSnapshotSchema, usageSourceSchema, type UsageSnapshot } from './schema'
+import {
+  isValidTimezone,
+  timezoneValidationCacheSize,
+  usageSnapshotSchema,
+  usageSourceSchema,
+  type UsageSnapshot
+} from './schema'
 
 const baseSnapshot: UsageSnapshot = {
   source: 'codex',
@@ -63,6 +69,14 @@ describe('usage snapshot schema', () => {
     expect(constructor).toHaveBeenCalledTimes(2)
 
     constructor.mockRestore()
+  })
+
+  test('caches canonical timezone names instead of case variants', () => {
+    const before = timezoneValidationCacheSize()
+    for (const timezone of ['Etc/UTC', 'etc/utc', 'ETC/UTC', 'eTc/uTc']) {
+      expect(isValidTimezone(timezone)).toBe(true)
+    }
+    expect(timezoneValidationCacheSize() - before).toBeLessThanOrEqual(1)
   })
 
   test('rejects oversized timezone and model fields', () => {

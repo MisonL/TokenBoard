@@ -587,6 +587,21 @@ test('mergeConfig preserves concurrent server profile updates across processes',
   }
 })
 
+test('mergeConfig creates a missing config directory before locking', () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const parent = mkdtempSync(join(tmpdir(), 'tokenboard-config-first-write-'))
+  const directory = join(parent, 'nested', 'config')
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    mergeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
+    assert.equal(readConfig().endpoint, 'https://tokenboard.example/api/v1/ingest')
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
 function collectChildExit(child) {
   return new Promise((resolve, reject) => {
     let stderr = ''

@@ -83,10 +83,15 @@ export function isValidTimezone(value: unknown): value is string {
   if (validTimezoneCache.has(timezone)) return true
 
   try {
-    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date(0))
-    validTimezoneCache.add(timezone)
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone })
+    formatter.format(new Date(0))
+    validTimezoneCache.add(formatter.resolvedOptions().timeZone)
     return true
   } catch (_) {
     return false
   }
+}
+
+export function timezoneValidationCacheSize() {
+  return validTimezoneCache.size
 }

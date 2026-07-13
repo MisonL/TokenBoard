@@ -76,6 +76,18 @@ test('setup activates an existing server profile without pairing again', () => {
   }
 })
 
+test('setup activates the profile read after acquiring the credentials lock', () => {
+  const source = readFileSync(new URL('./setup.mjs', import.meta.url), 'utf8')
+  const lockBody = source.slice(
+    source.indexOf('withCredentialsLock(configDir(), () => {'),
+    source.indexOf("console.log('TokenBoard server profile activated.')")
+  )
+
+  assert.match(lockBody, /const latestProfile = reusableServerProfile\(latestConfig, serverOrigin\)/)
+  assert.match(lockBody, /withServerProfile\(latestConfig, serverOrigin, latestProfile\)/)
+  assert.doesNotMatch(lockBody, /withServerProfile\(latestConfig, serverOrigin, savedProfile\)/)
+})
+
 test('setup honors explicit device-link reconnect over an existing server profile', () => {
   const directory = mkdtempSync(join(tmpdir(), 'tokenboard-setup-device-link-priority-'))
   try {

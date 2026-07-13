@@ -33,6 +33,18 @@ export function formatCostWithAvailability(costUsd: number, sourceSplit: SourceS
     : formatted
 }
 
+export function formatModelCostWithAvailability(
+  costUsd: number,
+  modelSourceSplit: SourceSplitItem[] | undefined,
+  reportSourceSplit: SourceSplitItem[]
+) {
+  if (modelSourceSplit?.length) return formatCostWithAvailability(costUsd, modelSourceSplit)
+  const formatted = formatUsd(costUsd)
+  return hasUnavailableCostSource(reportSourceSplit)
+    ? `${formatted} (费用可用性未知)`
+    : formatted
+}
+
 export function formatSourceCostNote(source: string) {
   return antigravityCostUnavailableLabels[source] ?? ''
 }

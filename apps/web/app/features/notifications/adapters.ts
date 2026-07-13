@@ -2,6 +2,7 @@ import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metr
 import { formatUsd } from '../../lib/money'
 import {
   formatCostWithAvailability,
+  formatModelCostWithAvailability,
   formatSource,
   formatSourceCostNote,
   hasUnavailableCostSource
@@ -342,10 +343,7 @@ function formatModelCost(
   item: DailyTokenReport['topModels'][number],
   report: DailyTokenReport
 ) {
-  if (item.sourceSplit?.length) return formatCostWithAvailability(item.costUsd, item.sourceSplit)
-  return hasUnavailableCostSource(report.sourceSplit)
-    ? `${formatUsd(item.costUsd)} (费用可用性未知)`
-    : formatUsd(item.costUsd)
+  return formatModelCostWithAvailability(item.costUsd, item.sourceSplit, report.sourceSplit)
 }
 
 function formatSourceCostSuffix(source: string) {

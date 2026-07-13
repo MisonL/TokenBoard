@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import {
   closeSync,
   linkSync,
+  mkdirSync,
   openSync,
   readFileSync,
   renameSync,
@@ -23,6 +24,7 @@ export function credentialsLockPath(root) {
 }
 
 export function withCredentialsLock(root, callback) {
+  mkdirSync(root, { recursive: true, mode: 0o700 })
   const lockPath = credentialsLockPath(root)
   const owner = acquireCredentialsLock(lockPath)
   let callbackFailed = false

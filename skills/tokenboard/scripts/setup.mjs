@@ -50,7 +50,9 @@ const useDeviceLink = shouldUseDeviceLink(flags)
 if (!pairingCode && !useDeviceLink && savedProfile) {
   withCredentialsLock(configDir(), () => {
     const latestConfig = existsSync(configPath()) ? readConfig() : {}
-    writeConfig(withServerProfile(latestConfig, serverOrigin, savedProfile))
+    const latestProfile = reusableServerProfile(latestConfig, serverOrigin)
+    if (!latestProfile) throw new Error('TokenBoard server profile changed during setup')
+    writeConfig(withServerProfile(latestConfig, serverOrigin, latestProfile))
   })
   console.log('TokenBoard server profile activated.')
 } else {
