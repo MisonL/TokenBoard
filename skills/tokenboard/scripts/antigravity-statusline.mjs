@@ -1,36 +1,40 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto'
-import {
-  readFileSync,
-  readSync,
-  realpathSync
-} from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
 import {
   appendBoundedStatuslineError,
   appendBoundedStatuslineEvent
 } from './antigravity-statusline-log.mjs'
+import { startOriginalStatuslineCommand } from './antigravity-statusline-original.mjs'
 
 const defaultMaxInputBytes = 256 * 1024
 const maxTokenValue = 1_000_000_000
 const maxModelLength = 160
-const maxCommandLength = 8192
-const originalCommandTimeoutMs = 3_000
-const originalCommandMaxBuffer = 8192
 const schemaVersion = 'antigravity-statusline/v1'
 const defaultMaxLogBytes = 8 * 1024 * 1024
 const minMaxLogBytes = 1024
 const maxMaxLogBytes = 64 * 1024 * 1024
 
-export function runStatuslineCli(argv = process.argv.slice(2), env = process.env) {
+export async function runStatuslineCli(argv = process.argv.slice(2), env = process.env) {
   const options = readOptions(argv, env)
-  let raw = ''
+  let original = null
   try {
-    raw = readStdinLimited(options.maxInputBytes)
+    original = startOriginalStatuslineCommand({
+      originalCommandFile: options.originalCommandFile,
+      selfPath: options.selfPath
+    })
+  } catch (error) {
+    recordStatuslineError(options.errorPath, 'original', error, options.maxLogBytes)
+  }
+
+  let input
+  try {
+    input = await readStdin(options.maxInputBytes, original)
+    if (input.captureError) throw input.captureError
+    if (input.tooLarge) throw new Error('Antigravity statusline payload too large')
     const event = extractStatuslineEvent(
-      raw,
+      input.raw,
       new Date().toISOString(),
       randomBytes(16).toString('hex')
     )
@@ -39,17 +43,18 @@ export function runStatuslineCli(argv = process.argv.slice(2), env = process.env
     }
   } catch (error) {
     recordStatuslineError(options.errorPath, 'capture', error, options.maxLogBytes)
+  } finally {
+    original?.finishInput()
   }
 
-  try {
-    const output = runOriginalCommand({
-      raw,
-      originalCommandFile: options.originalCommandFile,
-      selfPath: options.selfPath
-    })
-    if (output) process.stdout.write(output)
-  } catch (error) {
-    recordStatuslineError(options.errorPath, 'original', error, options.maxLogBytes)
+  if (original) {
+    const result = await original.completion
+    const originalError = result.error ?? input?.forwardError
+    if (originalError) {
+      recordStatuslineError(options.errorPath, 'original', originalError, options.maxLogBytes)
+    } else if (result.output) {
+      process.stdout.write(result.output)
+    }
   }
 }
 
@@ -102,7 +107,9 @@ export function readOptions(argv, env = process.env) {
     logPath,
     errorPath,
     originalCommandFile,
-    maxInputBytes: Number(flags['max-input-bytes'] || defaultMaxInputBytes),
+    maxInputBytes: Number(Object.hasOwn(flags, 'max-input-bytes')
+      ? flags['max-input-bytes']
+      : defaultMaxInputBytes),
     maxLogBytes: readMaxLogBytes(flags['max-log-bytes'] || env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_MAX_BYTES),
     selfPath: resolve(fileURLToPath(import.meta.url))
   }
@@ -121,23 +128,39 @@ function parsePayload(raw) {
   return payload
 }
 
-function readStdinLimited(maxBytes) {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > defaultMaxInputBytes) {
-    throw new Error('Invalid Antigravity statusline input limit')
-  }
-  const chunks = []
+async function readStdin(maxBytes, original) {
+  const captureError = !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > defaultMaxInputBytes
+    ? new Error('Invalid Antigravity statusline input limit')
+    : undefined
+  const captured = captureError ? null : Buffer.alloc(maxBytes)
   let total = 0
-  const buffer = Buffer.alloc(Math.min(16 * 1024, maxBytes))
-  while (true) {
-    const bytesRead = readSync(0, buffer, 0, buffer.length, null)
-    if (bytesRead === 0) break
-    total += bytesRead
-    if (total > maxBytes) {
-      throw new Error('Antigravity statusline payload too large')
+  let tooLarge = false
+  let forwardError
+  for await (const value of process.stdin) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
+    if (!captureError && !tooLarge) {
+      total += chunk.length
+      if (total > maxBytes) {
+        tooLarge = true
+        captured.fill(0)
+      } else {
+        chunk.copy(captured, total - chunk.length)
+      }
     }
-    chunks.push(Buffer.from(buffer.subarray(0, bytesRead)))
+    if (original && !forwardError) {
+      try {
+        await original.writeInput(chunk)
+      } catch (error) {
+        forwardError = error
+      }
+    }
   }
-  return Buffer.concat(chunks).toString('utf8')
+  return {
+    raw: tooLarge || !captured ? '' : captured.subarray(0, total).toString('utf8'),
+    tooLarge,
+    captureError,
+    forwardError
+  }
 }
 
 function readModel(value) {
@@ -203,55 +226,6 @@ function recordStatuslineError(filePath, stage, error, maxBytes) {
   } catch (_) {}
 }
 
-function runOriginalCommand({ raw, originalCommandFile, selfPath }) {
-  const command = readOriginalCommand(originalCommandFile, selfPath)
-  if (!command) return ''
-  const result = spawnSync(command, {
-    input: raw,
-    shell: true,
-    encoding: 'utf8',
-    timeout: originalCommandTimeoutMs,
-    maxBuffer: originalCommandMaxBuffer,
-    env: { ...process.env }
-  })
-  if (result.error) throw result.error
-  if (result.status !== 0) {
-    throw new Error(`Antigravity original statusline command exited with ${result.status}`)
-  }
-  return typeof result.stdout === 'string' ? result.stdout.slice(0, originalCommandMaxBuffer) : ''
-}
-
-function readOriginalCommand(filePath, selfPath) {
-  let parsed
-  try {
-    parsed = JSON.parse(readFileSync(filePath, 'utf8'))
-  } catch (error) {
-    if (error && error.code === 'ENOENT') return ''
-    throw new Error('Invalid Antigravity original statusline command backup', { cause: error })
-  }
-  if (parsed?.statusLine && typeof parsed.statusLine === 'object' && parsed.statusLine.enabled === false) {
-    return ''
-  }
-  const command = readBoundedString(parsed?.statusLine?.command ?? parsed?.command, maxCommandLength)
-  if (!command) return ''
-  return isSelfCommand(command, selfPath) ? '' : command
-}
-
-function isSelfCommand(command, selfPath) {
-  if (command.includes(selfPath)) return true
-  const resolvedSelf = safeRealpath(selfPath)
-  if (resolvedSelf && command.includes(resolvedSelf)) return true
-  return command.includes('antigravity-statusline.mjs')
-}
-
-function safeRealpath(path) {
-  try {
-    return realpathSync(path)
-  } catch {
-    return ''
-  }
-}
-
 function readFlags(args) {
   const flags = {}
   for (let index = 0; index < args.length; index += 1) {
@@ -274,5 +248,5 @@ function readFlags(args) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  runStatuslineCli()
+  await runStatuslineCli()
 }
