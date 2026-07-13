@@ -108,6 +108,41 @@ describe('readAntigravityDbUsageEvents', () => {
     }
   })
 
+  test('does not acknowledge a row when a nested SQLite usage block is semantically invalid', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-invalid-nested-db-'))
+    try {
+      const dir = join(root, 'conversations')
+      const sqliteBin = join(root, 'sqlite3-invalid-nested.sh')
+      const queriesPath = join(root, 'queries.sql')
+      const cascadeId = '00000000-0000-0000-0000-000000000001'
+      const lastSeenRowIndexByCascadeHash = new Map([[hash(cascadeId), 41]])
+      const invalidNestedUsageHex = '0A472216100A18025A10726573706F6E73652D7072696D6172798A01191217108194EBDC035A0F726573706F6E73652D6E65737465649A011067656D696E692D332D666C6173682D61220B657865637574696F6E2D61'
+      const query = 'select idx, hex(data) from gen_metadata where idx > 41 order by idx limit 500'
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `${cascadeId}.db`), '')
+      await writeFile(sqliteBin, [
+        '#!/bin/sh',
+        `printf '%s\\n' "$3" >> ${JSON.stringify(queriesPath)}`,
+        `printf '%s\\n' ${JSON.stringify(`42|${invalidNestedUsageHex}`)}`
+      ].join('\n'))
+      await chmod(sqliteBin, 0o755)
+
+      const read = () => readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        sqliteBin,
+        lastSeenRowIndexByCascadeHash
+      })
+
+      await expect(read()).rejects.toThrow('token field 2 is invalid')
+      await expect(read()).rejects.toThrow('token field 2 is invalid')
+
+      expect(lastSeenRowIndexByCascadeHash.get(hash(cascadeId))).toBe(41)
+      expect((await readFile(queriesPath, 'utf8')).trim().split('\n')).toEqual([query, query])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('pages large metadata backlogs and advances the row cursor between sqlite calls', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-paged-db-'))
     try {
