@@ -87,7 +87,7 @@ function readUsages(chatModel: ProtoMessage) {
 
 function readOptionalNestedUsageMessage(message: ProtoMessage, path: number[]) {
   try {
-    // The nested usage projection is optional and must not invalidate field 4 usage.
+    // Only malformed optional wire data may be ignored; semantic validation errors must propagate.
     return readNestedMessage(message, path)
   } catch (error) {
     if (error instanceof MalformedProtobufError) return null

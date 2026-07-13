@@ -128,6 +128,32 @@ describe('parseAntigravityGeneratorMetadataBlob', () => {
     ])
   })
 
+  test('rejects an oversized token in an optional nested usage block', () => {
+    const blob = message([
+      fieldMessage(1, message([
+        fieldMessage(4, usageMessage({
+          inputTokens: 10,
+          outputTokens: 2,
+          responseId: 'response-primary'
+        })),
+        fieldMessage(17, message([
+          fieldMessage(2, usageMessage({
+            inputTokens: 1_000_000_001,
+            responseId: 'response-nested'
+          }))
+        ])),
+        fieldString(19, 'gemini-3-flash-a')
+      ])),
+      fieldString(4, 'execution-a')
+    ])
+
+    expect(() => parseAntigravityGeneratorMetadataBlobEvents(blob, {
+      cascadeId: 'conversation-a',
+      rowIndex: 0,
+      fallbackCreatedAt: '2026-06-24T00:00:00.000Z'
+    })).toThrow('token field 2 is invalid')
+  })
+
   test('does not suppress unexpected optional usage parsing failures', () => {
     const blob = message([
       fieldMessage(1, message([
