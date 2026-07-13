@@ -98,6 +98,65 @@ describe('parseAntigravityGeneratorMetadataBlob', () => {
     ])
   })
 
+  test('keeps primary usage when an optional nested usage block is truncated', () => {
+    const blob = message([
+      fieldMessage(1, message([
+        fieldMessage(4, usageMessage({
+          inputTokens: 10,
+          outputTokens: 2,
+          responseId: 'response-primary'
+        })),
+        fieldMessage(17, message([
+          fieldMessage(2, Buffer.from([0x08, 0x80]))
+        ])),
+        fieldString(19, 'gemini-3-flash-a')
+      ])),
+      fieldString(4, 'execution-a')
+    ])
+
+    expect(parseAntigravityGeneratorMetadataBlobEvents(blob, {
+      cascadeId: 'conversation-a',
+      rowIndex: 0,
+      fallbackCreatedAt: '2026-06-24T00:00:00.000Z'
+    })).toMatchObject([
+      {
+        model: 'gemini-3-flash-a',
+        inputTokens: 10,
+        outputTokens: 2,
+        cacheReadTokens: 0
+      }
+    ])
+  })
+
+  test('does not suppress unexpected optional usage parsing failures', () => {
+    const blob = message([
+      fieldMessage(1, message([
+        fieldMessage(4, usageMessage({
+          inputTokens: 10,
+          outputTokens: 2,
+          responseId: 'response-primary'
+        })),
+        fieldString(19, 'gemini-3-flash-a')
+      ])),
+      fieldString(4, 'execution-a')
+    ])
+    const originalGet = Map.prototype.get
+    Map.prototype.get = function (key) {
+      if (key === 17) throw new Error('Unexpected optional usage parser failure')
+      return originalGet.call(this, key)
+    }
+
+    try {
+      expect(() => parseAntigravityGeneratorMetadataBlobEvents(blob, {
+        cascadeId: 'conversation-a',
+        rowIndex: 0,
+        fallbackCreatedAt: '2026-06-24T00:00:00.000Z'
+      })).toThrow('Unexpected optional usage parser failure')
+    } finally {
+      Map.prototype.get = originalGet
+    }
+  })
+
   test('keeps placeholder model ids when SQLite blobs have no resolved model', () => {
     const blob = message([
       fieldMessage(1, message([

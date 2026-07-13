@@ -22,6 +22,8 @@ type AntigravityRawUsage = {
   responseId: string
 }
 
+class MalformedProtobufError extends Error {}
+
 const maxTokenValue = 1_000_000_000
 const placeholderModelPrefix = 'MODEL_PLACEHOLDER_'
 
@@ -78,9 +80,19 @@ function historyEventHash(input: {
 function readUsages(chatModel: ProtoMessage) {
   const usages = [
     readUsage(readMessage(chatModel, 4)),
-    readUsage(readNestedMessage(chatModel, [17, 2]))
+    readUsage(readOptionalNestedUsageMessage(chatModel, [17, 2]))
   ].filter((usage): usage is AntigravityRawUsage => Boolean(usage))
   return dedupeUsages(usages)
+}
+
+function readOptionalNestedUsageMessage(message: ProtoMessage, path: number[]) {
+  try {
+    // The nested usage projection is optional and must not invalidate field 4 usage.
+    return readNestedMessage(message, path)
+  } catch (error) {
+    if (error instanceof MalformedProtobufError) return null
+    throw error
+  }
 }
 
 function dedupeUsages(usages: AntigravityRawUsage[]) {
@@ -214,7 +226,7 @@ function parseProtoMessage(input: Uint8Array): ProtoMessage {
 }
 
 function readField(buffer: Buffer, offset: number, field: number, wireType: number, fields: ProtoMessage) {
-  if (field <= 0) throw new Error('Invalid protobuf field number')
+  if (field <= 0) throw new MalformedProtobufError('Invalid protobuf field number')
   if (wireType === 0) {
     const value = readVarint(buffer, offset)
     pushField(fields, field, { wireType, value: value.value })
@@ -223,11 +235,11 @@ function readField(buffer: Buffer, offset: number, field: number, wireType: numb
   if (wireType === 1 || wireType === 5) {
     return readFixedField(buffer, offset, field, wireType, fields)
   }
-  if (wireType !== 2) throw new Error(`Unsupported protobuf wire type: ${wireType}`)
+  if (wireType !== 2) throw new MalformedProtobufError(`Unsupported protobuf wire type: ${wireType}`)
   const length = readVarint(buffer, offset)
   const start = length.next
   const end = start + Number(length.value)
-  if (end > buffer.length) throw new Error('Invalid protobuf length-delimited field')
+  if (end > buffer.length) throw new MalformedProtobufError('Invalid protobuf length-delimited field')
   pushField(fields, field, { wireType, bytes: buffer.subarray(start, end) })
   return end
 }
@@ -235,7 +247,7 @@ function readField(buffer: Buffer, offset: number, field: number, wireType: numb
 function readFixedField(buffer: Buffer, offset: number, field: number, wireType: 1 | 5, fields: ProtoMessage) {
   const width = wireType === 1 ? 8 : 4
   const end = offset + width
-  if (end > buffer.length) throw new Error('Invalid protobuf fixed-width field')
+  if (end > buffer.length) throw new MalformedProtobufError('Invalid protobuf fixed-width field')
   pushField(fields, field, { wireType, bytes: buffer.subarray(offset, end) })
   return end
 }
@@ -248,9 +260,9 @@ function readVarint(buffer: Buffer, offset: number) {
     value |= BigInt(byte & 127) << shift
     if ((byte & 128) === 0) return { value, next: index + 1 }
     shift += 7n
-    if (shift > 70n) throw new Error('Invalid protobuf varint')
+    if (shift > 70n) throw new MalformedProtobufError('Invalid protobuf varint')
   }
-  throw new Error('Truncated protobuf varint')
+  throw new MalformedProtobufError('Truncated protobuf varint')
 }
 
 function pushField(fields: ProtoMessage, field: number, value: ProtoField) {
