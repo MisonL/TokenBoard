@@ -17,6 +17,20 @@ SET top_models = (
   SELECT json_group_array(
     CASE
       WHEN json_type(top_model.value, '$.sourceSplit') IS NOT NULL THEN top_model.value
+      WHEN NOT EXISTS (
+        SELECT 1
+        FROM effective_daily_usage
+        WHERE user_id = daily_report_history.user_id
+          AND usage_date = daily_report_history.report_date
+          AND model = json_extract(top_model.value, '$.model')
+      ) THEN top_model.value
+      WHEN (
+        SELECT SUM(total_tokens)
+        FROM effective_daily_usage
+        WHERE user_id = daily_report_history.user_id
+          AND usage_date = daily_report_history.report_date
+          AND model = json_extract(top_model.value, '$.model')
+      ) <> json_extract(top_model.value, '$.totalTokens') THEN top_model.value
       ELSE json_set(
         top_model.value,
         '$.sourceSplit',
@@ -39,6 +53,7 @@ SET top_models = (
 )
 WHERE json_valid(source_split)
   AND json_valid(top_models)
+  AND (SELECT COUNT(*) FROM json_each(daily_report_history.source_split)) = 1
   AND NOT EXISTS (
     SELECT 1
     FROM json_each(daily_report_history.source_split) AS source_item

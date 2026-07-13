@@ -671,6 +671,7 @@ describe('usage summary cache integration', () => {
           ('agy-user', 'device-d', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-d', '2026-06-02T11:00:00.000Z'),
           ('agy-user', 'device-e', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-e', '2026-06-02T11:00:00.000Z'),
           ('agy-user', 'device-f', 'codex', '2026-06-03', 'UTC', 'gpt-5', 40, 10, 0, 0, 50, 7.0, 1, 'hash-f', '2026-06-03T11:00:00.000Z'),
+          ('agy-user', 'device-g', 'codex', '2026-06-01', 'UTC', 'replacement-model', 20, 5, 0, 0, 25, 0, 1, 'hash-g', '2026-06-01T11:00:00.000Z'),
           ('agy-user', 'legacy', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-legacy-codex', '2026-06-02T10:00:00.000Z'),
           ('agy-user', 'legacy', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-legacy-claude', '2026-06-02T10:00:00.000Z');
       `,
@@ -759,7 +760,7 @@ describe('usage summary cache integration', () => {
             1.25,
             1,
             '[{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25}]',
-            '[{"model":"gpt-5","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
+            '[{"model":"replacement-model","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
             '2026-06-01T10:00:00.000Z',
             '2026-06-01T10:00:00.000Z'
           ),
@@ -780,6 +781,24 @@ describe('usage summary cache integration', () => {
             '[{"model":"gemini","totalTokens":15,"totalTokensWithoutCacheRead":15,"costUsd":9.5}]',
             '2026-05-31T10:00:00.000Z',
             '2026-05-31T10:00:00.000Z'
+          ),
+          (
+            'drr_codex_missing_model',
+            'agy-user',
+            '2026-06-01',
+            '2026-06-01T19:00',
+            'Agy User',
+            'UTC',
+            'https://tokenboard.example/dashboard',
+            25,
+            25,
+            0,
+            1.25,
+            1,
+            '[{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25}]',
+            '[{"model":"retired-model","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
+            '2026-06-01T10:00:00.000Z',
+            '2026-06-01T10:00:00.000Z'
           ),
           (
             'drr_agy_mismatched_tokens',
@@ -861,11 +880,16 @@ describe('usage summary cache integration', () => {
        FROM daily_report_history, json_each(top_models, '$[0].sourceSplit') AS source_item
        WHERE daily_report_history.id = 'drr_agy_costs'
          AND json_extract(source_item.value, '$.source') = 'antigravity-cli'`,
-      1
+      0
     )
     await expectScalar(
       db,
       "SELECT json_extract(top_models, '$[1].sourceSplit[0].source') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
+      null
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[0].sourceSplit[0].source') AS value FROM daily_report_history WHERE id = 'drr_codex_costs'",
       'codex'
     )
     await expectScalar(
@@ -891,6 +915,11 @@ describe('usage summary cache integration', () => {
     await expectScalar(
       db,
       "SELECT json_type(top_models, '$[0].sourceSplit') AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
+      null
+    )
+    await expectScalar(
+      db,
+      "SELECT json_type(top_models, '$[0].sourceSplit') AS value FROM daily_report_history WHERE id = 'drr_codex_missing_model'",
       null
     )
   })

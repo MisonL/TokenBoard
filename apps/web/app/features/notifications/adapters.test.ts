@@ -142,6 +142,19 @@ describe('notification adapters', () => {
     expect(text).not.toContain('gpt-5：620 token，缓存率 23%，$0.80 (Antigravity')
   })
 
+  test('treats an empty model source split as unavailable history metadata', () => {
+    const text = formatDailyReport({
+      ...report,
+      sourceSplit: [
+        ...report.sourceSplit,
+        { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
+      ],
+      topModels: [{ ...report.topModels[0], sourceSplit: [] }]
+    })
+
+    expect(text).toContain('gpt-5：620 token，缓存率 23%，$0.80 (费用可用性未知)')
+  })
+
   test('falls back to the public leaderboards when no shared report URL exists', () => {
     const text = formatDailyReport({ ...report, reportUrl: undefined })
     const wecomText = formatWeComDailyReport({ ...report, reportUrl: undefined })

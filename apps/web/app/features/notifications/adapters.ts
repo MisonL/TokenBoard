@@ -342,7 +342,7 @@ function formatModelCost(
   item: DailyTokenReport['topModels'][number],
   report: DailyTokenReport
 ) {
-  if (item.sourceSplit) return formatCostWithAvailability(item.costUsd, item.sourceSplit)
+  if (item.sourceSplit?.length) return formatCostWithAvailability(item.costUsd, item.sourceSplit)
   return hasUnavailableCostSource(report.sourceSplit)
     ? `${formatUsd(item.costUsd)} (费用可用性未知)`
     : formatUsd(item.costUsd)
