@@ -89,6 +89,17 @@ export async function runCollectorCli(
       return 0
     }
 
+    if (options.command === 'sync') {
+      const missing = [
+        options.endpoint ? null : 'TOKENBOARD_ENDPOINT',
+        options.uploadToken ? null : 'TOKENBOARD_UPLOAD_TOKEN'
+      ].filter((value): value is string => Boolean(value))
+      if (missing.length > 0) {
+        deps.stderr(`Missing required config for sync: ${missing.join(', ')}`)
+        return 1
+      }
+    }
+
     const collectionStartedAtMs = startedAtMs
     const cursorScope = options.command === 'sync' ? cursorScopeFromEndpoint(options.endpoint) : undefined
     const collectionContext = { timezone: options.timezone, cursorScope, deps, env }
@@ -97,16 +108,6 @@ export async function runCollectorCli(
     if (options.command === 'preview') {
       deps.stdout(JSON.stringify(collection.snapshots, null, 2))
       return 0
-    }
-
-    const missing = [
-      options.endpoint ? null : 'TOKENBOARD_ENDPOINT',
-      options.uploadToken ? null : 'TOKENBOARD_UPLOAD_TOKEN'
-    ].filter((value): value is string => Boolean(value))
-
-    if (missing.length > 0) {
-      deps.stderr(`Missing required config for sync: ${missing.join(', ')}`)
-      return 1
     }
 
     const result = await deps.uploadSnapshots(

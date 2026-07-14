@@ -128,6 +128,38 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
+  test.each([
+    {
+      label: 'endpoint',
+      env: { TOKENBOARD_STATE_DIR: '/state', TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token' },
+      missing: 'TOKENBOARD_ENDPOINT'
+    },
+    {
+      label: 'upload token',
+      env: { TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest', TOKENBOARD_STATE_DIR: '/state' },
+      missing: 'TOKENBOARD_UPLOAD_TOKEN'
+    }
+  ])('does not collect Antigravity before a required sync $label is validated', async ({ env, missing }) => {
+    const stderr: string[] = []
+    const calls: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity'],
+      env,
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          calls.push('antigravity')
+          return [{ ...antigravitySnapshot, source: 'antigravity' }]
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(calls).toEqual([])
+    expect(stderr[0]).toContain(missing)
+  })
+
   test('does not fail strict all mode when Antigravity products are not installed', async () => {
     const stderr: string[] = []
     const uploaded: UsageSnapshot[][] = []
