@@ -9,6 +9,7 @@ import {
   formatMetadataRequestHttpError,
   formatMetadataRequestTransportError,
   listAntigravityCascades,
+  requestGeneratorMetadata,
   type AntigravityCascadeFileSystem
 } from './antigravity-gui-client'
 import type { AntigravityFileScanState } from './antigravity-file-scan'
@@ -39,13 +40,11 @@ describe('createAntigravityLanguageServerClient', () => {
       .toBe('Antigravity metadata request transport failed for antigravity: socket hang up')
   })
 
-  test.skipIf(process.platform === 'win32')('rejects and aborts metadata responses larger than the response limit', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-response-limit-'))
+  test('rejects and aborts metadata responses larger than the response limit', async () => {
     const response = Object.assign(new PassThrough(), { statusCode: 200 })
     const request = new EventEmitter()
     const expectedMessage = `Antigravity metadata response exceeded the ${metadataResponseLimitBytes}-byte limit for antigravity`
     const destroy = vi.spyOn(response, 'destroy')
-    let client: Awaited<ReturnType<typeof createAntigravityLanguageServerClient>> | undefined
 
     try {
       Object.assign(request, { end: vi.fn() })
@@ -54,23 +53,11 @@ describe('createAntigravityLanguageServerClient', () => {
         return request
       })
 
-      const serverPath = join(root, 'server.mjs')
-      await writeFile(serverPath, [
-        '#!/usr/bin/env node',
-        'const portIndex = process.argv.indexOf("--https_server_port")',
-        'const port = process.argv[portIndex + 1]',
-        'process.stdout.write(`fixed port at ${port} for HTTPS`)',
-        'setInterval(() => undefined, 1_000)'
-      ].join('\n'))
-      await chmod(serverPath, 0o700)
-
-      client = await createAntigravityLanguageServerClient({
+      const metadata = requestGeneratorMetadata({
         source: 'antigravity',
-        languageServerPath: serverPath
-      })
-      const metadata = client.requestGeneratorMetadata({
-        source: 'antigravity',
-        cascadeId: cascadeId(1)
+        cascadeId: cascadeId(1),
+        port: 1,
+        csrfToken: 'test-csrf-token'
       })
       response.write(Buffer.alloc(metadataResponseLimitBytes, 0x61))
       expect(destroy).not.toHaveBeenCalled()
@@ -79,18 +66,14 @@ describe('createAntigravityLanguageServerClient', () => {
       await expect(metadata).rejects.toThrow(expectedMessage)
       expect(destroy).toHaveBeenCalledWith()
     } finally {
-      await client?.close()
       requestMock.mockReset()
-      await rm(root, { recursive: true, force: true })
     }
   })
 
-  test.skipIf(process.platform === 'win32')('aborts non-success metadata responses instead of draining them', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-error-response-'))
+  test('aborts non-success metadata responses instead of draining them', async () => {
     const response = Object.assign(new PassThrough(), { statusCode: 500 })
     const request = new EventEmitter()
     const destroy = vi.spyOn(response, 'destroy')
-    let client: Awaited<ReturnType<typeof createAntigravityLanguageServerClient>> | undefined
 
     try {
       Object.assign(request, { end: vi.fn() })
@@ -99,31 +82,17 @@ describe('createAntigravityLanguageServerClient', () => {
         return request
       })
 
-      const serverPath = join(root, 'server.mjs')
-      await writeFile(serverPath, [
-        '#!/usr/bin/env node',
-        'const portIndex = process.argv.indexOf("--https_server_port")',
-        'const port = process.argv[portIndex + 1]',
-        'process.stdout.write(`fixed port at ${port} for HTTPS`)',
-        'setInterval(() => undefined, 1_000)'
-      ].join('\n'))
-      await chmod(serverPath, 0o700)
-
-      client = await createAntigravityLanguageServerClient({
+      const metadata = requestGeneratorMetadata({
         source: 'antigravity',
-        languageServerPath: serverPath
-      })
-      const metadata = client.requestGeneratorMetadata({
-        source: 'antigravity',
-        cascadeId: cascadeId(2)
+        cascadeId: cascadeId(2),
+        port: 1,
+        csrfToken: 'test-csrf-token'
       })
 
       await expect(metadata).rejects.toThrow('Antigravity metadata request failed for antigravity: HTTP 500')
       expect(destroy).toHaveBeenCalledWith()
     } finally {
-      await client?.close()
       requestMock.mockReset()
-      await rm(root, { recursive: true, force: true })
     }
   })
 

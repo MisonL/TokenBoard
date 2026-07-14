@@ -312,7 +312,7 @@ function drainOutput(server: LanguageServerProcess) {
   server.stderr.resume()
 }
 
-function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & { port: number; csrfToken: string }) {
+export function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & { port: number; csrfToken: string }) {
   const body = JSON.stringify({ cascadeId: input.cascadeId })
   return new Promise<unknown>((resolve, reject) => {
     let settled = false
