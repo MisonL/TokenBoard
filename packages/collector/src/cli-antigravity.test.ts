@@ -460,6 +460,38 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
+  test.each([
+    {
+      label: 'metadata response size-limit errors',
+      message: 'Antigravity metadata response exceeded the 8388608-byte limit for antigravity'
+    },
+    {
+      label: 'metadata HTTP errors',
+      message: 'Antigravity metadata request failed for antigravity: HTTP 500'
+    }
+  ])('classifies $label as language-server unavailable', async ({ message }) => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          throw new Error(message)
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=failed category=language-server-unavailable'
+    ])
+  })
+
   test('fails default all mode when an installed Antigravity source has a real parse error', async () => {
     const stderr: string[] = []
     const uploaded: UsageSnapshot[][] = []

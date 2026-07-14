@@ -9,6 +9,7 @@ import {
   collectAntigravityUsage,
   isAntigravityPartialUsageError
 } from './providers/antigravity-gui'
+import { isUnavailableLanguageServerError } from './providers/antigravity-gui-environment'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
@@ -348,10 +349,8 @@ function antigravityErrorCategory(message: string) {
   if (message.includes('Antigravity SQLite reader unavailable')) return 'sqlite-reader-unavailable'
   if (message.includes('Antigravity conversations directory not found') ||
       message.includes('No Antigravity conversations found')) return 'history-unavailable'
-  if (message.includes('Antigravity language server exited before it was ready') ||
-      message.includes('Timed out starting Antigravity language server') ||
-      message.includes('Antigravity language server unavailable after DB history was collected') ||
-      message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null) {
+  if (message.includes('Antigravity language server unavailable after DB history was collected') ||
+      isUnavailableLanguageServerError(new Error(message))) {
     return 'language-server-unavailable'
   }
   if (message.includes('Invalid Antigravity')) return 'invalid-metadata'
