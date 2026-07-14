@@ -117,13 +117,9 @@ async function collectAntigravityGuiUsageLocked(input: {
     throw localDbError
   }
 
-  const uncapturedCascades = await listUncapturedLanguageServerCascades({ options, cursor, localDbUsage })
-  if (uncapturedCascades.length > 0) {
-    await collectLanguageServerUsage({
-      options, cursor, cursorPath, snapshots, emittedKeys, timezone, collectedAt,
-      localDbUsage, uncapturedCascades
-    })
-  }
+  await collectLanguageServerUsage({
+    options, cursor, cursorPath, snapshots, emittedKeys, timezone, collectedAt, localDbUsage
+  })
 
   markDbCascadeRowsProcessed({
     cursor,
@@ -144,15 +140,17 @@ async function collectLanguageServerUsage(input: {
   timezone: string
   collectedAt: string
   localDbUsage: AntigravityDbUsageResult
-  uncapturedCascades: AntigravityCascadeRef[]
 }) {
   let request
   let collectionFailed = false
   let collectionError: unknown
   const cleanupErrors: unknown[] = []
   try {
-    request = await createRequestContext(input.options)
-    await requestLanguageServerUsage(input, request)
+    const uncapturedCascades = await listUncapturedLanguageServerCascades(input)
+    if (uncapturedCascades.length > 0) {
+      request = await createRequestContext(input.options)
+      await requestLanguageServerUsage({ ...input, uncapturedCascades }, request)
+    }
   } catch (error) {
     collectionFailed = true
     collectionError = error
@@ -174,7 +172,9 @@ async function collectLanguageServerUsage(input: {
 }
 
 async function requestLanguageServerUsage(
-  input: Parameters<typeof collectLanguageServerUsage>[0],
+  input: Parameters<typeof collectLanguageServerUsage>[0] & {
+    uncapturedCascades: AntigravityCascadeRef[]
+  },
   request: Awaited<ReturnType<typeof createRequestContext>>
 ) {
   for (const cascade of input.uncapturedCascades) {

@@ -687,6 +687,61 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
+  test('persists partial DB snapshots when cascade enumeration fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-partial-list-'))
+    const dbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-06-23T16:30:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      let run = 0
+      const seenDbCursorSizes: number[] = []
+      const options = {
+        source: 'antigravity' as const,
+        stateDir: root,
+        timezone: 'UTC',
+        listCascades: async () => {
+          throw new Error('Failed to enumerate Antigravity cascades')
+        },
+        readDbUsageEvents: async (input?: { lastSeenRowIndexByCascadeHash?: Map<string, number> }) => {
+          seenDbCursorSizes.push(input?.lastSeenRowIndexByCascadeHash?.size ?? 0)
+          const firstRun = run++ === 0
+          return {
+            cascadeIds: firstRun ? new Set(['conversation-db']) : new Set<string>(),
+            events: firstRun ? [dbEvent] : [],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 3]])
+          }
+        }
+      }
+
+      const first = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      }))
+      const second = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      }))
+
+      expect(first.snapshots).toEqual([
+        expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
+      ])
+      expect(second.snapshots).toEqual([{
+        ...first.snapshots[0],
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      }])
+      expect(seenDbCursorSizes).toEqual([0, 1])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('preserves partial DB snapshots when a metadata request fails', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-partial-request-'))
     try {
