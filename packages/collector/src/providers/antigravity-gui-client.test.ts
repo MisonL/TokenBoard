@@ -96,6 +96,33 @@ describe('createAntigravityLanguageServerClient', () => {
     }
   })
 
+  test('reports metadata timeouts without transport-error wrapping', async () => {
+    const request = new EventEmitter()
+    const destroy = vi.fn((error?: Error) => {
+      request.emit('error', error ?? new Error('socket hang up'))
+    })
+
+    try {
+      Object.assign(request, { destroy, end: vi.fn() })
+      requestMock.mockImplementation(() => request)
+
+      const metadata = requestGeneratorMetadata({
+        source: 'antigravity',
+        cascadeId: cascadeId(3),
+        port: 1,
+        csrfToken: 'test-csrf-token'
+      })
+      request.emit('timeout')
+
+      await expect(metadata).rejects.toMatchObject({
+        message: 'Antigravity metadata request timed out for antigravity'
+      })
+      expect(destroy).toHaveBeenCalledWith()
+    } finally {
+      requestMock.mockReset()
+    }
+  })
+
   test.skipIf(process.platform === 'win32')('closes the language server process when startup times out', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-'))
     const previousTimeout = process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS

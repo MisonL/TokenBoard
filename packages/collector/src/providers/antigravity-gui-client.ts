@@ -374,7 +374,10 @@ export function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequ
         }
       })
     })
-    req.on('timeout', () => req.destroy(new Error(`Antigravity metadata request timed out for ${input.source}`)))
+    req.on('timeout', () => {
+      rejectOnce(new Error(`Antigravity metadata request timed out for ${input.source}`))
+      req.destroy()
+    })
     req.on('error', (error) => rejectOnce(new Error(formatMetadataRequestTransportError(input.source, error))))
     req.end(body)
   })
