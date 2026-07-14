@@ -106,9 +106,17 @@ export async function runCollectorCli(
     const cursorScope = options.command === 'sync' ? cursorScopeFromEndpoint(options.endpoint) : undefined
     const collectionContext = { timezone: options.timezone, cursorScope, deps, env }
     const collection = await collectSnapshots(options.source, collectionContext)
+    const hasFatalSourceFailure = collection.sourceFailures.some((failure) => failure.fatal)
+    const shouldFailForSourceErrors = (options.failOnSourceError || options.source !== 'all') &&
+      collection.sourceFailures.length > 0
+    const collectionFailed = hasFatalSourceFailure || shouldFailForSourceErrors
 
     if (options.command === 'preview') {
       deps.stdout(JSON.stringify(collection.snapshots, null, 2))
+      if (collectionFailed) {
+        deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
+        return 1
+      }
       return 0
     }
 
@@ -128,10 +136,7 @@ export async function runCollectorCli(
     })
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since)
     deps.stdout(JSON.stringify(result, null, 2))
-    const hasFatalSourceFailure = collection.sourceFailures.some((failure) => failure.fatal)
-    const shouldFailForSourceErrors = (options.failOnSourceError || options.source !== 'all') &&
-      collection.sourceFailures.length > 0
-    if (hasFatalSourceFailure || shouldFailForSourceErrors) {
+    if (collectionFailed) {
       deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
       return 1
     }

@@ -475,6 +475,32 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
+  test('fails all preview after printing healthy snapshots for a hard Antigravity error', async () => {
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {},
+      deps({
+        stdout: (line) => stdout.push(line),
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        collectAntigravityUsage: async () => {
+          throw new Error('Invalid Antigravity generator metadata item 3')
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(JSON.parse(stdout[0])).toEqual([claudeSnapshot, codexSnapshot])
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
+    ])
+  })
+
   test('uploads healthy sources before failing all sync for a hard Antigravity error', async () => {
     const stderr: string[] = []
     const uploaded: UsageSnapshot[][] = []
