@@ -89,7 +89,7 @@ export async function runCollectorCli(
     }
 
     const collectionStartedAtMs = startedAtMs
-    const cursorScope = cursorScopeFromEndpoint(options.endpoint)
+    const cursorScope = options.command === 'sync' ? cursorScopeFromEndpoint(options.endpoint) : undefined
     const collectionContext = { timezone: options.timezone, cursorScope, deps, env }
     const collection = await collectSnapshots(options.source, collectionContext)
 

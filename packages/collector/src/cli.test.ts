@@ -45,6 +45,34 @@ describe('runCollectorCli', () => {
     expect(uploaded).toEqual([])
   })
 
+  test.each([
+    {
+      label: 'environment endpoint',
+      args: ['preview', '--source', 'codex'],
+      env: { TOKENBOARD_ENDPOINT: 'not a URL', TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }
+    },
+    {
+      label: 'command endpoint',
+      args: ['preview', '--source', 'codex', '--endpoint', 'not a URL'],
+      env: { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }
+    }
+  ])('previews when the $label is invalid', async ({ args, env }) => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(args, env, {
+      stdout: (line) => stdout.push(line),
+      stderr: () => undefined,
+      collectClaudeCodeUsage: async () => [claudeSnapshot],
+      collectCodexUsage: async () => [codexSnapshot],
+      uploadSnapshots: async () => {
+        throw new Error('preview must not upload')
+      }
+    })
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([codexSnapshot])
+  })
+
   test('syncs selected source to the configured endpoint with the upload token', async () => {
     const uploaded: Array<{ endpoint: string; uploadToken: string; snapshots: UsageSnapshot[] }> = []
 
