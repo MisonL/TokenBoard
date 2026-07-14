@@ -1,7 +1,9 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { PassThrough } from 'node:stream'
+import { describe, expect, test, vi } from 'vitest'
 import {
   createAntigravityLanguageServerClient,
   formatMetadataRequestHttpError,
@@ -10,6 +12,11 @@ import {
   type AntigravityCascadeFileSystem
 } from './antigravity-gui-client'
 import type { AntigravityFileScanState } from './antigravity-file-scan'
+
+const metadataResponseLimitBytes = 8 * 1024 * 1024
+const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }))
+
+vi.mock('node:https', () => ({ request: requestMock }))
 
 describe('createAntigravityLanguageServerClient', () => {
   test('does not include raw response bodies in metadata HTTP errors', () => {
@@ -30,6 +37,52 @@ describe('createAntigravityLanguageServerClient', () => {
   test('formats metadata transport errors with a stable source prefix', () => {
     expect(formatMetadataRequestTransportError('antigravity', new Error('socket hang up')))
       .toBe('Antigravity metadata request transport failed for antigravity: socket hang up')
+  })
+
+  test.skipIf(process.platform === 'win32')('rejects and aborts metadata responses larger than the response limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-response-limit-'))
+    const response = Object.assign(new PassThrough(), { statusCode: 200 })
+    const request = new EventEmitter()
+    const expectedMessage = `Antigravity metadata response exceeded the ${metadataResponseLimitBytes}-byte limit for antigravity`
+    const destroy = vi.spyOn(response, 'destroy')
+    let client: Awaited<ReturnType<typeof createAntigravityLanguageServerClient>> | undefined
+
+    try {
+      Object.assign(request, { end: vi.fn() })
+      requestMock.mockImplementation((_options, callback) => {
+        callback(response)
+        return request
+      })
+
+      const serverPath = join(root, 'server.mjs')
+      await writeFile(serverPath, [
+        '#!/usr/bin/env node',
+        'const portIndex = process.argv.indexOf("--https_server_port")',
+        'const port = process.argv[portIndex + 1]',
+        'process.stdout.write(`fixed port at ${port} for HTTPS`)',
+        'setInterval(() => undefined, 1_000)'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+
+      client = await createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      })
+      const metadata = client.requestGeneratorMetadata({
+        source: 'antigravity',
+        cascadeId: cascadeId(1)
+      })
+      response.write(Buffer.alloc(metadataResponseLimitBytes, 0x61))
+      expect(destroy).not.toHaveBeenCalled()
+      response.end(Buffer.from('a'))
+
+      await expect(metadata).rejects.toThrow(expectedMessage)
+      expect(destroy).toHaveBeenCalledWith()
+    } finally {
+      await client?.close()
+      requestMock.mockReset()
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test.skipIf(process.platform === 'win32')('closes the language server process when startup times out', async () => {

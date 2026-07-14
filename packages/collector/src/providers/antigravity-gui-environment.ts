@@ -16,6 +16,7 @@ export function isUnavailableLanguageServerError(error: unknown) {
     error.message.startsWith('Antigravity metadata request transport failed for ') ||
     error.message.startsWith('Antigravity metadata request timed out for ') ||
     error.message.startsWith('Antigravity metadata request returned invalid JSON for ') ||
+    error.message.startsWith('Antigravity metadata response exceeded the ') ||
     error.message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null
 }
 

@@ -23,6 +23,7 @@ const apiServerUrl = 'https://generativelanguage.googleapis.com'
 const cloudCodeEndpoint = 'https://daily-cloudcode-pa.googleapis.com'
 const defaultReadyTimeoutMs = 30_000
 const requestTimeoutMs = 60_000
+const maxMetadataResponseBytes = 8 * 1024 * 1024
 const cascadeIdPattern = /^[0-9a-fA-F-]{8,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{12,}$/
 type LanguageServerProcess = ChildProcessByStdio<null, Readable, Readable>
 
@@ -314,6 +315,17 @@ function drainOutput(server: LanguageServerProcess) {
 function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & { port: number; csrfToken: string }) {
   const body = JSON.stringify({ cascadeId: input.cascadeId })
   return new Promise<unknown>((resolve, reject) => {
+    let settled = false
+    const rejectOnce = (error: Error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    const resolveOnce = (value: unknown) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
     const req = request({
       hostname: '127.0.0.1',
       port: input.port,
@@ -328,25 +340,48 @@ function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & {
         'X-Codeium-Csrf-Token': input.csrfToken
       }
     }, (res) => {
+      const responseError = (error: unknown) => {
+        rejectOnce(new Error(formatMetadataRequestTransportError(input.source, error)))
+      }
+      res.once('error', responseError)
+      res.once('aborted', () => responseError(new Error('response aborted')))
+      if (res.statusCode !== 200) {
+        res.resume()
+        rejectOnce(new Error(formatMetadataRequestHttpError(input.source, res.statusCode)))
+        return
+      }
       const chunks: Buffer[] = []
-      res.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8')
-        if (res.statusCode !== 200) {
-          reject(new Error(formatMetadataRequestHttpError(input.source, res.statusCode)))
+      let receivedBytes = 0
+      res.on('data', (chunk) => {
+        if (settled) return
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        receivedBytes += buffer.byteLength
+        if (receivedBytes > maxMetadataResponseBytes) {
+          chunks.length = 0
+          rejectOnce(new Error(formatMetadataResponseLimitError(input.source)))
+          res.destroy()
           return
         }
+        chunks.push(buffer)
+      })
+      res.on('end', () => {
+        if (settled) return
+        const text = Buffer.concat(chunks).toString('utf8')
         try {
-          resolve(JSON.parse(text))
+          resolveOnce(JSON.parse(text))
         } catch {
-          reject(new Error(`Antigravity metadata request returned invalid JSON for ${input.source}`))
+          rejectOnce(new Error(`Antigravity metadata request returned invalid JSON for ${input.source}`))
         }
       })
     })
     req.on('timeout', () => req.destroy(new Error(`Antigravity metadata request timed out for ${input.source}`)))
-    req.on('error', (error) => reject(new Error(formatMetadataRequestTransportError(input.source, error))))
+    req.on('error', (error) => rejectOnce(new Error(formatMetadataRequestTransportError(input.source, error))))
     req.end(body)
   })
+}
+
+function formatMetadataResponseLimitError(source: AntigravityGuiSource) {
+  return `Antigravity metadata response exceeded the ${maxMetadataResponseBytes}-byte limit for ${source}`
 }
 
 export function formatMetadataRequestHttpError(source: AntigravityGuiSource, statusCode?: number) {
