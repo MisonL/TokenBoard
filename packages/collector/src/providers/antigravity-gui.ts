@@ -57,10 +57,12 @@ export type CollectAntigravityGuiUsageOptions = {
 const defaultMaxLanguageServerCascades = 12
 
 export class AntigravityPartialUsageError extends Error {
+  readonly fatal: boolean
   readonly snapshots: UsageSnapshot[]
 
-  constructor(message: string, snapshots: UsageSnapshot[], cause?: unknown) {
+  constructor(message: string, snapshots: UsageSnapshot[], cause?: unknown, fatal = false) {
     super(message)
+    this.fatal = fatal
     this.name = 'AntigravityPartialUsageError'
     this.snapshots = snapshots
     if (cause !== undefined) {
@@ -165,7 +167,10 @@ async function collectLanguageServerUsage(input: {
   if (collectionFailed) {
     throw guiCollectionError(collectionError, input.snapshots, cleanupErrors)
   }
-  if (cleanupErrors.length > 0) throw cleanupErrors[0]
+  const cleanupError = cleanupErrors[0]
+  if (cleanupError !== undefined) {
+    throw guiCollectionError(cleanupError, input.snapshots, cleanupErrors.slice(1))
+  }
 }
 
 async function requestLanguageServerUsage(
@@ -220,11 +225,15 @@ function guiCollectionError(
   cleanupErrors: unknown[]
 ) {
   const cause = cleanupErrorCause(cleanupErrors)
-  if (snapshots.length > 0 && isUnavailableLanguageServerError(error)) {
+  if (snapshots.length > 0) {
+    const unavailable = isUnavailableLanguageServerError(error)
     return new AntigravityPartialUsageError(
-      `Antigravity language server unavailable after DB history was collected: ${errorMessage(error)}`,
+      `${unavailable
+        ? 'Antigravity language server unavailable'
+        : 'Antigravity language server collection failed'} after DB history was collected: ${errorMessage(error)}`,
       mergeSnapshots(snapshots),
-      cause
+      cause,
+      !unavailable
     )
   }
   if (!(error instanceof Error) || cause === undefined) return error

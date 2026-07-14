@@ -557,18 +557,20 @@ describe('collectAntigravityGuiUsage', () => {
         readDbUsageEvents: async () => ({ cascadeIds: new Set<string>(), events: [] })
       }
 
-      await expect(collectAntigravityGuiUsage({
+      const first = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
-      })).rejects.toThrow('metadata unavailable')
+      }))
       expect(calls).toEqual(['conversation-a', 'conversation-b'])
+      expect(first.snapshots).toHaveLength(1)
 
       calls.length = 0
-      await expect(collectAntigravityGuiUsage({
+      const second = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:05:00.000Z'
-      })).rejects.toThrow('metadata unavailable')
+      }))
       expect(calls).toEqual(['conversation-b'])
+      expect(second.snapshots).toHaveLength(1)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1449,6 +1451,18 @@ async function expectPartialAntigravitySnapshots(promise: Promise<unknown>) {
     expect(isAntigravityPartialUsageError(error)).toBe(true)
     if (!isAntigravityPartialUsageError(error)) throw error
     return error.snapshots
+  }
+}
+
+async function expectFatalPartialAntigravityUsage(promise: Promise<unknown>) {
+  try {
+    await promise
+    throw new Error('Expected fatal partial Antigravity usage error')
+  } catch (error) {
+    expect(isAntigravityPartialUsageError(error)).toBe(true)
+    if (!isAntigravityPartialUsageError(error)) throw error
+    expect(error.fatal).toBe(true)
+    return error
   }
 }
 

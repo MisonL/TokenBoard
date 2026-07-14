@@ -22,11 +22,13 @@ type ConcreteCliSource = Exclude<CliSource, 'all'>
 
 type CliEnv = Partial<Record<string, string>>
 type SourceFailure = {
+  fatal: boolean
   source: ConcreteCliSource
   message: string
 }
 
 type CollectOptionalSourceOptions = {
+  deferFailure?: boolean
   failFast?: boolean
   failOnNonUnavailable?: boolean
   ignoreUnavailable?: boolean
@@ -126,7 +128,10 @@ export async function runCollectorCli(
     })
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since)
     deps.stdout(JSON.stringify(result, null, 2))
-    if ((options.failOnSourceError || options.source !== 'all') && collection.sourceFailures.length > 0) {
+    const hasFatalSourceFailure = collection.sourceFailures.some((failure) => failure.fatal)
+    const shouldFailForSourceErrors = (options.failOnSourceError || options.source !== 'all') &&
+      collection.sourceFailures.length > 0
+    if (hasFatalSourceFailure || shouldFailForSourceErrors) {
       deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
       return 1
     }
@@ -212,7 +217,7 @@ async function collectAllSnapshots(context: CollectionContext) {
   if (hookMode) {
     return { snapshots, collectedSources, sourceFailures }
   }
-  const antigravityOptions = { failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
+  const antigravityOptions = { deferFailure: true, failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
   const antigravityContext = { timezone, stateDir: resolveStateDir(env), cursorScope }
   await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity', () => readAntigravityGuiCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
@@ -266,7 +271,7 @@ async function collectOptionalSource(
     if (isAntigravityPartialUsageError(error)) {
       snapshots.push(...error.snapshots)
       collectedSources.push(source)
-      sourceFailures.push({ source, message: sourceFailureMessage(source, 'partial', message) })
+      sourceFailures.push({ source, message: sourceFailureMessage(source, 'partial', message), fatal: error.fatal })
       deps.stderr(formatAntigravityDiagnostic(source, 'partial', message))
       return
     }
@@ -274,10 +279,19 @@ async function collectOptionalSource(
       deps.stderr(formatAntigravityDiagnostic(source, 'unavailable', message))
       return
     }
-    if (options.failFast || options.failOnNonUnavailable) {
+    if (options.failFast || (options.failOnNonUnavailable && !options.deferFailure)) {
       throw safeSourceError(source, error, message)
     }
-    sourceFailures.push({ source, message })
+    const fatal = Boolean(options.failOnNonUnavailable)
+    sourceFailures.push({
+      source,
+      message: source.startsWith('antigravity') ? sourceFailureMessage(source, 'failed', message) : message,
+      fatal
+    })
+    if (source.startsWith('antigravity')) {
+      deps.stderr(formatAntigravityDiagnostic(source, 'failed', message))
+      return
+    }
     deps.stderr(`Skipping ${source} source: ${message}`)
   }
 }

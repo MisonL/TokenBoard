@@ -18,6 +18,20 @@ const antigravitySnapshot: UsageSnapshot = {
   collectedAt: '2026-06-23T10:00:00.000Z'
 }
 
+const claudeSnapshot: UsageSnapshot = {
+  ...antigravitySnapshot,
+  source: 'claude-code',
+  model: 'claude-sonnet-4-5',
+  costUsd: 0.01
+}
+
+const codexSnapshot: UsageSnapshot = {
+  ...antigravitySnapshot,
+  source: 'codex',
+  model: 'gpt-5',
+  costUsd: 0.02
+}
+
 describe('runCollectorCli Antigravity source', () => {
   test('previews the selected Antigravity CLI source', async () => {
     const stdout: string[] = []
@@ -425,6 +439,74 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
+  test('uploads fatal partial Antigravity snapshots before failing all sync', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+    const snapshot = { ...antigravitySnapshot, source: 'antigravity' as const }
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new AntigravityPartialUsageError(
+            'Antigravity language server collection failed after DB history was collected: Invalid Antigravity generator metadata item 3',
+            [snapshot],
+            undefined,
+            true
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[snapshot]])
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=partial category=invalid-metadata',
+      'One or more sources failed: antigravity: status=partial category=invalid-metadata'
+    ])
+  })
+
+  test('uploads healthy sources before failing all sync for a hard Antigravity error', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new Error('Invalid Antigravity generator metadata item 3')
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[claudeSnapshot, codexSnapshot]])
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
+    ])
+  })
+
   test('fails strict all mode after uploading partial Antigravity DB snapshots', async () => {
     const stderr: string[] = []
     const uploaded: UsageSnapshot[][] = []
@@ -520,7 +602,8 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=failed category=invalid-metadata'
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
     ])
   })
 
@@ -582,9 +665,10 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=failed category=invalid-metadata'
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
     ])
-    expect(uploaded).toEqual([])
+    expect(uploaded).toEqual([[]])
   })
 
   test('fails strict all mode for real Antigravity ENOENT failures', async () => {
@@ -607,7 +691,8 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=failed category=metadata-read-failed'
+      'Antigravity collection: source=antigravity status=failed category=metadata-read-failed',
+      'One or more sources failed: antigravity: status=failed category=metadata-read-failed'
     ])
   })
 
