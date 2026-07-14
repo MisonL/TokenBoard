@@ -3,7 +3,7 @@ import { toIsoDate } from '../../lib/time'
 import { usageSourceSchema } from './schema'
 import { normalizeDeviceFilter, usageSummaryStrictMode } from './deduped-daily-usage'
 import type { Bindings } from '../../lib/db'
-import type { UsageSource } from '@tokenboard/usage-core'
+import { isAntigravityUsageSource, type UsageSource } from '@tokenboard/usage-core'
 
 export type DashboardSummary = UsageSummary & {
   dailyTrend: DailyUsageTrendItem[]
@@ -82,23 +82,28 @@ export function usageDetailsToCsv(details: UsageDetails) {
     'total_tokens_without_cache_read',
     'total_tokens',
     'cost_usd',
+    'cost_available',
     'session_count'
   ]
 
-  const rows = details.modelRows.map((row) => [
-    row.usageDate,
-    row.source,
-    row.model,
-    row.inputTokens,
-    row.outputTokens,
-    row.cacheCreationTokens,
-    row.cacheReadTokens,
-    row.cacheReadRate,
-    row.totalTokensWithoutCacheRead,
-    row.totalTokens,
-    row.costUsd,
-    row.sessionCount
-  ])
+  const rows = details.modelRows.map((row) => {
+    const costAvailable = !isAntigravityUsageSource(row.source)
+    return [
+      row.usageDate,
+      row.source,
+      row.model,
+      row.inputTokens,
+      row.outputTokens,
+      row.cacheCreationTokens,
+      row.cacheReadTokens,
+      row.cacheReadRate,
+      row.totalTokensWithoutCacheRead,
+      row.totalTokens,
+      costAvailable ? row.costUsd : '',
+      costAvailable,
+      row.sessionCount
+    ]
+  })
 
   return [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\n')
 }
@@ -113,7 +118,7 @@ function readIsoDate(value: string | undefined, fallback: string) {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : fallback
 }
 
-function csvCell(value: string | number) {
+function csvCell(value: string | number | boolean) {
   const text = String(value)
   if (/[",\n\r]/.test(text)) {
     return `"${text.replaceAll('"', '""')}"`
