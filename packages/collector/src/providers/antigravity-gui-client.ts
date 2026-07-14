@@ -346,8 +346,8 @@ function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & {
       res.once('error', responseError)
       res.once('aborted', () => responseError(new Error('response aborted')))
       if (res.statusCode !== 200) {
-        res.resume()
         rejectOnce(new Error(formatMetadataRequestHttpError(input.source, res.statusCode)))
+        res.destroy()
         return
       }
       const chunks: Buffer[] = []

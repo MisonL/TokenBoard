@@ -85,6 +85,48 @@ describe('createAntigravityLanguageServerClient', () => {
     }
   })
 
+  test.skipIf(process.platform === 'win32')('aborts non-success metadata responses instead of draining them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-error-response-'))
+    const response = Object.assign(new PassThrough(), { statusCode: 500 })
+    const request = new EventEmitter()
+    const destroy = vi.spyOn(response, 'destroy')
+    let client: Awaited<ReturnType<typeof createAntigravityLanguageServerClient>> | undefined
+
+    try {
+      Object.assign(request, { end: vi.fn() })
+      requestMock.mockImplementation((_options, callback) => {
+        callback(response)
+        return request
+      })
+
+      const serverPath = join(root, 'server.mjs')
+      await writeFile(serverPath, [
+        '#!/usr/bin/env node',
+        'const portIndex = process.argv.indexOf("--https_server_port")',
+        'const port = process.argv[portIndex + 1]',
+        'process.stdout.write(`fixed port at ${port} for HTTPS`)',
+        'setInterval(() => undefined, 1_000)'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+
+      client = await createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      })
+      const metadata = client.requestGeneratorMetadata({
+        source: 'antigravity',
+        cascadeId: cascadeId(2)
+      })
+
+      await expect(metadata).rejects.toThrow('Antigravity metadata request failed for antigravity: HTTP 500')
+      expect(destroy).toHaveBeenCalledWith()
+    } finally {
+      await client?.close()
+      requestMock.mockReset()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test.skipIf(process.platform === 'win32')('closes the language server process when startup times out', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-'))
     const previousTimeout = process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS
