@@ -648,8 +648,8 @@ describe('collectAntigravityCliUsage', () => {
           events: [{
             cascadeHash: conversationA,
             eventHash: 'e'.repeat(64),
-            createdAt: '2026-06-23T16:30:00.000Z',
-            model: 'Gemini 3.5 Flash (Medium)',
+            createdAt: '2026-06-23T16:29:50.000Z',
+            model: 'gemini-3-flash-a',
             inputTokens: 100,
             outputTokens: 12,
             cacheCreationTokens: 0,
@@ -1148,13 +1148,13 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
-  test('treats statusline and DB history as the same usage stream', async () => {
+  test('dedupes a statusline display model against the matching DB history model ID', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-dedupe-'))
     try {
       const eventPath = join(root, 'events.jsonl')
       await writeEvents(eventPath, [event({
         conversationHash: conversationA,
-        capturedAt: '2026-06-23T16:30:00.000Z',
+        capturedAt: '2026-06-23T16:30:12.000Z',
         usage: { inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 }
       })])
 
@@ -1169,7 +1169,7 @@ describe('collectAntigravityCliUsage', () => {
             cascadeHash: conversationA,
             eventHash: 'e'.repeat(64),
             createdAt: '2026-06-23T16:30:00.000Z',
-            model: 'Gemini 3.5 Flash (Medium)',
+            model: 'gemini-3-flash-a',
             inputTokens: 100,
             outputTokens: 12,
             cacheCreationTokens: 0,
@@ -1192,6 +1192,46 @@ describe('collectAntigravityCliUsage', () => {
         sessionCount: 1,
         collectedAt: '2026-06-24T02:00:00.000Z'
       }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps different-model calls with identical token counts at different times', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-distinct-model-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      await writeEvents(eventPath, [event({
+        conversationHash: conversationA,
+        capturedAt: '2026-06-23T16:31:00.000Z',
+        usage: { inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 }
+      })])
+
+      const snapshots = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-a']),
+          events: [{
+            cascadeHash: conversationA,
+            eventHash: 'e'.repeat(64),
+            createdAt: '2026-06-23T16:30:00.000Z',
+            model: 'claude-sonnet-4-5',
+            inputTokens: 100,
+            outputTokens: 12,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 50
+          }]
+        })
+      })
+
+      expect(snapshots).toHaveLength(2)
+      expect(snapshots).toEqual(expect.arrayContaining([
+        expect.objectContaining({ model: 'Gemini 3.5 Flash (Medium)', totalTokens: 162 }),
+        expect.objectContaining({ model: 'claude-sonnet-4-5', totalTokens: 162 })
+      ]))
     } finally {
       await rm(root, { recursive: true, force: true })
     }
