@@ -25,6 +25,7 @@ type AntigravityRawUsage = {
 class MalformedProtobufError extends Error {}
 
 const maxTokenValue = 1_000_000_000
+const maxModelLength = 160
 const placeholderModelPrefix = 'MODEL_PLACEHOLDER_'
 
 export function parseAntigravityGeneratorMetadataBlob(
@@ -44,12 +45,13 @@ export function parseAntigravityGeneratorMetadataBlobEvents(
   const usages = readUsages(chatModel)
   if (usages.length === 0) return []
   const createdAt = readCreatedAt(chatModel, options.fallbackCreatedAt)
-  const model = readModel(chatModel)
+  const { model, modelAliases } = readModel(chatModel)
   return usages.map((usage) => ({
     cascadeHash: hash(options.cascadeId),
     eventHash: historyEventHash({ root, usage, options, createdAt, model }),
     createdAt,
     model,
+    ...(modelAliases.length > 0 ? { modelAliases } : {}),
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheCreationTokens: 0,
@@ -157,10 +159,17 @@ function readModel(chatModel: ProtoMessage) {
     readString(chatModel, 19),
     readString(chatModel, 21)
   ].filter((value): value is string => Boolean(value))
+  if (candidates.some((value) => value.length > maxModelLength)) {
+    throw new Error('Invalid Antigravity generator metadata blob: model is invalid')
+  }
   const model = candidates.find((value) => !value.startsWith(placeholderModelPrefix))
   const fallback = candidates[0]
   if (!model && !fallback) throw new Error('Invalid Antigravity generator metadata blob: model is required')
-  return model ?? fallback
+  const selected = model ?? fallback
+  const modelAliases = [...new Set(candidates.filter((value) => (
+    value !== selected && !value.startsWith(placeholderModelPrefix)
+  )))]
+  return { model: selected, modelAliases }
 }
 
 function sameUsage(left: AntigravityRawUsage, right: AntigravityRawUsage) {

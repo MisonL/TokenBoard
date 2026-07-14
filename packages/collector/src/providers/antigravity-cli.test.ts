@@ -333,6 +333,8 @@ describe('collectAntigravityCliUsage', () => {
         sessionCount: 1,
         collectedAt: '2026-06-24T02:00:00.000Z'
       }])
+      const cursor = await readFile(join(root, 'antigravity-cli-cursor.json'), 'utf8')
+      expect(cursor).not.toContain('history-occurrence')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -650,6 +652,7 @@ describe('collectAntigravityCliUsage', () => {
             eventHash: 'e'.repeat(64),
             createdAt: '2026-06-23T16:29:50.000Z',
             model: 'gemini-3-flash-a',
+            modelAliases: ['Gemini 3.5 Flash (Medium)'],
             inputTokens: 100,
             outputTokens: 12,
             cacheCreationTokens: 0,
@@ -809,15 +812,20 @@ describe('collectAntigravityCliUsage', () => {
     }
   }, 30000)
 
-  test('dedupes statusline events after matching DB history alias cursor entries exist', async () => {
+  test('claims one delayed statusline event per matching history event', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-after-history-'))
     try {
       const eventPath = join(root, 'events.jsonl')
+      const rawConversationId = 'conversation-a'
+      const statuslineConversationHash = legacyHash(rawConversationId)
+      const historyConversationHash = plainHash(rawConversationId)
       const historyEvent = {
-        cascadeHash: conversationA,
+        cascadeHash: historyConversationHash,
+        cascadeHashAliases: [statuslineConversationHash],
         eventHash: 'e'.repeat(64),
         createdAt: '2026-06-23T16:30:00.000Z',
-        model: 'Gemini 3.5 Flash (Medium)',
+        model: 'gemini-3-flash-a',
+        modelAliases: ['Gemini 3.5 Flash (Medium)'],
         inputTokens: 100,
         outputTokens: 12,
         cacheCreationTokens: 0,
@@ -828,16 +836,17 @@ describe('collectAntigravityCliUsage', () => {
         stateDir: root,
         eventPath,
         timezone: 'Asia/Shanghai',
-        collectedAt: '2026-06-24T02:00:00.000Z',
+        collectedAt: '2026-06-23T16:30:05.000Z',
         readDbUsageEvents: async () => ({
-          cascadeIds: new Set(['conversation-a']),
+          cascadeIds: new Set([rawConversationId]),
           events: [historyEvent]
         })
       })
       await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
       await appendFile(eventPath, `${JSON.stringify(event({
-        conversationHash: conversationA,
-        capturedAt: '2026-06-23T16:30:00.000Z',
+        conversationHash: statuslineConversationHash,
+        conversationHashAliases: [historyConversationHash],
+        capturedAt: '2026-06-23T16:30:30.000Z',
         usage: {
           inputTokens: 100,
           outputTokens: 12,
@@ -849,15 +858,40 @@ describe('collectAntigravityCliUsage', () => {
         stateDir: root,
         eventPath,
         timezone: 'Asia/Shanghai',
-        collectedAt: '2026-06-24T02:05:00.000Z',
+        collectedAt: '2026-06-23T16:30:35.000Z',
         readDbUsageEvents: async () => ({
-          cascadeIds: new Set(['conversation-a']),
+          cascadeIds: new Set([rawConversationId]),
+          events: [historyEvent]
+        })
+      })
+      await appendFile(eventPath, `${JSON.stringify(event({
+        conversationHash: statuslineConversationHash,
+        conversationHashAliases: [historyConversationHash],
+        captureId: 'b'.repeat(32),
+        capturedAt: '2026-06-23T16:30:31.000Z',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 12,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 50
+        }
+      }))}\n`)
+      const third = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-23T16:30:36.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set([rawConversationId]),
           events: [historyEvent]
         })
       })
 
       expect(first).toHaveLength(1)
       expect(second).toEqual([])
+      expect(third).toEqual([
+        expect.objectContaining({ model: 'Gemini 3.5 Flash (Medium)', totalTokens: 162 })
+      ])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1154,7 +1188,7 @@ describe('collectAntigravityCliUsage', () => {
       const eventPath = join(root, 'events.jsonl')
       await writeEvents(eventPath, [event({
         conversationHash: conversationA,
-        capturedAt: '2026-06-23T16:30:12.000Z',
+        capturedAt: '2026-06-23T16:31:00.000Z',
         usage: { inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 }
       })])
 
@@ -1170,6 +1204,7 @@ describe('collectAntigravityCliUsage', () => {
             eventHash: 'e'.repeat(64),
             createdAt: '2026-06-23T16:30:00.000Z',
             model: 'gemini-3-flash-a',
+            modelAliases: ['Gemini 3.5 Flash (Medium)'],
             inputTokens: 100,
             outputTokens: 12,
             cacheCreationTokens: 0,
@@ -1197,13 +1232,13 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
-  test('keeps different-model calls with identical token counts at different times', async () => {
+  test('keeps different-model calls with identical token counts inside the old time window', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-distinct-model-'))
     try {
       const eventPath = join(root, 'events.jsonl')
       await writeEvents(eventPath, [event({
         conversationHash: conversationA,
-        capturedAt: '2026-06-23T16:31:00.000Z',
+        capturedAt: '2026-06-23T16:30:12.000Z',
         usage: { inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 }
       })])
 
@@ -1380,6 +1415,7 @@ function baseEvent() {
     schemaVersion: 'antigravity-statusline/v1',
     capturedAt: '2026-06-23T10:00:00.000Z',
     conversationHash: defaultConversationHash,
+    conversationHashAliases: undefined as string[] | undefined,
     captureId: undefined as string | undefined,
     eventHash: undefined as string | undefined,
     model: 'Gemini 3.5 Flash (Medium)',
@@ -1395,6 +1431,8 @@ function baseEvent() {
 function historyEvent(overrides: Partial<{
   eventHash: string
   createdAt: string
+  model: string
+  modelAliases: string[]
   inputTokens: number
   outputTokens: number
   cacheCreationTokens: number

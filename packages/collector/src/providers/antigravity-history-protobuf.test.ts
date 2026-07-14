@@ -47,11 +47,30 @@ describe('parseAntigravityGeneratorMetadataBlob', () => {
       eventHash: expect.any(String),
       createdAt: '2026-06-23T15:38:59.863Z',
       model: 'gemini-3-flash-a',
+      modelAliases: ['Gemini 3.5 Flash (High)'],
       inputTokens: 25_908,
       outputTokens: 551,
       cacheCreationTokens: 0,
       cacheReadTokens: 24_454
     })
+  })
+
+  test('rejects an oversized display model alias', () => {
+    const blob = message([
+      fieldMessage(1, message([
+        fieldMessage(4, usageMessage({ inputTokens: 10, outputTokens: 2 })),
+        fieldMessage(9, message([
+          fieldMessage(4, message([fieldVarint(1, 1_782_229_139)]))
+        ])),
+        fieldString(19, 'gemini-3-flash-a'),
+        fieldString(21, 'x'.repeat(161))
+      ]))
+    ])
+
+    expect(() => parseAntigravityGeneratorMetadataBlob(blob, {
+      cascadeId: 'conversation-a',
+      rowIndex: 0
+    })).toThrow('model is invalid')
   })
 
   test('emits distinct usage blocks from the same SQLite row', () => {

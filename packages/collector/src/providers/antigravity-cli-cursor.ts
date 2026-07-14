@@ -11,12 +11,16 @@ import type { StatuslineEvent } from './antigravity-cli-statusline'
 import {
   hasIndexedStatuslineOccurrences,
   historyStatuslineClaimKey,
-  isWithinCrossSourceMatchWindow,
-  normalizeStatuslineDedupeKey,
-  statuslineDedupeKey,
   takeIndexedStatuslineOccurrence,
   type CliStatuslineOccurrenceIndex
 } from './antigravity-cli-occurrence-index'
+import {
+  historyOccurrenceClaimKey,
+  historyOccurrenceKey,
+  shouldTrackHistoryOccurrence,
+  takeIndexedHistoryOccurrence,
+  type CliHistoryOccurrenceIndex
+} from './antigravity-cli-history-index'
 
 const source = 'antigravity-cli'
 
@@ -29,7 +33,9 @@ export function pushCliUsageEvent(input: {
   emittedKeys: Set<string>
   timezone: string
   collectedAt: string
+  origin: 'statusline' | 'history'
   occurrenceIndex?: CliStatuslineOccurrenceIndex
+  historyOccurrenceIndex?: CliHistoryOccurrenceIndex
 }) {
   if (!input.event.eventHash) {
     pushStatuslineUsageEvent(input)
@@ -71,6 +77,12 @@ export function pushCliUsageEvent(input: {
   }
   input.snapshots.push(snapshot)
   input.emittedKeys.add(primaryKey)
+  if (
+    input.origin === 'history' &&
+    shouldTrackHistoryOccurrence(input.event.capturedAt, input.collectedAt)
+  ) {
+    markHistoryOccurrences(input.cursor, input.event, eventKeys.slice(1))
+  }
 }
 
 function pushStatuslineUsageEvent(input: {
@@ -80,8 +92,20 @@ function pushStatuslineUsageEvent(input: {
   emittedKeys: Set<string>
   timezone: string
   collectedAt: string
+  historyOccurrenceIndex?: CliHistoryOccurrenceIndex
 }) {
   const eventKeys = usageEventKeys(input.event)
+  const historyEventHash = input.historyOccurrenceIndex
+    ? takeIndexedHistoryOccurrence({
+        index: input.historyOccurrenceIndex,
+        statuslineKeys: eventKeys,
+        capturedAt: input.event.capturedAt
+      })
+    : undefined
+  if (historyEventHash) {
+    markStatuslineCoveredByHistory(input.cursor, input.event, historyEventHash)
+    return
+  }
   const capturedAtMs = Date.parse(input.event.capturedAt)
   const coveredKey = eventKeys.find((key) => {
     const entry = input.cursor.files[key]
@@ -261,8 +285,8 @@ function hasStatuslineOccurrences(
   occurrenceIndex?: CliStatuslineOccurrenceIndex
 ) {
   if (occurrenceIndex) return hasIndexedStatuslineOccurrences(occurrenceIndex, statuslineKey)
-  const normalizedKey = normalizeStatuslineDedupeKey(statuslineKey)
-  return Object.keys(cursor.files).some((key) => occurrenceSignature(key) === normalizedKey)
+  const prefix = `statusline-occurrence\0${statuslineKey}\0`
+  return Object.keys(cursor.files).some((key) => key.startsWith(prefix))
 }
 
 function findUnclaimedStatuslineOccurrence(
@@ -270,25 +294,19 @@ function findUnclaimedStatuslineOccurrence(
   statuslineKeys: string[],
   cursor: AntigravityCliCursor
 ) {
-  const normalizedKeys = new Set(statuslineKeys.map(normalizeStatuslineDedupeKey))
-  const candidates = Object.entries(cursor.files)
-    .filter(([key, entry]) => (
-      normalizedKeys.has(occurrenceSignature(key) ?? '') &&
-      entry.snapshots.length > 0 &&
-      !cursor.files[historyStatuslineClaimKey(key)]
-    ))
+  const candidates = statuslineKeys.flatMap((statuslineKey) => {
+    const prefix = `statusline-occurrence\0${statuslineKey}\0`
+    return Object.entries(cursor.files)
+      .filter(([key, entry]) => (
+        key.startsWith(prefix) &&
+        entry.snapshots.length > 0 &&
+        !cursor.files[historyStatuslineClaimKey(key)]
+      ))
+  })
   const exact = candidates.find(([key]) => key.endsWith(`\0${event.capturedAt}`))
   if (exact) return exact[0]
-  const capturedAtMs = Date.parse(event.capturedAt)
-  const nearest = candidates
-    .map((candidate) => ({ candidate, distance: candidate[1].mtimeMs - capturedAtMs }))
-    .filter((item) => isWithinCrossSourceMatchWindow(item.candidate[1].mtimeMs, capturedAtMs))
-    .sort((left, right) => left.distance - right.distance || left.candidate[0].localeCompare(right.candidate[0]))[0]
-  if (nearest) return nearest.candidate[0]
-  const modelKeys = new Set(statuslineKeys.filter((key) => key.startsWith('event\0')))
-  const sameModel = candidates.filter(([key]) => modelKeys.has(rawOccurrenceSignature(key) ?? ''))
-  sameModel.sort((left, right) => left[1].mtimeMs - right[1].mtimeMs || left[0].localeCompare(right[0]))
-  return sameModel[0]?.[0]
+  candidates.sort((left, right) => left[1].mtimeMs - right[1].mtimeMs || left[0].localeCompare(right[0]))
+  return candidates[0]?.[0]
 }
 
 function markHistoryEventCoveredByStatusline(input: {
@@ -308,6 +326,44 @@ function markHistoryEventCoveredByStatusline(input: {
     snapshots: [],
     marker: claimKey,
     mtimeMs: Date.parse(input.event.capturedAt),
+    pendingUpload: false
+  })
+}
+
+function markHistoryOccurrences(
+  cursor: AntigravityCliCursor,
+  event: StatuslineEvent,
+  statuslineKeys: string[]
+) {
+  if (!event.eventHash) return
+  for (const statuslineKey of statuslineKeys) {
+    const key = historyOccurrenceKey(statuslineKey, event.eventHash)
+    cursor.files[key] ??= newCursorEntry({
+      snapshots: [],
+      marker: key,
+      mtimeMs: Date.parse(event.capturedAt),
+      pendingUpload: false
+    })
+  }
+}
+
+function markStatuslineCoveredByHistory(
+  cursor: AntigravityCliCursor,
+  event: StatuslineEvent,
+  eventHash: string
+) {
+  const claimKey = historyOccurrenceClaimKey(eventHash)
+  cursor.files[claimKey] ??= newCursorEntry({
+    snapshots: [],
+    marker: claimKey,
+    mtimeMs: Date.parse(event.capturedAt),
+    pendingUpload: false
+  })
+  const occurrenceKey = statuslineOccurrenceKey(event)
+  cursor.files[occurrenceKey] ??= newCursorEntry({
+    snapshots: [],
+    marker: occurrenceKey,
+    mtimeMs: Date.parse(event.capturedAt),
     pendingUpload: false
   })
 }
@@ -345,19 +401,21 @@ function newCursorEntry(input: {
 
 function usageEventKeys(event: StatuslineEvent) {
   const conversationHashes = [...new Set([event.conversationHash, ...(event.conversationHashAliases ?? [])])]
-  const dedupeKeys = conversationHashes.map((hash) => statuslineDedupeKey(event, hash))
-  const legacyKeys = conversationHashes.map((hash) => statuslineEventKey(event, hash))
+  const models = [...new Set([event.model, ...(event.modelAliases ?? [])])]
+  const statuslineKeys = conversationHashes.flatMap((hash) => (
+    models.map((model) => statuslineEventKey(event, hash, model))
+  ))
   if (event.eventHash) {
-    return [['history-event', event.conversationHash, event.eventHash].join('\0'), ...dedupeKeys, ...legacyKeys]
+    return [['history-event', event.conversationHash, event.eventHash].join('\0'), ...statuslineKeys]
   }
-  return [...dedupeKeys, ...legacyKeys]
+  return statuslineKeys
 }
 
-function statuslineEventKey(event: StatuslineEvent, conversationHash: string) {
+function statuslineEventKey(event: StatuslineEvent, conversationHash: string, model = event.model) {
   return [
     'event',
     conversationHash,
-    event.model,
+    model,
     event.inputTokens,
     event.outputTokens,
     event.cacheCreationTokens,
@@ -371,19 +429,6 @@ function statuslineOccurrenceKey(event: StatuslineEvent) {
     statuslineEventKey(event, event.conversationHash),
     event.captureId ?? event.capturedAt
   ].join('\0')
-}
-
-function occurrenceSignature(key: string) {
-  const signature = rawOccurrenceSignature(key)
-  return signature ? normalizeStatuslineDedupeKey(signature) : undefined
-}
-
-function rawOccurrenceSignature(key: string) {
-  const prefix = 'statusline-occurrence\0'
-  if (!key.startsWith(prefix)) return undefined
-  const separator = key.lastIndexOf('\0')
-  if (separator <= prefix.length) return undefined
-  return key.slice(prefix.length, separator)
 }
 
 function statuslineHeadKeys(event: StatuslineEvent) {

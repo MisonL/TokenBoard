@@ -10,29 +10,25 @@ type OccurrenceBucket = {
   nextIndex: number
 }
 
-export type CliStatuslineOccurrenceIndex = {
-  crossSource: Map<string, OccurrenceBucket>
-  byModel: Map<string, OccurrenceBucket>
-  claimed: Set<string>
-}
+export type CliStatuslineOccurrenceIndex = Map<string, OccurrenceBucket>
 
 export function buildCliStatuslineOccurrenceIndex(cursor: { files: Record<string, CursorEntry> }) {
-  const index: CliStatuslineOccurrenceIndex = {
-    crossSource: new Map(),
-    byModel: new Map(),
-    claimed: new Set()
-  }
+  const index: CliStatuslineOccurrenceIndex = new Map()
   for (const [key, entry] of Object.entries(cursor.files)) {
-    if (entry.snapshots.length === 0) continue
-    const signature = storedStatuslineSignature(key)
-    if (!signature) continue
-    const available = !cursor.files[historyStatuslineClaimKey(key)]
-    addOccurrence(index.crossSource, normalizeStatuslineDedupeKey(signature), key, entry, available)
-    if (signature.startsWith('event\0')) {
-      addOccurrence(index.byModel, signature, key, entry, available)
-    }
+    if (!key.startsWith(occurrencePrefix) || entry.snapshots.length === 0) continue
+    const separator = key.lastIndexOf('\0')
+    const signature = key.slice(occurrencePrefix.length, separator)
+    const bucket = index.get(signature) ?? newOccurrenceBucket()
+    index.set(signature, bucket)
+    if (cursor.files[historyStatuslineClaimKey(key)]) continue
+    bucket.available.add(key)
+    bucket.mtimeByKey.set(key, entry.mtimeMs)
+    bucket.ordered.push(key)
+    const byTime = bucket.byMtime.get(entry.mtimeMs) ?? []
+    byTime.push(key)
+    bucket.byMtime.set(entry.mtimeMs, byTime)
   }
-  for (const bucket of [...index.crossSource.values(), ...index.byModel.values()]) {
+  for (const bucket of index.values()) {
     bucket.ordered.sort((left, right) => (
       bucket.mtimeByKey.get(left)! - bucket.mtimeByKey.get(right)! || left.localeCompare(right)
     ))
@@ -40,29 +36,11 @@ export function buildCliStatuslineOccurrenceIndex(cursor: { files: Record<string
   return index
 }
 
-function addOccurrence(
-  buckets: Map<string, OccurrenceBucket>,
-  signature: string,
-  key: string,
-  entry: CursorEntry,
-  available: boolean
-) {
-  const bucket = buckets.get(signature) ?? newOccurrenceBucket()
-  buckets.set(signature, bucket)
-  if (!available) return
-  bucket.available.add(key)
-  bucket.mtimeByKey.set(key, entry.mtimeMs)
-  bucket.ordered.push(key)
-  const byTime = bucket.byMtime.get(entry.mtimeMs) ?? []
-  byTime.push(key)
-  bucket.byMtime.set(entry.mtimeMs, byTime)
-}
-
 export function hasIndexedStatuslineOccurrences(
   index: CliStatuslineOccurrenceIndex,
   statuslineKey: string
 ) {
-  return index.crossSource.has(normalizeStatuslineDedupeKey(statuslineKey))
+  return index.has(statuslineKey)
 }
 
 export function takeIndexedStatuslineOccurrence(
@@ -71,53 +49,37 @@ export function takeIndexedStatuslineOccurrence(
   index: CliStatuslineOccurrenceIndex
 ) {
   const capturedAtMs = Date.parse(event.capturedAt)
-  const normalizedKeys = [...new Set(statuslineKeys.map(normalizeStatuslineDedupeKey))]
-  for (const statuslineKey of normalizedKeys) {
-    const bucket = index.crossSource.get(statuslineKey)
+  for (const statuslineKey of statuslineKeys) {
+    const bucket = index.get(statuslineKey)
     if (!bucket) continue
-    const nearest = takeNearestOccurrence(index, bucket, capturedAtMs)
-    if (nearest) return nearest
+    const exact = takeExactOccurrence(bucket, capturedAtMs)
+    if (exact) return exact
   }
-  const modelKeys = [...new Set(statuslineKeys.filter((key) => key.startsWith('event\0')))]
-  const selected = earliestAvailableOccurrence(modelKeys, index.byModel, index.claimed)
-  return selected ? claimOccurrence(index, selected.bucket, selected.key) : undefined
+  const selected = earliestAvailableOccurrence(statuslineKeys, index)
+  return selected ? claimOccurrence(selected.bucket, selected.key) : undefined
 }
 
-function takeNearestOccurrence(index: CliStatuslineOccurrenceIndex, bucket: OccurrenceBucket, mtimeMs: number) {
+function takeExactOccurrence(bucket: OccurrenceBucket, mtimeMs: number) {
   const keys = bucket.byMtime.get(mtimeMs)
-  if (keys) {
-    let offset = bucket.byMtimeIndex.get(mtimeMs) ?? 0
-    while (offset < keys.length && !isAvailable(index, bucket, keys[offset])) offset += 1
-    bucket.byMtimeIndex.set(mtimeMs, offset + 1)
-    const key = keys[offset]
-    if (key) return claimOccurrence(index, bucket, key)
-  }
-  let nearest: string | undefined
-  let nearestDistance = Number.POSITIVE_INFINITY
-  for (const key of bucket.available) {
-    if (index.claimed.has(key)) continue
-    const statuslineAtMs = bucket.mtimeByKey.get(key) ?? Number.POSITIVE_INFINITY
-    const distance = statuslineAtMs - mtimeMs
-    if (isWithinCrossSourceMatchWindow(statuslineAtMs, mtimeMs) && distance < nearestDistance) {
-      nearest = key
-      nearestDistance = distance
-    }
-  }
-  return nearest ? claimOccurrence(index, bucket, nearest) : undefined
+  if (!keys) return undefined
+  let index = bucket.byMtimeIndex.get(mtimeMs) ?? 0
+  while (index < keys.length && !bucket.available.has(keys[index])) index += 1
+  bucket.byMtimeIndex.set(mtimeMs, index + 1)
+  const key = keys[index]
+  return key ? claimOccurrence(bucket, key) : undefined
 }
 
 function earliestAvailableOccurrence(
   statuslineKeys: string[],
-  buckets: Map<string, OccurrenceBucket>,
-  claimed: Set<string>
+  index: CliStatuslineOccurrenceIndex
 ) {
   let selected: { bucket: OccurrenceBucket; key: string } | undefined
   for (const statuslineKey of statuslineKeys) {
-    const bucket = buckets.get(statuslineKey)
+    const bucket = index.get(statuslineKey)
     if (!bucket) continue
     while (
       bucket.nextIndex < bucket.ordered.length &&
-      (!bucket.available.has(bucket.ordered[bucket.nextIndex]) || claimed.has(bucket.ordered[bucket.nextIndex]))
+      !bucket.available.has(bucket.ordered[bucket.nextIndex])
     ) {
       bucket.nextIndex += 1
     }
@@ -133,14 +95,9 @@ function occurrenceMtime(bucket: OccurrenceBucket, key: string) {
   return bucket.mtimeByKey.get(key) ?? Number.POSITIVE_INFINITY
 }
 
-function claimOccurrence(index: CliStatuslineOccurrenceIndex, bucket: OccurrenceBucket, key: string) {
-  index.claimed.add(key)
+function claimOccurrence(bucket: OccurrenceBucket, key: string) {
   bucket.available.delete(key)
   return key
-}
-
-function isAvailable(index: CliStatuslineOccurrenceIndex, bucket: OccurrenceBucket, key: string) {
-  return bucket.available.has(key) && !index.claimed.has(key)
 }
 
 function newOccurrenceBucket(): OccurrenceBucket {
@@ -159,41 +116,3 @@ export function historyStatuslineClaimKey(statuslineKey: string) {
 }
 
 const occurrencePrefix = 'statusline-occurrence\0'
-const crossSourceMatchWindowMs = 30_000
-
-export function isWithinCrossSourceMatchWindow(statuslineAtMs: number, historyAtMs: number) {
-  const delayMs = statuslineAtMs - historyAtMs
-  return delayMs >= 0 && delayMs <= crossSourceMatchWindowMs
-}
-
-export function statuslineDedupeKey(event: StatuslineEvent, conversationHash: string) {
-  return [
-    dedupeKeyPrefix,
-    conversationHash,
-    event.inputTokens,
-    event.outputTokens,
-    event.cacheCreationTokens,
-    event.cacheReadTokens
-  ].join('\0')
-}
-
-export function normalizeStatuslineDedupeKey(key: string) {
-  if (key.startsWith(`${dedupeKeyPrefix}\0`)) return key
-  const parts = key.split('\0')
-  if (parts[0] !== 'event' || parts.length < 7) return key
-  return [dedupeKeyPrefix, parts[1], ...parts.slice(-4)].join('\0')
-}
-
-function storedStatuslineSignature(key: string) {
-  if (key.startsWith(occurrencePrefix)) {
-    const separator = key.lastIndexOf('\0')
-    if (separator <= occurrencePrefix.length) return undefined
-    return key.slice(occurrencePrefix.length, separator)
-  }
-  if (key.startsWith('event\0') || key.startsWith(`${dedupeKeyPrefix}\0`)) {
-    return key
-  }
-  return undefined
-}
-
-const dedupeKeyPrefix = 'event-v2'

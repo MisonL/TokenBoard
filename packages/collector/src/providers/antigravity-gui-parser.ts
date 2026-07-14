@@ -6,6 +6,7 @@ export type AntigravityUsageEvent = {
   eventHash: string
   createdAt: string
   model: string
+  modelAliases?: string[]
   inputTokens: number
   outputTokens: number
   cacheCreationTokens: number

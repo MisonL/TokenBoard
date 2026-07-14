@@ -15,6 +15,7 @@ import { readAntigravityDbUsageEvents, type AntigravityDbUsageResult } from './a
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseStatuslineEvent, type StatuslineEvent } from './antigravity-cli-statusline'
 import { buildCliStatuslineOccurrenceIndex } from './antigravity-cli-occurrence-index'
+import { buildCliHistoryOccurrenceIndex } from './antigravity-cli-history-index'
 import {
   lastSeenCliDbRowIndexByCascadeHash,
   markCliDbRowsProcessed,
@@ -67,6 +68,10 @@ async function collectAntigravityCliUsageLocked(input: {
   cursor.antigravityDbFileScan ??= { nextSequence: 0, files: {} }
   const emittedKeys = new Set<string>()
   const snapshots: UsageSnapshot[] = []
+  const statuslineAvailable = Boolean(eventStats)
+  const historyOccurrenceIndex = statuslineAvailable
+    ? buildCliHistoryOccurrenceIndex(cursor)
+    : undefined
 
   if (eventStats) {
     const eventSizeBytes = readEventSizeBytes(eventStats.size)
@@ -77,16 +82,34 @@ async function collectAntigravityCliUsageLocked(input: {
       ? 0
       : scanStartOffset(cursor.lastScanOffsetBytes, eventSizeBytes)
     for await (const event of readStatuslineEvents(eventPath, scanStartBytes, eventSizeBytes)) {
-      pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt })
+      pushCliUsageEvent({
+        event,
+        cursor,
+        snapshots,
+        emittedKeys,
+        timezone,
+        collectedAt,
+        origin: 'statusline',
+        historyOccurrenceIndex
+      })
     }
     cursor.lastScanOffsetBytes = eventSizeBytes
     cursor.lastScanGeneration = generation
   }
 
   const occurrenceIndex = buildCliStatuslineOccurrenceIndex(cursor)
-  const localDbUsage = await readOptionalLocalDbUsage(options, Boolean(eventStats), cursor)
+  const localDbUsage = await readOptionalLocalDbUsage(options, statuslineAvailable, cursor)
   for (const event of localDbUsage.events.map(historyEvent)) {
-    pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt, occurrenceIndex })
+    pushCliUsageEvent({
+      event,
+      cursor,
+      snapshots,
+      emittedKeys,
+      timezone,
+      collectedAt,
+      origin: 'history',
+      occurrenceIndex
+    })
   }
   markCliDbRowsProcessed({
     cursor,
@@ -166,6 +189,7 @@ function historyEvent(event: AntigravityUsageEvent): StatuslineEvent {
     conversationHashAliases: event.cascadeHashAliases,
     eventHash: event.eventHash,
     model: event.model,
+    modelAliases: event.modelAliases,
     inputTokens: event.inputTokens,
     outputTokens: event.outputTokens,
     cacheCreationTokens: event.cacheCreationTokens,

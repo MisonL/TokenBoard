@@ -45,6 +45,7 @@ export type StatuslineEvent = {
   conversationHashAliases?: string[]
   eventHash?: string
   model: string
+  modelAliases?: string[]
   inputTokens: number
   outputTokens: number
   cacheCreationTokens: number
