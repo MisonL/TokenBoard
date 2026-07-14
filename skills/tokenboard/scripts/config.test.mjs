@@ -91,6 +91,34 @@ test('writes active server profile while preserving other server credentials', (
   assert.equal(config.servers['https://prod.example.com'].uploadToken, 'prod-token')
 })
 
+test('migrates legacy root credentials before activating another server profile', () => {
+  const config = withServerProfile(
+    {
+      endpoint: 'https://prod.example.com/api/v1/ingest',
+      uploadToken: 'prod-token',
+      deviceId: 'dev_prod',
+      installationId: 'inst_prod',
+      repoUrl: 'https://github.com/example/prod.git',
+      repoRef: 'prod-branch'
+    },
+    'https://private.example.com',
+    {
+      endpoint: 'https://private.example.com/api/v1/ingest',
+      uploadToken: 'private-token',
+      deviceId: 'dev_private',
+      installationId: 'inst_private'
+    }
+  )
+
+  assert.equal(config.activeServer, 'https://private.example.com')
+  assert.equal(config.uploadToken, 'private-token')
+  assert.equal(config.servers['https://prod.example.com'].uploadToken, 'prod-token')
+  assert.equal(config.servers['https://prod.example.com'].deviceId, 'dev_prod')
+  assert.equal(config.servers['https://prod.example.com'].repoUrl, 'https://github.com/example/prod.git')
+  assert.equal(config.servers['https://prod.example.com'].repoRef, 'prod-branch')
+  assert.equal(config.servers['https://private.example.com'].uploadToken, 'private-token')
+})
+
 test('normalizes config by mirroring the active server profile', () => {
   const config = normalizeActiveServerConfig({
     activeServer: 'https://prod.example.com',

@@ -211,7 +211,7 @@ export function withUpdatedServerProfile(current, serverOrigin, profile) {
 }
 
 function mergedServerProfile(current, serverOrigin, profile) {
-  const servers = persistedServerProfiles(current.servers)
+  const servers = serverProfilesWithLegacyRoot(current)
   const definedProfile = persistedServerProfile(profile)
   const nextProfile = {
     ...persistedServerProfile(servers[serverOrigin]),
@@ -219,6 +219,18 @@ function mergedServerProfile(current, serverOrigin, profile) {
   }
   servers[serverOrigin] = nextProfile
   return { servers, nextProfile }
+}
+
+function serverProfilesWithLegacyRoot(current) {
+  const servers = persistedServerProfiles(current.servers)
+  if (hasActiveServerProfile(current) || !current?.endpoint) return servers
+  const legacyOrigin = serverOriginFromEndpoint(current.endpoint)
+  const legacyProfile = persistedServerProfile(current)
+  servers[legacyOrigin] = {
+    ...legacyProfile,
+    ...persistedServerProfile(servers[legacyOrigin])
+  }
+  return servers
 }
 
 function withoutUndefinedFields(value) {
