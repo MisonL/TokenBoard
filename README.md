@@ -1,18 +1,22 @@
 # TokenBoard
 
-TokenBoard is a hosted AI token usage dashboard for Claude Code and Codex. A local collector
-normalizes daily usage snapshots, uploads them to a Cloudflare Workers + D1 backend, and the web app
-serves private dashboards, leaderboards, public JSON, README SVG cards, and scheduled reports.
+TokenBoard is a hosted AI token usage dashboard for Claude Code, Codex, and Antigravity. A local
+collector normalizes daily usage snapshots, uploads them to a Cloudflare Workers + D1 backend, and
+the web app serves private dashboards, leaderboards, public JSON, README SVG cards, and scheduled
+reports.
 
 TokenBoard never uploads prompts, completions, raw conversation logs, local paths, or plaintext upload
 tokens.
 
 ## Highlights
 
-- Claude Code and Codex collection through a local Node.js collector.
+- Claude Code, Codex, Antigravity CLI, Antigravity, and Antigravity IDE collection through a local
+  Node.js collector.
 - Dashboard totals, detail drill-down, CSV export, public JSON, README SVG cards, and leaderboards.
 - Total tokens, tokens without cache reads, and cache-read rate across every reporting surface.
-- Device-aware upload tokens with legacy collector compatibility.
+- Device-aware upload tokens, device-link reconnect, and legacy collector compatibility.
+- Antigravity cost is marked unavailable everywhere instead of being treated as complete `$0.00`
+  usage.
 - Daily webhook reports for WeCom, DingTalk, Feishu, and Lark.
 - D1 summary caches and bounded cron backfills tuned for Cloudflare free-tier limits.
 
@@ -25,8 +29,9 @@ https://<your-tokenboard-domain>/settings/install
 ```
 
 Generate an install prompt, paste it into Codex or Claude Code, and let the agent run setup. The
-setup flow pairs the device, writes `~/.tokenboard/config.json`, installs scheduled sync and notifier
-hooks, then runs the initial sync unless `--skip-initial-sync` is used.
+setup flow pairs the device, writes `~/.tokenboard/config.json` and the local
+`~/.tokenboard/device-link.json` recovery claim, installs scheduled sync and notifier hooks, then
+runs the initial sync unless `--skip-initial-sync` is used.
 
 The install form passes the browser's IANA timezone from
 `Intl.DateTimeFormat().resolvedOptions().timeZone`; `UTC` is used only when the browser cannot provide
@@ -108,6 +113,13 @@ four-column, two-column, then single-column layout.
 - Upload tokens without `device_id` are stored under the `legacy` device id.
 - Aggregate views dedupe overlapping legacy and paired-device rows; concrete device filters read raw
   rows for that device.
+- `device-link.json` is local sensitive recovery state. Reconnect requires explicit
+  `--use-device-link`; setup never prints the install claim.
+- Generated install and upgrade commands resolve the remote default branch from `origin/HEAD`.
+  Explicit repo refs try branch checkout first, including all-hex branch names, then fall back to raw
+  ref checkout.
+- Antigravity collection reads local metadata only and emits `costUsd: 0`. Web, public, report, and
+  leaderboard surfaces label those costs as unavailable.
 
 Notifier hooks:
 
@@ -115,6 +127,7 @@ Notifier hooks:
 | --- | --- |
 | Codex | `~/.codex/config.toml` `notify` |
 | Claude Code | `~/.claude/settings.json` `hooks.SessionEnd` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/settings.json` `statusLine.command`, explicit opt-in only |
 
 Hooks append `~/.tokenboard/notify.signal`, start background `notify.mjs`, use `sync.lock`, skip
 auto-upgrade, and coalesce bursts with a 5-minute cooldown plus a trailing run.
@@ -198,6 +211,8 @@ GitHub Actions variables:
 | `TOKENBOARD_WORKER_ROUTE` | required | production custom domain host |
 | `BETTER_AUTH_URL` | required | canonical `https://...` origin |
 | `TOKENBOARD_DAILY_REPORT_HISTORY_DAYS` | `30` | `1` to `31` |
+| `TOKENBOARD_COLLECTOR_REPO_URL` | required | GitHub repository used in generated collector install prompts |
+| `TOKENBOARD_COLLECTOR_REF` | required | branch/ref used in generated collector install prompts |
 | `TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS` | `90` | `1` to `365` |
 | `TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE` | `5` | `1` to `5` due subscriptions per tick |
 | `TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT` | `50` | `1` to `500` summary keys per cron tick |
@@ -214,6 +229,7 @@ Production config validation requires:
 - an HTTPS `BETTER_AUTH_URL`
 - a production route
 - a D1 UUID
+- a GitHub collector repository URL and branch/ref for generated install prompts
 - the `*/15 * * * *` notification cron trigger
 - numeric retention, cron batch, and summary backfill values
 

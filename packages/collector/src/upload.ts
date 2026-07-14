@@ -2,6 +2,7 @@ import {
   maxUsageModelNameLength,
   snapshotHashPayload,
   snapshotKey,
+  usageSourceSchema,
   type UsageSnapshot,
   type UsageSnapshotKey
 } from '@tokenboard/usage-core'
@@ -206,7 +207,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isUsageSource(value: unknown): value is ExistingSnapshotHash['source'] {
-  return value === 'claude-code' || value === 'codex'
+  return usageSourceSchema.safeParse(value).success
 }
 
 function isUsageDate(value: unknown): value is string {

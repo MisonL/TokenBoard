@@ -1,6 +1,8 @@
 import { z } from 'zod'
 
-export const usageSourceSchema = z.enum(['claude-code', 'codex'])
+export const usageSources = ['claude-code', 'codex', 'antigravity-cli', 'antigravity', 'antigravity-ide'] as const
+export const antigravityUsageSources = ['antigravity-cli', 'antigravity', 'antigravity-ide'] as const
+export const usageSourceSchema = z.enum(usageSources)
 export const maxUsageTimezoneLength = 80
 export const maxUsageModelNameLength = 160
 
@@ -33,12 +35,24 @@ export const usageSnapshotSchema = z.object({
       message: 'cacheReadTokens must not exceed totalTokens'
     })
   }
+
+  if (isAntigravityUsageSource(snapshot.source) && snapshot.costUsd > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['costUsd'],
+      message: 'Antigravity source costs are unavailable; costUsd must be 0'
+    })
+  }
 })
 
 export type UsageSource = z.infer<typeof usageSourceSchema>
 export type UsageSnapshot = z.infer<typeof usageSnapshotSchema>
 
 export type UsageSnapshotKey = Pick<UsageSnapshot, 'source' | 'usageDate' | 'model'>
+
+export function isAntigravityUsageSource(source: UsageSource) {
+  return (antigravityUsageSources as readonly UsageSource[]).includes(source)
+}
 
 export function snapshotKey(snapshot: UsageSnapshotKey) {
   return [snapshot.source, snapshot.usageDate, snapshot.model].join('\u0000')

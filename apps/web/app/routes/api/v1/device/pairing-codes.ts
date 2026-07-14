@@ -20,6 +20,7 @@ export const POST = createRoute(async (c) => {
       requestOrigin: new URL(c.req.url).origin
     })
 
+    c.header('Cache-Control', 'no-store')
     return c.json({
       ...result,
       baseUrl

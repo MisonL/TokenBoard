@@ -61,21 +61,24 @@ describe('notification report queries', () => {
           totalTokens: 1000,
           totalTokensWithoutCacheRead: 900,
           cacheReadRate: 100 / 1000,
-          costUsd: 1.25
+          costUsd: 1.25,
+          sourceSplit: [{ source: 'codex' }]
         },
         {
           model: 'claude-sonnet-4-5',
           totalTokens: 600,
           totalTokensWithoutCacheRead: 550,
           cacheReadRate: 50 / 600,
-          costUsd: 1.25
+          costUsd: 1.25,
+          sourceSplit: [{ source: 'claude-code' }]
         },
         {
           model: 'gpt-5-mini',
           totalTokens: 450,
           totalTokensWithoutCacheRead: 350,
           cacheReadRate: 100 / 450,
-          costUsd: 0.65
+          costUsd: 0.65,
+          sourceSplit: [{ source: 'codex' }]
         }
       ]
     })

@@ -42,8 +42,17 @@ function parseTopModelItem(value: unknown, column: string): DailyTokenReport['to
     totalTokens: historyNumber(item.totalTokens, column),
     totalTokensWithoutCacheRead: historyNumber(item.totalTokensWithoutCacheRead, column),
     cacheReadRate: optionalHistoryNumber(item.cacheReadRate, column),
-    costUsd: historyNumber(item.costUsd, column)
+    costUsd: historyNumber(item.costUsd, column),
+    sourceSplit: optionalHistoryModelSourceSplit(item.sourceSplit, column)
   }
+}
+
+function optionalHistoryModelSourceSplit(value: unknown, column: string) {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error(`Invalid daily report history ${column}`)
+  return value.map((source) => ({
+    source: historyString(historyRecord(source, column).source, column)
+  }))
 }
 
 function historyRecord(value: unknown, column: string): Record<string, unknown> {

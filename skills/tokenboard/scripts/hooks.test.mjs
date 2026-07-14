@@ -85,6 +85,36 @@ test('hook paths prefer CLAUDE_CONFIG_DIR for Claude settings', () => {
   assert.equal(paths.claudeSettingsPath, '/custom/claude-config/settings.json')
 })
 
+test('hook paths include Antigravity CLI, IDE, and standalone homes', () => {
+  const paths = hookPaths({
+    homeDir: '/home/user',
+    stateDir: '/home/user/.tokenboard',
+    env: {
+      ANTIGRAVITY_CONFIG_DIR: '/custom/agy-cli',
+      ANTIGRAVITY_IDE_CONFIG_DIR: '/custom/agy-ide',
+      ANTIGRAVITY_APP_CONFIG_DIR: '/custom/agy-app'
+    }
+  })
+
+  assert.equal(paths.antigravitySettingsPath, '/custom/agy-cli/settings.json')
+  assert.equal(paths.antigravityIdePath, '/custom/agy-ide')
+  assert.equal(paths.antigravityPath, '/custom/agy-app')
+})
+
+test('status detects Antigravity GUI products with local history support', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.antigravityIdePath]: '',
+    [paths.antigravityPath]: ''
+  })
+
+  const status = hookStatus({ paths, fs })
+
+  assert.equal(status.antigravityCli, 'not-installed')
+  assert.equal(status.antigravityIde, 'installed-local-history')
+  assert.equal(status.antigravity, 'installed-local-history')
+})
+
 test('rejects unsupported hook sources even when all is also present', () => {
   const paths = createPaths()
   const fs = memoryFs({})
@@ -522,6 +552,216 @@ test('keeps notify handler when uninstalling one source leaves the other install
   assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).claudeCode, 'installed')
 })
 
+test('install all keeps Antigravity statusLine opt-in', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.codexConfigPath]: 'model = "gpt-5"\n',
+    [paths.claudeSettingsPath]: JSON.stringify({ hooks: {} }),
+    [paths.antigravitySettingsPath]: JSON.stringify({ other: true })
+  })
+
+  installHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } })
+
+  assert.equal(fs.files.has(paths.antigravityOriginalStatuslinePath), false)
+  assert.deepEqual(JSON.parse(fs.files.get(paths.antigravitySettingsPath)), { other: true })
+  assert.equal(hookStatus({ paths, fs }).antigravityCli, 'not-installed')
+})
+
+test('uninstall all does not let invalid Antigravity settings block Codex and Claude cleanup', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.codexConfigPath]: 'model = "gpt-5"\n',
+    [paths.claudeSettingsPath]: JSON.stringify({ hooks: {} }),
+    [paths.antigravitySettingsPath]: '{ invalid json'
+  })
+
+  installHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } })
+  const removed = uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } })
+
+  assert.equal(removed.notifyRemoved, true)
+  assert.equal(fs.files.has(paths.notifyPath), false)
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).codex, 'not-installed')
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).claudeCode, 'not-installed')
+  assert.deepEqual(
+    removed.hooks.find((hook) => hook.source === 'antigravity-cli'),
+    {
+      source: 'antigravity-cli',
+      action: 'skip',
+      changed: false,
+      detail: 'Antigravity statusline not checked: Invalid Antigravity settings.json'
+    }
+  )
+})
+
+test('explicit Antigravity uninstall still fails visibly when settings are invalid', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.antigravitySettingsPath]: '{ invalid json'
+  })
+
+  assert.throws(
+    () => uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'antigravity-cli' } }),
+    /Invalid Antigravity settings\.json/
+  )
+})
+
+test('explicit Antigravity uninstall validates before mutating other requested sources', () => {
+  const paths = createPaths()
+  const codexConfig = `model = "gpt-5"\nnotify = ["/usr/bin/env", "node", "${paths.notifyPath}", "--source=codex"]\n`
+  const fs = memoryFs({
+    [paths.notifyPath]: 'TOKENBOARD_NOTIFY_HANDLER',
+    [paths.codexConfigPath]: codexConfig,
+    [paths.antigravitySettingsPath]: '{ invalid json'
+  })
+
+  assert.throws(
+    () => uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'codex,antigravity-cli' } }),
+    /Invalid Antigravity settings\.json/
+  )
+  assert.equal(fs.files.get(paths.codexConfigPath), codexConfig)
+  assert.equal(fs.files.has(paths.notifyPath), true)
+})
+
+test('multi-source uninstall validates Claude before mutating Codex', () => {
+  const paths = createPaths()
+  const codexConfig = `model = "gpt-5"\nnotify = ["/usr/bin/env", "node", "${paths.notifyPath}", "--source=codex"]\n`
+  const fs = memoryFs({
+    [paths.notifyPath]: 'TOKENBOARD_NOTIFY_HANDLER',
+    [paths.codexConfigPath]: codexConfig,
+    [paths.claudeSettingsPath]: '{ invalid json'
+  })
+
+  assert.throws(
+    () => uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'codex,claude-code' } }),
+    /Invalid Claude settings\.json/
+  )
+  assert.equal(fs.files.get(paths.codexConfigPath), codexConfig)
+  assert.equal(fs.files.has(paths.notifyPath), true)
+})
+
+test('uninstall all validates Claude before mutating Codex', () => {
+  const paths = createPaths()
+  const codexConfig = `model = "gpt-5"\nnotify = ["/usr/bin/env", "node", "${paths.notifyPath}", "--source=codex"]\n`
+  const fs = memoryFs({
+    [paths.notifyPath]: 'TOKENBOARD_NOTIFY_HANDLER',
+    [paths.codexConfigPath]: codexConfig,
+    [paths.claudeSettingsPath]: '{ invalid json'
+  })
+
+  assert.throws(
+    () => uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } }),
+    /Invalid Claude settings\.json/
+  )
+  assert.equal(fs.files.get(paths.codexConfigPath), codexConfig)
+  assert.equal(fs.files.has(paths.notifyPath), true)
+})
+
+test('uninstall all fails visibly when installed Antigravity restore backup is invalid', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.antigravitySettingsPath]: JSON.stringify({
+      statusLine: {
+        enabled: true,
+        command: `/usr/bin/env node ${paths.statuslineScriptPath} --state-dir ${paths.stateDir}`
+      }
+    }),
+    [paths.antigravityOriginalStatuslinePath]: '{ invalid json'
+  })
+
+  assert.throws(
+    () => uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } }),
+    /Invalid Antigravity original statusline backup/
+  )
+  assert.match(
+    JSON.parse(fs.files.get(paths.antigravitySettingsPath)).statusLine.command,
+    /antigravity-statusline\.mjs/
+  )
+})
+
+test('uninstall all finalizes notify cleanup before Antigravity restore errors', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.notifyPath]: 'TOKENBOARD_NOTIFY_HANDLER',
+    [paths.codexConfigPath]: `model = "gpt-5"\nnotify = ["/usr/bin/env", "node", "${paths.notifyPath}", "--source=codex"]\n`,
+    [paths.claudeSettingsPath]: JSON.stringify({
+      hooks: {
+        SessionEnd: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: `/usr/bin/env node ${paths.notifyPath} --source=claude-code`
+              }
+            ]
+          }
+        ]
+      }
+    }),
+    [paths.antigravitySettingsPath]: JSON.stringify({
+      statusLine: {
+        enabled: true,
+        command: `/usr/bin/env node ${paths.statuslineScriptPath} --state-dir ${paths.stateDir}`
+      }
+    }),
+    [paths.antigravityOriginalStatuslinePath]: '{ invalid json'
+  })
+
+  assert.throws(
+    () => uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } }),
+    /Invalid Antigravity original statusline backup/
+  )
+  assert.equal(fs.files.has(paths.notifyPath), false)
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).codex, 'not-installed')
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).claudeCode, 'not-installed')
+})
+
+test('uninstall all preserves Antigravity restore error when notify cleanup fails', () => {
+  const paths = createPaths()
+  const baseFs = memoryFs({
+    [paths.notifyPath]: 'TOKENBOARD_NOTIFY_HANDLER',
+    [paths.codexConfigPath]: `model = "gpt-5"\nnotify = ["/usr/bin/env", "node", "${paths.notifyPath}", "--source=codex"]\n`,
+    [paths.claudeSettingsPath]: JSON.stringify({
+      hooks: {
+        SessionEnd: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: `/usr/bin/env node ${paths.notifyPath} --source=claude-code`
+              }
+            ]
+          }
+        ]
+      }
+    }),
+    [paths.antigravitySettingsPath]: JSON.stringify({
+      statusLine: {
+        enabled: true,
+        command: `/usr/bin/env node ${paths.statuslineScriptPath} --state-dir ${paths.stateDir}`
+      }
+    }),
+    [paths.antigravityOriginalStatuslinePath]: '{ invalid json'
+  })
+  const fs = {
+    ...baseFs,
+    unlink: (path) => {
+      if (path === paths.notifyPath) {
+        throw new Error('notify cleanup denied')
+      }
+      baseFs.unlink(path)
+    }
+  }
+
+  assert.throws(
+    () => uninstallHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'all' } }),
+    (error) => {
+      assert.match(error.message, /Invalid Antigravity original statusline backup/)
+      assert.match(error.cleanupError.message, /notify cleanup denied/)
+      return true
+    }
+  )
+})
+
 test('keeps notify handler when another source status is unreadable during uninstall', () => {
   const paths = createPaths()
   const fs = memoryFs({
@@ -570,9 +810,14 @@ function createPaths() {
     binDir: '/home/user/.tokenboard/bin',
     notifyPath: '/home/user/.tokenboard/bin/notify.cjs',
     notifyScriptPath: '/repo/scripts/notify.mjs',
+    statuslineScriptPath: '/repo/scripts/antigravity-statusline.mjs',
     codexConfigPath: '/home/user/.codex/config.toml',
     codexOriginalPath: '/home/user/.tokenboard/codex_notify_original.json',
-    claudeSettingsPath: '/home/user/.claude/settings.json'
+    claudeSettingsPath: '/home/user/.claude/settings.json',
+    antigravitySettingsPath: '/home/user/.gemini/antigravity-cli/settings.json',
+    antigravityOriginalStatuslinePath: '/home/user/.tokenboard/antigravity_statusline_original.json',
+    antigravityIdePath: '/home/user/.gemini/antigravity-ide',
+    antigravityPath: '/home/user/.gemini/antigravity'
   }
 }
 
@@ -582,9 +827,14 @@ function createWindowsPaths() {
     binDir: 'C:\\Users\\user\\.tokenboard\\bin',
     notifyPath: 'C:\\Users\\user\\.tokenboard\\bin\\notify.cjs',
     notifyScriptPath: 'C:\\repo\\scripts\\notify.mjs',
+    statuslineScriptPath: 'C:\\repo\\scripts\\antigravity-statusline.mjs',
     codexConfigPath: 'C:\\Users\\user\\.codex\\config.toml',
     codexOriginalPath: 'C:\\Users\\user\\.tokenboard\\codex_notify_original.json',
-    claudeSettingsPath: 'C:\\Users\\user\\.claude\\settings.json'
+    claudeSettingsPath: 'C:\\Users\\user\\.claude\\settings.json',
+    antigravitySettingsPath: 'C:\\Users\\user\\.gemini\\antigravity-cli\\settings.json',
+    antigravityOriginalStatuslinePath: 'C:\\Users\\user\\.tokenboard\\antigravity_statusline_original.json',
+    antigravityIdePath: 'C:\\Users\\user\\.gemini\\antigravity-ide',
+    antigravityPath: 'C:\\Users\\user\\.gemini\\antigravity'
   }
 }
 
@@ -592,6 +842,7 @@ function memoryFs(initial = {}) {
   const files = new Map(Object.entries(initial))
   return {
     files,
+    exists: (path) => files.has(path),
     mkdir: () => {},
     readFile: (path) => {
       if (!files.has(path)) {

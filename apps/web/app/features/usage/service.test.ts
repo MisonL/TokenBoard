@@ -46,6 +46,17 @@ describe('parseUsageDetailsFilters', () => {
     expect(filters.deviceId).toBe('all')
   })
 
+  test('keeps Antigravity CLI source filters', () => {
+    const filters = parseUsageDetailsFilters(
+      {
+        source: 'antigravity-cli'
+      },
+      new Date('2026-04-29T12:00:00.000Z')
+    )
+
+    expect(filters.source).toBe('antigravity-cli')
+  })
+
   test('normalizes reversed date ranges', () => {
     const filters = parseUsageDetailsFilters(
       {

@@ -1,13 +1,8 @@
 import type { UsageDetailsFilters } from '../service'
+export { formatSource } from '../source-format'
 
 export function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
-}
-
-export function formatSource(source: string) {
-  if (source === 'claude-code') return 'Claude Code'
-  if (source === 'codex') return 'Codex'
-  return '全部来源'
 }
 
 export function formatPercent(value: number, total: number) {

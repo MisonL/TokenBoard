@@ -27,8 +27,10 @@ describe('public card svg renderer', () => {
     expect(svg).toContain('总额度')
     expect(svg).toContain('本月 token')
     expect(svg).toContain('本月额度')
+    expect(svg).toContain('width="100%"')
+    expect(svg).toContain('height="auto"')
     expect(svg).toContain('color-scheme="dark"')
-    expect(svg).toContain('style="color-scheme:dark;-webkit-force-dark:none"')
+    expect(svg).toContain('style="display:block;width:100%;height:auto;max-width:520px;color-scheme:dark;-webkit-force-dark:none"')
     expect(svg).toContain('#161a13')
     expect(svg).toContain('url(#glow)')
   })
@@ -54,7 +56,9 @@ describe('public card svg renderer', () => {
     expect(svg).toContain('1,200')
     expect(svg).toContain('$0.20')
     expect(svg).toContain('color-scheme="only light"')
-    expect(svg).toContain('style="color-scheme:only light;-webkit-force-dark:none"')
+    expect(svg).toContain('width="100%"')
+    expect(svg).toContain('height="auto"')
+    expect(svg).toContain('style="display:block;width:100%;height:auto;max-width:520px;color-scheme:only light;-webkit-force-dark:none"')
     expect(svg).toContain('#fffef8')
     expect(svg).toContain('fill="#365314"')
     expect(svg).not.toContain('fill="url(#glow)"')
@@ -87,5 +91,33 @@ describe('public card svg renderer', () => {
     expect(svg).toContain('72%')
     expect(svg).toContain('49%')
     expect(svg).toContain('28%')
+  })
+
+  test('marks cost metrics when Antigravity cost is unavailable', () => {
+    const svg = renderUsageCardSvg({
+      ...input,
+      totalCostAvailable: false,
+      monthCostAvailable: false,
+      todayCostAvailable: true
+    }, {
+      metrics: ['totalCost', 'monthCost', 'todayCost']
+    })
+
+    expect(svg).toContain('总额度*')
+    expect(svg).toContain('本月额度*')
+    expect(svg).not.toContain('今日额度*')
+    expect(svg).toContain('* Antigravity 费用不可用')
+  })
+
+  test('does not add unavailable-cost notes when no cost metric is visible', () => {
+    const svg = renderUsageCardSvg({
+      ...input,
+      totalCostAvailable: false
+    }, {
+      metrics: ['totalTokens', 'monthTokens']
+    })
+
+    expect(svg).not.toContain('Antigravity 费用不可用')
+    expect(svg).not.toContain('总 token*')
   })
 })

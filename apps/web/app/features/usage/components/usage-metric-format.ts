@@ -1,4 +1,5 @@
 import { formatUsd } from '../../../lib/money'
+import { hasUnavailableCostSource, type SourceSplitItem } from '../source-format'
 
 const compactThreshold = 1_000_000
 
@@ -38,6 +39,19 @@ export function formatUsageMetricUsd(value: number): UsageMetricValue {
     value: compactUsd(value),
     exactValue,
     detail: `${chineseMagnitude(value)} USD`
+  }
+}
+
+export function formatUsageMetricUsdWithAvailability(value: number, sourceSplit: SourceSplitItem[]): UsageMetricValue {
+  return formatUsageMetricUsdWithCostAvailability(value, !hasUnavailableCostSource(sourceSplit))
+}
+
+export function formatUsageMetricUsdWithCostAvailability(value: number, costAvailable: boolean): UsageMetricValue {
+  const metric = formatUsageMetricUsd(value)
+  if (costAvailable) return metric
+  return {
+    ...metric,
+    detail: metric.detail ? `${metric.detail}, Antigravity 费用不可用` : 'Antigravity 费用不可用'
   }
 }
 

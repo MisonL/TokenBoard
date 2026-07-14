@@ -6,7 +6,8 @@ import { checkExistingSnapshots, ingestSnapshots } from './service'
 const legacyUser: AuthenticatedUser = {
   id: 'user_legacy',
   uploadTokenHash: 'hash:legacy-upload-token',
-  deviceId: null
+  deviceId: null,
+  installationId: null
 }
 
 function makeSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {

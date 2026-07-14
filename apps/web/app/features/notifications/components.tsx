@@ -1,14 +1,13 @@
 import { AppNav } from '../../components/app-nav'
 import { Button } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
-import { CustomSelect } from '../../components/ui/custom-select'
 import { Input, Label } from '../../components/ui/input'
+import { CreateSubscriptionForm } from './create-subscription-form'
 import { DailyReportHistoryCard } from './report-history-card'
 import type { DailyReportHistoryItem } from './report-history-item'
 import {
   ScheduleTimeFields,
   ScheduleWeekdayFields,
-  defaultScheduleWeekdayValues,
   scheduleRuleLabel
 } from './schedule-fields'
 import type { WebhookSubscriptionSummary } from './schema'
@@ -233,65 +232,6 @@ function CreateSubscriptionCard(props: { timezone: string; disabled: boolean }) 
         <CreateSubscriptionForm {...props} />
       </CardContent>
     </Card>
-  )
-}
-
-function CreateSubscriptionForm(props: { timezone: string; disabled: boolean }) {
-  return (
-    <form method="post" class="space-y-4" data-submit-feedback="true">
-      <input type="hidden" name="action" value="create" />
-      <Label>
-        名称
-        <Input name="name" placeholder="每日日报" autocomplete="off" required disabled={props.disabled} />
-      </Label>
-      <ProviderSelect />
-      <Label>
-        Webhook URL
-        <Input name="webhookUrl" type="url" placeholder="https://..." autocomplete="off" required disabled={props.disabled} />
-      </Label>
-      <Label>
-        加签 secret (钉钉、飞书 / Lark 启用加签时填写)
-        <Input name="signingSecret" type="password" autocomplete="new-password" disabled={props.disabled} />
-      </Label>
-      <Label>
-        时区
-        <Input name="timezone" value={props.timezone} autocomplete="off" required disabled={props.disabled} />
-      </Label>
-      <ScheduleTimeFields scheduleTimesLocal={['18:00']} disabled={props.disabled} />
-      <ScheduleWeekdayFields scheduleWeekdays={defaultScheduleWeekdayValues()} disabled={props.disabled} />
-      <CreateChecks disabled={props.disabled} />
-      <Button class="w-full" type="submit" disabled={props.disabled} data-submitting-label="正在保存 Webhook...">保存 Webhook</Button>
-    </form>
-  )
-}
-
-function ProviderSelect() {
-  return (
-    <CustomSelect
-      label="平台"
-      name="provider"
-      value="wecom"
-      options={[
-        { value: 'wecom', label: '企微' },
-        { value: 'dingtalk', label: '钉钉' },
-        { value: 'feishu', label: '飞书 / Lark' }
-      ]}
-    />
-  )
-}
-
-function CreateChecks(props: { disabled: boolean }) {
-  return (
-    <>
-      <label class="app-surface-subtle flex min-h-11 items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-input)] px-3 text-sm font-bold text-[var(--app-text)]">
-        <input type="checkbox" name="sendEmptyReport" disabled={props.disabled} />
-        空日报也发送
-      </label>
-      <label class="app-surface-subtle flex min-h-11 items-center gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-input)] px-3 text-sm font-bold text-[var(--app-text)]">
-        <input type="checkbox" name="enabled" checked disabled={props.disabled} />
-        启用定时推送
-      </label>
-    </>
   )
 }
 

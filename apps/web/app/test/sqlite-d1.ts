@@ -3,12 +3,22 @@ import { spawnSync } from 'node:child_process'
 
 type SqliteRow = Record<string, unknown>
 
+type SqlitePreparedStatement = {
+  sql: string
+  bindings: unknown[]
+  first: <T>() => Promise<T | null>
+  all: <T>() => Promise<{ results: T[] }>
+  run: () => Promise<D1Result>
+}
+
 export function createSqliteD1(dbPath: string): D1Database {
   return {
     prepare(sql: string) {
       return {
         bind(...values: unknown[]) {
           return {
+            sql,
+            bindings: values,
             first: async <T>() => {
               return runPreparedSql(dbPath, wrapFirstQuery(sql), values)[0] as T | null
             },
@@ -20,18 +30,12 @@ export function createSqliteD1(dbPath: string): D1Database {
               const changes = Number(rows.at(-1)?.changes ?? 0)
               return { success: true, meta: { changes } }
             }
-          }
+          } as SqlitePreparedStatement
         }
       }
     },
-    batch: async (statements: Array<{
-      run?: () => Promise<unknown>
-    }>) => {
-      const results = []
-      for (const statement of statements) {
-        results.push(await statement.run?.())
-      }
-      return results as D1Result[]
+    batch: async (statements: SqlitePreparedStatement[]) => {
+      return runPreparedSqlBatch(dbPath, statements)
     }
   } as unknown as D1Database
 }
@@ -62,6 +66,37 @@ function runPreparedSql(dbPath: string, sql: string, bindings: unknown[]) {
 
   if (!output.trim()) return []
   return parseRows(parseSqliteJsonRows(output))
+}
+
+function runPreparedSqlBatch(dbPath: string, statements: SqlitePreparedStatement[]) {
+  const commands = statements.flatMap((statement) => [
+    'DELETE FROM temp.sqlite_parameters;',
+    ...statement.bindings.map((value, index) => parameterInsertSql(index, value)),
+    `${statement.sql};`,
+    'SELECT changes() AS changes;'
+  ])
+  const output = runSql(dbPath, [
+    '.bail on',
+    '.mode json',
+    '.parameter init',
+    'BEGIN IMMEDIATE;',
+    ...commands,
+    'COMMIT;'
+  ].join('\n'))
+  const resultSets = sqliteJsonResultSets(output)
+    .map((json) => JSON.parse(json) as SqliteRow[])
+    .filter((rows) => rows.length === 1 && 'changes' in rows[0])
+
+  if (resultSets.length !== statements.length) {
+    throw new Error(
+      `sqlite batch returned ${resultSets.length} results for ${statements.length} statements`
+    )
+  }
+
+  return resultSets.map((rows) => ({
+    success: true,
+    meta: { changes: Number(rows[0]?.changes ?? 0) }
+  })) as D1Result[]
 }
 
 function wrapFirstQuery(sql: string) {

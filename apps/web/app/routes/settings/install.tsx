@@ -4,6 +4,7 @@ import { requireUser } from '../../features/auth/middleware'
 import { InstallCommand } from '../../features/device/components/install-command'
 import { D1DevicePairingRepository } from '../../features/device/repository'
 import { createPairingCode, createPairingCodeDeps } from '../../features/device/service'
+import { requireDeviceStepUp } from '../../features/device/step-up'
 import { getCanonicalPublicOrigin, getProfileTimezoneSettings } from '../../features/settings/service'
 import { ApiError } from '../../lib/errors'
 import { jsonError } from '../../lib/http'
@@ -24,6 +25,7 @@ export const GET = createRoute(async (c) => {
         baseUrl={publicOrigin}
         timezone={profile.timezone}
         collectorRepoUrl={c.env.TOKENBOARD_COLLECTOR_REPO_URL}
+        collectorRepoRef={c.env.TOKENBOARD_COLLECTOR_REF}
       />
     </main>
   )
@@ -39,9 +41,25 @@ export const POST = createRoute(async (c) => {
     })
     const profile = await readProfile(c.env.DB, user.id)
     const timezone = parseInstallTimezone(form.timezone, profile.timezone)
+    const targetDeviceId = parseOptionalDeviceId(form.targetDeviceId)
+    if (targetDeviceId) {
+      requireDeviceStepUp(c.env, 'device.reconnect')
+    }
     const repository = new D1DevicePairingRepository(c.env.DB)
-    const result = await createPairingCode(repository, user.id, createPairingCodeDeps())
+    const result = await createPairingCode(
+      repository,
+      user.id,
+      createPairingCodeDeps(),
+      30,
+      targetDeviceId
+        ? {
+            pairingType: 'reconnect_device',
+            targetDeviceId
+          }
+        : undefined
+    )
 
+    c.header('Cache-Control', 'no-store')
     return c.render(
       <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
         <title>连接 TokenBoard</title>
@@ -50,8 +68,11 @@ export const POST = createRoute(async (c) => {
           baseUrl={publicOrigin}
           timezone={timezone}
           collectorRepoUrl={c.env.TOKENBOARD_COLLECTOR_REPO_URL}
+          collectorRepoRef={c.env.TOKENBOARD_COLLECTOR_REF}
           pairingCode={result.pairingCode}
           expiresAt={result.expiresAt}
+          mode={targetDeviceId ? 'reconnect' : 'new'}
+          targetDeviceId={targetDeviceId ?? undefined}
         />
       </main>
     )
@@ -73,4 +94,11 @@ function parseInstallTimezone(value: unknown, fallback: string) {
   }
 
   return timezone
+}
+
+function parseOptionalDeviceId(value: unknown) {
+  if (typeof value !== 'string') return null
+  const deviceId = value.trim()
+  if (!deviceId) return null
+  return deviceId
 }

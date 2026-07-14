@@ -5,66 +5,9 @@ import {
   type PublicCardMetric
 } from './config'
 import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metrics'
+import { palettes, type Palette, type UsageCardInput } from './svg-types'
 
-export type UsageCardInput = {
-  displayName: string
-  publicUrl: string
-  totalTokens: number
-  totalTokensWithoutCacheRead?: number
-  totalCacheReadRate?: number
-  totalCostUsd: number
-  monthTokens: number
-  monthTokensWithoutCacheRead?: number
-  monthCacheReadRate?: number
-  monthCostUsd: number
-  todayTokens?: number
-  todayTokensWithoutCacheRead?: number
-  todayCacheReadRate?: number
-  todayCostUsd?: number
-}
-
-type Palette = {
-  bgStart: string
-  bgEnd: string
-  panel: string
-  panelStrong: string
-  text: string
-  muted: string
-  border: string
-  logoPanelStart: string
-  logoPanelEnd: string
-  shadow: string
-  highlightText: string
-}
-
-const palettes = {
-  dark: {
-    bgStart: '#161a13',
-    bgEnd: '#0c0d0a',
-    panel: '#151812',
-    panelStrong: '#10130f',
-    text: '#fafaf9',
-    muted: '#a8a29e',
-    border: '#78716c',
-    logoPanelStart: '#272a22',
-    logoPanelEnd: '#11130f',
-    shadow: '#090a08',
-    highlightText: '#bef264'
-  },
-  light: {
-    bgStart: '#fffef8',
-    bgEnd: '#ede6d8',
-    panel: '#f8f4ec',
-    panelStrong: '#ffffff',
-    text: '#1c1917',
-    muted: '#57534e',
-    border: '#a8a29e',
-    logoPanelStart: '#f8f4ec',
-    logoPanelEnd: '#e7dccb',
-    shadow: '#f4f0e8',
-    highlightText: '#365314'
-  }
-} as const satisfies Record<PublicCardConfig['theme'], Palette>
+export type { UsageCardInput } from './svg-types'
 
 export function renderUsageCardSvg(input: UsageCardInput, configInput?: Partial<PublicCardConfig> | null) {
   const config = parsePublicCardConfig(configInput ? { ...defaultPublicCardConfig, ...configInput } : null)
@@ -73,8 +16,9 @@ export function renderUsageCardSvg(input: UsageCardInput, configInput?: Partial<
   const title = config.title || labels(config.language).title
   const subtitle = config.subtitle || subtitleText(input, config)
   const colorScheme = config.theme === 'light' ? 'only light' : 'dark'
+  const unavailableCostNote = buildUnavailableCostNote(input, config)
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="220" viewBox="0 0 520 220" role="img" aria-label="${escapeXml(title)}" color-scheme="${colorScheme}" style="color-scheme:${colorScheme};-webkit-force-dark:none">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 520 220" role="img" aria-label="${escapeXml(title)}" color-scheme="${colorScheme}" style="display:block;width:100%;height:auto;max-width:520px;color-scheme:${colorScheme};-webkit-force-dark:none">
   <title>${escapeXml(title)}</title>
   <defs>
     <linearGradient id="card-bg" x1="0" y1="0" x2="520" y2="220" gradientUnits="userSpaceOnUse">
@@ -99,6 +43,7 @@ export function renderUsageCardSvg(input: UsageCardInput, configInput?: Partial<
   <text x="94" y="41" fill="${palette.text}" font-family="Arial, sans-serif" font-size="20" font-weight="800">${escapeXml(title)}</text>
   <text x="94" y="64" fill="${palette.muted}" font-family="Arial, sans-serif" font-size="13">${escapeXml(subtitle)}</text>
   ${metrics.join('\n  ')}
+  ${unavailableCostNote ? `<text x="24" y="211" fill="${palette.muted}" font-family="Arial, sans-serif" font-size="11">${escapeXml(unavailableCostNote)}</text>` : ''}
 </svg>`
 }
 
@@ -108,7 +53,7 @@ function buildMetricBlocks(input: UsageCardInput, config: PublicCardConfig) {
     const slot = slots[index]
     return metricBlock({
       ...slot,
-      label: labels(config.language).metrics[metric],
+      label: metricLabel(metric, config, !costAvailabilityForMetric(input, metric)),
       value: metricValue(input, metric),
       highlight: index === 0,
       palette: palettes[config.theme]
@@ -148,6 +93,7 @@ function labels(language: PublicCardConfig['language']) {
   if (language === 'en') {
     return {
       title: 'TokenBoard Stats',
+      costUnavailableNote: '* Antigravity cost unavailable',
       metrics: {
         totalTokens: 'Total Tokens',
         totalTokensWithoutCacheRead: 'No Cache Read',
@@ -167,6 +113,7 @@ function labels(language: PublicCardConfig['language']) {
 
   return {
     title: 'TokenBoard 统计',
+    costUnavailableNote: '* Antigravity 费用不可用',
     metrics: {
       totalTokens: '总 token',
       totalTokensWithoutCacheRead: '总量不含缓存读',
@@ -182,6 +129,28 @@ function labels(language: PublicCardConfig['language']) {
       todayCost: '今日额度'
     } satisfies Record<PublicCardMetric, string>
   }
+}
+
+function metricLabel(metric: PublicCardMetric, config: PublicCardConfig, marksUnavailableCost: boolean) {
+  const label = labels(config.language).metrics[metric]
+  return marksUnavailableCost && isCostMetric(metric) ? `${label}*` : label
+}
+
+function buildUnavailableCostNote(input: UsageCardInput, config: PublicCardConfig) {
+  return config.metrics.some((metric) => isCostMetric(metric) && !costAvailabilityForMetric(input, metric))
+    ? labels(config.language).costUnavailableNote
+    : ''
+}
+
+function costAvailabilityForMetric(input: UsageCardInput, metric: PublicCardMetric) {
+  if (metric === 'totalCost') return input.totalCostAvailable ?? true
+  if (metric === 'monthCost') return input.monthCostAvailable ?? true
+  if (metric === 'todayCost') return input.todayCostAvailable ?? true
+  return true
+}
+
+function isCostMetric(metric: PublicCardMetric) {
+  return metric === 'totalCost' || metric === 'monthCost' || metric === 'todayCost'
 }
 
 function subtitleText(input: UsageCardInput, config: PublicCardConfig) {

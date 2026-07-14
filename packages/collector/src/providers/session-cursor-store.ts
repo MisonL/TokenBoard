@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
@@ -18,6 +19,8 @@ export type CursorState = {
   version: 1
   source: UsageSource
   lastScanHighWaterMs?: number
+  lastScanOffsetBytes?: number
+  lastScanGeneration?: string
   files: Record<string, CursorEntry>
 }
 
@@ -65,8 +68,19 @@ export function stripCollectedAt(snapshot: UsageSnapshot): CursorSnapshot {
   }
 }
 
-export function cursorFileName(source: UsageSource) {
-  return `${source === 'codex' ? 'codex' : 'claude-code'}-cursor.json`
+export function cursorFileName(source: UsageSource, scope?: string) {
+  const baseName = sourceCursorFileName(source)
+  if (!scope) return baseName
+  const scopeHash = createHash('sha256').update(scope).digest('hex')
+  return baseName.replace(/\.json$/, `.server-${scopeHash}.json`)
+}
+
+function sourceCursorFileName(source: UsageSource) {
+  if (source === 'codex') return 'codex-cursor.json'
+  if (source === 'antigravity-cli') return 'antigravity-cli-cursor.json'
+  if (source === 'antigravity') return 'antigravity-cursor.json'
+  if (source === 'antigravity-ide') return 'antigravity-ide-cursor.json'
+  return 'claude-code-cursor.json'
 }
 
 function isValidCursor(value: unknown, source: UsageSource): value is CursorState {
@@ -75,6 +89,8 @@ function isValidCursor(value: unknown, source: UsageSource): value is CursorStat
   return candidate.version === 1 &&
     candidate.source === source &&
     (candidate.lastScanHighWaterMs === undefined || isFiniteTimestampMs(candidate.lastScanHighWaterMs)) &&
+    (candidate.lastScanOffsetBytes === undefined || isFiniteTimestampMs(candidate.lastScanOffsetBytes)) &&
+    (candidate.lastScanGeneration === undefined || isValidScanGeneration(candidate.lastScanGeneration)) &&
     candidate.files !== null &&
     typeof candidate.files === 'object' &&
     !Array.isArray(candidate.files) &&
@@ -97,7 +113,13 @@ function isValidCursorEntry(value: unknown): value is CursorEntry {
 function isValidCursorSnapshot(value: unknown): value is CursorSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as CursorSnapshot
-  if (candidate.source !== 'codex' && candidate.source !== 'claude-code') return false
+  if (
+    candidate.source !== 'codex' &&
+    candidate.source !== 'claude-code' &&
+    candidate.source !== 'antigravity-cli' &&
+    candidate.source !== 'antigravity' &&
+    candidate.source !== 'antigravity-ide'
+  ) return false
   return typeof candidate.usageDate === 'string' &&
     typeof candidate.timezone === 'string' &&
     typeof candidate.model === 'string' &&
@@ -116,4 +138,8 @@ function isFiniteNumber(value: unknown) {
 
 function isFiniteTimestampMs(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function isValidScanGeneration(value: unknown) {
+  return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value)
 }

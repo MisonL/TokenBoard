@@ -1,24 +1,10 @@
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 export const notifyHandlerMarker = 'TOKENBOARD_NOTIFY_HANDLER'
-export const codexSource = 'codex'
-export const claudeSource = 'claude-code'
-
-export function readSources(value) {
-  const sources = String(value || 'all')
-    .split(',')
-    .map((source) => source.trim())
-    .filter(Boolean)
-  for (const source of sources) {
-    if (source === 'all') continue
-    if (source !== codexSource && source !== claudeSource) {
-      throw new Error(`Unsupported hook source: ${source}`)
-    }
-  }
-  if (sources.includes('all')) return [codexSource, claudeSource]
-  return [...new Set(sources)]
-}
+export {
+  antigravitySource, claudeSource, codexSource, readSources, readUninstallSources
+} from './hook-sources.mjs'
 
 export function removeNotifyHandler({ paths, fs }) {
   const text = readOptional(paths.notifyPath, fs)
@@ -137,6 +123,8 @@ export function readOptional(filePath, fs) {
 
 export function nodeFs() {
   return {
+    chmod: (path, mode) => chmodSync(path, mode),
+    exists: (path) => existsSync(path),
     mkdir: (path, options) => mkdirSync(path, options),
     readFile: (path) => readFileSync(path, 'utf8'),
     writeFile: (path, value, options) => writeFileSync(path, value, options),

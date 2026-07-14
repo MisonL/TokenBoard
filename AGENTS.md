@@ -1,4 +1,51 @@
-# TokenBoard Project Guidelines
+# Repository Guidelines
+
+本文件是 TokenBoard 仓库的 AI Agent 与贡献者执行指南。它同时记录项目架构约束、开发命令、测试口径和交付前检查要求。执行任务时以当前代码、测试结果、Git 记录和真实运行证据为准。
+
+## Contributor Quick Reference
+
+### 常用命令
+
+```bash
+pnpm install
+pnpm dev
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm preview
+pnpm deploy
+```
+
+- `pnpm dev`：启动 Web 开发服务，等价于 `pnpm --filter @tokenboard/web dev`。
+- `pnpm test`：运行 workspace 测试，包含 Web、collector、usage-core。
+- `pnpm typecheck`：运行所有包的 TypeScript 类型检查。
+- `pnpm build`：构建 Web Worker 客户端与服务端产物。
+- `pnpm preview`：通过 Wrangler 本地预览 Worker。
+- `pnpm deploy`：执行生产部署脚本，包含配置校验、构建、D1 migration 和 Worker 发布。
+
+### 目录速览
+
+- `apps/web/`：HonoX + Cloudflare Workers Web/API 应用。
+- `apps/web/app/features/`：按业务 feature 组织的服务、查询、schema、组件和测试。
+- `packages/collector/`：本地 Node.js collector，负责调用 `ccusage` 并上传 snapshot。
+- `packages/usage-core/`：跨端共享的 usage schema、normalize、hash 和工具函数。
+- `skills/tokenboard/`：Codex / Claude Code 安装、同步、hook、schedule 脚本。
+- `apps/web/app/components/ui/`：通用 UI 原语；业务组件不要放这里。
+
+### 提交与 PR
+
+- 提交信息优先使用历史风格：`fix(...)`、`test(...)`、`docs:`、`feat(...)`。
+- 每个 PR 必须说明改动范围、验证命令和风险边界。
+- UI/Webhook 改动需要附截图或真实 webhook 发送验证结果。
+- client/collector 改动需要覆盖 `pnpm -r test`、`pnpm -r typecheck`，并说明可复现的验证口径。
+
+### Agent 工作基线
+
+- 先读代码和配置，再改动；不要凭记忆推断当前状态。
+- 修改前说明将改哪些文件和原因。
+- 每次只处理一个原子任务，避免顺手改无关问题。
+- 禁止静默降级、mock 成功、吞错继续或为了测试硬编码路径。
+- 完成前必须运行最小充分验证，并用 `git diff` / `git status` 检查残留改动。
 
 ## 项目目标
 
@@ -7,8 +54,9 @@ TokenBoard 是一个面向多用户的 AI token 使用统计平台，而不是�
 第一阶段目标：
 
 - 支持用户注册或创建个人上传 token。
-- 支持 Claude Code 与 Codex 两类 usage 来源。
-- 通过 TokenBoard skill + collector CLI 调用 `ccusage`、`@ccusage/codex` 获取统计数据。
+- 支持 Claude Code、Codex、Antigravity CLI、Antigravity、Antigravity IDE 五类 usage 来源。
+- 通过 TokenBoard skill + collector CLI 调用 `ccusage`、`@ccusage/codex`，并从 Antigravity 三类本地历史中提取 token 元数据。
+- Antigravity CLI 可额外通过官方 `statusLine.command` 写入脱敏 token 事件；该路径是增量辅助来源，不是唯一来源。
 - 后端接收标准化后的 usage snapshot，并按用户、日期、来源、模型聚合。
 - 提供统计 dashboard、公开 JSON API、GitHub README SVG 卡片。
 - 提供每日、每月排行榜，例如 token 总量、费用、连续同步天数、模型使用分布等。
@@ -39,11 +87,14 @@ TokenBoard 是一个面向多用户的 AI token 使用统计平台，而不是�
 
 ### 本地采集端
 
-- TokenBoard skill: Codex / Claude Code 安装入口
+- TokenBoard skill: Codex / Claude Code 通知 hook 安装入口，以及 Antigravity CLI status line 采集安装入口
 - CLI runtime: Node.js
 - Usage source:
   - Claude Code: `ccusage`
   - Codex: `@ccusage/codex`
+  - Antigravity CLI: `~/.gemini/antigravity-cli/conversations/*.db` 的 `gen_metadata.data` token 元数据；可叠加 `~/.gemini/antigravity-cli/settings.json` 的 `statusLine.command`
+  - Antigravity: `~/.gemini/antigravity/conversations` 的 SQLite token 元数据和 bounded language-server metadata projection
+  - Antigravity IDE: `~/.gemini/antigravity-ide/conversations` 的 SQLite token 元数据和 bounded language-server metadata projection
 - 数据上传：HTTPS `POST /api/v1/ingest`
 
 ### 部署
@@ -78,10 +129,26 @@ Worker 不负责：
 本地 skill/collector 负责：
 
 - 调用 `ccusage` 或 `@ccusage/codex`。
+- 从 Antigravity 三类本地历史中只提取 token、model、timestamp 和去重所需 hash。
+- 通过 Antigravity CLI status line handler 读取 stdin，严格限长解析后只保存脱敏 JSONL。
 - 将不同来源的数据 normalize 成 TokenBoard 的标准格式。
 - 预览本地统计数据。
 - 上传 snapshot。
 - 记录最近同步状态。
+
+Antigravity 三类来源特殊约束：
+
+- `source` 固定使用 `antigravity-cli`、`antigravity`、`antigravity-ide`，不要用 `agy` 等别名上传。
+- Antigravity CLI 展示名为 `Antigravity CLI (agy)`。
+- status line 安装必须显式 opt-in，不包含在默认 `--source all` hook 安装中；但 `--source all` 可以读取本地 history metadata。
+- status line handler 只能本地写入脱敏 JSONL，不能联网、上传、调用 sync，也不能保存 prompt、completion、cwd、workspace、email、plan_tier、工具参数、文件路径或原始 conversation_id。
+- 脱敏 JSONL 仍包含稳定 conversation hash，应视为本机私有状态文件，不得作为公开 artifact 上传。
+- SQLite `gen_metadata.data` 和 language-server response 只能投影 token 元数据字段；禁止保存 prompt、completion、promptSections、conversationHistory、路径、邮箱、工具参数、原始 conversation ID、原始 response ID 或完整 blob。
+- `.pb` 文件仍不得直接作为上传来源；当前仅通过本地 language server 的 `GetCascadeTrajectoryGeneratorMetadata` 读取已结构化 metadata，并在 collector 内裁剪到 usage 字段。
+- GUI/IDE language-server 扫描必须 bounded 且 cursor-based，默认 `--source all` 不得无界遍历全部历史。
+- language-server response 中的 raw content 字段不能进入 cursor、snapshot、日志或上传 payload；测试必须覆盖原文不落盘。
+- Antigravity placeholder model ID 可以保留为 model fallback；若 responseModel 存在，优先使用 responseModel。
+- Antigravity 三类来源费用不可用，`costUsd` 只能置为 `0`，所有 Web、日报和排行榜费用展示必须标注该来源费用不可用，禁止从 credits 推算成本。
 
 ## 数据模型规范
 
@@ -90,7 +157,7 @@ Worker 不负责：
 标准字段建议：
 
 ```ts
-type UsageSource = "claude-code" | "codex";
+type UsageSource = "claude-code" | "codex" | "antigravity-cli" | "antigravity" | "antigravity-ide";
 
 type UsageSnapshot = {
   source: UsageSource;
@@ -300,6 +367,14 @@ packages/collector/
     providers/
       claude-code.ts
       codex.ts
+      antigravity-cli.ts
+      antigravity-cli-cursor.ts
+      antigravity-cli-statusline.ts
+      antigravity-gui.ts
+      antigravity-gui-cursor.ts
+      antigravity-gui-client.ts
+      antigravity-history-db.ts
+      antigravity-history-protobuf.ts
     upload.ts
     config.ts
 
@@ -309,6 +384,8 @@ skills/tokenboard/
     setup.mjs
     sync.mjs
     install-schedule.mjs
+    antigravity-hook.mjs
+    antigravity-statusline.mjs
     status.mjs
 ```
 
@@ -337,7 +414,7 @@ skills/tokenboard/
 - 数据库字段使用 snake_case。
 - TypeScript 字段使用 camelCase。
 - route path 使用 kebab-case。
-- usage source 使用稳定枚举值，例如 `claude-code`、`codex`。
+- usage source 使用稳定枚举值，例如 `claude-code`、`codex`、`antigravity-cli`、`antigravity`、`antigravity-ide`。
 - user-facing slug 必须全局唯一。
 
 ## 测试规范
@@ -377,3 +454,38 @@ skills/tokenboard/
 - 修改代码前先说明将修改的文件和意图。
 - 遇到读取错误或乱码文件时，使用 `jiemi.exe <文件路径>` 解密后再读取。
 - 不确定的外部 API、第三方库行为或 Cloudflare 平台限制，需要查官方资料后再下结论。
+
+## AI Agent Coding Practices
+
+### 证据优先
+
+- 回答“是否同步上游”“是否还有问题”“client 是否正常”前，必须重新执行相关检查命令。
+- 上游状态检查使用：
+
+```bash
+git fetch --all --prune
+git status --short --branch
+git rev-list --left-right --count master...upstream/master
+git rev-list --left-right --count master...origin/master
+```
+
+- 运行状态结论必须基于真实命令输出，例如 `node skills/tokenboard/scripts/status.mjs`、`ccusage --version`、`curl -I` 或调度器状态。
+
+### 验证闭环
+
+- Web/API 改动至少运行相关测试；跨 feature 改动运行 `pnpm test` 和 `pnpm typecheck`。
+- collector 或 skill 改动至少运行 `packages/collector`、`packages/usage-core` 和 `skills/tokenboard/scripts` 相关测试。
+- Cloudflare/D1/Better Auth/Webhook 行为不要只靠类型检查；需要 HTTP、浏览器或真实 webhook 验证。
+- 修复网络或服务问题时，同时验证进程状态、路由/DNS、真实请求和 TokenBoard 业务命令。
+
+### 配置与安全
+
+- 不要把用户提供的 webhook、token、OAuth secret、Cloudflare secret 写入源码或文档。
+- 调试时可以临时使用用户提供的密钥，但输出日志和总结时必须脱敏。
+- `WEBHOOK_ENCRYPTION_KEY` 必须作为 Worker secret 配置，不要提交本地生产配置文件。
+
+### Client 与兼容性注意事项
+
+- collector 依赖外部 usage 工具；升级相关依赖时必须同步更新 provider 测试、package-runner 测试和 `pnpm-lock.yaml`。
+- 判断 client 健康状态时，区分 client 代码问题、主机网络问题和用户未配置问题。
+- TokenBoard 定时同步日志默认位于用户配置目录下的 `logs/daily-sync.out.log` 和 `logs/daily-sync.err.log`。

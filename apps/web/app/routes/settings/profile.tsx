@@ -36,6 +36,9 @@ export function ProfilePage(props: { profile: ProfileSettings; saved: boolean; e
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>公开资料 - TokenBoard</title>
       <AppNav active="profile" email={props.email} />
+      <header class="mx-auto mb-5 max-w-6xl">
+        <h1 class="text-3xl font-black tracking-tight sm:text-4xl">公开资料</h1>
+      </header>
 
       <form
         method="post"

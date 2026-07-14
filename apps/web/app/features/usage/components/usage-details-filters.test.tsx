@@ -20,7 +20,9 @@ describe('UsageDetailsFiltersForm', () => {
             platform: 'darwin',
             lastSyncedAt: '2026-05-29T01:27:47.279Z',
             createdAt: '2026-04-29T10:03:36.232Z',
-            activeTokenCount: 1
+            activeTokenCount: 1,
+            installations: [],
+            uploadTokens: []
           }
         ]}
       />
@@ -31,6 +33,7 @@ describe('UsageDetailsFiltersForm', () => {
     expect(html).toContain('data-submitting-label="正在应用..."')
     expect(html).toContain('data-link-button="true"')
     expect(html).toContain('href="/dashboard/details.csv?')
+    expect(html).toContain('Antigravity CLI (agy)')
     expect(html).toContain('MacBook Pro')
   })
 })

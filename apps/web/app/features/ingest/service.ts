@@ -21,6 +21,7 @@ export async function ingestSnapshots(
   await markIngestSynced(db, {
     uploadTokenHash: user.uploadTokenHash,
     deviceId: user.deviceId,
+    installationId: user.installationId,
     syncedAt
   })
   return result

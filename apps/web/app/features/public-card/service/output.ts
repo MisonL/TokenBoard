@@ -11,19 +11,22 @@ export async function getPublicUsageJson(db: D1Database, slug: string, now = new
       tokens: profile.totalTokens,
       tokensWithoutCacheRead: profile.totalTokensWithoutCacheRead,
       cacheReadRate: profile.totalCacheReadRate,
-      costUsd: profile.totalCostUsd
+      costUsd: profile.totalCostUsd,
+      costAvailable: profile.totalCostAvailable
     },
     today: {
       tokens: profile.todayTokens,
       tokensWithoutCacheRead: profile.todayTokensWithoutCacheRead,
       cacheReadRate: profile.todayCacheReadRate,
-      costUsd: profile.todayCostUsd
+      costUsd: profile.todayCostUsd,
+      costAvailable: profile.todayCostAvailable
     },
     month: {
       tokens: profile.monthTokens,
       tokensWithoutCacheRead: profile.monthTokensWithoutCacheRead,
       cacheReadRate: profile.monthCacheReadRate,
-      costUsd: profile.monthCostUsd
+      costUsd: profile.monthCostUsd,
+      costAvailable: profile.monthCostAvailable
     },
     sourceSplit: profile.sourceSplit,
     topModels: profile.topModels
@@ -37,7 +40,7 @@ export async function getPublicUsageCard(
   publicUrl = 'TokenBoard',
   summaryStrict = false
 ) {
-  const profile = await getPublicUsageProfileCore(db, slug, now, summaryStrict, false)
+  const profile = await getPublicUsageProfileCore(db, slug, now, summaryStrict, false, true)
   return renderUsageCardSvg({
     displayName: profile.displayName,
     publicUrl,
@@ -45,14 +48,18 @@ export async function getPublicUsageCard(
     totalTokensWithoutCacheRead: profile.totalTokensWithoutCacheRead,
     totalCacheReadRate: profile.totalCacheReadRate,
     totalCostUsd: profile.totalCostUsd,
+    totalCostAvailable: profile.totalCostAvailable,
     monthTokens: profile.monthTokens,
     monthTokensWithoutCacheRead: profile.monthTokensWithoutCacheRead,
     monthCacheReadRate: profile.monthCacheReadRate,
     monthCostUsd: profile.monthCostUsd,
+    monthCostAvailable: profile.monthCostAvailable,
     todayTokens: profile.todayTokens,
     todayTokensWithoutCacheRead: profile.todayTokensWithoutCacheRead,
     todayCacheReadRate: profile.todayCacheReadRate,
-    todayCostUsd: profile.todayCostUsd
+    todayCostUsd: profile.todayCostUsd,
+    todayCostAvailable: profile.todayCostAvailable,
+    sourceSplit: profile.sourceSplit
   }, profile.publicCardConfig)
 }
 
@@ -64,9 +71,13 @@ export function getEmptyPublicCard() {
     totalTokensWithoutCacheRead: 0,
     totalCacheReadRate: 0,
     totalCostUsd: 0,
+    totalCostAvailable: true,
     monthTokens: 0,
     monthTokensWithoutCacheRead: 0,
     monthCacheReadRate: 0,
-    monthCostUsd: 0
+    monthCostUsd: 0,
+    monthCostAvailable: true,
+    todayCostAvailable: true,
+    sourceSplit: []
   })
 }

@@ -11,6 +11,8 @@ const outputFile = resolve(packageDir, process.argv[3] || 'wrangler.production.c
 const workerRoute = requireEnv('TOKENBOARD_WORKER_ROUTE')
 const betterAuthUrl = requireEnv('BETTER_AUTH_URL')
 const d1DatabaseId = requireEnv('D1_DATABASE_ID')
+const collectorRepoUrl = requireEnv('TOKENBOARD_COLLECTOR_REPO_URL')
+const collectorRepoRef = requireEnv('TOKENBOARD_COLLECTOR_REF')
 const dailyReportHistoryDays = optionalIntegerEnv(
   'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS',
   '30',
@@ -43,6 +45,8 @@ const webhookCronBatchSize = optionalIntegerEnv(
 validateWorkerRoute(workerRoute)
 validateBetterAuthUrl(betterAuthUrl)
 validateD1DatabaseId(d1DatabaseId)
+validateCollectorRepoUrl(collectorRepoUrl)
+validateCollectorRepoRef(collectorRepoRef)
 
 let content = readFileSync(inputFile, 'utf8')
 
@@ -57,6 +61,18 @@ content = replaceRequired(
   /"BETTER_AUTH_URL"\s*:\s*"https:\/\/<your-tokenboard-domain>"/,
   `"BETTER_AUTH_URL": ${JSON.stringify(betterAuthUrl)}`,
   'BETTER_AUTH_URL'
+)
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_COLLECTOR_REPO_URL"\s*:\s*"<tokenboard-collector-repo-url>"/,
+  `"TOKENBOARD_COLLECTOR_REPO_URL": ${JSON.stringify(collectorRepoUrl)}`,
+  'TOKENBOARD_COLLECTOR_REPO_URL'
+)
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_COLLECTOR_REF"\s*:\s*"<tokenboard-collector-ref>"/,
+  `"TOKENBOARD_COLLECTOR_REF": ${JSON.stringify(collectorRepoRef)}`,
+  'TOKENBOARD_COLLECTOR_REF'
 )
 content = replaceRequired(
   content,
@@ -171,6 +187,28 @@ function validateD1DatabaseId(value) {
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   if (!uuidPattern.test(value)) {
     fail('D1_DATABASE_ID must be the D1 database UUID from Cloudflare.')
+  }
+}
+
+function validateCollectorRepoUrl(value) {
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    fail('TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.')
+  }
+
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com') {
+    fail('TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.')
+  }
+  if (!/^\/[^/]+\/[^/]+(?:\.git)?$/.test(url.pathname) || url.search || url.hash) {
+    fail('TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL.')
+  }
+}
+
+function validateCollectorRepoRef(value) {
+  if (!value.trim() || /\s/.test(value)) {
+    fail('TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name.')
   }
 }
 

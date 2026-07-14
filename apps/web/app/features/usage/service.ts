@@ -3,6 +3,7 @@ import { toIsoDate } from '../../lib/time'
 import { usageSourceSchema } from './schema'
 import { normalizeDeviceFilter, usageSummaryStrictMode } from './deduped-daily-usage'
 import type { Bindings } from '../../lib/db'
+import type { UsageSource } from '@tokenboard/usage-core'
 
 export type DashboardSummary = UsageSummary & {
   dailyTrend: DailyUsageTrendItem[]
@@ -29,7 +30,7 @@ export async function getDashboardSummary(
 }
 
 export type UsageDetailsFilters = {
-  source: 'all' | 'claude-code' | 'codex'
+  source: 'all' | UsageSource
   startDate: string
   endDate: string
   deviceId: string

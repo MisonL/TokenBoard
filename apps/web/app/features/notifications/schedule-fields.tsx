@@ -27,6 +27,7 @@ export function ScheduleTimeFields(props: {
             name="scheduleTimesLocal[]"
             type="time"
             value={time}
+            aria-label={scheduleTimeInputLabel(index)}
             autocomplete="off"
             required={index === 0}
             disabled={props.disabled}
@@ -78,6 +79,10 @@ export function scheduleRuleLabel(subscription: WebhookSubscriptionSummary) {
 function scheduleTimeSlots(times: string[]) {
   const normalized = times?.length > 0 ? times : ['18:00']
   return normalized.concat(Array(Math.max(0, scheduleTimeSlotCount - normalized.length)).fill(''))
+}
+
+function scheduleTimeInputLabel(index: number) {
+  return index === 0 ? '推送时间 1' : `推送时间 ${index + 1}（可选）`
 }
 
 function weekdaysLabel(weekdays: number[]) {

@@ -1,108 +1,14 @@
 import { sql } from 'drizzle-orm'
 import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import {
+  accounts, auditLogs, deviceInstallations, devices, pairingCodes, profiles,
+  sessions, uploadTokens, users, verifications
+} from './schema-identity'
 
-export const users = sqliteTable('users', {
-  id: text('id').primaryKey(),
-  email: text('email').unique(),
-  emailVerified: integer('email_verified', { mode: 'boolean' }).notNull().default(false),
-  name: text('name'),
-  image: text('image'),
-  createdAt: text('created_at').notNull(),
-  updatedAt: text('updated_at').notNull()
-})
-
-export const sessions = sqliteTable('sessions', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  token: text('token').notNull().unique(),
-  expiresAt: integer('expires_at').notNull(),
-  ipAddress: text('ip_address'),
-  userAgent: text('user_agent'),
-  createdAt: integer('created_at').notNull(),
-  updatedAt: integer('updated_at').notNull()
-})
-
-export const accounts = sqliteTable('accounts', {
-  id: text('id').primaryKey(),
-  accountId: text('account_id').notNull(),
-  providerId: text('provider_id').notNull(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  accessToken: text('access_token'),
-  refreshToken: text('refresh_token'),
-  idToken: text('id_token'),
-  accessTokenExpiresAt: integer('access_token_expires_at'),
-  refreshTokenExpiresAt: integer('refresh_token_expires_at'),
-  scope: text('scope'),
-  password: text('password'),
-  createdAt: integer('created_at').notNull(),
-  updatedAt: integer('updated_at').notNull()
-})
-
-export const verifications = sqliteTable('verifications', {
-  id: text('id').primaryKey(),
-  identifier: text('identifier').notNull(),
-  value: text('value').notNull(),
-  expiresAt: integer('expires_at').notNull(),
-  createdAt: integer('created_at').notNull(),
-  updatedAt: integer('updated_at').notNull()
-})
-
-export const profiles = sqliteTable('profiles', {
-  userId: text('user_id')
-    .notNull()
-    .primaryKey()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  slug: text('slug').notNull().unique(),
-  displayName: text('display_name').notNull(),
-  timezone: text('timezone').notNull().default('UTC'),
-  timezoneSource: text('timezone_source').notNull().default('default'),
-  publicCardConfig: text('public_card_config'),
-  dailyReportShareEnabled: integer('daily_report_share_enabled', { mode: 'boolean' }).notNull().default(false),
-  isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
-  participatesInLeaderboards: integer('participates_in_leaderboards', { mode: 'boolean' }).notNull().default(false),
-  createdAt: text('created_at').notNull(),
-  updatedAt: text('updated_at').notNull()
-})
-
-export const uploadTokens = sqliteTable('upload_tokens', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  tokenHash: text('token_hash').notNull().unique(),
-  deviceId: text('device_id'),
-  lastUsedAt: text('last_used_at'),
-  createdAt: text('created_at').notNull(),
-  revokedAt: text('revoked_at')
-})
-
-export const pairingCodes = sqliteTable('pairing_codes', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  codeHash: text('code_hash').notNull().unique(),
-  expiresAt: text('expires_at').notNull(),
-  consumedAt: text('consumed_at'),
-  createdAt: text('created_at').notNull()
-})
-
-export const devices = sqliteTable('devices', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(),
-  platform: text('platform').notNull(),
-  lastSyncedAt: text('last_synced_at'),
-  createdAt: text('created_at').notNull(),
-  updatedAt: text('updated_at').notNull()
-})
+export {
+  accounts, auditLogs, deviceInstallations, devices, pairingCodes, profiles,
+  sessions, uploadTokens, users, verifications
+} from './schema-identity'
 
 export const dailyUsage = sqliteTable(
   'daily_usage',
@@ -294,7 +200,7 @@ export const apiRateLimits = sqliteTable('api_rate_limits', {
 }, (table) => [index('api_rate_limits_reset_idx').on(table.resetAt)])
 
 export const schema = {
-  users, sessions, accounts, verifications, profiles, uploadTokens, pairingCodes, devices,
+  users, sessions, accounts, verifications, profiles, uploadTokens, pairingCodes, devices, deviceInstallations, auditLogs,
   dailyUsage, dailyUsageSummary, userUsageTotals, usageSummaryBackfillState,
   webhookSubscriptions, webhookDeliveryLogs, dailyReportHistory, apiRateLimits
 }

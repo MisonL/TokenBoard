@@ -30,6 +30,8 @@ describe('ProfilePage layout', () => {
     expect(html).toContain('data-public-card-form="true"')
     expect(html).toContain('data-submit-feedback="true"')
     expect(html).toContain('data-submitting-label="正在保存..."')
+    expect(html).toContain('>公开资料</h1>')
+    expect(html).toContain('>公开资料设置</h2>')
     expect(html).toContain('data-submitting-label="正在还原..."')
     expect(html).toContain('data-link-button="true"')
     expect(html).toContain('min-w-0 self-start')

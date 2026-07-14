@@ -144,12 +144,17 @@ describe('verifyUploadToken', () => {
           prepare(sql: string) {
             expect(sql).toContain('FROM upload_tokens')
             expect(sql).toContain('device_id as deviceId')
+            expect(sql).toContain('installation_id as installationId')
             return {
               bind(value: string) {
                 expect(value).toBe('hash:tok')
                 return {
                   async first() {
-                    return { userId: 'paired-user', deviceId: 'dev_123' }
+                    return {
+                      userId: 'paired-user',
+                      deviceId: 'dev_123',
+                      installationId: 'inst_123'
+                    }
                   }
                 }
               }
@@ -164,7 +169,8 @@ describe('verifyUploadToken', () => {
     expect(user).toEqual({
       id: 'paired-user',
       uploadTokenHash: 'hash:tok',
-      deviceId: 'dev_123'
+      deviceId: 'dev_123',
+      installationId: 'inst_123'
     })
   })
 

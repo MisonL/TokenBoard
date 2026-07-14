@@ -25,6 +25,8 @@ describe('Wrangler deploy config', () => {
     expect(config).toContain('"routes"')
     expect(config).toContain('"pattern": "tokenboard.chaosyn.com"')
     expect(config).toContain('"BETTER_AUTH_URL": "https://tokenboard.chaosyn.com"')
+    expect(config).toContain('"TOKENBOARD_COLLECTOR_REPO_URL"')
+    expect(config).toContain('"TOKENBOARD_COLLECTOR_REF"')
     expect(config).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
     expect(config).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"')
     expect(config).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
@@ -58,6 +60,8 @@ describe('Wrangler deploy config', () => {
     expect(example).toContain('"run_worker_first"')
     expect(example).toContain('"run_worker_first": true')
     expect(example).toContain('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"')
+    expect(example).toContain('"TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>"')
+    expect(example).toContain('"TOKENBOARD_COLLECTOR_REF": "<tokenboard-collector-ref>"')
     expect(example).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"')
     expect(example).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "<tokenboard-usage-summary-backfill-limit>"')
     expect(example).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>"')
@@ -88,7 +92,7 @@ describe('Wrangler deploy config', () => {
   })
 
   test('Drizzle schema declares webhook migration indexes', () => {
-    const schema = readPackageFile('app/db/schema.ts')
+    const schema = readDrizzleSchema()
 
     expect(schema).toContain("index('webhook_subscriptions_user_idx')")
     expect(schema).toContain("index('webhook_subscriptions_due_idx')")
@@ -102,7 +106,7 @@ describe('Wrangler deploy config', () => {
   })
 
   test('Drizzle schema declares daily report history table and indexes', () => {
-    const schema = readPackageFile('app/db/schema.ts')
+    const schema = readDrizzleSchema()
 
     expect(schema).toContain("'daily_report_history'")
     expect(schema).toContain('dailyReportShareEnabled')
@@ -114,7 +118,7 @@ describe('Wrangler deploy config', () => {
   })
 
   test('Drizzle schema declares usage summary cache tables', () => {
-    const schema = readPackageFile('app/db/schema.ts')
+    const schema = readDrizzleSchema()
 
     expect(schema).toContain("'daily_usage_summary'")
     expect(schema).toContain("'user_usage_totals'")
@@ -197,6 +201,19 @@ describe('Wrangler deploy config', () => {
     expect(migration).toContain('CREATE INDEX api_rate_limits_reset_idx')
   })
 
+  test('device token rotation migration prevents duplicate active successors', () => {
+    const schema = readDrizzleSchema()
+    const migration = readPackageFile('db/migrations/0024_upload_token_active_successor.sql')
+
+    expect(schema).toContain("uniqueIndex('upload_tokens_active_successor_idx')")
+    expect(schema).toContain('table.supersedesTokenId} IS NOT NULL')
+    expect(schema).toContain('table.revokedAt} IS NULL')
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS upload_tokens_active_successor_idx')
+    expect(migration).toContain('ON upload_tokens(supersedes_token_id)')
+    expect(migration).toContain('supersedes_token_id IS NOT NULL')
+    expect(migration).toContain('revoked_at IS NULL')
+  })
+
   test('usage summary migration creates cache tables without blocking backfill work', () => {
     const migration = readPackageFile('db/migrations/0016_usage_summary_cache.sql')
     const refreshMigration = readPackageFile('db/migrations/0017_refresh_usage_summary_cache.sql')
@@ -231,6 +248,8 @@ describe('Wrangler deploy config', () => {
             ...process.env,
             TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
             BETTER_AUTH_URL: 'https://tokenboard.example.com',
+            TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+            TOKENBOARD_COLLECTOR_REF: 'master',
             D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
           }
         }
@@ -241,6 +260,8 @@ describe('Wrangler deploy config', () => {
       const generated = readFileSync(outputFile, 'utf8')
       expect(generated).toContain('"pattern": "tokenboard.example.com"')
       expect(generated).toContain('"BETTER_AUTH_URL": "https://tokenboard.example.com"')
+      expect(generated).toContain('"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"')
+      expect(generated).toContain('"TOKENBOARD_COLLECTOR_REF": "master"')
       expect(generated).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"')
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
@@ -284,6 +305,8 @@ describe('Wrangler deploy config', () => {
             ...process.env,
             TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
             BETTER_AUTH_URL: 'https://tokenboard.example.com',
+            TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+            TOKENBOARD_COLLECTOR_REF: 'research/agy-token-support-plan',
             TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '14',
             TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: '25',
             TOKENBOARD_USAGE_SUMMARY_STRICT: 'true',
@@ -297,6 +320,8 @@ describe('Wrangler deploy config', () => {
       expect(result.status).toBe(0)
 
       const generated = readFileSync(outputFile, 'utf8')
+      expect(generated).toContain('"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"')
+      expect(generated).toContain('"TOKENBOARD_COLLECTOR_REF": "research/agy-token-support-plan"')
       expect(generated).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "14"')
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "25"')
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "true"')
@@ -316,7 +341,9 @@ describe('Wrangler deploy config', () => {
         ['TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT', '501', 'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'],
         ['TOKENBOARD_USAGE_SUMMARY_STRICT', 'yes', 'TOKENBOARD_USAGE_SUMMARY_STRICT must be true, false, 1, or 0'],
         ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
-        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5']
+        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
         const result = spawnSync(
@@ -329,6 +356,8 @@ describe('Wrangler deploy config', () => {
               ...process.env,
               TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
               BETTER_AUTH_URL: 'https://tokenboard.example.com',
+              TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+              TOKENBOARD_COLLECTOR_REF: 'master',
               TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '30',
               TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: '50',
               TOKENBOARD_USAGE_SUMMARY_STRICT: 'false',
@@ -356,6 +385,8 @@ describe('Wrangler deploy config', () => {
       const content = readPackageFile('wrangler.production.example.jsonc')
         .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
         .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
+        .replace('"TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>"', '"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"')
+        .replace('"TOKENBOARD_COLLECTOR_REF": "<tokenboard-collector-ref>"', '"TOKENBOARD_COLLECTOR_REF": "master"')
         .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
       writeFileSync(outputFile, content)
 
@@ -384,7 +415,9 @@ describe('Wrangler deploy config', () => {
         ['TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT', '501', 'vars.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'],
         ['TOKENBOARD_USAGE_SUMMARY_STRICT', 'yes', 'vars.TOKENBOARD_USAGE_SUMMARY_STRICT must be true, false, 1, or 0'],
         ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
-        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5']
+        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'vars.TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
         const content = filledProductionExample()
@@ -430,6 +463,8 @@ describe('Wrangler deploy config', () => {
           PATH: `${tempDir}:${process.env.PATH ?? ''}`,
           TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
           BETTER_AUTH_URL: 'https://tokenboard.example.com',
+          TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+          TOKENBOARD_COLLECTOR_REF: 'master',
           TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '7',
           TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: '20',
           TOKENBOARD_USAGE_SUMMARY_STRICT: '1',
@@ -444,6 +479,8 @@ describe('Wrangler deploy config', () => {
       const generated = readFileSync(join(tempDir, 'wrangler.production.ci.jsonc'), 'utf8')
       expect(generated).toContain('"pattern": "tokenboard.example.com"')
       expect(generated).toContain('"BETTER_AUTH_URL": "https://tokenboard.example.com"')
+      expect(generated).toContain('"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"')
+      expect(generated).toContain('"TOKENBOARD_COLLECTOR_REF": "master"')
       expect(generated).toContain('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "7"')
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "20"')
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "true"')
@@ -582,6 +619,8 @@ describe('Wrangler deploy config', () => {
             ...process.env,
             TOKENBOARD_WORKER_ROUTE: badRoute,
             BETTER_AUTH_URL: 'https://tokenboard.example.com',
+            TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+            TOKENBOARD_COLLECTOR_REF: 'master',
             D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
           }
         }
@@ -652,10 +691,19 @@ function readPackageFile(relativePath: string): string {
   return readFileSync(resolve(packageDir, relativePath), 'utf8')
 }
 
+function readDrizzleSchema() {
+  return [
+    readPackageFile('app/db/schema.ts'),
+    readPackageFile('app/db/schema-identity.ts')
+  ].join('\n')
+}
+
 function filledProductionExample() {
   return readPackageFile('wrangler.production.example.jsonc')
     .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
     .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
+    .replace('"TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>"', '"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"')
+    .replace('"TOKENBOARD_COLLECTOR_REF": "<tokenboard-collector-ref>"', '"TOKENBOARD_COLLECTOR_REF": "master"')
     .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
     .replace('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "<tokenboard-usage-summary-backfill-limit>"', '"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"')
     .replace('"TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>"', '"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
@@ -670,5 +718,7 @@ function resourceControlDefault(name: string) {
   if (name === 'TOKENBOARD_USAGE_SUMMARY_STRICT') return 'false'
   if (name === 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS') return '90'
   if (name === 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE') return '5'
+  if (name === 'TOKENBOARD_COLLECTOR_REPO_URL') return 'https://github.com/MisonL/TokenBoard.git'
+  if (name === 'TOKENBOARD_COLLECTOR_REF') return 'master'
   throw new Error(`Unknown resource control variable ${name}`)
 }

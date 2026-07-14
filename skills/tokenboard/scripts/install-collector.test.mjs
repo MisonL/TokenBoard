@@ -43,8 +43,139 @@ test('updates the existing collector origin before pulling', () => {
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
+        command: 'git-ensure-default-branch',
+        args: [],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
         command: 'git',
         args: ['pull', '--ff-only'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
+test('pins an existing collector checkout to a configured ref', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'research/agy-token-support-plan',
+      packageManager: 'pnpm',
+      exists: true,
+      isGitRepo: true,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['remote', 'set-url', 'origin', 'https://github.com/example/TokenBoard.git'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git-fetch-branch-or-ref',
+        args: ['research/agy-token-support-plan'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
+test('clones the configured collector ref when provided', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'research/agy-token-support-plan',
+      packageManager: 'pnpm',
+      exists: false,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        options: {}
+      },
+      {
+        command: 'git-fetch-branch-or-ref',
+        args: ['research/agy-token-support-plan'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
+test('treats all-hex collector refs as branch candidates when installing', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'deadbeef',
+      packageManager: 'pnpm',
+      exists: false,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        options: {}
+      },
+      {
+        command: 'git-fetch-branch-or-ref',
+        args: ['deadbeef'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      }
+    ]
+  )
+})
+
+test('clones a configured full ref detached when provided', () => {
+  assert.deepEqual(
+    buildInstallCollectorPlan({
+      dir: '/home/user/.tokenboard/TokenBoard',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'refs/tags/v1.2.3',
+      packageManager: 'pnpm',
+      exists: false,
+      platform: 'linux'
+    }),
+    [
+      {
+        command: 'git',
+        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        options: {}
+      },
+      {
+        command: 'git',
+        args: ['fetch', '--depth', '1', 'origin', 'refs/tags/v1.2.3'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
+        command: 'git',
+        args: ['checkout', 'FETCH_HEAD'],
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {

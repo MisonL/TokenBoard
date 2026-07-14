@@ -1,0 +1,299 @@
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, test } from 'vitest'
+import {
+  createAntigravityLanguageServerClient,
+  formatMetadataRequestHttpError,
+  listAntigravityCascades,
+  type AntigravityCascadeFileSystem
+} from './antigravity-gui-client'
+
+describe('createAntigravityLanguageServerClient', () => {
+  test('does not include raw response bodies in metadata HTTP errors', () => {
+    const rawBody = [
+      'prompt: summarize /Users/test/private/project/file.ts',
+      'email: user@example.com',
+      'completion: raw local content'
+    ].join('\n')
+    const message = formatMetadataRequestHttpError('antigravity', 500)
+
+    expect(message).toBe('Antigravity metadata request failed for antigravity: HTTP 500')
+    expect(message).not.toContain(rawBody)
+    expect(message).not.toContain('/Users/test/private/project/file.ts')
+    expect(message).not.toContain('user@example.com')
+    expect(message).not.toContain('raw local content')
+  })
+
+  test.skipIf(process.platform === 'win32')('closes the language server process when startup times out', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-'))
+    const previousTimeout = process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS
+    const previousPidFile = process.env.TOKENBOARD_ANTIGRAVITY_TEST_PID_FILE
+    try {
+      const serverPath = join(root, 'server.mjs')
+      const pidPath = join(root, 'server.pid')
+      await writeFile(serverPath, [
+        '#!/bin/sh',
+        'printf "%s" "$$" > "$TOKENBOARD_ANTIGRAVITY_TEST_PID_FILE"',
+        'while :; do sleep 1; done'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+      process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS = '500'
+      process.env.TOKENBOARD_ANTIGRAVITY_TEST_PID_FILE = pidPath
+
+      const client = createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      })
+      const timeoutAssertion = expect(client).rejects.toThrow('Timed out starting Antigravity language server')
+      const pid = await readPid(pidPath)
+
+      await timeoutAssertion
+      await expectProcessExited(pid)
+    } finally {
+      restoreEnv('TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS', previousTimeout)
+      restoreEnv('TOKENBOARD_ANTIGRAVITY_TEST_PID_FILE', previousPidFile)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.skipIf(process.platform === 'win32')('detects readiness markers split across output chunks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-split-ready-'))
+    try {
+      const serverPath = join(root, 'server.mjs')
+      await writeFile(serverPath, [
+        '#!/usr/bin/env node',
+        'const portIndex = process.argv.indexOf("--https_server_port")',
+        'const port = process.argv[portIndex + 1]',
+        'process.stdout.write("fixed port ")',
+        'setTimeout(() => process.stderr.write(`at ${port} `), 25)',
+        'setTimeout(() => process.stdout.write("for HTTPS"), 50)',
+        'setInterval(() => undefined, 1000)'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+
+      const client = await createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      })
+
+      await client.close()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('listAntigravityCascades', () => {
+  test('marks cascades that have a SQLite history file', async () => {
+    const id = cascadeId(0)
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        yield { name: `${id}.pb`, isFile: () => true }
+      },
+      stat: async (path) => path.endsWith('.db')
+        ? { mtimeMs: 200, size: 30 }
+        : { mtimeMs: 100, size: 20 }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-db-marker',
+      fileSystem
+    })
+
+    expect(cascades).toEqual([{
+      id,
+      mtimeMs: 200,
+      size: 30,
+      hasDatabaseFile: true
+    }])
+  })
+
+  test('selects newest requestable cascades before applying the limit', async () => {
+    const statPaths: string[] = []
+    const mtimes = new Map([
+      [cascadeId(0), 100],
+      [cascadeId(1), 300],
+      [cascadeId(2), 200]
+    ])
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (const index of [0, 2, 1]) {
+          const name = `${cascadeId(index)}.pb`
+          yield {
+            name,
+            isFile: () => true
+          }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        return { mtimeMs: mtimes.get(id ?? '') ?? 0, size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-cascades',
+      limit: 2,
+      fileSystem
+    })
+
+    expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(1), cascadeId(2)])
+    expect(statPaths.some((path) => path.includes(cascadeId(0)))).toBe(true)
+    expect(statPaths.some((path) => path.includes(cascadeId(1)))).toBe(true)
+    expect(statPaths.some((path) => path.includes(cascadeId(2)))).toBe(true)
+  })
+
+  test('selects newest cascades from the full directory before applying the request limit', async () => {
+    const listed: string[] = []
+    const statPaths: string[] = []
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 500; index += 1) {
+          const name = `${cascadeId(index)}.pb`
+          listed.push(name)
+          yield {
+            name,
+            isFile: () => true
+          }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        return { mtimeMs: Number(id?.slice(-12) ?? 0), size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-large-cascades',
+      limit: 2,
+      fileSystem
+    })
+
+    expect(listed).toHaveLength(500)
+    expect(statPaths).toHaveLength(1000)
+    expect(cascades).toHaveLength(2)
+    expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(499), cascadeId(498)])
+  })
+
+  test('does not miss newest cascades when directory order lists them after old entries', async () => {
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 500; index += 1) {
+          yield {
+            name: `${cascadeId(index)}.pb`,
+            isFile: () => true
+          }
+        }
+      },
+      stat: async (path) => {
+        if (path.endsWith('.db')) {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        const index = Number(id?.slice(-12) ?? 0)
+        return { mtimeMs: index >= 498 ? 10_000 + index : index, size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-unsorted-cascades',
+      limit: 2,
+      fileSystem
+    })
+
+    expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(499), cascadeId(498)])
+  })
+
+  test('stats required cascades even when they are outside the bounded directory window', async () => {
+    const listed: string[] = []
+    const statPaths: string[] = []
+    const requiredId = cascadeId(499)
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 500; index += 1) {
+          const name = `${cascadeId(index)}.pb`
+          listed.push(name)
+          yield {
+            name,
+            isFile: () => true
+          }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) {
+          throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        }
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        return { mtimeMs: Number(id?.slice(-12) ?? 0), size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-required-cascades',
+      limit: 2,
+      requiredCascadeIds: [requiredId],
+      includeCascade: (cascade) => cascade.id === requiredId,
+      fileSystem
+    })
+
+    expect(listed).toHaveLength(500)
+    expect(cascades.map((cascade) => cascade.id)).toEqual([requiredId])
+    expect(statPaths.some((path) => path.includes(requiredId))).toBe(true)
+  })
+})
+
+async function readPid(path: string) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      return Number(await readFile(path, 'utf8'))
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error('Expected test language server to write a pid file')
+}
+
+async function expectProcessExited(pid: number) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!isProcessRunning(pid)) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {}
+  throw new Error(`Expected process ${pid} to exit`)
+}
+
+function isProcessRunning(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function restoreEnv(key: string, value: string | undefined) {
+  if (value === undefined) delete process.env[key]
+  else process.env[key] = value
+}
+
+function cascadeId(index: number) {
+  return `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+}

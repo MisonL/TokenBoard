@@ -25,6 +25,8 @@
   ],
   "vars": {
     "BETTER_AUTH_URL": "https://<your-tokenboard-domain>",
+    "TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>",
+    "TOKENBOARD_COLLECTOR_REF": "<tokenboard-collector-ref>",
     "TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>",
     "TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "<tokenboard-usage-summary-backfill-limit>",
     "TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>",

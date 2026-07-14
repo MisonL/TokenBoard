@@ -16,6 +16,7 @@ export type AuthenticatedUser = {
   id: string
   uploadTokenHash: string
   deviceId: string | null
+  installationId: string | null
 }
 
 export async function requireUser(c: Context): Promise<SessionUser> {
@@ -73,7 +74,10 @@ export async function verifyUploadToken(
   const row = await env.DB
     .prepare(
       `
-        SELECT user_id as userId, device_id as deviceId
+        SELECT
+          user_id as userId,
+          device_id as deviceId,
+          installation_id as installationId
         FROM upload_tokens
         WHERE token_hash = ?
           AND revoked_at IS NULL
@@ -81,10 +85,15 @@ export async function verifyUploadToken(
       `
     )
     .bind(tokenHash)
-    .first<{ userId: string; deviceId: string | null }>()
+    .first<{ userId: string; deviceId: string | null; installationId: string | null }>()
 
   if (row) {
-    return { id: row.userId, uploadTokenHash: tokenHash, deviceId: row.deviceId ?? null }
+    return {
+      id: row.userId,
+      uploadTokenHash: tokenHash,
+      deviceId: row.deviceId ?? null,
+      installationId: row.installationId ?? null
+    }
   }
 
   throw new ApiError('UNAUTHORIZED', 'Invalid upload token', 401)

@@ -2,24 +2,37 @@ import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertAntigravitySettingsValid, getAntigravityHookStatus, installAntigravityHook, uninstallAntigravityHook } from './antigravity-hook.mjs'
 import { assertClaudeSettingsValid, getClaudeHookStatus, installClaudeHook, uninstallClaudeHook } from './claude-hook.mjs'
 import { configDir, parseArgs } from './config.mjs'
 import { assertCodexNotifyWritable, getCodexHookStatus, installCodexHook, uninstallCodexHook } from './codex-hook.mjs'
-import { claudeSource, codexSource, isTokenBoardNotifyHandler, nodeFs, notifyHandlerMarker, readOptional, readSources, removeNotifyHandler } from './hooks-utils.mjs'
+import { antigravitySource, claudeSource, codexSource, isTokenBoardNotifyHandler, nodeFs, notifyHandlerMarker, readOptional, readSources, readUninstallSources, removeNotifyHandler } from './hooks-utils.mjs'
 
 export function hookPaths({ homeDir = homedir(), stateDir = configDir(), env = process.env } = {}) {
   const tokenboardHome = stateDir
   const binDir = join(tokenboardHome, 'bin')
   const codexHome = resolveEnvPath(env.CODEX_HOME) || join(homeDir, '.codex')
   const claudeHome = resolveEnvPath(env.CLAUDE_CONFIG_DIR) || resolveEnvPath(env.CLAUDE_HOME) || join(homeDir, '.claude')
+  const antigravityHome = resolveEnvPath(env.ANTIGRAVITY_CONFIG_DIR) ||
+    resolveEnvPath(env.ANTIGRAVITY_HOME) ||
+    join(homeDir, '.gemini', 'antigravity-cli')
+  const antigravityIdeHome = resolveEnvPath(env.ANTIGRAVITY_IDE_CONFIG_DIR) ||
+    join(homeDir, '.gemini', 'antigravity-ide')
+  const antigravityAppHome = resolveEnvPath(env.ANTIGRAVITY_APP_CONFIG_DIR) ||
+    join(homeDir, '.gemini', 'antigravity')
   return {
     stateDir: tokenboardHome,
     binDir,
     notifyPath: join(binDir, 'notify.cjs'),
     notifyScriptPath: fileURLToPath(new URL('./notify.mjs', import.meta.url)),
+    statuslineScriptPath: fileURLToPath(new URL('./antigravity-statusline.mjs', import.meta.url)),
     codexConfigPath: join(codexHome, 'config.toml'),
     codexOriginalPath: join(tokenboardHome, 'codex_notify_original.json'),
-    claudeSettingsPath: join(claudeHome, 'settings.json')
+    claudeSettingsPath: join(claudeHome, 'settings.json'),
+    antigravitySettingsPath: join(antigravityHome, 'settings.json'),
+    antigravityIdePath: antigravityIdeHome,
+    antigravityPath: antigravityAppHome,
+    antigravityOriginalStatuslinePath: join(tokenboardHome, 'antigravity_statusline_original.json')
   }
 }
 
@@ -32,12 +45,14 @@ export function installHooks(options = {}) {
   const sources = readSources(flags.source || flags.sources || 'all')
   validateHookTargets({ sources, paths, fs })
 
-  fs.mkdir(paths.binDir, { recursive: true, mode: 0o700 })
-  fs.writeFile(paths.notifyPath, buildNotifyHandler({
-    stateDir: paths.stateDir,
-    notifyScriptPath: paths.notifyScriptPath,
-    nodePath
-  }), { mode: 0o700 })
+  if (needsNotifyHandler(sources)) {
+    fs.mkdir(paths.binDir, { recursive: true, mode: 0o700 })
+    fs.writeFile(paths.notifyPath, buildNotifyHandler({
+      stateDir: paths.stateDir,
+      notifyScriptPath: paths.notifyScriptPath,
+      nodePath
+    }), { mode: 0o700 })
+  }
 
   const results = []
   if (sources.includes(codexSource)) {
@@ -46,9 +61,13 @@ export function installHooks(options = {}) {
   if (sources.includes(claudeSource)) {
     results.push(installClaudeHook({ paths, fs, nodePath, platform }))
   }
+  if (sources.includes(antigravitySource)) {
+    results.push(installAntigravityHook({ paths, fs, nodePath, platform }))
+  }
   const installedHooks = {
     codex: getCodexHookStatus({ paths, fs }),
-    claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform })
+    claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform }),
+    antigravityCli: getAntigravityHookStatus({ paths, fs })
   }
   if (canRemoveNotifyHandler(installedHooks)) {
     removeNotifyHandler({ paths, fs })
@@ -62,8 +81,10 @@ export function uninstallHooks(options = {}) {
   const fs = options.fs || nodeFs()
   const nodePath = options.nodePath || process.execPath
   const platform = options.platform || process.platform
-  const sources = readSources(flags.source || flags.sources || 'all')
-  validateHookTargets({ sources, paths, fs })
+  const sourceValue = flags.source || flags.sources || 'all'
+  const sources = readUninstallSources(sourceValue)
+  const explicitAntigravity = sourceWasExplicitlyRequested(sourceValue, antigravitySource)
+  validateUninstallHookTargets({ sources, explicitAntigravity, paths, fs })
   const results = []
 
   if (sources.includes(codexSource)) {
@@ -72,15 +93,55 @@ export function uninstallHooks(options = {}) {
   if (sources.includes(claudeSource)) {
     results.push(uninstallClaudeHook({ paths, fs, nodePath, platform }))
   }
+  if (sources.includes(antigravitySource)) {
+    try {
+      if (!explicitAntigravity) {
+        assertAntigravitySettingsValid({ paths, fs })
+      }
+    } catch (error) {
+      results.push({
+        source: antigravitySource,
+        action: 'skip',
+        changed: false,
+        detail: `Antigravity statusline not checked: ${errorMessage(error)}`
+      })
+      return finishUninstallHooks({ results, paths, fs, nodePath, platform })
+    }
+    try {
+      results.push(uninstallAntigravityHook({ paths, fs }))
+    } catch (error) {
+      finishUninstallHooksBeforeRethrow({ results, paths, fs, nodePath, platform }, error)
+      throw error
+    }
+  }
 
+  return finishUninstallHooks({ results, paths, fs, nodePath, platform })
+}
+
+function finishUninstallHooks({ results, paths, fs, nodePath, platform }) {
   const remainingHooks = {
     codex: getCodexHookStatus({ paths, fs }),
-    claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform })
+    claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform }),
+    antigravityCli: getAntigravityHookStatus({ paths, fs })
   }
   const notifyRemoved = canRemoveNotifyHandler(remainingHooks)
     ? removeNotifyHandler({ paths, fs })
     : false
   return { notifyPath: paths.notifyPath, notifyRemoved, hooks: results }
+}
+
+function finishUninstallHooksBeforeRethrow(args, originalError) {
+  try {
+    finishUninstallHooks(args)
+  } catch (cleanupError) {
+    attachCleanupError(originalError, cleanupError)
+  }
+}
+
+function attachCleanupError(originalError, cleanupError) {
+  if (originalError && typeof originalError === 'object') {
+    originalError.cleanupError = cleanupError
+  }
 }
 
 export function hookStatus(options = {}) {
@@ -92,7 +153,10 @@ export function hookStatus(options = {}) {
     notifyPath: paths.notifyPath,
     notifyHandler: isTokenBoardNotifyHandler(readOptional(paths.notifyPath, fs)) ? 'installed' : 'not-installed',
     codex: getCodexHookStatus({ paths, fs }),
-    claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform })
+    claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform }),
+    antigravityCli: getAntigravityHookStatus({ paths, fs }),
+    antigravityIde: getAntigravityGuiStatus(paths.antigravityIdePath, fs),
+    antigravity: getAntigravityGuiStatus(paths.antigravityPath, fs)
   }
 }
 
@@ -266,10 +330,54 @@ function validateHookTargets({ sources, paths, fs }) {
   if (sources.includes(claudeSource)) {
     assertClaudeSettingsValid({ paths, fs })
   }
+  if (sources.includes(antigravitySource)) {
+    assertAntigravitySettingsValid({ paths, fs })
+  }
+}
+
+function validateUninstallHookTargets({ sources, explicitAntigravity, paths, fs }) {
+  if (sources.includes(codexSource)) {
+    assertCodexNotifyWritable({ paths, fs })
+  }
+  if (sources.includes(claudeSource)) {
+    assertClaudeSettingsValid({ paths, fs })
+  }
+  if (sources.includes(antigravitySource) && explicitAntigravity) {
+    assertAntigravitySettingsValid({ paths, fs })
+  }
+}
+
+function sourceWasExplicitlyRequested(value, source) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .includes(source)
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function canRemoveNotifyHandler(status) {
   return status.codex === 'not-installed' && status.claudeCode === 'not-installed'
+}
+
+function needsNotifyHandler(sources) {
+  return sources.includes(codexSource) || sources.includes(claudeSource)
+}
+
+function getAntigravityGuiStatus(path, fs) {
+  if (!path) return 'not-installed'
+  try {
+    return pathExists(path, fs) ? 'installed-local-history' : 'not-installed'
+  } catch {
+    return 'error'
+  }
+}
+
+function pathExists(path, fs) {
+  if (typeof fs.exists === 'function') return fs.exists(path)
+  return readOptional(path, fs) !== null
 }
 
 function resolveEnvPath(value) {

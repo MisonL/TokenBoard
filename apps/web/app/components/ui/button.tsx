@@ -10,7 +10,7 @@ const buttonVariants = cva(
         default: 'bg-lime-300 text-stone-950 hover:bg-lime-200',
         secondary: 'border border-[var(--app-border)] bg-[var(--app-panel-strong)] text-[var(--app-text)] hover:border-lime-300 hover:text-[var(--app-text)]',
         ghost: 'text-[var(--app-muted)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]',
-        destructive: 'bg-red-400 text-stone-950 hover:bg-red-300'
+        destructive: 'app-danger-button'
       },
       size: {
         default: 'h-11 px-4 py-2',
@@ -33,6 +33,7 @@ type ButtonProps = VariantProps<typeof buttonVariants> & {
   value?: string
   disabled?: boolean
   'data-confirm'?: string
+  'data-login-primary'?: string
   'data-submitting-label'?: string
   'data-submitting-tone'?: string
   children?: Child

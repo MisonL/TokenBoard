@@ -29,6 +29,25 @@ describe('filterChangedSnapshots', () => {
       skipped: 1
     })
   })
+
+  test('accepts Antigravity CLI hashes from the server check response', async () => {
+    const snapshot = { ...unchangedSnapshot, source: 'antigravity-cli' as const, model: 'Gemini 3.5 Flash (Medium)' }
+    const checked = await filterChangedSnapshots(
+      [snapshot],
+      async () => ({
+        existing: [
+          {
+            source: snapshot.source,
+            usageDate: snapshot.usageDate,
+            model: snapshot.model,
+            snapshotHash: await snapshotHash(snapshot)
+          }
+        ]
+      })
+    )
+
+    expect(checked).toEqual({ snapshots: [], skipped: 1 })
+  })
 })
 
 describe('uploadSnapshots', () => {

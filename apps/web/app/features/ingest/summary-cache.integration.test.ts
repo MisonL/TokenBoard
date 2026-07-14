@@ -634,6 +634,296 @@ describe('usage summary cache integration', () => {
       ['sub_old_0014']
     )
   })
+
+  test('Antigravity cost cleanup migration clears realtime aggregate costs', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-antigravity-cost-cleanup-'))
+    tempDirs.push(tempDir)
+    const dbPath = join(tempDir, 'tokenboard.db')
+    applyMigrations(dbPath)
+    runSql(dbPath, [
+      `
+        INSERT INTO users (id, email, name, image, created_at, updated_at)
+        VALUES ('agy-user', 'agy@example.com', 'Agy User', null, '2026-06-02T10:00:00.000Z', '2026-06-02T10:00:00.000Z');
+      `,
+      `
+        INSERT INTO daily_usage (
+          user_id,
+          device_id,
+          source,
+          usage_date,
+          timezone,
+          model,
+          input_tokens,
+          output_tokens,
+          cache_creation_tokens,
+          cache_read_tokens,
+          total_tokens,
+          cost_usd,
+          session_count,
+          snapshot_hash,
+          synced_at
+        )
+        VALUES
+          ('agy-user', 'device-a', 'antigravity-cli', '2026-06-02', 'UTC', 'gemini', 10, 5, 0, 0, 15, 9.5, 1, 'hash-a', '2026-06-02T10:00:00.000Z'),
+          ('agy-user', 'device-b', 'antigravity', '2026-06-02', 'UTC', 'gemini', 8, 4, 0, 0, 12, 4.0, 1, 'hash-b', '2026-06-02T10:00:00.000Z'),
+          ('agy-user', 'device-c', 'antigravity-ide', '2026-06-02', 'UTC', 'gemini', 6, 3, 0, 0, 9, 6.0, 1, 'hash-c', '2026-06-02T10:00:00.000Z'),
+          ('agy-user', 'device-d', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-d', '2026-06-02T11:00:00.000Z'),
+          ('agy-user', 'device-e', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-e', '2026-06-02T11:00:00.000Z'),
+          ('agy-user', 'device-f', 'codex', '2026-06-03', 'UTC', 'gpt-5', 40, 10, 0, 0, 50, 7.0, 1, 'hash-f', '2026-06-03T11:00:00.000Z'),
+          ('agy-user', 'legacy', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-legacy-codex', '2026-06-02T10:00:00.000Z'),
+          ('agy-user', 'legacy', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-legacy-claude', '2026-06-02T10:00:00.000Z');
+      `,
+      `
+        INSERT INTO daily_usage_summary (
+          user_id,
+          usage_date,
+          source,
+          model,
+          timezone,
+          input_tokens,
+          output_tokens,
+          cache_creation_tokens,
+          cache_read_tokens,
+          total_tokens,
+          total_tokens_without_cache_read,
+          cost_usd,
+          session_count,
+          updated_at
+        )
+        VALUES
+          ('agy-user', '2026-06-02', 'antigravity-cli', 'gemini', 'UTC', 10, 5, 0, 0, 15, 15, 9.5, 1, '2026-06-02T10:00:00.000Z'),
+          ('agy-user', '2026-06-02', 'antigravity', 'gemini', 'UTC', 8, 4, 0, 0, 12, 12, 4.0, 1, '2026-06-02T10:00:00.000Z'),
+          ('agy-user', '2026-06-02', 'antigravity-ide', 'gemini', 'UTC', 6, 3, 0, 0, 9, 9, 6.0, 1, '2026-06-02T10:00:00.000Z');
+      `,
+      `
+        INSERT INTO user_usage_totals (
+          user_id,
+          total_tokens,
+          total_tokens_without_cache_read,
+          cost_usd,
+          session_count,
+          updated_at
+        )
+        VALUES ('agy-user', 166, 166, 27, 7, '2026-06-02T10:00:00.000Z');
+      `,
+      `
+        INSERT INTO daily_report_history (
+          id,
+          user_id,
+          report_date,
+          schedule_slot,
+          display_name,
+          timezone,
+          dashboard_url,
+          total_tokens,
+          total_tokens_without_cache_read,
+          cache_read_rate,
+          cost_usd,
+          session_count,
+          source_split,
+          top_models,
+          generated_at,
+          updated_at
+        )
+        VALUES
+          (
+            'drr_agy_costs',
+            'agy-user',
+            '2026-06-02',
+            '2026-06-02T18:00',
+            'Agy User',
+            'UTC',
+            'https://tokenboard.example/dashboard',
+            101,
+            101,
+            0,
+            27,
+            5,
+            '[{"source":"antigravity-cli","totalTokens":15,"totalTokensWithoutCacheRead":15},{"source":"antigravity","totalTokens":12,"totalTokensWithoutCacheRead":12},{"source":"antigravity-ide","totalTokens":9,"totalTokensWithoutCacheRead":9},{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25},{"source":"claude-code","totalTokens":40,"totalTokensWithoutCacheRead":40}]',
+            '[{"model":"gemini","totalTokens":36,"totalTokensWithoutCacheRead":36,"costUsd":19.5},{"model":"gpt-5","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":2.5},{"model":"claude-sonnet","totalTokens":40,"totalTokensWithoutCacheRead":40,"costUsd":5}]',
+            '2026-06-02T10:00:00.000Z',
+            '2026-06-02T10:00:00.000Z'
+          ),
+          (
+            'drr_codex_costs',
+            'agy-user',
+            '2026-06-01',
+            '2026-06-01T18:00',
+            'Agy User',
+            'UTC',
+            'https://tokenboard.example/dashboard',
+            25,
+            25,
+            0,
+            1.25,
+            1,
+            '[{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25}]',
+            '[{"model":"gpt-5","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
+            '2026-06-01T10:00:00.000Z',
+            '2026-06-01T10:00:00.000Z'
+          ),
+          (
+            'drr_agy_zero_total_stale_models',
+            'agy-user',
+            '2026-05-31',
+            '2026-05-31T18:00',
+            'Agy User',
+            'UTC',
+            'https://tokenboard.example/dashboard',
+            15,
+            15,
+            0,
+            0,
+            1,
+            '[{"source":"antigravity","totalTokens":15,"totalTokensWithoutCacheRead":15}]',
+            '[{"model":"gemini","totalTokens":15,"totalTokensWithoutCacheRead":15,"costUsd":9.5}]',
+            '2026-05-31T10:00:00.000Z',
+            '2026-05-31T10:00:00.000Z'
+          ),
+          (
+            'drr_agy_mismatched_tokens',
+            'agy-user',
+            '2026-06-02',
+            '2026-06-02T20:00',
+            'Agy User',
+            'UTC',
+            'https://tokenboard.example/dashboard',
+            100,
+            100,
+            0,
+            19.5,
+            4,
+            '[{"source":"antigravity-cli","totalTokens":14,"totalTokensWithoutCacheRead":14},{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25}]',
+            '[{"model":"gemini","totalTokens":14,"totalTokensWithoutCacheRead":14,"costUsd":18.25},{"model":"gpt-5","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
+            '2026-06-02T10:00:00.000Z',
+            '2026-06-02T10:00:00.000Z'
+          );
+      `,
+      `.read ${quoteSqlitePath(join(migrationsDir, '0025_antigravity_costs_unavailable.sql'))}`
+    ].join('\n'))
+    const db = createSqliteD1(dbPath)
+
+    await expectScalar(
+      db,
+      "SELECT COALESCE(SUM(cost_usd), -1) AS value FROM daily_usage WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')",
+      0
+    )
+    await expectScalar(
+      db,
+      "SELECT COALESCE(SUM(cost_usd), -1) AS value FROM daily_usage_summary WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')",
+      0
+    )
+    await expectScalar(
+      db,
+      "SELECT COUNT(*) AS value FROM daily_usage_summary WHERE source = 'codex'",
+      0
+    )
+    await expectScalar(
+      db,
+      "SELECT cost_usd AS value FROM user_usage_totals WHERE user_id = 'agy-user'",
+      10.75
+    )
+    await expectScalar(
+      db,
+      "SELECT COALESCE(SUM(cost_usd), -1) AS value FROM daily_usage WHERE source IN ('codex', 'claude-code')",
+      14.5
+    )
+    await expectScalar(
+      db,
+      "SELECT cost_usd AS value FROM daily_usage WHERE source = 'codex' AND device_id = 'device-d'",
+      1.25
+    )
+    await expectScalar(
+      db,
+      "SELECT cost_usd AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
+      7.5
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[0].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
+      0
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[1].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
+      2.5
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[2].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
+      5
+    )
+    await expectScalar(
+      db,
+      "SELECT cost_usd AS value FROM daily_report_history WHERE id = 'drr_codex_costs'",
+      1.25
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[0].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_zero_total_stale_models'",
+      0
+    )
+    await expectScalar(
+      db,
+      "SELECT cost_usd AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
+      19.5
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[0].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
+      18.25
+    )
+  })
+
+  test('upload token active successor migration cleans duplicate active successors', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-active-successor-cleanup-'))
+    tempDirs.push(tempDir)
+    const dbPath = join(tempDir, 'tokenboard.db')
+    applyMigrations(dbPath)
+    runSql(dbPath, [
+      `.read ${quoteSqlitePath(join(migrationsDir, '0022_device_installations.sql'))}`,
+      `.read ${quoteSqlitePath(join(migrationsDir, '0023_device_install_claim.sql'))}`,
+      `
+        INSERT INTO users (id, email, name, image, created_at, updated_at)
+        VALUES ('rotate-user', 'rotate@example.com', 'Rotate User', null, '2026-06-03T10:00:00.000Z', '2026-06-03T10:00:00.000Z');
+      `,
+      `
+        INSERT INTO upload_tokens (
+          id,
+          user_id,
+          name,
+          token_hash,
+          device_id,
+          installation_id,
+          supersedes_token_id,
+          created_at,
+          revoked_at
+        )
+        VALUES
+          ('ut_old', 'rotate-user', 'Office PC', 'hash-old', null, null, null, '2026-06-03T10:00:00.000Z', '2026-06-03T10:03:00.000Z'),
+          ('ut_successor_old', 'rotate-user', 'Office PC', 'hash-successor-old', null, null, 'ut_old', '2026-06-03T10:01:00.000Z', null),
+          ('ut_successor_new', 'rotate-user', 'Office PC', 'hash-successor-new', null, null, 'ut_old', '2026-06-03T10:02:00.000Z', null);
+      `,
+      `.read ${quoteSqlitePath(join(migrationsDir, '0024_upload_token_active_successor.sql'))}`
+    ].join('\n'))
+    const db = createSqliteD1(dbPath)
+
+    await expectScalar(
+      db,
+      "SELECT COUNT(*) AS value FROM upload_tokens WHERE supersedes_token_id = 'ut_old' AND revoked_at IS NULL",
+      1
+    )
+    await expectScalar(
+      db,
+      "SELECT id AS value FROM upload_tokens WHERE supersedes_token_id = 'ut_old' AND revoked_at IS NULL",
+      'ut_successor_new'
+    )
+    await expectScalar(
+      db,
+      "SELECT revoked_at AS value FROM upload_tokens WHERE id = 'ut_successor_old'",
+      '2026-06-03T10:01:00.000Z'
+    )
+  })
 })
 
 function applyMigrations(dbPath: string, includeSummaryCache = true) {

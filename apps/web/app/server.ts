@@ -15,7 +15,6 @@ import type { Bindings } from './lib/db'
 import { pruneExpiredRateLimits } from './lib/rate-limit'
 
 const app = createApp()
-const PUBLIC_API_SUBJECT_CACHE_CONTROL = 'public, max-age=15'
 
 showRoutes(app)
 
@@ -46,15 +45,7 @@ async function handlePublicApiRequest(request: Request, env: Bindings, ctx: Exec
 
     const summaryStrict = usageSummaryStrictMode(env)
     const cache = publicApiCache()
-    const subject = cache
-      ? await publicApiSubject({
-          cache,
-          ctx,
-          db: env.DB,
-          origin: url.origin,
-          slug: route.slug
-        })
-      : null
+    const subject = await assertPublicUsageVisible(env.DB, route.slug)
     const cacheKey = cache && subject
       ? await publicApiCacheKey(url, route, subject, summaryStrict)
       : null
@@ -86,29 +77,6 @@ type PublicApiSubject = {
   summaryUpdatedAt: string
 }
 
-async function publicApiSubject(input: {
-  cache: Cache | null
-  ctx: ExecutionContext
-  db: D1Database
-  origin: string
-  slug: string
-}): Promise<PublicApiSubject> {
-  const cacheKey = input.cache
-    ? publicApiSubjectCacheKey(input.origin, input.slug)
-    : null
-  if (input.cache && cacheKey) {
-    const cached = await input.cache.match(cacheKey)
-    const subject = cached ? await cachedPublicApiSubject(cached) : null
-    if (subject) return subject
-  }
-
-  const subject = await assertPublicUsageVisible(input.db, input.slug)
-  if (input.cache && cacheKey) {
-    input.ctx.waitUntil(input.cache.put(cacheKey, publicApiSubjectCacheResponse(subject)))
-  }
-  return subject
-}
-
 async function publicApiCacheKey(
   url: URL,
   route: { slug: string; format: 'json' | 'svg' },
@@ -123,37 +91,6 @@ async function publicApiCacheKey(
     )
   )
   return new Request(cacheUrl.toString())
-}
-
-function publicApiSubjectCacheKey(origin: string, slug: string) {
-  const cacheUrl = new URL(`${origin}/api/public/${encodeURIComponent(slug)}.__subject`)
-  return new Request(cacheUrl.toString())
-}
-
-async function cachedPublicApiSubject(response: Response) {
-  if (!response.ok) return null
-  try {
-    const value = await response.json()
-    if (!isPublicApiSubject(value)) return null
-    return value
-  } catch {
-    return null
-  }
-}
-
-function publicApiSubjectCacheResponse(subject: PublicApiSubject) {
-  return Response.json(subject, {
-    headers: { 'cache-control': PUBLIC_API_SUBJECT_CACHE_CONTROL }
-  })
-}
-
-function isPublicApiSubject(value: unknown): value is PublicApiSubject {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const subject = value as Record<string, unknown>
-  return typeof subject.userId === 'string'
-    && typeof subject.updatedAt === 'string'
-    && typeof subject.usageUpdatedAt === 'string'
-    && typeof subject.summaryUpdatedAt === 'string'
 }
 
 async function sha256Hex(value: string) {

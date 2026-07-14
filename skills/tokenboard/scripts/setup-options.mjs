@@ -37,8 +37,81 @@ export function buildInstallCollectorArgs({ flags = {}, packageManager, installC
   if (flags['repo-url']) {
     args.push('--repo-url', flags['repo-url'])
   }
+  if (flags['repo-ref']) {
+    args.push('--repo-ref', flags['repo-ref'])
+  }
   if (typeof packageManager === 'string' && packageManager.trim()) {
     args.push('--package-manager', packageManager)
   }
   return args
+}
+
+export function shouldUseDeviceLink(flags = {}, env = process.env) {
+  const explicit = flags['use-device-link']
+  if (explicit === false || explicit === 'false' || explicit === '0') {
+    return false
+  }
+  if (explicit) {
+    return true
+  }
+  return env.TOKENBOARD_USE_DEVICE_LINK === '1'
+}
+
+export async function createPairingCodeFromDeviceLink({
+  baseUrl,
+  readDeviceLink,
+  writeDeviceLink,
+  fetcher = fetch
+} = {}) {
+  if (!baseUrl) {
+    throw new Error('Missing --base-url or TOKENBOARD_BASE_URL')
+  }
+  const deviceLink = readDeviceLink()
+  if (!deviceLink) {
+    throw new Error('TokenBoard device link not found')
+  }
+  const baseOrigin = serverOriginFromUrl(baseUrl)
+  if (!baseOrigin || deviceLink.serverOrigin !== baseOrigin) {
+    throw new Error('TokenBoard device link belongs to a different server')
+  }
+  const response = await fetcher(`${baseOrigin}/api/v1/device/reconnect-pairing-codes`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      deviceId: deviceLink.deviceId,
+      installationId: deviceLink.installationId,
+      installClaim: deviceLink.installClaim
+    })
+  })
+  if (!response.ok) {
+    throw new Error(`Device-link reconnect failed with status ${response.status}`)
+  }
+  const result = await response.json()
+  if (result && typeof result.installClaim === 'string' && result.installClaim.trim() !== '') {
+    if (typeof writeDeviceLink !== 'function') {
+      throw new Error('Failed to refresh TokenBoard device link after reconnect')
+    }
+    try {
+      await writeDeviceLink({
+        serverOrigin: baseOrigin,
+        deviceId: deviceLink.deviceId,
+        installationId: deviceLink.installationId,
+        installClaim: result.installClaim
+      })
+    } catch {
+      throw new Error('Failed to refresh TokenBoard device link after reconnect')
+    }
+  }
+  if (!result || typeof result.pairingCode !== 'string' || result.pairingCode.trim() === '') {
+    throw new Error('Device-link reconnect response did not include a pairing code')
+  }
+  return result.pairingCode
+}
+
+function serverOriginFromUrl(value) {
+  try {
+    return new URL(value).origin
+  } catch {
+    return null
+  }
 }
