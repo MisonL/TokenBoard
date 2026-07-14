@@ -76,6 +76,50 @@ test('setup activates an existing server profile without pairing again', () => {
   }
 })
 
+test('setup applies explicit install flags without dropping saved profile defaults', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-setup-profile-options-'))
+  try {
+    writeFileSync(join(directory, 'config.json'), JSON.stringify({
+      activeServer: 'https://prod.example.com',
+      servers: {
+        'https://prod.example.com': {
+          endpoint: 'https://prod.example.com/api/v1/ingest',
+          uploadToken: 'prod-token',
+          repoUrl: 'https://github.com/example/private.git',
+          repoRef: 'release-branch',
+          packageManager: 'bun',
+          scheduleTimes: ['07:15', '19:45']
+        }
+      }
+    }))
+
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./setup.mjs', import.meta.url)),
+      '--base-url', 'https://prod.example.com',
+      '--repo-ref', 'override-branch',
+      '--schedule-times', '08:30,20:30',
+      '--skip-collector',
+      '--skip-schedule',
+      '--skip-initial-sync',
+      '--skip-hook'
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, TOKENBOARD_CONFIG_DIR: directory }
+    })
+
+    assert.equal(result.status, 0, result.stderr)
+    const config = JSON.parse(readFileSync(join(directory, 'config.json'), 'utf8'))
+    assert.equal(config.repoUrl, 'https://github.com/example/private.git')
+    assert.equal(config.repoRef, 'override-branch')
+    assert.equal(config.packageManager, 'bun')
+    assert.deepEqual(config.scheduleTimes, ['08:30', '20:30'])
+    assert.equal(config.servers['https://prod.example.com'].repoRef, 'override-branch')
+    assert.deepEqual(config.servers['https://prod.example.com'].scheduleTimes, ['08:30', '20:30'])
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('setup activates the profile read after acquiring the credentials lock', () => {
   const source = readFileSync(new URL('./setup.mjs', import.meta.url), 'utf8')
   const lockBody = source.slice(
@@ -84,7 +128,7 @@ test('setup activates the profile read after acquiring the credentials lock', ()
   )
 
   assert.match(lockBody, /const latestProfile = reusableServerProfile\(latestConfig, serverOrigin\)/)
-  assert.match(lockBody, /withServerProfile\(latestConfig, serverOrigin, latestProfile\)/)
+  assert.match(lockBody, /withServerProfile\(latestConfig, serverOrigin, \{/)
   assert.doesNotMatch(lockBody, /withServerProfile\(latestConfig, serverOrigin, savedProfile\)/)
 })
 

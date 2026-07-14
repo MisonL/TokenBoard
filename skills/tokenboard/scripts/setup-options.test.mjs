@@ -6,9 +6,59 @@ import {
   buildWarmHookCursorArgs,
   createPairingCodeFromDeviceLink,
   readSetupBaseUrl,
+  resolveSetupInstallOptions,
   shouldUseDeviceLink,
   shouldWarmHookCursorsBeforeInstall
 } from './setup-options.mjs'
+
+test('setup install options inherit saved server profile values', () => {
+  assert.deepEqual(
+    resolveSetupInstallOptions({
+      flags: {},
+      env: {},
+      profile: {
+        repoUrl: 'https://github.com/example/private.git',
+        repoRef: 'release-branch',
+        packageManager: 'bun',
+        scheduleTimes: ['07:15', '19:45']
+      },
+      defaultScheduleTimes: ['00:00']
+    }),
+    {
+      repoUrl: 'https://github.com/example/private.git',
+      repoRef: 'release-branch',
+      packageManager: 'bun',
+      scheduleTimesInput: '07:15,19:45'
+    }
+  )
+})
+
+test('explicit setup flags override saved server profile values', () => {
+  assert.deepEqual(
+    resolveSetupInstallOptions({
+      flags: {
+        'repo-url': 'https://github.com/example/override.git',
+        'repo-ref': 'override-branch',
+        'package-manager': 'npm',
+        'schedule-times': '08:30,20:30'
+      },
+      env: {},
+      profile: {
+        repoUrl: 'https://github.com/example/private.git',
+        repoRef: 'release-branch',
+        packageManager: 'bun',
+        scheduleTimes: ['07:15', '19:45']
+      },
+      defaultScheduleTimes: ['00:00']
+    }),
+    {
+      repoUrl: 'https://github.com/example/override.git',
+      repoRef: 'override-branch',
+      packageManager: 'npm',
+      scheduleTimesInput: '08:30,20:30'
+    }
+  )
+})
 
 test('initial setup sync uses a full history scan by default', () => {
   assert.deepEqual(
