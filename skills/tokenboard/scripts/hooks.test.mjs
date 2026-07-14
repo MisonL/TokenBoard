@@ -588,6 +588,7 @@ test('uninstall all does not let invalid Antigravity settings block Codex and Cl
       source: 'antigravity-cli',
       action: 'skip',
       changed: false,
+      incomplete: true,
       detail: 'Antigravity statusline not checked: Invalid Antigravity settings.json'
     }
   )

@@ -103,6 +103,7 @@ export function uninstallHooks(options = {}) {
         source: antigravitySource,
         action: 'skip',
         changed: false,
+        incomplete: true,
         detail: `Antigravity statusline not checked: ${errorMessage(error)}`
       })
       return finishUninstallHooks({ results, paths, fs, nodePath, platform })

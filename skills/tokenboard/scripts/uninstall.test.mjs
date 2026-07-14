@@ -127,6 +127,35 @@ test('removes collector and config directory with all flag', () => {
   ])
 })
 
+for (const flag of ['--all', '--remove-config-dir', '--remove-collector', '--remove-config', '--remove-hooks']) {
+  test(`does not remove recovery state after an incomplete Antigravity uninstall with ${flag}`, () => {
+    const harness = createHarness()
+
+    assert.throws(
+      () => uninstallClient({
+        ...harness.options,
+        argv: [flag],
+        uninstallHooks: () => {
+          harness.recordHookCall()
+          return {
+            hooks: [{
+              source: 'antigravity-cli',
+              action: 'skip',
+              changed: false,
+              incomplete: true,
+              detail: 'Antigravity statusline not checked: Invalid Antigravity settings.json'
+            }]
+          }
+        }
+      }),
+      /Antigravity statusline restoration is incomplete/
+    )
+    assert.equal(harness.hookCalls, 1)
+    assert.equal(harness.scheduleCalls, 1)
+    assert.deepEqual(harness.removedPaths, [])
+  })
+}
+
 test('leaves collector directory before removing it', () => {
   const harness = createHarness()
   let currentDirectory = '/home/tokenboard/.tokenboard/TokenBoard/skills/tokenboard'
@@ -192,6 +221,9 @@ function createHarness() {
     },
     removedPaths,
     changedDirectories,
+    recordHookCall() {
+      calls.hook += 1
+    },
     options: {
       collectorDir: '/home/tokenboard/.tokenboard/TokenBoard',
       configDir: '/home/tokenboard/.tokenboard',
