@@ -677,6 +677,7 @@ describe('collectAntigravityGuiUsage', () => {
 
       expect(isAntigravityPartialUsageError(thrown)).toBe(true)
       if (!isAntigravityPartialUsageError(thrown)) throw thrown
+      expect(thrown.fatal).toBe(true)
       expect(thrown.snapshots).toEqual([
         expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
       ])

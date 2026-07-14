@@ -233,7 +233,7 @@ function guiCollectionError(
         : 'Antigravity language server collection failed'} after DB history was collected: ${errorMessage(error)}`,
       mergeSnapshots(snapshots),
       cause,
-      !unavailable
+      cleanupErrors.length > 0 || !unavailable
     )
   }
   if (!(error instanceof Error) || cause === undefined) return error
