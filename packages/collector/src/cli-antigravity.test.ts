@@ -57,6 +57,38 @@ describe('runCollectorCli Antigravity source', () => {
     expect(JSON.parse(stdout[0])).toEqual([{ ...antigravitySnapshot, source: 'antigravity' }])
   })
 
+  test.each([
+    {
+      label: 'environment endpoint',
+      args: ['preview', '--source', 'antigravity'],
+      env: { TOKENBOARD_ENDPOINT: 'not a URL', TOKENBOARD_STATE_DIR: '/state' }
+    },
+    {
+      label: 'command endpoint',
+      args: ['preview', '--source', 'antigravity', '--endpoint', 'not a URL'],
+      env: { TOKENBOARD_STATE_DIR: '/state' }
+    }
+  ])('previews Antigravity without parsing an invalid $label', async ({ args, env }) => {
+    const stdout: string[] = []
+    const cursorScopes: Array<string | undefined> = []
+
+    const result = await runCollectorCli(
+      args,
+      env,
+      deps({
+        stdout: (line) => stdout.push(line),
+        collectAntigravityUsage: async (options) => {
+          cursorScopes.push(options?.cursorScope)
+          return [{ ...antigravitySnapshot, source: 'antigravity' }]
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(cursorScopes).toEqual([undefined])
+    expect(JSON.parse(stdout[0])).toEqual([{ ...antigravitySnapshot, source: 'antigravity' }])
+  })
+
   test('previews the standalone Antigravity IDE source', async () => {
     const stdout: string[] = []
 
