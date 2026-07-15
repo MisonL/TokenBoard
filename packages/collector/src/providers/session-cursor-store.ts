@@ -103,9 +103,16 @@ export async function withCursorLock<T>(
 }
 
 function startCursorLockHeartbeat(refresh: () => Promise<void>, intervalMs: number) {
-  let inFlight = Promise.resolve()
+  let inFlight: Promise<void> | undefined
   const heartbeat = setInterval(() => {
-    inFlight = inFlight.then(refresh)
+    if (inFlight) return
+    inFlight = (async () => {
+      try {
+        await refresh()
+      } finally {
+        inFlight = undefined
+      }
+    })()
   }, intervalMs)
   heartbeat.unref()
   return async () => {

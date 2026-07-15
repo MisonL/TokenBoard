@@ -8,15 +8,19 @@ describe('session cursor store concurrency', () => {
   test('waits for an in-flight heartbeat before releasing the cursor lock', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-heartbeat-release-'))
     const cursorPath = join(root, 'codex-cursor.json')
+    const callbackStarted = deferred<void>()
     const heartbeatStarted = deferred<void>()
     const releaseHeartbeat = deferred<void>()
+    let refreshCount = 0
     let settled = false
     try {
       const operation = withCursorLock(cursorPath, async () => {
+        callbackStarted.resolve()
         await delay(30)
       }, {
         heartbeatIntervalMs: 1,
         refreshCursorLock: async () => {
+          refreshCount += 1
           heartbeatStarted.resolve()
           await releaseHeartbeat.promise
         }
@@ -24,6 +28,7 @@ describe('session cursor store concurrency', () => {
         settled = true
       })
 
+      await callbackStarted.promise
       await delay(40)
       try {
         expect(heartbeatStarted.settled()).toBe(true)
@@ -32,6 +37,7 @@ describe('session cursor store concurrency', () => {
         releaseHeartbeat.resolve()
         await operation
       }
+      expect(refreshCount).toBe(1)
       await expect(readFile(`${cursorPath}.lock`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       releaseHeartbeat.resolve()
