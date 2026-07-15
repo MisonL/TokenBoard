@@ -53,7 +53,8 @@ export async function runStatuslineCli(argv = process.argv.slice(2), env = proce
     const originalError = result.error ?? input?.forwardError
     if (originalError) {
       recordStatuslineError(options.errorPath, 'original', originalError, options.maxLogBytes)
-    } else if (result.output) {
+    }
+    if (result.output) {
       process.stdout.write(result.output)
     }
   }

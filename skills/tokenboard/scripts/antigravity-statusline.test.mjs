@@ -116,6 +116,33 @@ test('statusline CLI forwards oversized input to the original command', async ()
   }
 })
 
+test('statusline CLI preserves successful original output when the original command closes stdin', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-epipe-'))
+  try {
+    const originalPath = join(root, 'original.mjs')
+    const backupPath = join(root, 'original.json')
+    const errorPath = join(root, 'errors.log')
+    await writeFile(originalPath, [
+      'process.stdout.write("static-output")',
+      'process.stdin.destroy()'
+    ].join('\n'))
+    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+
+    const result = spawnSync(process.execPath, [
+      scriptPath,
+      '--state-dir', root,
+      '--error-path', errorPath,
+      '--original-command-file', backupPath,
+      '--max-input-bytes', '1024'
+    ], { input: Buffer.alloc(2 * 1024 * 1024), encoding: 'utf8', timeout: 8000 })
+
+    assert.equal(result.status, 0)
+    assert.equal(result.stdout, 'static-output')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('statusline CLI force-terminates an original command that ignores its timeout signal', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-timeout-'))
   try {

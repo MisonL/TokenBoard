@@ -82,11 +82,17 @@ function waitForCommand(child, state) {
     child.once('close', (status) => {
       const error = commandCompletionError(status, state)
       settle({
-        output: error ? '' : Buffer.concat(state.stdout).toString('utf8'),
+        output: canForwardCommandOutput(status, state)
+          ? Buffer.concat(state.stdout).toString('utf8')
+          : '',
         error
       })
     })
   })
+}
+
+function canForwardCommandOutput(status, state) {
+  return status === 0 && !state.processError && !state.timedOut
 }
 
 function commandCompletionError(status, state) {
