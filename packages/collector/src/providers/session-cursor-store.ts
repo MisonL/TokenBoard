@@ -73,15 +73,19 @@ export async function writeCursor(cursorPath: string, cursor: CursorState) {
   }
 }
 
-export async function withCursorLock<T>(cursorPath: string, callback: () => Promise<T>) {
+export async function withCursorLock<T>(
+  cursorPath: string,
+  callback: () => Promise<T>,
+  options: CursorLockHeartbeatOptions = {}
+) {
   await mkdir(dirname(cursorPath), { recursive: true })
   const lockPath = `${cursorPath}.lock`
   const owner = { pid: process.pid, token: randomBytes(16).toString('hex') }
   await acquireCursorLock(lockPath, owner)
-  const heartbeat = setInterval(() => {
-    void refreshCursorLock(lockPath, owner)
-  }, cursorLockHeartbeatMs)
-  heartbeat.unref()
+  const stopHeartbeat = startCursorLockHeartbeat(
+    () => (options.refreshCursorLock ?? refreshCursorLock)(lockPath, owner),
+    options.heartbeatIntervalMs ?? cursorLockHeartbeatMs
+  )
   let callbackFailed = false
   try {
     return await cursorLockContext.run({ cursorPath, lockPath, owner }, callback)
@@ -89,12 +93,24 @@ export async function withCursorLock<T>(cursorPath: string, callback: () => Prom
     callbackFailed = true
     throw error
   } finally {
-    clearInterval(heartbeat)
+    await stopHeartbeat()
     try {
       await releaseCursorLock(lockPath, owner)
     } catch (error) {
       if (!callbackFailed) throw error
     }
+  }
+}
+
+function startCursorLockHeartbeat(refresh: () => Promise<void>, intervalMs: number) {
+  let inFlight = Promise.resolve()
+  const heartbeat = setInterval(() => {
+    inFlight = inFlight.then(refresh)
+  }, intervalMs)
+  heartbeat.unref()
+  return async () => {
+    clearInterval(heartbeat)
+    await inFlight
   }
 }
 
@@ -225,6 +241,10 @@ function delay(milliseconds: number) {
 
 type CursorLockOwner = { pid: number; token: string }
 type CursorLockLease = { cursorPath: string; lockPath: string; owner: CursorLockOwner }
+type CursorLockHeartbeatOptions = {
+  heartbeatIntervalMs?: number
+  refreshCursorLock?: (lockPath: string, owner: CursorLockOwner) => Promise<void>
+}
 
 export function stripCollectedAt(snapshot: UsageSnapshot): CursorSnapshot {
   return {

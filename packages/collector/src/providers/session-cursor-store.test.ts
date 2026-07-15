@@ -5,6 +5,40 @@ import { describe, expect, test } from 'vitest'
 import { readCursor, withCursorLock, writeCursor } from './session-cursor-store'
 
 describe('session cursor store concurrency', () => {
+  test('waits for an in-flight heartbeat before releasing the cursor lock', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-heartbeat-release-'))
+    const cursorPath = join(root, 'codex-cursor.json')
+    const heartbeatStarted = deferred<void>()
+    const releaseHeartbeat = deferred<void>()
+    let settled = false
+    try {
+      const operation = withCursorLock(cursorPath, async () => {
+        await delay(30)
+      }, {
+        heartbeatIntervalMs: 1,
+        refreshCursorLock: async () => {
+          heartbeatStarted.resolve()
+          await releaseHeartbeat.promise
+        }
+      }).finally(() => {
+        settled = true
+      })
+
+      await delay(40)
+      try {
+        expect(heartbeatStarted.settled()).toBe(true)
+        expect(settled).toBe(false)
+      } finally {
+        releaseHeartbeat.resolve()
+        await operation
+      }
+      await expect(readFile(`${cursorPath}.lock`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      releaseHeartbeat.resolve()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('serializes the complete cursor read-modify-write interval', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-lock-'))
     const cursorPath = join(root, 'codex-cursor.json')
@@ -64,3 +98,19 @@ describe('session cursor store concurrency', () => {
     }
   })
 })
+
+function deferred<T>() {
+  let isSettled = false
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = (value) => {
+      isSettled = true
+      resolvePromise(value)
+    }
+  })
+  return { promise, resolve, settled: () => isSettled }
+}
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
