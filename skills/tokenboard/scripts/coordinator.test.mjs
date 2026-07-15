@@ -92,6 +92,29 @@ test('coordinator rotates a legacy run directory before enabling bounded retenti
   assert.equal(fs.files.has('/state/runs/.bounded-v1'), true)
 })
 
+test('coordinator serializes run log directory preparation', () => {
+  const fs = memoryRuntime()
+  let checkedRunsDirectory = false
+
+  coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(118),
+    exists: (path) => {
+      if (path === '/state/runs') {
+        checkedRunsDirectory = true
+        assert.equal(fs.files.has('/state/run-logs.lock'), true)
+      }
+      return fs.exists(path)
+    },
+    executeSync: () => ({ ok: true })
+  })
+
+  assert.equal(checkedRunsDirectory, true)
+  assert.equal(fs.files.has('/state/run-logs.lock'), false)
+})
+
 test('coordinator fails visibly when run log writing fails', () => {
   const fs = memoryRuntime()
   assert.throws(

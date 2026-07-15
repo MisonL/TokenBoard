@@ -250,6 +250,24 @@ function scheduleTrailingSources(trigger, sources, runtime, remainingMs) {
 }
 
 function writeRunLog(result, startedAtMs, runtime) {
+  const lockPath = join(runtime.stateDir, 'run-logs.lock')
+  acquireRunLogLock(lockPath, runtime)
+  try {
+    writeRunLogEntry(result, startedAtMs, runtime)
+  } finally {
+    releaseLock(lockPath, runtime)
+  }
+}
+
+function acquireRunLogLock(lockPath, runtime) {
+  if (acquireLock(lockPath, runtime)) return
+  const wait = waitForLock(lockPath, runtime)
+  if (!wait.acquired) {
+    throw new Error(`run log ${wait.error || 'lock timeout'}`)
+  }
+}
+
+function writeRunLogEntry(result, startedAtMs, runtime) {
   const completedAtMs = runtime.now()
   const status = deriveStatus(result)
   const entry = {
