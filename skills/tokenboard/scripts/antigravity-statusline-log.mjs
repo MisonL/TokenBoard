@@ -22,6 +22,7 @@ const logSchemaVersion = 'antigravity-statusline-log/v1'
 const lockRetryDelayMs = 20
 const lockWaitTimeoutMs = 2_000
 const orphanLockGraceMs = 500
+const compactionLineageMaxAttempts = 8
 const sleepState = new Int32Array(new SharedArrayBuffer(4))
 
 export function appendBoundedStatuslineEvent(filePath, value, maxBytes) {
@@ -78,15 +79,19 @@ function compactJsonl(filePath, line, maxBytes, currentSize, withUsageHeader) {
       })
     : ''
   let tail = { text: '', startOffsetBytes: currentSize }
+  let converged = false
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < compactionLineageMaxAttempts; attempt += 1) {
     const availableBytes = maxBytes - Buffer.byteLength(header) - Buffer.byteLength(line)
     if (availableBytes < 0) {
       throw new Error('Antigravity statusline log limit is too small for one event')
     }
     tail = readCompleteLogTail(filePath, currentSize, availableBytes)
     const nextRetainedFromOffsetBytes = tail.startOffsetBytes
-    if (!withUsageHeader || nextRetainedFromOffsetBytes === retainedFromOffsetBytes) break
+    if (!withUsageHeader || nextRetainedFromOffsetBytes === retainedFromOffsetBytes) {
+      converged = true
+      break
+    }
     retainedFromOffsetBytes = nextRetainedFromOffsetBytes
     generation = nextUsageLogGeneration(previousGeneration, retainedFromOffsetBytes)
     header = buildUsageLogHeader({
@@ -94,7 +99,13 @@ function compactJsonl(filePath, line, maxBytes, currentSize, withUsageHeader) {
       retainedFrom: previousGeneration === undefined ? undefined : retainedFromOffsetBytes
     })
   }
+  if (!converged) {
+    throw new Error('Antigravity statusline log compaction did not converge')
+  }
   const content = `${header}${tail.text}${line}`
+  if (Buffer.byteLength(content) > maxBytes) {
+    throw new Error('Antigravity statusline log compaction exceeded byte limit')
+  }
   const tempPath = `${filePath}.tmp-${process.pid}`
   writeFileSync(tempPath, content, { mode: 0o600 })
   renameSync(tempPath, filePath)

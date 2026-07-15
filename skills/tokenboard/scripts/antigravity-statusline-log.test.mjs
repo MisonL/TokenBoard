@@ -62,6 +62,35 @@ test('statusline compaction records lineage for generation-aware cursor translat
   }
 })
 
+test('statusline compaction leaves the original log untouched when lineage does not converge', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-lineage-exhausted-'))
+  try {
+    const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
+    const modulePath = join(root, 'antigravity-statusline-log.mjs')
+    const source = (await readFile(sourcePath, 'utf8'))
+      .replace('const compactionLineageMaxAttempts = 8', 'const compactionLineageMaxAttempts = 1')
+    await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
+
+    const logPath = join(root, 'events.jsonl')
+    const previousGeneration = 'a'.repeat(32)
+    const original = `${JSON.stringify({
+      schemaVersion: 'antigravity-statusline-log/v1',
+      generation: previousGeneration
+    })}\n${Array.from({ length: 8 }, (_, index) => JSON.stringify({ value: `${index}-${'x'.repeat(32)}` })).join('\n')}\n`
+    await writeFile(logPath, original)
+    const module = await import(`${pathToFileURL(modulePath).href}?lineage-exhausted-test`)
+
+    assert.throws(
+      () => module.appendBoundedStatuslineEvent(logPath, { value: 'new-event' }, 240),
+      /Antigravity statusline log compaction did not converge/
+    )
+    assert.equal(await readFile(logPath, 'utf8'), original)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('statusline CLI keeps concurrent events while compacting', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-concurrent-'))
   try {
