@@ -340,7 +340,10 @@ const antigravityUsageStatePrefixes = [
 const antigravityReplayIdentityPrefixes = [
   'event\0',
   'history-event\0',
+  'history-occurrence\0',
+  'history-statusline-claim\0',
   'session\0',
+  'statusline-history-claim\0',
   'statusline-occurrence\0'
 ]
 

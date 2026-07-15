@@ -1184,6 +1184,13 @@ describe('collectAntigravityGuiUsage', () => {
         collectedAt: '2026-01-01T10:05:00.000Z'
       })
       await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      const cursorPath = join(root, 'antigravity-cursor.json')
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      for (const entry of Object.values(cursor.files) as Array<{ updatedAt: string }>) {
+        entry.updatedAt = '2025-01-01T00:00:00.000Z'
+      }
+      await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
       const second = await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
@@ -1191,7 +1198,7 @@ describe('collectAntigravityGuiUsage', () => {
 
       expect(first).toHaveLength(1)
       expect(second).toEqual([])
-      const cursorText = await readFile(join(root, 'antigravity-cursor.json'), 'utf8')
+      const cursorText = await readFile(cursorPath, 'utf8')
       expect(cursorText).toContain('gemini-3-flash-a')
       expect(cursorText).not.toContain('conversation-db')
     } finally {

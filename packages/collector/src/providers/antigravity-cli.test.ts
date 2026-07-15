@@ -897,6 +897,71 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('keeps delayed statusline claims after matching history cursor entries are compacted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-after-compacted-history-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      const rawConversationId = 'conversation-a'
+      const statuslineConversationHash = legacyHash(rawConversationId)
+      const historyConversationHash = plainHash(rawConversationId)
+      const matchingHistoryEvent = {
+        cascadeHash: historyConversationHash,
+        cascadeHashAliases: [statuslineConversationHash],
+        eventHash: 'e'.repeat(64),
+        createdAt: '2026-06-23T16:30:00.000Z',
+        model: 'gemini-3-flash-a',
+        modelAliases: ['Gemini 3.5 Flash (Medium)'],
+        inputTokens: 100,
+        outputTokens: 12,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 50
+      }
+
+      const first = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-23T16:30:05.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set([rawConversationId]),
+          events: [matchingHistoryEvent]
+        })
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      const cursorPath = join(root, 'antigravity-cli-cursor.json')
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      for (const entry of Object.values(cursor.files) as Array<{ updatedAt: string }>) {
+        entry.updatedAt = '2025-01-01T00:00:00.000Z'
+      }
+      await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      await writeEvents(eventPath, [event({
+        conversationHash: statuslineConversationHash,
+        conversationHashAliases: [historyConversationHash],
+        capturedAt: '2026-06-23T16:30:25.000Z',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 12,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 50
+        }
+      })])
+
+      const second = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-23T16:30:30.000Z',
+        readDbUsageEvents: emptyDbUsage
+      })
+
+      expect(first).toEqual([expect.objectContaining({ totalTokens: 162, sessionCount: 1 })])
+      expect(second).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('counts a new statusline occurrence after matching history was acknowledged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-new-statusline-after-history-'))
     try {
