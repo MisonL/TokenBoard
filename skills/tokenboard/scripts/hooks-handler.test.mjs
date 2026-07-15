@@ -75,6 +75,8 @@ test('notify handler records foreground failures for local diagnosis', () => {
   assert.match(source, /recordHandlerError\("enqueue", error\)/)
   assert.match(source, /recordHandlerError\("background", error\)/)
   assert.match(source, /function errorMessage\(error\)/)
+  assert.match(source, /function safeErrorString\(value\)/)
+  assert.doesNotMatch(source, /: String\(error\)/)
   assert.match(source, /return "Unknown error"/)
 })
 

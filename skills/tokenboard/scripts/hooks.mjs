@@ -304,11 +304,34 @@ function recordHandlerError(stage, error) {
 }
 
 function errorMessage(error) {
-  const message = error instanceof Error ? String(error.message ?? "") : String(error);
+  let isError = false;
+  try {
+    isError = error instanceof Error;
+  } catch (_) {}
+  if (!isError) return safeErrorString(error);
+
+  const message = safeErrorPropertyString(error, "message");
   if (message.trim()) return message;
-  const name = error instanceof Error ? String(error.name ?? "") : "";
+  const name = safeErrorPropertyString(error, "name");
   if (name.trim()) return name;
   return "Unknown error";
+}
+
+function safeErrorPropertyString(error, property) {
+  try {
+    return String(error[property] ?? "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function safeErrorString(value) {
+  try {
+    const message = String(value);
+    return message.trim() ? message : "Unknown error";
+  } catch (_) {
+    return "Unknown error";
+  }
 }
 
 function isMissingFileError(error) {
