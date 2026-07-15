@@ -4,9 +4,47 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { collectAntigravityGuiUsage } from './antigravity-gui'
+import {
+  lastSeenDbRowIndexByCascadeHash,
+  prepareGuiHistoryScope
+} from './antigravity-gui-cursor'
+import { resolveAntigravityCollectionRange } from './antigravity-since'
 import { clearPendingUploadCursors } from './session-cursor'
 
 describe('collectAntigravityGuiUsage since ranges', () => {
+  test('max-merges reusable bounded DB cursors across residual scopes', () => {
+    const earlierScope = resolveAntigravityCollectionRange({ since: '20260601', timezone: 'UTC' }).historyScope
+    const residualScope = resolveAntigravityCollectionRange({ since: '20260620', timezone: 'UTC' }).historyScope
+    const currentScope = resolveAntigravityCollectionRange({ since: '20260624', timezone: 'UTC' }).historyScope
+    const cascadeId = 'conversation-a'
+    const cascadeHash = createHash('sha256').update(cascadeId).digest('hex')
+    const entry = (rowIndex: number) => ({
+      size: 0,
+      mtimeMs: rowIndex,
+      sha256: 'a'.repeat(64),
+      snapshots: [],
+      missingCost: true,
+      pendingUpload: false,
+      updatedAt: '2026-06-24T00:00:00.000Z'
+    })
+    const cursor = {
+      version: 1 as const,
+      source: 'antigravity' as const,
+      files: {
+        [`db\0antigravity\0since:${earlierScope}\0${cascadeHash}`]: entry(7),
+        [`db\0antigravity\0since:${residualScope}\0${cascadeHash}`]: entry(5)
+      }
+    }
+
+    prepareGuiHistoryScope({ cursor, source: 'antigravity', historyScope: currentScope })
+
+    expect(lastSeenDbRowIndexByCascadeHash({
+      cursor,
+      source: 'antigravity',
+      historyScope: currentScope
+    }).get(cascadeHash)).toBe(7)
+  })
+
   test('excludes SQLite and language-server events before the configured date', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-'))
     try {

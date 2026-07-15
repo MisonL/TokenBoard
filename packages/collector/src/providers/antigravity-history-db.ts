@@ -204,7 +204,21 @@ function hasDbRowCursor(filePath: string, lastSeenRowIndexByCascadeHash: Map<str
 async function readDbFileCandidate(filePath: string, statFile: StatFile) {
   try {
     const info = await statFile(filePath)
-    return { filePath, mtimeMs: info.mtimeMs, size: info.size ?? 0 }
+    const walMtimeMs = await readWalMtime(filePath)
+    return {
+      filePath,
+      mtimeMs: Math.max(info.mtimeMs, walMtimeMs ?? info.mtimeMs),
+      size: info.size ?? 0
+    }
+  } catch (error) {
+    if (isMissingFileError(error)) return null
+    throw error
+  }
+}
+
+async function readWalMtime(dbFilePath: string) {
+  try {
+    return (await stat(`${dbFilePath}-wal`)).mtimeMs
   } catch (error) {
     if (isMissingFileError(error)) return null
     throw error

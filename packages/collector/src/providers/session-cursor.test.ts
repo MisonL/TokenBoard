@@ -444,6 +444,40 @@ describe('collectChangedSessionFiles', () => {
     }
   })
 
+  test('acks snapshotless Antigravity entries with unknown mtime in a bounded range', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-zero-mtime-'))
+    const cursorPath = join(root, 'antigravity-cursor.json')
+    try {
+      await writeFile(cursorPath, `${JSON.stringify({
+        version: 1,
+        source: 'antigravity',
+        files: {
+          'event\0unknown-time': {
+            size: 0,
+            mtimeMs: 0,
+            sha256: 'a'.repeat(64),
+            snapshots: [],
+            missingCost: true,
+            pendingUpload: true,
+            updatedAt: new Date().toISOString()
+          }
+        }
+      }, null, 2)}\n`)
+
+      await clearPendingUploadCursors({
+        stateDir: root,
+        source: 'antigravity',
+        since: '20260624',
+        timezone: 'UTC'
+      })
+
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      expect(cursor.files['event\0unknown-time'].pendingUpload).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('drops pending upload entries without snapshots when the session file disappears before retry', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
     const sessionsDir = join(root, 'sessions')

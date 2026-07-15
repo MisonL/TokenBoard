@@ -1114,6 +1114,52 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('does not double-count retained old statusline events after cursor compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-compaction-replay-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      const oldGeneration = 'a'.repeat(32)
+      const oldEvent = event({ conversationHash: conversationA, usage: { inputTokens: 10, outputTokens: 2 } })
+      const newEvent = event({ conversationHash: conversationB, usage: { inputTokens: 20, outputTokens: 4 } })
+      const oldHeader = JSON.stringify(statuslineLogHeader(oldGeneration))
+      const oldEventLine = JSON.stringify(oldEvent)
+      const retainedFrom = Buffer.byteLength(`${oldHeader}\n`)
+      await writeFile(eventPath, `${oldHeader}\n${oldEventLine}\n`)
+
+      await collectAntigravityCliUsage({ stateDir: root, eventPath, timezone: 'UTC', readDbUsageEvents: emptyDbUsage })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      const cursorPath = join(root, 'antigravity-cli-cursor.json')
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      for (const entry of Object.values(cursor.files) as Array<{ updatedAt: string }>) {
+        entry.updatedAt = '2025-01-01T00:00:00.000Z'
+      }
+      await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+
+      const rewrittenHeader = {
+        ...statuslineLogHeader(compactedGeneration(oldGeneration, retainedFrom)),
+        retainedFrom
+      }
+      await writeFile(eventPath, [
+        JSON.stringify(rewrittenHeader),
+        oldEventLine,
+        JSON.stringify(newEvent),
+        ''
+      ].join('\n'))
+
+      const snapshots = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'UTC',
+        readDbUsageEvents: emptyDbUsage
+      })
+
+      expect(snapshots).toEqual([expect.objectContaining({ inputTokens: 30, sessionCount: 2 })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('keeps recently acknowledged old cursor entries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-'))
     try {
@@ -1397,6 +1443,16 @@ async function writeEvents(path: string, events: unknown[]) {
 
 function statuslineLogHeader(generation: string) {
   return { schemaVersion: 'antigravity-statusline-log/v1', generation }
+}
+
+function compactedGeneration(previousGeneration: string, retainedFromOffsetBytes: number) {
+  const previousHash = createHash('sha256').update(previousGeneration).digest('hex')
+  return createHash('sha256')
+    .update(previousHash)
+    .update('\0')
+    .update(String(retainedFromOffsetBytes))
+    .digest('hex')
+    .slice(0, 32)
 }
 
 function event(overrides: Partial<Omit<ReturnType<typeof baseEvent>, 'usage'>> & { usage?: Partial<ReturnType<typeof baseEvent>['usage']> } = {}) {

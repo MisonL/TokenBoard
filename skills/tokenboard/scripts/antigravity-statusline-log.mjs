@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import {
   appendFileSync,
   chmodSync,
@@ -51,30 +51,91 @@ function appendWithinLock(filePath, value, maxBytes, buildHeader) {
     chmodSync(filePath, 0o600)
     return
   }
-  compactJsonl(filePath, line, maxBytes, currentSize, buildHeader?.() ?? '')
+  compactJsonl(filePath, line, maxBytes, currentSize, Boolean(buildHeader))
 }
 
-function buildUsageLogHeader() {
-  return `${JSON.stringify({
+function buildUsageLogHeader(input) {
+  const header = {
     schemaVersion: logSchemaVersion,
-    generation: randomBytes(16).toString('hex')
-  })}\n`
+    generation: input.generation
+  }
+  if (input.retainedFrom !== undefined) {
+    header.retainedFrom = input.retainedFrom
+  }
+  return `${JSON.stringify(header)}\n`
 }
 
-function compactJsonl(filePath, line, maxBytes, currentSize, header) {
-  const availableBytes = maxBytes - Buffer.byteLength(header) - Buffer.byteLength(line)
-  if (availableBytes < 0) {
-    throw new Error('Antigravity statusline log limit is too small for one event')
+function compactJsonl(filePath, line, maxBytes, currentSize, withUsageHeader) {
+  const previousGeneration = withUsageHeader ? readUsageLogGeneration(filePath) : undefined
+  let retainedFromOffsetBytes = currentSize
+  let generation = withUsageHeader
+    ? nextUsageLogGeneration(previousGeneration, retainedFromOffsetBytes)
+    : undefined
+  let header = withUsageHeader
+    ? buildUsageLogHeader({
+        generation,
+        retainedFrom: previousGeneration === undefined ? undefined : retainedFromOffsetBytes
+      })
+    : ''
+  let tail = { text: '', startOffsetBytes: currentSize }
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const availableBytes = maxBytes - Buffer.byteLength(header) - Buffer.byteLength(line)
+    if (availableBytes < 0) {
+      throw new Error('Antigravity statusline log limit is too small for one event')
+    }
+    tail = readCompleteLogTail(filePath, currentSize, availableBytes)
+    const nextRetainedFromOffsetBytes = tail.startOffsetBytes
+    if (!withUsageHeader || nextRetainedFromOffsetBytes === retainedFromOffsetBytes) break
+    retainedFromOffsetBytes = nextRetainedFromOffsetBytes
+    generation = nextUsageLogGeneration(previousGeneration, retainedFromOffsetBytes)
+    header = buildUsageLogHeader({
+      generation,
+      retainedFrom: previousGeneration === undefined ? undefined : retainedFromOffsetBytes
+    })
   }
-  const content = `${header}${readCompleteLogTail(filePath, currentSize, availableBytes)}${line}`
+  const content = `${header}${tail.text}${line}`
   const tempPath = `${filePath}.tmp-${process.pid}`
   writeFileSync(tempPath, content, { mode: 0o600 })
   renameSync(tempPath, filePath)
   chmodSync(filePath, 0o600)
 }
 
+function nextUsageLogGeneration(previousGeneration, retainedFromOffsetBytes) {
+  if (previousGeneration === undefined) return randomBytes(16).toString('hex')
+  const previousHash = createHash('sha256').update(previousGeneration).digest('hex')
+  return createHash('sha256')
+    .update(previousHash)
+    .update('\0')
+    .update(String(retainedFromOffsetBytes))
+    .digest('hex')
+    .slice(0, 32)
+}
+
+function readUsageLogGeneration(filePath) {
+  if (readFileSize(filePath) === 0) return undefined
+  const buffer = Buffer.alloc(512)
+  const file = openSync(filePath, 'r')
+  try {
+    const bytesRead = readSync(file, buffer, 0, buffer.length, 0)
+    const newline = buffer.indexOf(0x0a, 0, bytesRead)
+    const end = newline === -1 ? bytesRead : newline
+    const line = buffer.subarray(0, end).toString('utf8').replace(/\r$/, '')
+    try {
+      const value = JSON.parse(line)
+      return value?.schemaVersion === logSchemaVersion && typeof value.generation === 'string'
+        ? value.generation
+        : undefined
+    } catch {
+      return undefined
+    }
+  } finally {
+    closeSync(file)
+  }
+}
+
 function readCompleteLogTail(filePath, currentSize, maxBytes) {
-  if (currentSize === 0 || maxBytes === 0) return ''
+  if (currentSize === 0 || maxBytes === 0) return { text: '', startOffsetBytes: currentSize }
   const bytesToRead = Math.min(currentSize, maxBytes)
   const start = currentSize - bytesToRead
   const buffer = Buffer.alloc(bytesToRead)
@@ -84,16 +145,32 @@ function readCompleteLogTail(filePath, currentSize, maxBytes) {
   } finally {
     closeSync(file)
   }
-  let text = buffer.toString('utf8')
+  let retained = buffer
+  let retainedStart = start
   if (start > 0) {
-    const firstNewline = text.indexOf('\n')
-    text = firstNewline === -1 ? '' : text.slice(firstNewline + 1)
+    const firstNewline = retained.indexOf(0x0a)
+    if (firstNewline === -1) return { text: '', startOffsetBytes: currentSize }
+    retained = retained.subarray(firstNewline + 1)
+    retainedStart += firstNewline + 1
   }
-  const lines = text.split('\n').filter((item) => item && !isLogHeader(item))
-  while (Buffer.byteLength(`${lines.join('\n')}${lines.length ? '\n' : ''}`) > maxBytes) {
-    lines.shift()
+  const firstNewline = retained.indexOf(0x0a)
+  if (firstNewline !== -1) {
+    const firstLine = retained.subarray(0, firstNewline).toString('utf8').replace(/\r$/, '')
+    if (isLogHeader(firstLine)) {
+      retained = retained.subarray(firstNewline + 1)
+      retainedStart += firstNewline + 1
+    }
   }
-  return lines.length ? `${lines.join('\n')}\n` : ''
+  if (retained.length > 0 && retained.at(-1) !== 0x0a) {
+    while (retained.length + 1 > maxBytes) {
+      const newline = retained.indexOf(0x0a)
+      if (newline === -1) return { text: '', startOffsetBytes: currentSize }
+      retained = retained.subarray(newline + 1)
+      retainedStart += newline + 1
+    }
+    retained = Buffer.concat([retained, Buffer.from('\n')])
+  }
+  return { text: retained.toString('utf8'), startOffsetBytes: retainedStart }
 }
 
 function isLogHeader(line) {

@@ -6,17 +6,67 @@ export function readCliStatuslineScanStart(input: {
   cursor: CursorState
   eventSizeBytes: number
   generation?: string
+  previousGeneration?: string
+  retainedFromOffsetBytes?: number
+  compactLineage?: boolean
+  headerBytes?: number
   historyScope: string
 }) {
   if (input.historyScope === 'all') {
-    const generationChanged = input.generation !== input.cursor.lastScanGeneration &&
-      (input.generation !== undefined || input.cursor.lastScanGeneration !== undefined)
-    return generationChanged ? 0 : scanStartOffset(input.cursor.lastScanOffsetBytes, input.eventSizeBytes)
+    if (input.generation === input.cursor.lastScanGeneration) {
+      return scanStartOffset(input.cursor.lastScanOffsetBytes, input.eventSizeBytes)
+    }
+    const translated = translatePreviousGenerationOffset({
+      ...input,
+      previousOffsetBytes: input.cursor.lastScanOffsetBytes,
+      matchesPreviousGeneration: lineageMatches({
+        ...input,
+        previousGenerationHash: generationHash(input.cursor.lastScanGeneration)
+      })
+    })
+    return translated ?? 0
   }
 
   const candidate = latestReusableBoundedScan(input.cursor, input.historyScope)
-  if (!candidate || candidate.entry.sha256 !== generationHash(input.generation)) return 0
-  return scanStartOffset(candidate.entry.size, input.eventSizeBytes)
+  if (!candidate) return 0
+  if (candidate.entry.sha256 === generationHash(input.generation)) {
+    return scanStartOffset(candidate.entry.size, input.eventSizeBytes)
+  }
+  const translated = translatePreviousGenerationOffset({
+    ...input,
+    previousOffsetBytes: candidate.entry.size,
+    matchesPreviousGeneration: lineageMatches({
+      ...input,
+      previousGenerationHash: candidate.entry.sha256
+    })
+  })
+  return translated ?? 0
+}
+
+function lineageMatches(input: {
+  generation?: string
+  previousGeneration?: string
+  retainedFromOffsetBytes?: number
+  compactLineage?: boolean
+  previousGenerationHash: string
+}) {
+  if (!input.compactLineage) {
+    return input.previousGenerationHash === generationHash(input.previousGeneration)
+  }
+  if (input.generation === undefined || input.retainedFromOffsetBytes === undefined) return false
+  return input.generation === deriveCompactedGeneration(
+    input.previousGenerationHash,
+    input.retainedFromOffsetBytes
+  )
+}
+
+function deriveCompactedGeneration(previousGenerationHash: string, retainedFromOffsetBytes: number) {
+  return createHash('sha256')
+    .update(previousGenerationHash)
+    .update('\0')
+    .update(String(retainedFromOffsetBytes))
+    .digest('hex')
+    .slice(0, 32)
 }
 
 export function markCliStatuslineScanComplete(input: {
@@ -64,6 +114,25 @@ function boundedScanKey(historyScope: string) {
 function scanStartOffset(value: number | undefined, currentSize: number) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > currentSize) return 0
   return value
+}
+
+function translatePreviousGenerationOffset(input: {
+  eventSizeBytes: number
+  retainedFromOffsetBytes?: number
+  headerBytes?: number
+  previousOffsetBytes?: number
+  matchesPreviousGeneration: boolean
+}) {
+  if (!input.matchesPreviousGeneration || input.previousOffsetBytes === undefined ||
+      input.retainedFromOffsetBytes === undefined || input.headerBytes === undefined ||
+      !Number.isSafeInteger(input.previousOffsetBytes) || input.previousOffsetBytes < 0) return null
+  if (!Number.isSafeInteger(input.retainedFromOffsetBytes) || input.retainedFromOffsetBytes < 0 ||
+      !Number.isSafeInteger(input.headerBytes) || input.headerBytes < 0) return null
+  if (input.previousOffsetBytes < input.retainedFromOffsetBytes) return 0
+  return scanStartOffset(
+    input.headerBytes + input.previousOffsetBytes - input.retainedFromOffsetBytes,
+    input.eventSizeBytes
+  )
 }
 
 function generationHash(generation?: string) {

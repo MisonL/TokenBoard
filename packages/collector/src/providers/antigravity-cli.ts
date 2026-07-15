@@ -89,11 +89,15 @@ async function collectAntigravityCliUsageLocked(input: {
 
   if (eventStats) {
     const eventSizeBytes = readEventSizeBytes(eventStats.size)
-    const generation = await readStatuslineLogGeneration(eventPath, eventSizeBytes)
+    const logState = await readStatuslineLogState(eventPath, eventSizeBytes)
     const scanStartBytes = readCliStatuslineScanStart({
       cursor,
       eventSizeBytes,
-      generation,
+      generation: logState?.generation,
+      previousGeneration: logState?.previousGeneration,
+      retainedFromOffsetBytes: logState?.retainedFromOffsetBytes,
+      compactLineage: logState?.compactLineage,
+      headerBytes: logState?.headerBytes,
       historyScope: range.historyScope
     })
     for await (const event of readStatuslineEvents(eventPath, scanStartBytes, eventSizeBytes)) {
@@ -112,7 +116,7 @@ async function collectAntigravityCliUsageLocked(input: {
     markCliStatuslineScanComplete({
       cursor,
       eventSizeBytes,
-      generation,
+      generation: logState?.generation,
       historyScope: range.historyScope,
       collectedAt
     })
@@ -248,15 +252,20 @@ async function * readStatuslineEvents(eventPath: string, startBytes: number, end
   }
 }
 
-async function readStatuslineLogGeneration(eventPath: string, sizeBytes: number) {
+async function readStatuslineLogState(eventPath: string, sizeBytes: number) {
   if (sizeBytes === 0) return undefined
   const file = await open(eventPath, 'r')
   try {
     const buffer = Buffer.alloc(Math.min(statuslineLogHeaderBytes, sizeBytes))
     const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
-    const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0]
+    const newlineIndex = buffer.subarray(0, bytesRead).indexOf(0x0a)
+    const headerEnd = newlineIndex === -1 ? bytesRead : newlineIndex
+    const firstLine = buffer.subarray(0, headerEnd).toString('utf8').replace(/\r$/, '')
     const header = parseStatuslineLogHeader(firstLine)
-    return header?.generation
+    return header ? {
+      ...header,
+      headerBytes: newlineIndex === -1 ? headerEnd : newlineIndex + 1
+    } : undefined
   } finally {
     await file.close()
   }
@@ -274,12 +283,44 @@ function parseStatuslineLogHeader(line: string) {
     return null
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const candidate = value as { schemaVersion?: unknown; generation?: unknown }
+  const candidate = value as {
+    schemaVersion?: unknown
+    generation?: unknown
+    previousGeneration?: unknown
+    retainedFromOffsetBytes?: unknown
+    retainedFrom?: unknown
+  }
   if (candidate.schemaVersion !== statuslineLogSchemaVersion) return null
   if (typeof candidate.generation !== 'string' || !/^[a-f0-9]{32}$/.test(candidate.generation)) {
     throw new Error('Invalid Antigravity statusline log generation')
   }
-  return { generation: candidate.generation }
+  const hasPrevious = candidate.previousGeneration !== undefined || candidate.retainedFromOffsetBytes !== undefined
+  const hasCompactLineage = candidate.retainedFrom !== undefined
+  if (!hasPrevious && !hasCompactLineage) return { generation: candidate.generation }
+  if (hasPrevious && hasCompactLineage) {
+    throw new Error('Invalid Antigravity statusline log lineage')
+  }
+  if (hasCompactLineage) {
+    if (typeof candidate.retainedFrom !== 'number' ||
+        !Number.isSafeInteger(candidate.retainedFrom) || candidate.retainedFrom < 0) {
+      throw new Error('Invalid Antigravity statusline log lineage')
+    }
+    return {
+      generation: candidate.generation,
+      retainedFromOffsetBytes: candidate.retainedFrom,
+      compactLineage: true
+    }
+  }
+  if (typeof candidate.previousGeneration !== 'string' || !/^[a-f0-9]{32}$/.test(candidate.previousGeneration) ||
+      typeof candidate.retainedFromOffsetBytes !== 'number' ||
+      !Number.isSafeInteger(candidate.retainedFromOffsetBytes) || candidate.retainedFromOffsetBytes < 0) {
+    throw new Error('Invalid Antigravity statusline log lineage')
+  }
+  return {
+    generation: candidate.generation,
+    previousGeneration: candidate.previousGeneration,
+    retainedFromOffsetBytes: candidate.retainedFromOffsetBytes
+  }
 }
 
 function readEventSizeBytes(value: unknown) {

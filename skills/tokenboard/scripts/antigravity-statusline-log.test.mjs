@@ -40,6 +40,28 @@ test('statusline CLI compacts its private JSONL within the configured byte limit
   }
 })
 
+test('statusline compaction records lineage for generation-aware cursor translation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-lineage-'))
+  try {
+    const logPath = join(root, 'events.jsonl')
+    const previousGeneration = 'a'.repeat(32)
+    await writeFile(logPath, `${JSON.stringify({
+      schemaVersion: 'antigravity-statusline-log/v1',
+      generation: previousGeneration
+    })}\n${JSON.stringify({ value: 'x'.repeat(160) })}\n`)
+
+    appendBoundedStatuslineEvent(logPath, { value: 'new-event' }, 240)
+
+    const header = JSON.parse((await readFile(logPath, 'utf8')).split('\n', 1)[0])
+    assert.equal(header.previousGeneration, undefined)
+    assert.equal(typeof header.retainedFrom, 'number')
+    assert.ok(header.retainedFrom > 0)
+    assert.equal(header.generation, compactedGeneration(previousGeneration, header.retainedFrom))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('statusline CLI keeps concurrent events while compacting', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-concurrent-'))
   try {
@@ -243,6 +265,16 @@ function legacyHash(value) {
     .update('tokenboard-antigravity-cli\0')
     .update(value)
     .digest('hex')
+}
+
+function compactedGeneration(previousGeneration, retainedFromOffsetBytes) {
+  const previousHash = createHash('sha256').update(previousGeneration).digest('hex')
+  return createHash('sha256')
+    .update(previousHash)
+    .update('\0')
+    .update(String(retainedFromOffsetBytes))
+    .digest('hex')
+    .slice(0, 32)
 }
 
 function runStatuslineProcess(root, logPath, conversationId) {

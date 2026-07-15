@@ -24,27 +24,45 @@ export function prepareGuiHistoryScope(input: {
   historyScope: string
 }) {
   if (input.historyScope === 'all') return
-  const candidates = Object.keys(input.cursor.files)
-    .map((key) => ({ key, parsed: parseBoundedGuiCursorKey(key, input.source) }))
-    .filter((candidate): candidate is { key: string; parsed: { scope: string; parts: string[] } } => (
+  const candidates = Object.entries(input.cursor.files)
+    .map(([key, entry]) => ({ key, entry, parsed: parseBoundedGuiCursorKey(key, input.source) }))
+    .filter((candidate): candidate is {
+      key: string
+      entry: CursorEntry
+      parsed: { scope: string; parts: string[] }
+    } => (
       candidate.parsed !== null
     ))
-  const reusableScope = [...new Set(candidates.map((candidate) => candidate.parsed.scope))]
-    .filter((scope) => isReusableAntigravityHistoryScope(scope, input.historyScope))
-    .sort((left, right) => right.localeCompare(left))[0]
+  const migrated = new Map<string, { entry: CursorEntry; kind: string }>()
 
   for (const candidate of candidates) {
-    if (candidate.parsed.scope !== reusableScope) {
-      delete input.cursor.files[candidate.key]
-      continue
-    }
+    delete input.cursor.files[candidate.key]
+    if (!isReusableAntigravityHistoryScope(candidate.parsed.scope, input.historyScope)) continue
     candidate.parsed.parts[2] = `since:${input.historyScope}`
     const nextKey = candidate.parsed.parts.join('\0')
-    if (nextKey !== candidate.key) {
-      input.cursor.files[nextKey] ??= input.cursor.files[candidate.key]
-      delete input.cursor.files[candidate.key]
-    }
+    const current = migrated.get(nextKey)
+    const next = current
+      ? mergeBoundedGuiCursorEntry(current, { entry: candidate.entry, kind: candidate.parsed.parts[0] })
+      : { entry: candidate.entry, kind: candidate.parsed.parts[0] }
+    migrated.set(nextKey, next)
   }
+  for (const [key, value] of migrated) {
+    input.cursor.files[key] = value.entry
+  }
+}
+
+function mergeBoundedGuiCursorEntry(
+  left: { entry: CursorEntry; kind: string },
+  right: { entry: CursorEntry; kind: string }
+) {
+  if (left.kind === 'cascade-empty-frontier') {
+    if (right.entry.mtimeMs < left.entry.mtimeMs) return right
+    if (right.entry.mtimeMs === left.entry.mtimeMs && right.entry.sha256 > left.entry.sha256) return right
+    return left
+  }
+  if (right.entry.mtimeMs > left.entry.mtimeMs) return right
+  if (right.entry.mtimeMs === left.entry.mtimeMs && right.entry.size > left.entry.size) return right
+  return left
 }
 
 export function pushGuiUsageEvent(input: {

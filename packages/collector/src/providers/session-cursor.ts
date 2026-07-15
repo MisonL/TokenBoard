@@ -239,6 +239,7 @@ function cursorEntryIsInRange(
   if (entry.snapshots.length > 0) {
     return entry.snapshots.some((snapshot) => snapshot.usageDate >= sinceDate)
   }
+  if (entry.mtimeMs <= 0) return true
   return includesTimestamp(new Date(entry.mtimeMs).toISOString())
 }
 

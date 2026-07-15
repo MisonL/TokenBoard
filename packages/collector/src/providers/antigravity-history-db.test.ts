@@ -58,6 +58,34 @@ describe('readAntigravityDbUsageEvents', () => {
     }
   })
 
+  test('considers a newer SQLite WAL mtime when applying a since file filter', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-wal-mtime-'))
+    try {
+      const dir = join(root, 'conversations')
+      const sqliteBin = join(root, 'sqlite3-wal-mtime.sh')
+      const cascadeId = '00000000-0000-0000-0000-000000000001'
+      const walPath = join(dir, `${cascadeId}.db-wal`)
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `${cascadeId}.db`), '')
+      await writeFile(walPath, 'wal')
+      await utimes(walPath, new Date('2026-06-24T00:00:00.000Z'), new Date('2026-06-24T00:00:00.000Z'))
+      await writeFile(sqliteBin, '#!/bin/sh\nprintf ""\n')
+      await chmod(sqliteBin, 0o755)
+
+      const result = await readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        sqliteBin,
+        sinceDate: '2026-06-24',
+        timezone: 'UTC',
+        statFile: async () => ({ mtimeMs: Date.parse('2026-06-23T00:00:00.000Z'), size: 0 })
+      })
+
+      expect(result.lastReadRowIndexByCascade?.get(cascadeId)).toBe(-1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('records a successful empty database scan so bounded backlog selection can advance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-cursor-'))
     try {
