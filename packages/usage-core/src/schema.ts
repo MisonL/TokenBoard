@@ -80,12 +80,13 @@ export function isValidTimezone(value: unknown): value is string {
 
   const timezone = value.trim()
   if (!timezone || timezone !== value || timezone.length > maxUsageTimezoneLength) return false
-  if (validTimezoneCache.has(timezone)) return true
+  const cacheKey = timezone.toLowerCase()
+  if (validTimezoneCache.has(cacheKey)) return true
 
   try {
     const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone })
     formatter.format(new Date(0))
-    validTimezoneCache.add(formatter.resolvedOptions().timeZone)
+    validTimezoneCache.add(cacheKey)
     return true
   } catch (_) {
     return false

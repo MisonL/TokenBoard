@@ -71,12 +71,19 @@ describe('usage snapshot schema', () => {
     constructor.mockRestore()
   })
 
-  test('caches canonical timezone names instead of case variants', () => {
+  test('caches case-insensitive timezone inputs after validation', () => {
     const before = timezoneValidationCacheSize()
-    for (const timezone of ['Etc/UTC', 'etc/utc', 'ETC/UTC', 'eTc/uTc']) {
-      expect(isValidTimezone(timezone)).toBe(true)
-    }
-    expect(timezoneValidationCacheSize() - before).toBeLessThanOrEqual(1)
+    const formatter = Intl.DateTimeFormat
+    const constructor = vi.spyOn(Intl, 'DateTimeFormat')
+      .mockImplementation(function (...args) { return new formatter(...args) })
+
+    expect(isValidTimezone('US/Eastern')).toBe(true)
+    expect(isValidTimezone('us/eastern')).toBe(true)
+    expect(isValidTimezone('US/EASTERN')).toBe(true)
+    expect(constructor).toHaveBeenCalledTimes(1)
+    expect(timezoneValidationCacheSize() - before).toBe(1)
+
+    constructor.mockRestore()
   })
 
   test('rejects oversized timezone and model fields', () => {
