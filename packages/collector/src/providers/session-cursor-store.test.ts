@@ -45,6 +45,90 @@ describe('session cursor store concurrency', () => {
     }
   })
 
+  test('releases the cursor lock when an in-flight heartbeat refresh fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-heartbeat-error-'))
+    const cursorPath = join(root, 'codex-cursor.json')
+    const heartbeatStarted = deferred<void>()
+    const failHeartbeat = deferred<void>()
+    const heartbeatError = new Error('heartbeat failed')
+    try {
+      const operation = withCursorLock(cursorPath, async () => {
+        await heartbeatStarted.promise
+      }, {
+        heartbeatIntervalMs: 1,
+        refreshCursorLock: async () => {
+          heartbeatStarted.resolve()
+          await failHeartbeat.promise
+          throw heartbeatError
+        }
+      })
+
+      await heartbeatStarted.promise
+      failHeartbeat.resolve()
+      await expect(operation).rejects.toBe(heartbeatError)
+      await expect(readFile(`${cursorPath}.lock`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      failHeartbeat.resolve()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('preserves the callback error when heartbeat refresh and callback both fail', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-callback-heartbeat-error-'))
+    const cursorPath = join(root, 'codex-cursor.json')
+    const heartbeatStarted = deferred<void>()
+    const failHeartbeat = deferred<void>()
+    const callbackError = new Error('callback failed')
+    try {
+      const operation = withCursorLock(cursorPath, async () => {
+        await heartbeatStarted.promise
+        throw callbackError
+      }, {
+        heartbeatIntervalMs: 1,
+        refreshCursorLock: async () => {
+          heartbeatStarted.resolve()
+          await failHeartbeat.promise
+          throw new Error('heartbeat failed')
+        }
+      })
+
+      await heartbeatStarted.promise
+      failHeartbeat.resolve()
+      await expect(operation).rejects.toBe(callbackError)
+      await expect(readFile(`${cursorPath}.lock`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      failHeartbeat.resolve()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('reports a heartbeat refresh failure that settles before the callback completes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-early-heartbeat-error-'))
+    const cursorPath = join(root, 'codex-cursor.json')
+    const heartbeatFailed = deferred<void>()
+    const finishCallback = deferred<void>()
+    const heartbeatError = new Error('heartbeat failed early')
+    try {
+      const operation = withCursorLock(cursorPath, async () => {
+        await finishCallback.promise
+      }, {
+        heartbeatIntervalMs: 1,
+        refreshCursorLock: async () => {
+          heartbeatFailed.resolve()
+          throw heartbeatError
+        }
+      })
+
+      await heartbeatFailed.promise
+      finishCallback.resolve()
+      await expect(operation).rejects.toBe(heartbeatError)
+      await expect(readFile(`${cursorPath}.lock`, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      finishCallback.resolve()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('serializes the complete cursor read-modify-write interval', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-lock-'))
     const cursorPath = join(root, 'codex-cursor.json')

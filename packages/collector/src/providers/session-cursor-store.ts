@@ -93,22 +93,31 @@ export async function withCursorLock<T>(
     callbackFailed = true
     throw error
   } finally {
-    await stopHeartbeat()
+    let heartbeatFailure: { error: unknown } | undefined
+    try {
+      await stopHeartbeat()
+    } catch (error) {
+      heartbeatFailure = { error }
+    }
     try {
       await releaseCursorLock(lockPath, owner)
     } catch (error) {
       if (!callbackFailed) throw error
     }
+    if (!callbackFailed && heartbeatFailure) throw heartbeatFailure.error
   }
 }
 
 function startCursorLockHeartbeat(refresh: () => Promise<void>, intervalMs: number) {
   let inFlight: Promise<void> | undefined
+  let refreshFailure: { error: unknown } | undefined
   const heartbeat = setInterval(() => {
     if (inFlight) return
     inFlight = (async () => {
       try {
         await refresh()
+      } catch (error) {
+        refreshFailure ??= { error }
       } finally {
         inFlight = undefined
       }
@@ -118,6 +127,7 @@ function startCursorLockHeartbeat(refresh: () => Promise<void>, intervalMs: numb
   return async () => {
     clearInterval(heartbeat)
     await inFlight
+    if (refreshFailure) throw refreshFailure.error
   }
 }
 
