@@ -259,6 +259,83 @@ for (const failure of [
   })
 }
 
+test('coordinator preserves sync evidence when checkpoint and lock release both fail', () => {
+  const fs = memoryRuntime()
+  let runs = 0
+  let thrown
+
+  try {
+    coordinatedSync({ kind: 'notify', source: 'codex' }, {
+      ...fs,
+      stateDir: '/state',
+      process: fakeProcess(211),
+      writeFile: (path, value, options) => {
+        if (path === '/state/last-success.json') throw new Error('checkpoint write failed')
+        fs.writeFile(path, value, options)
+      },
+      unlink: (path) => {
+        if (path === '/state/sync.lock') throw new Error('sync lock release failed')
+        fs.unlink(path)
+      },
+      executeSync: (trigger) => {
+        runs += 1
+        if (runs === 1) writeSignal(fs, 'claude-code')
+        return { source: trigger.source, run: runs }
+      }
+    })
+  } catch (error) {
+    thrown = error
+  }
+
+  assert.match(thrown?.message || '', /checkpoint write failed/)
+  assert.match(thrown?.message || '', /sync lock release failed/)
+  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
+  assert.equal(lastRun.status, 'error')
+  assert.equal(lastRun.coordination.hadFollowUp, true)
+  assert.equal(lastRun.coordination.followUpCount, 1)
+  assert.deepEqual(lastRun.cycles, [
+    { source: 'codex', result: { source: 'codex', run: 1 } },
+    { source: 'claude-code', result: { source: 'claude-code', run: 2 } }
+  ])
+  assert.match(lastRun.error, /checkpoint write failed/)
+  assert.match(lastRun.error, /sync lock release failed/)
+  assert.equal(fs.files.has('/state/run-logs.lock'), false)
+})
+
+test('coordinator preserves sync evidence when lock release fails after a successful checkpoint', () => {
+  const fs = memoryRuntime()
+  let runs = 0
+
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    now: () => Date.parse('2026-07-16T00:00:00.000Z'),
+    process: fakeProcess(212),
+    unlink: (path) => {
+      if (path === '/state/sync.lock') throw new Error('sync lock release failed')
+      fs.unlink(path)
+    },
+    executeSync: (trigger) => {
+      runs += 1
+      if (runs === 1) writeSignal(fs, 'claude-code')
+      return { source: trigger.source, run: runs }
+    }
+  })
+
+  assert.equal(result.error, 'sync lock release failed')
+  assert.equal(result.hadFollowUp, true)
+  assert.equal(result.followUpCount, 1)
+  assert.deepEqual(result.cycles, [
+    { source: 'codex', result: { source: 'codex', run: 1 } },
+    { source: 'claude-code', result: { source: 'claude-code', run: 2 } }
+  ])
+  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
+  assert.deepEqual(lastRun.cycles, result.cycles)
+  assert.equal(lastRun.status, 'error')
+  assert.equal(fs.files.get('/state/last-success.json'), '2026-07-16T00:00:00.000Z')
+  assert.equal(fs.files.has('/state/run-logs.lock'), false)
+})
+
 for (const failure of [
   { name: 'an empty Error message', value: new Error(''), expected: 'Error' },
   { name: 'a whitespace Error message', value: new Error('   '), expected: 'Error' },

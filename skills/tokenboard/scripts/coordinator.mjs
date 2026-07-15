@@ -15,6 +15,23 @@ class SuccessfulSyncCheckpointError extends Error {
     this.cause = cause
     this.completedResult = completedResult
   }
+
+  withCleanupFailure(cleanupError) {
+    const combined = new AggregateError(
+      [this.cause, cleanupError],
+      `${this.message}; sync lock release failed: ${errorMessage(cleanupError)}`
+    )
+    return new SuccessfulSyncCheckpointError(combined, this.completedResult)
+  }
+}
+
+class CompletedSyncCleanupError extends Error {
+  constructor(cause, completedResult) {
+    super(errorMessage(cause))
+    this.name = 'CompletedSyncCleanupError'
+    this.cause = cause
+    this.completedResult = completedResult
+  }
 }
 
 export function coordinatedSync(trigger, options) {
@@ -29,7 +46,8 @@ export function coordinatedSync(trigger, options) {
   try {
     completed = runCoordinator(trigger, runtime, result)
   } catch (error) {
-    const failedResult = error instanceof SuccessfulSyncCheckpointError
+    const failedResult = error instanceof SuccessfulSyncCheckpointError ||
+      error instanceof CompletedSyncCleanupError
       ? error.completedResult
       : result
     completed = { ...failedResult, error: errorMessage(error) }
@@ -51,6 +69,8 @@ function runCoordinator(trigger, runtime, result) {
     return lock.result
   }
 
+  let coordinatorError
+  let completedResult
   try {
     const pendingSources = readSignalSources(runtime)
     if (lock.waited && pendingSources.length === 0) {
@@ -63,10 +83,24 @@ function runCoordinator(trigger, runtime, result) {
     }
 
     const completed = { ...result, ...runLockedCycles(trigger, runtime, syncSources), waitedForLock: lock.waited }
+    completedResult = completed
     writeSuccessfulSyncCheckpoint(completed, runtime)
     return completed
+  } catch (error) {
+    coordinatorError = error
+    throw error
   } finally {
-    if (lock.acquired) releaseLock(lockPath, runtime)
+    if (lock.acquired) {
+      try {
+        releaseLock(lockPath, runtime)
+      } catch (error) {
+        if (coordinatorError instanceof SuccessfulSyncCheckpointError) {
+          throw coordinatorError.withCleanupFailure(error)
+        }
+        if (completedResult) throw new CompletedSyncCleanupError(error, completedResult)
+        throw error
+      }
+    }
   }
 }
 
