@@ -71,7 +71,7 @@ describe('usage snapshot schema', () => {
     constructor.mockRestore()
   })
 
-  test('caches case-insensitive timezone inputs after validation', () => {
+  test('caches case-insensitive and canonical timezone aliases after validation', () => {
     const before = timezoneValidationCacheSize()
     const formatter = Intl.DateTimeFormat
     const constructor = vi.spyOn(Intl, 'DateTimeFormat')
@@ -80,8 +80,9 @@ describe('usage snapshot schema', () => {
     expect(isValidTimezone('US/Eastern')).toBe(true)
     expect(isValidTimezone('us/eastern')).toBe(true)
     expect(isValidTimezone('US/EASTERN')).toBe(true)
+    expect(isValidTimezone('America/New_York')).toBe(true)
     expect(constructor).toHaveBeenCalledTimes(1)
-    expect(timezoneValidationCacheSize() - before).toBe(1)
+    expect(timezoneValidationCacheSize() - before).toBe(2)
 
     constructor.mockRestore()
   })

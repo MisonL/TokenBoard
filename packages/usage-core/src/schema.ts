@@ -87,6 +87,7 @@ export function isValidTimezone(value: unknown): value is string {
     const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone })
     formatter.format(new Date(0))
     validTimezoneCache.add(cacheKey)
+    validTimezoneCache.add(formatter.resolvedOptions().timeZone.toLowerCase())
     return true
   } catch (_) {
     return false
