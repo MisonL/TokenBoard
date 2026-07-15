@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { buildNotifyHandler } from './hooks.mjs'
 
 const backgroundResultTimeoutMs = 5_000
@@ -78,6 +79,35 @@ test('notify handler records foreground failures for local diagnosis', () => {
   assert.match(source, /function safeErrorString\(value\)/)
   assert.doesNotMatch(source, /: String\(error\)/)
   assert.match(source, /return "Unknown error"/)
+})
+
+test('notify handler formats hostile errors without throwing at runtime', () => {
+  const source = buildNotifyHandler({
+    stateDir: '/home/user/.tokenboard',
+    notifyScriptPath: '/repo/scripts/notify.mjs',
+    nodePath: '/usr/bin/node'
+  })
+  const helperStart = source.indexOf('function errorMessage(error)')
+  const helperEnd = source.indexOf('function isMissingFileError(error)')
+
+  assert.notEqual(helperStart, -1)
+  assert.notEqual(helperEnd, -1)
+  const results = runInNewContext(`
+    ${source.slice(helperStart, helperEnd)}
+    const hostileError = new Error("failed");
+    Object.defineProperties(hostileError, {
+      message: { get() { throw new Error("message failed"); } },
+      name: { get() { throw new Error("name failed"); } }
+    });
+    [
+      errorMessage(new Error("")),
+      errorMessage(Object.create(null)),
+      errorMessage({ toString() { throw new Error("toString failed"); } }),
+      errorMessage(hostileError)
+    ];
+  `)
+
+  assert.deepEqual(Array.from(results), ['Error', 'Unknown error', 'Unknown error', 'Unknown error'])
 })
 
 test('notify handler records invalid source without enqueueing background work', async () => {
