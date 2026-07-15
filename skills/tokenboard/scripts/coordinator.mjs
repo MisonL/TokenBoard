@@ -9,10 +9,11 @@ const defaultMaxFollowUps = 3
 const defaultMaxRunLogs = 1_024
 
 class SuccessfulSyncCheckpointError extends Error {
-  constructor(cause) {
+  constructor(cause, completedResult) {
     super(errorMessage(cause))
     this.name = 'SuccessfulSyncCheckpointError'
     this.cause = cause
+    this.completedResult = completedResult
   }
 }
 
@@ -28,7 +29,10 @@ export function coordinatedSync(trigger, options) {
   try {
     completed = runCoordinator(trigger, runtime, result)
   } catch (error) {
-    completed = { ...result, error: errorMessage(error) }
+    const failedResult = error instanceof SuccessfulSyncCheckpointError
+      ? error.completedResult
+      : result
+    completed = { ...failedResult, error: errorMessage(error) }
     if (error instanceof SuccessfulSyncCheckpointError) {
       hasCheckpointError = true
       checkpointError = error.cause instanceof Error ? error.cause : error
@@ -275,7 +279,7 @@ function writeSuccessfulSyncCheckpoint(result, runtime) {
       new Date(runtime.now()).toISOString()
     )
   } catch (error) {
-    throw new SuccessfulSyncCheckpointError(error)
+    throw new SuccessfulSyncCheckpointError(error, result)
   }
 }
 

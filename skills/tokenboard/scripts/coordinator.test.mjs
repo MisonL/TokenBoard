@@ -226,6 +226,7 @@ for (const failure of [
 ]) {
   test(`coordinator logs and rethrows successful sync checkpoint failures from ${failure.name}`, () => {
     const fs = memoryRuntime()
+    let runs = 0
 
     assert.throws(
       () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
@@ -236,12 +237,23 @@ for (const failure of [
           if (path === '/state/last-success.json') throw failure.value
           fs.writeFile(path, value, options)
         },
-        executeSync: () => ({ ok: true })
+        executeSync: (trigger) => {
+          runs += 1
+          if (runs === 1) writeSignal(fs, 'claude-code')
+          return { source: trigger.source, run: runs }
+        }
       }),
       failure.expected
     )
 
-    assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'error')
+    const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
+    assert.equal(lastRun.status, 'error')
+    assert.equal(lastRun.coordination.hadFollowUp, true)
+    assert.equal(lastRun.coordination.followUpCount, 1)
+    assert.deepEqual(lastRun.cycles, [
+      { source: 'codex', result: { source: 'codex', run: 1 } },
+      { source: 'claude-code', result: { source: 'claude-code', run: 2 } }
+    ])
     assert.equal(fs.files.has('/state/sync.lock'), false)
     assert.equal(fs.files.has('/state/run-logs.lock'), false)
   })
