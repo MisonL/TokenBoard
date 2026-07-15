@@ -195,24 +195,32 @@ test('coordinator fails visibly when run log writing fails', () => {
   assert.equal(fs.files.has('/state/run-logs.lock'), false)
 })
 
-test('coordinator treats an empty error message as a failed sync', () => {
-  const fs = memoryRuntime()
-  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
-    process: fakeProcess(209),
-    executeSync: () => {
-      throw new Error('')
-    }
-  })
+for (const failure of [
+  { name: 'an empty Error message', value: new Error(''), expected: 'Error' },
+  { name: 'a whitespace Error message', value: new Error('   '), expected: 'Error' },
+  { name: 'an empty thrown string', value: '', expected: 'Unknown error' },
+  { name: 'a thrown null value', value: null, expected: 'null' },
+  { name: 'a thrown undefined value', value: undefined, expected: 'undefined' }
+]) {
+  test(`coordinator treats ${failure.name} as a failed sync`, () => {
+    const fs = memoryRuntime()
+    const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+      ...fs,
+      stateDir: '/state',
+      now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+      process: fakeProcess(209),
+      executeSync: () => {
+        throw failure.value
+      }
+    })
 
-  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
-  assert.equal(result.error, 'Error')
-  assert.equal(lastRun.status, 'error')
-  assert.equal(lastRun.error, 'Error')
-  assert.equal(fs.files.has('/state/last-success.json'), false)
-})
+    const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
+    assert.equal(result.error, failure.expected)
+    assert.equal(lastRun.status, 'error')
+    assert.equal(lastRun.error, failure.expected)
+    assert.equal(fs.files.has('/state/last-success.json'), false)
+  })
+}
 
 test('coordinator fails clearly when state directory is missing', () => {
   assert.throws(
