@@ -138,6 +138,25 @@ test('coordinator fails visibly when run log writing fails', () => {
   assert.equal(fs.files.has('/state/sync.lock'), false)
 })
 
+test('coordinator treats an empty error message as a failed sync', () => {
+  const fs = memoryRuntime()
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(209),
+    executeSync: () => {
+      throw new Error('')
+    }
+  })
+
+  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
+  assert.equal(result.error, 'Error')
+  assert.equal(lastRun.status, 'error')
+  assert.equal(lastRun.error, 'Error')
+  assert.equal(fs.files.has('/state/last-success.json'), false)
+})
+
 test('coordinator fails clearly when state directory is missing', () => {
   assert.throws(
     () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
