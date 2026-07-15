@@ -66,7 +66,7 @@ if (isMain()) {
   )
 
   if (result.error) {
-    console.error(`Failed to run ${invocation.command}: ${result.error.message}`)
+    console.error(`Failed to run ${invocation.command}: ${errorMessage(result.error)}`)
     closeScheduledLogRuntime(logs)
     process.exit(1)
   }

@@ -30,14 +30,19 @@ test('does not throw while formatting hostile thrown values', () => {
 test('skill CLI entrypoints use shared error diagnostics', () => {
   for (const fileName of [
     'hooks.mjs',
+    'install-collector.mjs',
     'install-schedule.mjs',
+    'notify.mjs',
     'rotate-token.mjs',
     'setup.mjs',
+    'sync.mjs',
     'uninstall-schedule.mjs',
-    'uninstall.mjs'
+    'uninstall.mjs',
+    'upgrade.mjs'
   ]) {
     const source = readFileSync(new URL(fileName, import.meta.url), 'utf8')
     assert.doesNotMatch(source, /console\.error\(error\.message\)/, fileName)
-    assert.match(source, /console\.error\(errorMessage\(error\)\)/, fileName)
+    assert.doesNotMatch(source, /result\.error\.message/, fileName)
+    assert.match(source, /errorMessage\((?:error|result\.error)\)/, fileName)
   }
 })
