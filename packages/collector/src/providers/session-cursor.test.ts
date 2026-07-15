@@ -367,6 +367,9 @@ describe('collectChangedSessionFiles', () => {
       expect(cursor.files['history-event\0old\0' + 'b'.repeat(64)].snapshots).toEqual([])
       expect(cursor.files['event\0old-model'].snapshots).toEqual([])
       expect(cursor.files['session\0old-session'].snapshots).toEqual([])
+      expect(cursor.files['history-event\0old\0' + 'b'.repeat(64)].compactedIdentity).toBe(true)
+      expect(cursor.files['event\0old-model'].compactedIdentity).toBe(true)
+      expect(cursor.files['session\0old-session'].compactedIdentity).toBe(true)
       expect(cursor.files['history-event\0recent\0' + 'c'.repeat(64)].pendingUpload).toBe(false)
       const entries = Object.values(cursor.files) as Array<{
         snapshots?: Array<{ model: string; totalTokens: number }>
@@ -374,6 +377,18 @@ describe('collectChangedSessionFiles', () => {
       expect(entries.some((item) => (
         item.snapshots?.some((snapshot) => snapshot.model === 'gemini-old' && snapshot.totalTokens === 15)
       ))).toBe(true)
+
+      for (const key of [
+        'history-event\0old\0' + 'b'.repeat(64),
+        'event\0old-model',
+        'session\0old-session'
+      ]) {
+        cursor.files[key].updatedAt = '2025-01-01T00:00:00.000Z'
+      }
+      await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
+      const compactedCursorText = await readFile(cursorPath, 'utf8')
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      expect(await readFile(cursorPath, 'utf8')).toBe(compactedCursorText)
 
       cursor.files['history-event\0late\0' + 'e'.repeat(64)] = entry(recentTimestamp, true, [{
         source: 'antigravity-cli',

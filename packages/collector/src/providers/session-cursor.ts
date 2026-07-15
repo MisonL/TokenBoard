@@ -250,6 +250,8 @@ function compactAcknowledgedAntigravityUsage(cursor: CursorState) {
   let changed = false
 
   for (const [key, entry] of Object.entries(cursor.files)) {
+    if (entry.compactedIdentity && entry.snapshots.length === 0 &&
+        !entry.pendingUpload && isAntigravityReplayIdentityKey(key)) continue
     const retainedAtMs = Date.parse(entry.updatedAt)
     if (entry.pendingUpload || !Number.isFinite(retainedAtMs) || retainedAtMs >= cutoffMs ||
         !isAntigravityUsageStateKey(key)) continue
@@ -266,6 +268,7 @@ function compactAcknowledgedAntigravityUsage(cursor: CursorState) {
       entry.snapshots = []
       entry.missingCost = true
       entry.pendingUpload = false
+      entry.compactedIdentity = true
       entry.updatedAt = compactedAt
     } else {
       delete cursor.files[key]

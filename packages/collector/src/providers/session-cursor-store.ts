@@ -18,6 +18,7 @@ export type CursorEntry = {
   snapshots: CursorSnapshot[]
   missingCost: boolean
   pendingUpload?: boolean
+  compactedIdentity?: true
   updatedAt: string
 }
 
@@ -284,7 +285,8 @@ function isValidCursorEntry(value: unknown): value is CursorEntry {
     candidate.snapshots.every(isValidCursorSnapshot) &&
     typeof candidate.missingCost === 'boolean' &&
     typeof candidate.updatedAt === 'string' &&
-    (candidate.pendingUpload === undefined || typeof candidate.pendingUpload === 'boolean')
+    (candidate.pendingUpload === undefined || typeof candidate.pendingUpload === 'boolean') &&
+    (candidate.compactedIdentity === undefined || candidate.compactedIdentity === true)
 }
 
 function isValidCursorSnapshot(value: unknown): value is CursorSnapshot {
