@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { describe, expect, test } from 'vitest'
-import { pushCompleteCliCursorSnapshots } from './antigravity-cli-cursor'
+import { pushCliUsageEvent, pushCompleteCliCursorSnapshots } from './antigravity-cli-cursor'
 import {
   clearPendingUploadCursors,
   collectChangedSessionFiles,
@@ -358,10 +358,15 @@ describe('collectChangedSessionFiles', () => {
 
       const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
       expect(Object.keys(cursor.files)).toEqual(expect.arrayContaining([
+        'history-event\0old\0' + 'b'.repeat(64),
+        'event\0old-model',
+        'session\0old-session',
         'history-event\0recent\0' + 'c'.repeat(64),
         'db-row\0antigravity-cli\0' + 'd'.repeat(64)
       ]))
-      expect(Object.keys(cursor.files).some((key) => key.includes('old'))).toBe(false)
+      expect(cursor.files['history-event\0old\0' + 'b'.repeat(64)].snapshots).toEqual([])
+      expect(cursor.files['event\0old-model'].snapshots).toEqual([])
+      expect(cursor.files['session\0old-session'].snapshots).toEqual([])
       expect(cursor.files['history-event\0recent\0' + 'c'.repeat(64)].pendingUpload).toBe(false)
       const entries = Object.values(cursor.files) as Array<{
         snapshots?: Array<{ model: string; totalTokens: number }>
@@ -388,6 +393,95 @@ describe('collectChangedSessionFiles', () => {
       expect(mergeSnapshots(uploadSnapshots)).toEqual([
         expect.objectContaining({ model: 'gemini-old', totalTokens: 20, sessionCount: 1 })
       ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps compacted Antigravity identities from being counted again after a full rescan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-cursor-replay-'))
+    const cursorPath = join(root, 'antigravity-cli-cursor.json')
+    const capturedAt = '2025-01-01T10:00:00.000Z'
+    const conversationHash = 'a'.repeat(64)
+    const eventHash = 'b'.repeat(64)
+    const event = {
+      capturedAt,
+      conversationHash,
+      eventHash,
+      model: 'gemini-old',
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 3
+    }
+    const historyEventKey = ['history-event', conversationHash, eventHash].join('\0')
+    const statuslineEventKey = [
+      'event',
+      conversationHash,
+      event.model,
+      event.inputTokens,
+      event.outputTokens,
+      event.cacheCreationTokens,
+      event.cacheReadTokens
+    ].join('\0')
+    const sessionKey = ['session', '2025-01-01', event.model, conversationHash].join('\0')
+    const entry = (snapshots: unknown[] = []) => ({
+      size: 0,
+      mtimeMs: Date.parse(capturedAt),
+      sha256: 'c'.repeat(64),
+      snapshots,
+      missingCost: true,
+      pendingUpload: false,
+      updatedAt: capturedAt
+    })
+
+    try {
+      await writeFile(cursorPath, `${JSON.stringify({
+        version: 1,
+        source: 'antigravity-cli',
+        files: {
+          [historyEventKey]: entry([{
+            source: 'antigravity-cli',
+            usageDate: '2025-01-01',
+            timezone: 'UTC',
+            model: event.model,
+            inputTokens: 10,
+            outputTokens: 2,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 3,
+            totalTokens: 15,
+            costUsd: 0,
+            sessionCount: 1
+          }]),
+          [statuslineEventKey]: entry(),
+          [sessionKey]: entry()
+        }
+      }, null, 2)}\n`)
+
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      const replayedSnapshots: UsageSnapshot[] = []
+      const emittedKeys = new Set<string>()
+      pushCliUsageEvent({
+        event,
+        cursor,
+        snapshots: replayedSnapshots,
+        emittedKeys,
+        timezone: 'UTC',
+        collectedAt: '2026-07-15T10:00:00.000Z',
+        origin: 'history'
+      })
+      pushCompleteCliCursorSnapshots(
+        replayedSnapshots,
+        cursor,
+        '2026-07-15T10:00:00.000Z',
+        emittedKeys
+      )
+
+      expect(replayedSnapshots).toEqual([])
+      expect(cursor.files[historyEventKey]?.snapshots).toEqual([])
+      expect(cursor.files[statuslineEventKey]?.snapshots).toEqual([])
+      expect(cursor.files[sessionKey]?.snapshots).toEqual([])
     } finally {
       await rm(root, { recursive: true, force: true })
     }

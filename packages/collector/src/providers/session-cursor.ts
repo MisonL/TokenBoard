@@ -246,13 +246,13 @@ function cursorEntryIsInRange(
 function compactAcknowledgedAntigravityUsage(cursor: CursorState) {
   const cutoffMs = Date.now() - antigravityUsageCursorRetentionMs
   const aggregateInputs = new Map<string, { mtimeMs: number; snapshots: CursorSnapshot[] }>()
+  const compactedAt = new Date().toISOString()
   let changed = false
 
   for (const [key, entry] of Object.entries(cursor.files)) {
     const retainedAtMs = Date.parse(entry.updatedAt)
     if (entry.pendingUpload || !Number.isFinite(retainedAtMs) || retainedAtMs >= cutoffMs ||
         !isAntigravityUsageStateKey(key)) continue
-    delete cursor.files[key]
     changed = true
     for (const snapshot of entry.snapshots) {
       const groupKey = cursorSnapshotGroupKey(snapshot)
@@ -260,6 +260,15 @@ function compactAcknowledgedAntigravityUsage(cursor: CursorState) {
       group.mtimeMs = Math.max(group.mtimeMs, entry.mtimeMs)
       group.snapshots.push(snapshot)
       aggregateInputs.set(groupKey, group)
+    }
+    if (isAntigravityReplayIdentityKey(key)) {
+      entry.size = 0
+      entry.snapshots = []
+      entry.missingCost = true
+      entry.pendingUpload = false
+      entry.updatedAt = compactedAt
+    } else {
+      delete cursor.files[key]
     }
   }
 
@@ -287,6 +296,10 @@ function compactAcknowledgedAntigravityUsage(cursor: CursorState) {
 
 function isAntigravityUsageStateKey(key: string) {
   return antigravityUsageStatePrefixes.some((prefix) => key.startsWith(prefix))
+}
+
+function isAntigravityReplayIdentityKey(key: string) {
+  return antigravityReplayIdentityPrefixes.some((prefix) => key.startsWith(prefix))
 }
 
 function mergeCursorSnapshotGroup(snapshots: CursorSnapshot[]) {
@@ -322,6 +335,12 @@ const antigravityUsageStatePrefixes = [
   'session\0',
   'statusline-head\0',
   'statusline-history-claim\0',
+  'statusline-occurrence\0'
+]
+const antigravityReplayIdentityPrefixes = [
+  'event\0',
+  'history-event\0',
+  'session\0',
   'statusline-occurrence\0'
 ]
 
