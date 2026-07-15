@@ -273,7 +273,7 @@ function waitForReady(server: LanguageServerProcess, port: number) {
       const text = chunk.toString('utf8')
       lines.push(text)
       output += text
-      if (output.includes(`fixed port at ${port} for HTTPS`) || output.includes(`:${port}`)) {
+      if (output.includes(`fixed port at ${port} for HTTPS`)) {
         cleanup()
         drainOutput(server)
         resolve()

@@ -761,6 +761,36 @@ describe('runCollectorCli Antigravity source', () => {
     expect(acknowledged).toEqual(collected)
   })
 
+  test('passes an explicit since date to every Antigravity collector', async () => {
+    const seen: Array<{ source: string; since: string | undefined }> = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all', '--since', '20260708'],
+      { TOKENBOARD_STATE_DIR: '/state' },
+      deps({
+        collectAntigravityCliUsage: async (options) => {
+          seen.push({ source: 'antigravity-cli', since: options?.since })
+          return []
+        },
+        collectAntigravityUsage: async (options) => {
+          seen.push({ source: 'antigravity', since: options?.since })
+          return []
+        },
+        collectAntigravityIdeUsage: async (options) => {
+          seen.push({ source: 'antigravity-ide', since: options?.since })
+          return []
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(seen).toEqual([
+      { source: 'antigravity-cli', since: '20260708' },
+      { source: 'antigravity', since: '20260708' },
+      { source: 'antigravity-ide', since: '20260708' }
+    ])
+  })
+
   test('acks Antigravity cursors after a successful non-hook upload', async () => {
     const acks: string[] = []
 

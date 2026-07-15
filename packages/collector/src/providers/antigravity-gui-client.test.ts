@@ -180,6 +180,37 @@ describe('createAntigravityLanguageServerClient', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test.skipIf(process.platform === 'win32')('does not treat an unrelated port diagnostic as readiness', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-port-diagnostic-'))
+    const previousTimeout = process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS
+    try {
+      const serverPath = join(root, 'server.mjs')
+      await writeFile(serverPath, [
+        '#!/usr/bin/env node',
+        'const portIndex = process.argv.indexOf("--https_server_port")',
+        'const port = process.argv[portIndex + 1]',
+        'process.stderr.write(`diagnostic: retrying upstream at 127.0.0.1:${port}`)',
+        'setInterval(() => undefined, 1000)'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+      process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS = '300'
+
+      const result = await createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      }).then(async (client) => {
+        await client.close()
+        return 'resolved'
+      }, (error) => error)
+
+      expect(result).toBeInstanceOf(Error)
+      expect((result as Error).message).toContain('Timed out starting Antigravity language server')
+    } finally {
+      restoreEnv('TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS', previousTimeout)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('listAntigravityCascades', () => {

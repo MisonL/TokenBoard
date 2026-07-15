@@ -14,13 +14,17 @@ import {
   type AntigravityGeneratorMetadataRequest
 } from './antigravity-gui-client'
 import { hash, parseGeneratorMetadata } from './antigravity-gui-parser'
-import { readAntigravityDbUsageEvents, type AntigravityDbUsageResult } from './antigravity-history-db'
+import type { AntigravityDbUsageResult } from './antigravity-history-db'
+import {
+  resolveAntigravityCollectionRange,
+  type AntigravityCollectionRange
+} from './antigravity-since'
 import {
   hasDbCascadeRowsProcessed,
-  lastSeenDbRowIndexByCascadeHash,
   markDbCascadeRowsProcessed,
   markCascadeProcessed,
   markEmptyCascadeAttempted,
+  prepareGuiHistoryScope,
   pushCompleteGuiCursorSnapshots,
   pushGuiUsageEvent,
   readEmptyCascadeFrontier,
@@ -28,9 +32,10 @@ import {
   shouldRequestCascade
 } from './antigravity-gui-cursor'
 import {
-  defaultConversationDir, errorMessage, isUnavailableDbError,
+  errorMessage, isUnavailableDbError,
   isUnavailableLanguageServerError, readStateDir
 } from './antigravity-gui-environment'
+import { readAntigravityGuiLocalDbUsage } from './antigravity-gui-local-db'
 
 export type AntigravityGuiSource = 'antigravity' | 'antigravity-ide'
 
@@ -40,6 +45,7 @@ export type CollectAntigravityGuiUsageOptions = {
   collectedAt?: string
   stateDir?: string
   cursorScope?: string
+  since?: string
   conversationDir?: string
   languageServerPath?: string
   overrideIdeVersion?: string
@@ -49,6 +55,8 @@ export type CollectAntigravityGuiUsageOptions = {
   readDbUsageEvents?: (input?: {
     lastSeenRowIndexByCascadeHash?: Map<string, number>
     maxDbFiles?: number | null
+    sinceDate?: string
+    timezone?: string
   }) => Promise<AntigravityDbUsageResult>
   maxLanguageServerCascades?: number
   maxDbFiles?: number | null
@@ -103,13 +111,15 @@ async function collectAntigravityGuiUsageLocked(input: {
 }) {
   const { options, timezone, collectedAt, cursorPath } = input
   const cursor = await readCursor(cursorPath, options.source)
+  const range = resolveAntigravityCollectionRange({ since: options.since, timezone })
+  prepareGuiHistoryScope({ cursor, source: options.source, historyScope: range.historyScope })
   cursor.antigravityDbFileScan ??= { nextSequence: 0, files: {} }
   cursor.antigravityCascadeFileScan ??= { nextSequence: 0, files: {} }
   const snapshots: UsageSnapshot[] = []
   const emittedKeys = new Set<string>()
 
-  const { usage: localDbUsage, error: localDbError } = await readLocalDbUsage(options, cursor)
-  for (const event of localDbUsage.events) {
+  const { usage: localDbUsage, error: localDbError } = await readAntigravityGuiLocalDbUsage(options, cursor, range, timezone)
+  for (const event of localDbUsage.events.filter((item) => range.includesTimestamp(item.createdAt))) {
     pushGuiUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt, source: options.source })
   }
 
@@ -118,15 +128,22 @@ async function collectAntigravityGuiUsageLocked(input: {
   }
 
   await collectLanguageServerUsage({
-    options, cursor, cursorPath, snapshots, emittedKeys, timezone, collectedAt, localDbUsage
+    options, cursor, cursorPath, snapshots, emittedKeys, timezone, collectedAt, localDbUsage, range
   })
 
   markDbCascadeRowsProcessed({
     cursor,
     source: options.source,
-    lastReadRowIndexByCascade: localDbUsage.lastReadRowIndexByCascade
+    lastReadRowIndexByCascade: localDbUsage.lastReadRowIndexByCascade,
+    historyScope: range.historyScope
   })
-  pushCompleteGuiCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
+  pushCompleteGuiCursorSnapshots(
+    snapshots,
+    cursor,
+    collectedAt,
+    emittedKeys,
+    (snapshot) => !range.sinceDate || snapshot.usageDate >= range.sinceDate
+  )
   await writeCursor(cursorPath, cursor)
   return mergeSnapshots(snapshots)
 }
@@ -140,6 +157,7 @@ async function collectLanguageServerUsage(input: {
   timezone: string
   collectedAt: string
   localDbUsage: AntigravityDbUsageResult
+  range: AntigravityCollectionRange
 }) {
   let request
   let collectionFailed = false
@@ -182,6 +200,7 @@ async function requestLanguageServerUsage(
     let hasUsableEvents = false
     for (const event of parseGeneratorMetadata(response, cascade.id)) {
       hasUsableEvents = true
+      if (!input.range.includesTimestamp(event.createdAt)) continue
       pushGuiUsageEvent({
         event,
         cursor: input.cursor,
@@ -193,11 +212,21 @@ async function requestLanguageServerUsage(
       })
     }
     if (!hasUsableEvents) {
-      markEmptyCascadeAttempted({ cascade, cursor: input.cursor, source: input.options.source })
+      markEmptyCascadeAttempted({
+        cascade,
+        cursor: input.cursor,
+        source: input.options.source,
+        historyScope: input.range.historyScope
+      })
       await writeCursor(input.cursorPath, input.cursor)
       continue
     }
-    markCascadeProcessed({ cascade, cursor: input.cursor, source: input.options.source })
+    markCascadeProcessed({
+      cascade,
+      cursor: input.cursor,
+      source: input.options.source,
+      historyScope: input.range.historyScope
+    })
     await writeCursor(input.cursorPath, input.cursor)
   }
 }
@@ -210,9 +239,16 @@ async function preservePartialGuiUsage(
     markDbCascadeRowsProcessed({
       cursor: input.cursor,
       source: input.options.source,
-      lastReadRowIndexByCascade: input.localDbUsage.lastReadRowIndexByCascade
+      lastReadRowIndexByCascade: input.localDbUsage.lastReadRowIndexByCascade,
+      historyScope: input.range.historyScope
     })
-    pushCompleteGuiCursorSnapshots(input.snapshots, input.cursor, input.collectedAt, input.emittedKeys)
+    pushCompleteGuiCursorSnapshots(
+      input.snapshots,
+      input.cursor,
+      input.collectedAt,
+      input.emittedKeys,
+      (snapshot) => !input.range.sinceDate || snapshot.usageDate >= input.range.sinceDate
+    )
     await writeCursor(input.cursorPath, input.cursor)
   } catch (cleanupError) {
     cleanupErrors.push(cleanupError)
@@ -274,25 +310,30 @@ async function listUncapturedLanguageServerCascades(input: {
   options: CollectAntigravityGuiUsageOptions
   cursor: Awaited<ReturnType<typeof readCursor>>
   localDbUsage: AntigravityDbUsageResult
+  range: AntigravityCollectionRange
 }) {
   const maxCascades = normalizeMaxLanguageServerCascades(input.options.maxLanguageServerCascades)
   const emptyCascadeFrontier = readEmptyCascadeFrontier({
     cursor: input.cursor,
-    source: input.options.source
+    source: input.options.source,
+    historyScope: input.range.historyScope
   })
   const cascades = await readLanguageServerCascadeRefs({ ...input, maxCascades, emptyCascadeFrontier })
   markDbCascadeRowsProcessed({
     coveredCascadeIds: input.localDbUsage.cascadeIds,
     coveredCascades: cascades,
     cursor: input.cursor,
-    source: input.options.source
+    source: input.options.source,
+    historyScope: input.range.historyScope
   })
   return cascades
+    .filter((cascade) => input.range.includesFileMtime(cascade.mtimeMs))
     .filter((cascade) => shouldRequestLanguageServerCascade({
       cascade,
       cursor: input.cursor,
       localDbUsage: input.localDbUsage,
-      source: input.options.source
+      source: input.options.source,
+      historyScope: input.range.historyScope
     }))
     .sort((left, right) => compareLanguageServerCascadePriority(
       left,
@@ -337,6 +378,7 @@ async function readLanguageServerCascadeRefs(input: {
   localDbUsage: AntigravityDbUsageResult
   maxCascades: number
   emptyCascadeFrontier: EmptyCascadeFrontier | null
+  range: AntigravityCollectionRange
 }) {
   const { options } = input
   if (options.listCascades) return options.listCascades()
@@ -359,19 +401,22 @@ async function readLanguageServerCascadeRefs(input: {
       input.emptyCascadeFrontier
     ),
     includeCascade: (cascade) => {
+      if (!input.range.includesFileMtime(cascade.mtimeMs)) return false
       if (input.localDbUsage.cascadeIds.has(cascade.id)) {
         markDbCascadeRowsProcessed({
           coveredCascadeIds: input.localDbUsage.cascadeIds,
           coveredCascades: [cascade],
           cursor: input.cursor,
-          source: options.source
+          source: options.source,
+          historyScope: input.range.historyScope
         })
       }
       return shouldRequestLanguageServerCascade({
         cascade,
         cursor: input.cursor,
         localDbUsage: input.localDbUsage,
-        source: options.source
+        source: options.source,
+        historyScope: input.range.historyScope
       })
     }
   })
@@ -393,6 +438,7 @@ function shouldRequestLanguageServerCascade(input: {
   cursor: Awaited<ReturnType<typeof readCursor>>
   localDbUsage: AntigravityDbUsageResult
   source: AntigravityGuiSource
+  historyScope: string
 }) {
   const databaseScanPending = input.cascade.hasDatabaseFile &&
     !input.localDbUsage.lastReadRowIndexByCascade?.has(input.cascade.id)
@@ -401,56 +447,13 @@ function shouldRequestLanguageServerCascade(input: {
     !hasDbCascadeRowsProcessed({
       cascade: input.cascade,
       cursor: input.cursor,
-      source: input.source
+      source: input.source,
+      historyScope: input.historyScope
     }) &&
-    shouldRequestCascade({ cascade: input.cascade, cursor: input.cursor, source: input.source })
-}
-
-async function readLocalDbUsage(
-  options: CollectAntigravityGuiUsageOptions,
-  cursor: Awaited<ReturnType<typeof readCursor>>
-): Promise<{
-  usage: AntigravityDbUsageResult
-  error?: unknown
-}> {
-  try {
-    return {
-      usage: await readLocalDbUsageOrThrow(options, cursor)
-    }
-  } catch (error) {
-    return {
-      usage: { cascadeIds: new Set<string>(), events: [] },
-      error
-    }
-  }
-}
-
-async function readLocalDbUsageOrThrow(
-  options: CollectAntigravityGuiUsageOptions,
-  cursor: Awaited<ReturnType<typeof readCursor>>
-) {
-  if (options.readDbUsageEvents) {
-    return options.readDbUsageEvents({
-      lastSeenRowIndexByCascadeHash: lastSeenDbRowIndexByCascadeHash({ cursor, source: options.source }),
-      maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
+    shouldRequestCascade({
+      cascade: input.cascade,
+      cursor: input.cursor,
+      source: input.source,
+      historyScope: input.historyScope
     })
-  }
-  if (options.requestGeneratorMetadata) {
-    return { cascadeIds: new Set<string>(), events: [] }
-  }
-  return readAntigravityDbUsageEvents({
-    conversationDir: options.conversationDir ?? defaultConversationDir(options.source),
-    lastSeenRowIndexByCascadeHash: lastSeenDbRowIndexByCascadeHash({ cursor, source: options.source }),
-    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles),
-    scanState: cursor.antigravityDbFileScan
-  })
-}
-
-function resolveMaxDbFiles(value: number | null | undefined) {
-  return value === undefined ? defaultMaxDbFilesForCurrentRun() : value
-}
-
-function defaultMaxDbFilesForCurrentRun() {
-  const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
-  return since === 'all' ? null : undefined
 }

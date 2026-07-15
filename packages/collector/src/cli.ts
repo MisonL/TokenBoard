@@ -36,6 +36,7 @@ type CollectOptionalSourceOptions = {
 
 type CollectionContext = {
   timezone: string
+  since: string
   cursorScope?: string
   deps: CliDeps
   env: CliEnv
@@ -104,7 +105,7 @@ export async function runCollectorCli(
 
     const collectionStartedAtMs = startedAtMs
     const cursorScope = options.command === 'sync' ? cursorScopeFromEndpoint(options.endpoint) : undefined
-    const collectionContext = { timezone: options.timezone, cursorScope, deps, env }
+    const collectionContext = { timezone: options.timezone, since: options.since, cursorScope, deps, env }
     const collection = await collectSnapshots(options.source, collectionContext)
     const hasFatalSourceFailure = collection.sourceFailures.some((failure) => failure.fatal)
     const shouldFailForSourceErrors = (options.failOnSourceError || options.source !== 'all') &&
@@ -131,6 +132,8 @@ export async function runCollectorCli(
     await ackUploadCursors({
       collectedSources: collection.collectedSources,
       cursorScope,
+      since: options.since,
+      timezone: options.timezone,
       deps,
       env
     })
@@ -184,7 +187,7 @@ function parseArgs(args: string[], env: CliEnv) {
     timezone,
     endpoint: flags.endpoint ?? env.TOKENBOARD_ENDPOINT ?? '',
     uploadToken: flags.token ?? env.TOKENBOARD_UPLOAD_TOKEN ?? '',
-    since: env.TOKENBOARD_SINCE ?? env.TOKENBOARD_DEFAULT_SINCE ?? '',
+    since: flags.since ?? env.TOKENBOARD_SINCE ?? env.TOKENBOARD_DEFAULT_SINCE ?? '',
     failOnSourceError: env.TOKENBOARD_FAIL_ON_SOURCE_ERROR === '1'
   }
 }
@@ -211,7 +214,7 @@ async function collectSnapshots(source: CliSource, context: CollectionContext) {
 }
 
 async function collectAllSnapshots(context: CollectionContext) {
-  const { cursorScope, deps, env, timezone } = context
+  const { cursorScope, deps, env, since, timezone } = context
   const snapshots: UsageSnapshot[] = []
   const collectedSources: CliSource[] = []
   const sourceFailures: SourceFailure[] = []
@@ -223,7 +226,7 @@ async function collectAllSnapshots(context: CollectionContext) {
     return { snapshots, collectedSources, sourceFailures }
   }
   const antigravityOptions = { deferFailure: true, failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
-  const antigravityContext = { timezone, stateDir: resolveStateDir(env), cursorScope }
+  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity', () => readAntigravityGuiCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity-ide', () => readAntigravityIdeCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
@@ -250,10 +253,10 @@ function collectSingleSource(
   source: ConcreteCliSource,
   context: CollectionContext
 ) {
-  const { cursorScope, deps, env, timezone } = context
+  const { cursorScope, deps, env, since, timezone } = context
   if (source === 'claude-code') return deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr })
   if (source === 'codex') return deps.collectCodexUsage({ timezone, stderr: deps.stderr })
-  const antigravityContext = { timezone, stateDir: resolveStateDir(env), cursorScope }
+  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)
   return readAntigravityIdeCollector(deps)(antigravityContext)
@@ -304,6 +307,8 @@ async function collectOptionalSource(
 async function ackUploadCursors(input: {
   collectedSources: CliSource[]
   cursorScope?: string
+  since: string
+  timezone: string
   deps: CliDeps
   env: CliEnv
 }) {
@@ -316,7 +321,9 @@ async function ackUploadCursors(input: {
       await input.deps.clearPendingUploadCursors?.({
         stateDir,
         source,
-        cursorScope: source.startsWith('antigravity') ? input.cursorScope : undefined
+        cursorScope: source.startsWith('antigravity') ? input.cursorScope : undefined,
+        since: source.startsWith('antigravity') ? input.since : undefined,
+        timezone: source.startsWith('antigravity') ? input.timezone : undefined
       })
     } catch (error) {
       throw safeSourceError(source, error, errorMessage(error))

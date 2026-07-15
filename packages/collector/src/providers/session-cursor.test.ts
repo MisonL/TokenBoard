@@ -1,8 +1,15 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { describe, expect, test } from 'vitest'
-import { clearPendingUploadCursors, collectChangedSessionFiles, warmHookCursorHighWater } from './session-cursor'
+import { pushCompleteCliCursorSnapshots } from './antigravity-cli-cursor'
+import {
+  clearPendingUploadCursors,
+  collectChangedSessionFiles,
+  mergeSnapshots,
+  warmHookCursorHighWater
+} from './session-cursor'
 
 const canDenyFileReadWithModeBits = process.platform !== 'win32' && process.getuid?.() !== 0
 
@@ -302,6 +309,136 @@ describe('collectChangedSessionFiles', () => {
         cursorPath: join(root, 'codex-cursor.json')
       })
       expect(result.files).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('prunes expired acknowledged Antigravity usage state while retaining control cursors', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-cursor-retention-'))
+    const cursorPath = join(root, 'antigravity-cli-cursor.json')
+    const oldTimestamp = Date.parse('2025-01-01T00:00:00.000Z')
+    const recentTimestamp = Date.now()
+    const entry = (mtimeMs: number, pendingUpload: boolean, snapshots: unknown[] = []) => ({
+      size: 0,
+      mtimeMs,
+      sha256: 'a'.repeat(64),
+      snapshots,
+      missingCost: true,
+      pendingUpload,
+      updatedAt: new Date(mtimeMs).toISOString()
+    })
+
+    try {
+      await writeFile(cursorPath, `${JSON.stringify({
+        version: 1,
+        source: 'antigravity-cli',
+        files: {
+          ['history-event\0old\0' + 'b'.repeat(64)]: entry(oldTimestamp, false, [{
+            source: 'antigravity-cli',
+            usageDate: '2025-01-01',
+            timezone: 'UTC',
+            model: 'gemini-old',
+            inputTokens: 10,
+            outputTokens: 2,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 3,
+            totalTokens: 15,
+            costUsd: 0,
+            sessionCount: 1
+          }]),
+          ['event\0old-model']: entry(oldTimestamp, false),
+          ['session\0old-session']: entry(oldTimestamp, false),
+          ['history-event\0recent\0' + 'c'.repeat(64)]: entry(recentTimestamp, true),
+          ['db-row\0antigravity-cli\0' + 'd'.repeat(64)]: entry(7, false)
+        }
+      }, null, 2)}\n`)
+
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      expect(Object.keys(cursor.files)).toEqual(expect.arrayContaining([
+        'history-event\0recent\0' + 'c'.repeat(64),
+        'db-row\0antigravity-cli\0' + 'd'.repeat(64)
+      ]))
+      expect(Object.keys(cursor.files).some((key) => key.includes('old'))).toBe(false)
+      expect(cursor.files['history-event\0recent\0' + 'c'.repeat(64)].pendingUpload).toBe(false)
+      const entries = Object.values(cursor.files) as Array<{
+        snapshots?: Array<{ model: string; totalTokens: number }>
+      }>
+      expect(entries.some((item) => (
+        item.snapshots?.some((snapshot) => snapshot.model === 'gemini-old' && snapshot.totalTokens === 15)
+      ))).toBe(true)
+
+      cursor.files['history-event\0late\0' + 'e'.repeat(64)] = entry(recentTimestamp, true, [{
+        source: 'antigravity-cli',
+        usageDate: '2025-01-01',
+        timezone: 'UTC',
+        model: 'gemini-old',
+        inputTokens: 4,
+        outputTokens: 1,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 5,
+        costUsd: 0,
+        sessionCount: 0
+      }])
+      const uploadSnapshots: UsageSnapshot[] = []
+      pushCompleteCliCursorSnapshots(uploadSnapshots, cursor, new Date().toISOString(), new Set())
+      expect(mergeSnapshots(uploadSnapshots)).toEqual([
+        expect.objectContaining({ model: 'gemini-old', totalTokens: 20, sessionCount: 1 })
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps pending Antigravity snapshots outside a bounded acknowledgement range', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-bounded-ack-'))
+    const cursorPath = join(root, 'antigravity-cursor.json')
+    const snapshot = (usageDate: string) => ({
+      source: 'antigravity',
+      usageDate,
+      timezone: 'UTC',
+      model: 'gemini',
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 12,
+      costUsd: 0,
+      sessionCount: 1
+    })
+    const entry = (usageDate: string) => ({
+      size: 0,
+      mtimeMs: Date.parse(`${usageDate}T10:00:00.000Z`),
+      sha256: 'a'.repeat(64),
+      snapshots: [snapshot(usageDate)],
+      missingCost: true,
+      pendingUpload: true,
+      updatedAt: new Date().toISOString()
+    })
+
+    try {
+      await writeFile(cursorPath, `${JSON.stringify({
+        version: 1,
+        source: 'antigravity',
+        files: {
+          'event\0old': entry('2026-06-23'),
+          'event\0current': entry('2026-06-24')
+        }
+      }, null, 2)}\n`)
+
+      await clearPendingUploadCursors({
+        stateDir: root,
+        source: 'antigravity',
+        since: '20260624',
+        timezone: 'UTC'
+      })
+
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      expect(cursor.files['event\0old'].pendingUpload).toBe(true)
+      expect(cursor.files['event\0current'].pendingUpload).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

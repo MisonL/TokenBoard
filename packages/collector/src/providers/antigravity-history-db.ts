@@ -5,6 +5,7 @@ import { basename, extname, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseAntigravityGeneratorMetadataBlobEvents } from './antigravity-history-protobuf'
+import { formatDate } from './session-jsonl-parser-utils'
 import {
   beginAntigravityFileScan,
   listAntigravityDirectoryFileNames,
@@ -53,6 +54,8 @@ export async function readAntigravityDbUsageEvents(input: {
   statFile?: StatFile
   listFiles?: ListFiles
   scanState?: AntigravityFileScanState
+  sinceDate?: string
+  timezone?: string
 }): Promise<AntigravityDbUsageResult> {
   const dbFiles = await listDbFiles({
     conversationDir: input.conversationDir,
@@ -60,7 +63,8 @@ export async function readAntigravityDbUsageEvents(input: {
     statFile: input.statFile ?? stat,
     listFiles: input.listFiles ?? nodeListFiles,
     lastSeenRowIndexByCascadeHash: input.lastSeenRowIndexByCascadeHash ?? new Map(),
-    scanState: input.scanState
+    scanState: input.scanState,
+    includeFileMtime: buildFileMtimeFilter(input.sinceDate, input.timezone)
   })
   const result: AntigravityDbUsageResult = {
     cascadeIds: new Set(),
@@ -116,6 +120,7 @@ async function listDbFiles(input: {
   listFiles: ListFiles
   lastSeenRowIndexByCascadeHash: Map<string, number>
   scanState?: AntigravityFileScanState
+  includeFileMtime: (mtimeMs: number) => boolean
 }) {
   let names
   try {
@@ -130,7 +135,9 @@ async function listDbFiles(input: {
   if (input.maxDbFiles === null) {
     const candidates = (await Promise.all(names
       .map((name) => readDbFileCandidate(join(input.conversationDir, name), input.statFile))))
-      .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => candidate !== null)
+      .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => (
+        candidate !== null && input.includeFileMtime(candidate.mtimeMs)
+      ))
     return sortDbCandidates(candidates)
   }
   const scanState = input.scanState ?? { nextSequence: 0, files: {} }
@@ -157,11 +164,18 @@ async function listDbFiles(input: {
       const entry = readAntigravityFileScanEntry(scanState, id)
       return entry ? { filePath: join(input.conversationDir, `${id}.db`), mtimeMs: entry.mtimeMs, size: entry.size } : null
     })
-    .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => candidate !== null)
+    .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => (
+      candidate !== null && input.includeFileMtime(candidate.mtimeMs)
+    ))
   const sorted = sortDbCandidates(candidates)
   const unread = sorted.filter((candidate) => !hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
   const processed = sorted.filter((candidate) => hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
   return selectDbReadCandidates(unread, processed, input.maxDbFiles, checkedSequence)
+}
+
+function buildFileMtimeFilter(sinceDate?: string, timezone?: string) {
+  if (!sinceDate || !timezone) return () => true
+  return (mtimeMs: number) => formatDate(new Date(mtimeMs), timezone) >= sinceDate
 }
 
 function sortDbCandidates(candidates: Array<{ filePath: string; mtimeMs: number; size: number }>) {
