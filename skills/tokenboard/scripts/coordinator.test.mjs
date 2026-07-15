@@ -142,6 +142,7 @@ test('coordinator fails visibly when the run log lock times out', () => {
 
   assert.equal(syncRuns, 1)
   assert.equal(JSON.parse(fs.files.get('/state/run-logs.lock')).pid, 400)
+  assert.equal(fs.files.get('/state/last-success.json'), '2026-05-22T10:01:00.000Z')
 })
 
 test('coordinator recovers a stale run log lock before writing', () => {
@@ -191,6 +192,33 @@ test('coordinator fails visibly when run log writing fails', () => {
     }),
     /log write failed/
   )
+  assert.equal(fs.files.has('/state/sync.lock'), false)
+  assert.equal(fs.files.has('/state/run-logs.lock'), false)
+  assert.equal(fs.files.get('/state/last-success.json'), '2026-05-22T10:00:00.000Z')
+})
+
+test('coordinator logs and rethrows successful sync checkpoint failures', () => {
+  const fs = memoryRuntime()
+
+  assert.throws(
+    () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
+      ...fs,
+      stateDir: '/state',
+      process: fakeProcess(210),
+      writeFile: (path, value, options) => {
+        if (path === '/state/last-success.json') {
+          const error = new Error('checkpoint write failed')
+          error.code = 'EACCES'
+          throw error
+        }
+        fs.writeFile(path, value, options)
+      },
+      executeSync: () => ({ ok: true })
+    }),
+    /checkpoint write failed/
+  )
+
+  assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'error')
   assert.equal(fs.files.has('/state/sync.lock'), false)
   assert.equal(fs.files.has('/state/run-logs.lock'), false)
 })

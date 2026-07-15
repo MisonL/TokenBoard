@@ -7,6 +7,14 @@ const defaultLockTimeoutMs = 60_000
 const defaultMaxFollowUps = 3
 const defaultMaxRunLogs = 1_024
 
+class SuccessfulSyncCheckpointError extends Error {
+  constructor(cause) {
+    super(errorMessage(cause))
+    this.name = 'SuccessfulSyncCheckpointError'
+    this.cause = cause
+  }
+}
+
 export function coordinatedSync(trigger, options) {
   const runtime = buildRuntime(options)
   const startedAtMs = runtime.now()
@@ -14,12 +22,17 @@ export function coordinatedSync(trigger, options) {
   runtime.mkdir(runtime.stateDir, { recursive: true })
 
   let completed
+  let checkpointError
   try {
     completed = runCoordinator(trigger, runtime, result)
   } catch (error) {
     completed = { ...result, error: errorMessage(error) }
+    if (error instanceof SuccessfulSyncCheckpointError) {
+      checkpointError = error.cause ?? error
+    }
   }
   writeRunLog(completed, startedAtMs, runtime)
+  if (checkpointError) throw checkpointError
   return completed
 }
 
@@ -42,7 +55,9 @@ function runCoordinator(trigger, runtime, result) {
       return skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock })
     }
 
-    return { ...result, ...runLockedCycles(trigger, runtime, syncSources), waitedForLock: lock.waited }
+    const completed = { ...result, ...runLockedCycles(trigger, runtime, syncSources), waitedForLock: lock.waited }
+    writeSuccessfulSyncCheckpoint(completed, runtime)
+    return completed
   } finally {
     if (lock.acquired) releaseLock(lockPath, runtime)
   }
@@ -249,6 +264,18 @@ function scheduleTrailingSources(trigger, sources, runtime, remainingMs) {
     runtime.scheduleTrailing({ ...trigger, source }, remainingMs) || scheduled, false)
 }
 
+function writeSuccessfulSyncCheckpoint(result, runtime) {
+  if (deriveStatus(result) !== 'success') return
+  try {
+    runtime.writeFile(
+      join(runtime.stateDir, 'last-success.json'),
+      new Date(runtime.now()).toISOString()
+    )
+  } catch (error) {
+    throw new SuccessfulSyncCheckpointError(error)
+  }
+}
+
 function writeRunLog(result, startedAtMs, runtime) {
   const lockPath = join(runtime.stateDir, 'run-logs.lock')
   acquireRunLogLock(lockPath, runtime)
@@ -296,9 +323,6 @@ function writeRunLogEntry(result, startedAtMs, runtime) {
   runtime.writeFile(join(runsDir, `${result.runId}.json`), json)
   pruneRunLogs(runsDir, runtime)
   runtime.writeFile(join(runtime.stateDir, 'last-run.json'), json)
-  if (status === 'success') {
-    runtime.writeFile(join(runtime.stateDir, 'last-success.json'), entry.completedAt)
-  }
 }
 
 function prepareRunLogDirectory(runId, runtime) {
