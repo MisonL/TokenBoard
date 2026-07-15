@@ -49,7 +49,7 @@ const useDeviceLink = shouldUseDeviceLink(flags)
 let activeProfile
 
 if (!pairingCode && !useDeviceLink && savedProfile) {
-  withCredentialsLock(configDir(), () => {
+  withSetupCredentialsLock(() => {
     const latestConfig = existsSync(configPath()) ? readConfig() : {}
     const latestProfile = reusableServerProfile(latestConfig, serverOrigin)
     if (!latestProfile) throw new Error('TokenBoard server profile changed during setup')
@@ -111,7 +111,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
     console.error('Pairing response did not include a valid endpoint.')
     process.exit(1)
   }
-  withCredentialsLock(configDir(), () => {
+  withSetupCredentialsLock(() => {
     const latestConfig = existsSync(configPath()) ? readConfig() : {}
     const existingProfile = latestConfig?.servers?.[pairedServerOrigin]
     const installOptions = resolveSetupInstallOptions({
@@ -168,6 +168,15 @@ function reusableServerProfile(config, serverOrigin) {
   if (typeof profile.endpoint !== 'string' || !profile.endpoint.trim()) return null
   if (typeof profile.uploadToken !== 'string' || !profile.uploadToken.trim()) return null
   return profile
+}
+
+function withSetupCredentialsLock(callback) {
+  try {
+    return withCredentialsLock(configDir(), callback)
+  } catch (error) {
+    console.error(errorMessage(error))
+    process.exit(1)
+  }
 }
 
 function scriptPath(name) {

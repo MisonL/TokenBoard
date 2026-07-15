@@ -120,10 +120,46 @@ test('setup applies explicit install flags without dropping saved profile defaul
   }
 })
 
+test('setup reports saved profile activation failures without an uncaught stack', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-setup-profile-error-'))
+  try {
+    writeFileSync(join(directory, 'config.json'), JSON.stringify({
+      activeServer: 'https://prod.example.com',
+      servers: {
+        'https://prod.example.com': {
+          endpoint: 'https://prod.example.com/api/v1/ingest',
+          uploadToken: 'prod-token',
+          scheduleTimes: ['not-a-time']
+        }
+      }
+    }))
+
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./setup.mjs', import.meta.url)),
+      '--base-url', 'https://prod.example.com',
+      '--skip-collector',
+      '--skip-schedule',
+      '--skip-initial-sync',
+      '--skip-hook'
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, TOKENBOARD_CONFIG_DIR: directory }
+    })
+
+    assert.equal(result.status, 1)
+    assert.equal(
+      result.stderr,
+      'Invalid schedule time: not-a-time. Expected HH:MM in 24-hour format.\n'
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('setup activates the profile read after acquiring the credentials lock', () => {
   const source = readFileSync(new URL('./setup.mjs', import.meta.url), 'utf8')
   const lockBody = source.slice(
-    source.indexOf('withCredentialsLock(configDir(), () => {'),
+    source.indexOf('withSetupCredentialsLock(() => {'),
     source.indexOf("console.log('TokenBoard server profile activated.')")
   )
 
