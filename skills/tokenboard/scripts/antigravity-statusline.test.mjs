@@ -138,6 +138,10 @@ test('statusline CLI preserves successful original output when the original comm
 
     assert.equal(result.status, 0)
     assert.equal(result.stdout, 'static-output')
+    const errors = await readErrorRecords(errorPath)
+    assert.ok(errors.some((record) => (
+      record.stage === 'original' && typeof record.message === 'string' && record.message.length > 0
+    )))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -166,6 +170,7 @@ test('statusline CLI force-terminates an original command that ignores its timeo
 
     assert.equal(result.status, 0)
     assert.ok(Date.now() - startedAt < 5000)
+    assert.equal(result.stdout, '')
     assert.match(await readFile(errorPath, 'utf8'), /timed out/)
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -272,7 +277,40 @@ test('statusline CLI preserves the original output-limit error when stdin forwar
     ], { input: Buffer.alloc(4 * 1024 * 1024), encoding: 'utf8', timeout: 8000 })
 
     assert.equal(result.status, 0)
+    assert.equal(result.stdout, '')
     assert.match(await readFile(errorPath, 'utf8'), /output exceeded the limit/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline CLI suppresses partial output from a failed original command', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-nonzero-'))
+  try {
+    const originalPath = join(root, 'original.mjs')
+    const backupPath = join(root, 'original.json')
+    const errorPath = join(root, 'errors.log')
+    await writeFile(originalPath, [
+      'process.stdin.resume()',
+      'process.stdin.on("end", () => {',
+      '  process.stdout.write("partial-output")',
+      '  process.exitCode = 2',
+      '})'
+    ].join('\n'))
+    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+
+    const result = spawnSync(process.execPath, [
+      scriptPath,
+      '--state-dir', root,
+      '--error-path', errorPath,
+      '--original-command-file', backupPath
+    ], { input: JSON.stringify(statuslinePayload()), encoding: 'utf8', timeout: 8000 })
+
+    assert.equal(result.status, 0)
+    assert.equal(result.stdout, '')
+    assert.ok((await readErrorRecords(errorPath)).some((record) => (
+      record.stage === 'original' && /exited with 2/.test(record.message)
+    )))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -510,6 +548,13 @@ function statuslinePayload(overrides = {}) {
     },
     ...overrides
   }
+}
+
+async function readErrorRecords(errorPath) {
+  return (await readFile(errorPath, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
 }
 
 function plainHash(value) {
