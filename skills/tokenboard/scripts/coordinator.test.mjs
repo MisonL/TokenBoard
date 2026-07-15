@@ -115,6 +115,62 @@ test('coordinator serializes run log directory preparation', () => {
   assert.equal(fs.files.has('/state/run-logs.lock'), false)
 })
 
+test('coordinator fails visibly when the run log lock times out', () => {
+  const fs = memoryRuntime({
+    '/state/run-logs.lock': JSON.stringify({ pid: 400, startedAt: '2026-05-22T10:00:00.000Z' })
+  })
+  let now = Date.parse('2026-05-22T10:01:00.000Z')
+  let syncRuns = 0
+
+  assert.throws(
+    () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
+      ...fs,
+      stateDir: '/state',
+      now: () => now,
+      sleep: (ms) => {
+        now += ms
+      },
+      lockTimeoutMs: 1,
+      process: fakeProcess(401),
+      executeSync: () => {
+        syncRuns += 1
+        return { ok: true }
+      }
+    }),
+    /run log lock timeout/
+  )
+
+  assert.equal(syncRuns, 1)
+  assert.equal(JSON.parse(fs.files.get('/state/run-logs.lock')).pid, 400)
+})
+
+test('coordinator recovers a stale run log lock before writing', () => {
+  const fs = memoryRuntime({
+    '/state/run-logs.lock': JSON.stringify({ pid: 402, startedAt: '2026-05-22T10:00:00.000Z' })
+  })
+
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    process: {
+      pid: 403,
+      kill: (pid) => {
+        if (pid === 402) {
+          const error = new Error('ESRCH')
+          error.code = 'ESRCH'
+          throw error
+        }
+        return true
+      }
+    },
+    executeSync: () => ({ ok: true })
+  })
+
+  assert.equal(result.error, undefined)
+  assert.equal(fs.files.has('/state/run-logs.lock'), false)
+  assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'success')
+})
+
 test('coordinator fails visibly when run log writing fails', () => {
   const fs = memoryRuntime()
   assert.throws(
@@ -136,6 +192,7 @@ test('coordinator fails visibly when run log writing fails', () => {
     /log write failed/
   )
   assert.equal(fs.files.has('/state/sync.lock'), false)
+  assert.equal(fs.files.has('/state/run-logs.lock'), false)
 })
 
 test('coordinator treats an empty error message as a failed sync', () => {
