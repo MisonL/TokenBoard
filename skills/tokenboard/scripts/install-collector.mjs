@@ -8,6 +8,7 @@ import {
   buildCloneSteps,
   buildDefaultBranchPullSteps,
   buildFetchAndCheckoutRefSteps,
+  errorMessage,
   runStep
 } from './upgrade-utils.mjs'
 
@@ -21,7 +22,7 @@ function run(command, args, options = {}) {
       platform: process.platform
     })
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error))
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }

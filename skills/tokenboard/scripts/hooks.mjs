@@ -6,6 +6,7 @@ import { assertAntigravitySettingsValid, getAntigravityHookStatus, installAntigr
 import { assertClaudeSettingsValid, getClaudeHookStatus, installClaudeHook, uninstallClaudeHook } from './claude-hook.mjs'
 import { configDir, parseArgs } from './config.mjs'
 import { assertCodexNotifyWritable, getCodexHookStatus, installCodexHook, uninstallCodexHook } from './codex-hook.mjs'
+import { errorMessage } from './error-message.mjs'
 import { antigravitySource, claudeSource, codexSource, isTokenBoardNotifyHandler, nodeFs, notifyHandlerMarker, readOptional, readSources, readUninstallSources, removeNotifyHandler } from './hooks-utils.mjs'
 
 export function hookPaths({ homeDir = homedir(), stateDir = configDir(), env = process.env } = {}) {
@@ -293,13 +294,21 @@ function isSelfNotify(cmd) {
 function recordHandlerError(stage, error) {
   try {
     mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-    const message = error && error.message ? error.message : String(error);
+    const message = errorMessage(error);
     appendFileSync(join(STATE_DIR, "notify-handler-errors.log"), JSON.stringify({
       stage,
       message,
       at: new Date().toISOString(),
     }) + "\\n", "utf8");
   } catch (_) {}
+}
+
+function errorMessage(error) {
+  const message = error instanceof Error ? String(error.message ?? "") : String(error);
+  if (message.trim()) return message;
+  const name = error instanceof Error ? String(error.name ?? "") : "";
+  if (name.trim()) return name;
+  return "Unknown error";
 }
 
 function isMissingFileError(error) {
@@ -353,10 +362,6 @@ function sourceWasExplicitlyRequested(value, source) {
     .split(',')
     .map((item) => item.trim())
     .includes(source)
-}
-
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function canRemoveNotifyHandler(status) {

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSyn
 import { join } from 'node:path'
 import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import { appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
+import { errorMessage } from './error-message.mjs'
 
 const defaultLockTimeoutMs = 60_000
 const defaultMaxFollowUps = 3
@@ -372,12 +373,4 @@ function positiveIntegerOrDefault(value, fallback) {
 function sleepSync(ms) {
   const timeout = Math.max(0, ms)
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, timeout)
-}
-
-function errorMessage(error) {
-  const message = error instanceof Error ? String(error.message ?? '') : String(error)
-  if (message.trim()) return message
-  const name = error instanceof Error ? String(error.name ?? '') : ''
-  if (name.trim()) return name
-  return 'Unknown error'
 }

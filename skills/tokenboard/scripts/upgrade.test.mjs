@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildUpgradePlan, resolveArchiveUrl, resolveArchiveUrls, resolveRepoUrl, runUpgrade } from './upgrade.mjs'
-import { runStep } from './upgrade-utils.mjs'
+import { errorMessage, runStep } from './upgrade-utils.mjs'
+
+test('normalizes empty error diagnostics', () => {
+  assert.equal(errorMessage(new Error('')), 'Error')
+  assert.equal(errorMessage(new Error('   ')), 'Error')
+  assert.equal(errorMessage(''), 'Unknown error')
+})
 
 test('updates collector and installed skill from the collector checkout', () => {
   assert.deepEqual(

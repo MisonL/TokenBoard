@@ -7,6 +7,7 @@ import {
   appendBoundedStatuslineEvent
 } from './antigravity-statusline-log.mjs'
 import { startOriginalStatuslineCommand } from './antigravity-statusline-original.mjs'
+import { errorMessage } from './error-message.mjs'
 
 const defaultMaxInputBytes = 256 * 1024
 const maxTokenValue = 1_000_000_000
@@ -220,7 +221,7 @@ function recordStatuslineError(filePath, stage, error, maxBytes) {
   try {
     appendBoundedStatuslineError(filePath, {
       stage,
-      message: error instanceof Error ? error.message : String(error),
+      message: errorMessage(error),
       capturedAt: new Date().toISOString()
     }, maxBytes)
   } catch (_) {}

@@ -1,4 +1,5 @@
 import { resolve } from 'node:path'
+export { errorMessage } from './error-message.mjs'
 
 export function runStep(step, runtime) {
   if (step.command === 'remove') {
@@ -29,10 +30,6 @@ export function runStep(step, runtime) {
   if (result.status !== 0) {
     throw new Error(`${step.command} failed with exit code ${result.status ?? 1}`)
   }
-}
-
-export function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 export function escapePowerShellSingleQuoted(value) {

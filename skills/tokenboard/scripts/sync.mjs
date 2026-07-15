@@ -14,6 +14,7 @@ import { normalizePathEnv } from './schedule.mjs'
 import { readSince } from './sync-options.mjs'
 import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
 import { runUpgrade } from './upgrade.mjs'
+import { errorMessage } from './error-message.mjs'
 
 if (isMain()) {
   const flags = parseArgs(process.argv.slice(2))
@@ -42,8 +43,7 @@ if (isMain()) {
         }
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.error(`TokenBoard upgrade skipped: ${message}`)
+      console.error(`TokenBoard upgrade skipped: ${errorMessage(error)}`)
     }
   }
 

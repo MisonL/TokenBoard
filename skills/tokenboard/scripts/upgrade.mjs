@@ -238,7 +238,7 @@ function runCli() {
   try {
     runUpgrade({ flags: parseArgs(process.argv.slice(2)) })
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error))
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }
