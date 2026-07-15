@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { promisify } from 'node:util'
+import { errorMessage } from '../error-message'
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseAntigravityGeneratorMetadataBlobEvents } from './antigravity-history-protobuf'
 import { formatDate } from './session-jsonl-parser-utils'
@@ -310,8 +311,4 @@ function parseSqliteRow(line: string, dbFile: string) {
 
 function isMissingFileError(error: unknown) {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
 }

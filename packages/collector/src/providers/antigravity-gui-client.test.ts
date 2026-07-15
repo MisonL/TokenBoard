@@ -38,6 +38,10 @@ describe('createAntigravityLanguageServerClient', () => {
   test('formats metadata transport errors with a stable source prefix', () => {
     expect(formatMetadataRequestTransportError('antigravity', new Error('socket hang up')))
       .toBe('Antigravity metadata request transport failed for antigravity: socket hang up')
+    expect(formatMetadataRequestTransportError('antigravity', new Error('')))
+      .toBe('Antigravity metadata request transport failed for antigravity: Error')
+    expect(formatMetadataRequestTransportError('antigravity', Object.create(null)))
+      .toBe('Antigravity metadata request transport failed for antigravity: Unknown error')
   })
 
   test('rejects and aborts metadata responses larger than the response limit', async () => {

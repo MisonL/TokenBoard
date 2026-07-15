@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import type { CollectorConfig } from './config'
+import { errorMessage } from './error-message'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
 import {
   collectAntigravityIdeUsage,
@@ -145,7 +146,7 @@ export async function runCollectorCli(
     }
     return 0
   } catch (error) {
-    deps.stderr(error instanceof Error ? error.message : String(error))
+    deps.stderr(errorMessage(error))
     return 1
   }
 }
@@ -342,10 +343,6 @@ function resolveStateDir(env: CliEnv = process.env) {
 
 function cursorScopeFromEndpoint(endpoint: string) {
   return endpoint ? new URL(endpoint).origin : undefined
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function formatAntigravityDiagnostic(

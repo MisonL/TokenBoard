@@ -6,6 +6,7 @@ import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import type { Readable } from 'node:stream'
+import { errorMessage } from '../error-message'
 import {
   beginAntigravityFileScan,
   listAntigravityDirectoryFileNames,
@@ -392,8 +393,7 @@ export function formatMetadataRequestHttpError(source: AntigravityGuiSource, sta
 }
 
 export function formatMetadataRequestTransportError(source: AntigravityGuiSource, error: unknown) {
-  const detail = error instanceof Error ? error.message : String(error)
-  return `Antigravity metadata request transport failed for ${source}: ${detail}`
+  return `Antigravity metadata request transport failed for ${source}: ${errorMessage(error)}`
 }
 
 async function closeLanguageServer(server: LanguageServerProcess) {

@@ -109,6 +109,31 @@ describe('runCollectorCli', () => {
     ])
   })
 
+  test('normalizes empty top-level upload errors', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual(['Error'])
+  })
+
   test('warms hook cursor high-water after a non-hook sync succeeds', async () => {
     const warmed: string[] = []
     const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1234).mockReturnValue(9999)

@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runJsonCommand, type CommandRunner } from '../command'
+import { errorMessage } from '../error-message'
 import { normalizeCcusageDailyJson } from '../normalize-ccusage'
 import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
 import { packageCommandOptions, readDailyTimeoutMs, readSessionTimeoutMs } from './codex-command-options'
@@ -265,11 +266,4 @@ function readBatchSize() {
     return DEFAULT_CODEX_BATCH_SIZE
   }
   return Math.min(Math.floor(value), MAX_CODEX_BATCH_SIZE)
-}
-
-function errorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message
-  }
-  return String(error)
 }
