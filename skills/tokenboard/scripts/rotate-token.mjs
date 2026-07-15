@@ -12,6 +12,7 @@ import {
 } from './config.mjs'
 import { withCredentialsLock } from './credentials-lock.mjs'
 import { writeDeviceLink } from './device-link.mjs'
+import { errorMessage } from './error-message.mjs'
 
 export function applyRotatedToken({
   currentConfig,
@@ -91,7 +92,7 @@ function runCli() {
     })
     console.log('TokenBoard rotated token written.')
   } catch (error) {
-    console.error(error.message)
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }

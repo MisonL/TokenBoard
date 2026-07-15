@@ -5,6 +5,7 @@ import { resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectorDir, configDir, configPath, parseArgs } from './config.mjs'
 import { deviceLinkPath } from './device-link.mjs'
+import { errorMessage } from './error-message.mjs'
 import { uninstallHooks } from './hooks.mjs'
 import { uninstallSchedule } from './uninstall-schedule.mjs'
 
@@ -116,7 +117,7 @@ function runCli() {
   try {
     uninstallClient()
   } catch (error) {
-    console.error(error.message)
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }

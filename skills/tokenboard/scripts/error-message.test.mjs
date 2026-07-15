@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { errorMessage } from './error-message.mjs'
 
@@ -24,4 +25,19 @@ test('does not throw while formatting hostile thrown values', () => {
   assert.equal(errorMessage(Object.create(null)), 'Unknown error')
   assert.equal(errorMessage(throwingString), 'Unknown error')
   assert.equal(errorMessage(throwingError), 'Unknown error')
+})
+
+test('skill CLI entrypoints use shared error diagnostics', () => {
+  for (const fileName of [
+    'hooks.mjs',
+    'install-schedule.mjs',
+    'rotate-token.mjs',
+    'setup.mjs',
+    'uninstall-schedule.mjs',
+    'uninstall.mjs'
+  ]) {
+    const source = readFileSync(new URL(fileName, import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /console\.error\(error\.message\)/, fileName)
+    assert.match(source, /console\.error\(errorMessage\(error\)\)/, fileName)
+  }
 })

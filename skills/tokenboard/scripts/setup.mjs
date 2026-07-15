@@ -15,6 +15,7 @@ import {
 import { withCredentialsLock } from './credentials-lock.mjs'
 import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
+import { errorMessage } from './error-message.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
@@ -79,7 +80,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
         writeDeviceLink
       })
     } catch (error) {
-      console.error(error.message)
+      console.error(errorMessage(error))
       process.exit(1)
     }
   }

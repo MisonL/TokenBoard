@@ -5,6 +5,7 @@ import { homedir, platform, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configDir, parseArgs, readConfig } from './config.mjs'
+import { errorMessage } from './error-message.mjs'
 import {
   buildLinuxSystemdUnits,
   buildMacLaunchAgentPlist,
@@ -203,7 +204,7 @@ function runCli() {
   try {
     installSchedule()
   } catch (error) {
-    console.error(error.message)
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }
