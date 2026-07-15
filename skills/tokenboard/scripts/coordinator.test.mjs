@@ -172,6 +172,25 @@ test('coordinator recovers a stale run log lock before writing', () => {
   assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'success')
 })
 
+for (const malformedLock of ['not-json', '{}']) {
+  test(`coordinator replaces malformed run log lock ${JSON.stringify(malformedLock)}`, () => {
+    const fs = memoryRuntime({
+      '/state/run-logs.lock': malformedLock
+    })
+
+    const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+      ...fs,
+      stateDir: '/state',
+      process: fakeProcess(404),
+      executeSync: () => ({ ok: true })
+    })
+
+    assert.equal(result.error, undefined)
+    assert.equal(fs.files.has('/state/run-logs.lock'), false)
+    assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'success')
+  })
+}
+
 test('coordinator fails visibly when run log writing fails', () => {
   const fs = memoryRuntime()
   assert.throws(
