@@ -30,10 +30,66 @@ test('coordinator uses a Windows-safe run log filename', () => {
     executeSync: () => ({ ok: true })
   })
 
-  const runLogPath = [...fs.files.keys()].find((path) => path.startsWith('/state/runs/'))
+  const runLogPath = [...fs.files.keys()].find((path) => path.startsWith('/state/runs/') && path.endsWith('.json'))
   const runLogName = runLogPath?.split('/').pop() || ''
   assert.match(runLogName, /\.json$/)
   assert.doesNotMatch(runLogName, /[<>:"\\|?*]/)
+})
+
+test('coordinator prunes oldest run logs beyond the retention limit', () => {
+  const oldest = '/state/runs/2026-05-20T10-00-00.000Z-oldest.json'
+  const recent = '/state/runs/2026-05-21T10-00-00.000Z-recent.json'
+  const fs = memoryRuntime({
+    [oldest]: '{}',
+    [recent]: '{}'
+  })
+
+  coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    listRunLogs: fs.readdir,
+    maxRunLogs: 2,
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(116),
+    executeSync: () => ({ ok: true })
+  })
+
+  const runLogs = [...fs.files.keys()].filter((path) => path.startsWith('/state/runs/') && path.endsWith('.json'))
+  assert.equal(runLogs.length, 2)
+  assert.equal(fs.files.has(oldest), false)
+  assert.equal(fs.files.has(recent), true)
+})
+
+test('coordinator rotates a legacy run directory before enabling bounded retention', () => {
+  const fs = memoryRuntime()
+  const renames = []
+  let legacyRunsExists = true
+
+  coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(117),
+    exists: (path) => {
+      if (path === '/state/runs') return legacyRunsExists
+      if (path === '/state/runs/.bounded-v1') return false
+      return fs.exists(path)
+    },
+    rename: (source, target) => {
+      if (source === '/state/runs') {
+        renames.push({ source, target })
+        legacyRunsExists = false
+        return
+      }
+      fs.rename(source, target)
+    },
+    executeSync: () => ({ ok: true })
+  })
+
+  assert.equal(renames.length, 1)
+  assert.equal(renames[0].source, '/state/runs')
+  assert.match(renames[0].target, /^\/state\/runs\.unbounded-/)
+  assert.equal(fs.files.has('/state/runs/.bounded-v1'), true)
 })
 
 test('coordinator fails visibly when run log writing fails', () => {

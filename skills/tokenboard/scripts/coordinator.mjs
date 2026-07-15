@@ -5,6 +5,7 @@ import { appendSignal, drainSignalSources, readSignalSources } from './coordinat
 
 const defaultLockTimeoutMs = 60_000
 const defaultMaxFollowUps = 3
+const defaultMaxRunLogs = 1_024
 
 export function coordinatedSync(trigger, options) {
   const runtime = buildRuntime(options)
@@ -183,6 +184,7 @@ function buildRuntime(options = {}) {
     cooldownMs: numberOrDefault(options.cooldownMs, 300_000),
     lockTimeoutMs: numberOrDefault(options.lockTimeoutMs, defaultLockTimeoutMs),
     maxFollowUps: numberOrDefault(options.maxFollowUps, defaultMaxFollowUps),
+    maxRunLogs: positiveIntegerOrDefault(options.maxRunLogs, defaultMaxRunLogs),
     trailingProcess: options.trailingProcess === true,
     version: options.version || 'unknown',
     now: options.now || Date.now,
@@ -193,6 +195,7 @@ function buildRuntime(options = {}) {
     readFile: options.readFile || ((path) => readFileSync(path, 'utf8')),
     writeFile: options.writeFile || writeFileSync,
     readdir: options.readdir || (hasCustomFileOps ? undefined : readdirSync),
+    listRunLogs: options.listRunLogs || (hasCustomFileOps ? undefined : readdirSync),
     rename: options.rename || (hasCustomFileOps ? undefined : renameSync),
     unlink: options.unlink || unlinkSync,
     exists: options.exists || existsSync
@@ -270,13 +273,44 @@ function writeRunLog(result, startedAtMs, runtime) {
     status,
     ...(result.error ? { error: result.error } : {})
   }
-  const runsDir = join(runtime.stateDir, 'runs')
-  runtime.mkdir(runsDir, { recursive: true })
+  const runsDir = prepareRunLogDirectory(result.runId, runtime)
   const json = `${JSON.stringify(entry, null, 2)}\n`
   runtime.writeFile(join(runsDir, `${result.runId}.json`), json)
+  pruneRunLogs(runsDir, runtime)
   runtime.writeFile(join(runtime.stateDir, 'last-run.json'), json)
   if (status === 'success') {
     runtime.writeFile(join(runtime.stateDir, 'last-success.json'), entry.completedAt)
+  }
+}
+
+function prepareRunLogDirectory(runId, runtime) {
+  const runsDir = join(runtime.stateDir, 'runs')
+  const markerPath = join(runsDir, '.bounded-v1')
+  if (runtime.rename && runtime.exists(runsDir) && !runtime.exists(markerPath)) {
+    try {
+      runtime.rename(runsDir, join(runtime.stateDir, `runs.unbounded-${runId}`))
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
+  runtime.mkdir(runsDir, { recursive: true })
+  if (!runtime.exists(markerPath)) {
+    runtime.writeFile(markerPath, 'TokenBoard bounded run logs v1\n')
+  }
+  return runsDir
+}
+
+function pruneRunLogs(runsDir, runtime) {
+  if (!runtime.listRunLogs) return
+  const names = runtime.listRunLogs(runsDir).filter((name) => name.endsWith('.json'))
+  if (names.length <= runtime.maxRunLogs) return
+  names.sort((left, right) => right.localeCompare(left))
+  for (const name of names.slice(runtime.maxRunLogs)) {
+    try {
+      runtime.unlink(join(runsDir, name))
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
   }
 }
 
@@ -288,6 +322,10 @@ function deriveStatus(result) {
 }
 
 function numberOrDefault(value, fallback) { return typeof value === 'number' && Number.isFinite(value) ? value : fallback }
+
+function positiveIntegerOrDefault(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback
+}
 
 function sleepSync(ms) {
   const timeout = Math.max(0, ms)
