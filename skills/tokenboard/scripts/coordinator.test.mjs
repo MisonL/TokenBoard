@@ -216,31 +216,36 @@ test('coordinator fails visibly when run log writing fails', () => {
   assert.equal(fs.files.get('/state/last-success.json'), '2026-05-22T10:00:00.000Z')
 })
 
-test('coordinator logs and rethrows successful sync checkpoint failures', () => {
-  const fs = memoryRuntime()
+for (const failure of [
+  {
+    name: 'an Error',
+    value: Object.assign(new Error('checkpoint write failed'), { code: 'EACCES' }),
+    expected: /checkpoint write failed/
+  },
+  { name: 'an empty value', value: '', expected: /Unknown error/ }
+]) {
+  test(`coordinator logs and rethrows successful sync checkpoint failures from ${failure.name}`, () => {
+    const fs = memoryRuntime()
 
-  assert.throws(
-    () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
-      ...fs,
-      stateDir: '/state',
-      process: fakeProcess(210),
-      writeFile: (path, value, options) => {
-        if (path === '/state/last-success.json') {
-          const error = new Error('checkpoint write failed')
-          error.code = 'EACCES'
-          throw error
-        }
-        fs.writeFile(path, value, options)
-      },
-      executeSync: () => ({ ok: true })
-    }),
-    /checkpoint write failed/
-  )
+    assert.throws(
+      () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
+        ...fs,
+        stateDir: '/state',
+        process: fakeProcess(210),
+        writeFile: (path, value, options) => {
+          if (path === '/state/last-success.json') throw failure.value
+          fs.writeFile(path, value, options)
+        },
+        executeSync: () => ({ ok: true })
+      }),
+      failure.expected
+    )
 
-  assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'error')
-  assert.equal(fs.files.has('/state/sync.lock'), false)
-  assert.equal(fs.files.has('/state/run-logs.lock'), false)
-})
+    assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'error')
+    assert.equal(fs.files.has('/state/sync.lock'), false)
+    assert.equal(fs.files.has('/state/run-logs.lock'), false)
+  })
+}
 
 for (const failure of [
   { name: 'an empty Error message', value: new Error(''), expected: 'Error' },

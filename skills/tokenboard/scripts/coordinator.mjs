@@ -24,16 +24,18 @@ export function coordinatedSync(trigger, options) {
 
   let completed
   let checkpointError
+  let hasCheckpointError = false
   try {
     completed = runCoordinator(trigger, runtime, result)
   } catch (error) {
     completed = { ...result, error: errorMessage(error) }
     if (error instanceof SuccessfulSyncCheckpointError) {
-      checkpointError = error.cause ?? error
+      hasCheckpointError = true
+      checkpointError = error.cause instanceof Error ? error.cause : error
     }
   }
   writeRunLog(completed, startedAtMs, runtime)
-  if (checkpointError) throw checkpointError
+  if (hasCheckpointError) throw checkpointError
   return completed
 }
 
