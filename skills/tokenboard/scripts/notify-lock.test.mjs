@@ -81,6 +81,40 @@ test('notify reports trailing lock cleanup failures after spawn errors', () => {
   assert.match(result.error, /trailing lock cleanup failed: EPERM/)
 })
 
+test('notify preserves diagnostics when spawn and cleanup errors have empty messages', () => {
+  const files = new Map([
+    ['/state/last-success.json', '2026-05-22T10:00:00.000Z']
+  ])
+
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    stateDir: '/state',
+    now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readFile: (path) => files.get(path) || '',
+    writeFile: (path, value) => files.set(path, String(value)),
+    unlink: (path) => {
+      if (path === '/state/trailing.lock') {
+        throw new Error('')
+      }
+      files.delete(path)
+    },
+    process: {
+      pid: 904,
+      kill: () => true
+    },
+    spawnDetached: () => {
+      throw new Error('')
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.error, 'Error; trailing lock cleanup failed: Error')
+})
+
 test('notify reports trailing lock ownership read failures', () => {
   const files = new Map([
     ['/state/last-success.json', '2026-05-22T10:00:00.000Z'],
