@@ -214,6 +214,29 @@ test('statusline command termination uses taskkill for the full Windows process 
   assert.equal(unrefCount, 2)
 })
 
+test('statusline command termination falls back when Windows taskkill exits nonzero', () => {
+  const listeners = new Map()
+  const killSignals = []
+  const child = {
+    pid: 4321,
+    kill(signal) {
+      killSignals.push(signal)
+    }
+  }
+  const spawnTreeKiller = () => ({
+    once(event, listener) {
+      listeners.set(event, listener)
+    },
+    unref() {}
+  })
+
+  terminateOriginalCommandTree(child, 'SIGKILL', { platform: 'win32', spawnTreeKiller })
+  assert.equal(typeof listeners.get('close'), 'function')
+  listeners.get('close')(1)
+
+  assert.deepEqual(killSignals, ['SIGKILL'])
+})
+
 test('statusline CLI force-terminates descendants after the original command exits on timeout', {
   skip: process.platform === 'win32'
 }, async () => {

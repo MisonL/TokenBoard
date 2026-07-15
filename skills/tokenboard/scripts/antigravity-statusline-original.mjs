@@ -181,10 +181,17 @@ function terminateWindowsCommandTree(child, signal, spawnTreeKiller) {
       stdio: 'ignore',
       windowsHide: true
     })
-    treeKiller.once('error', () => {
+    let fellBack = false
+    const fallback = () => {
+      if (fellBack) return
+      fellBack = true
       try {
         child.kill(signal)
       } catch {}
+    }
+    treeKiller.once('error', fallback)
+    treeKiller.once('close', (status) => {
+      if (status !== 0) fallback()
     })
     treeKiller.unref()
   } catch {
