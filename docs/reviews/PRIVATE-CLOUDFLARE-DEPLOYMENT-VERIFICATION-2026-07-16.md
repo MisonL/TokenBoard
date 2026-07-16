@@ -67,6 +67,8 @@ The private Cloudflare deployment, both pending D1 migrations, public and authen
 After adding the manual production workflow and critical schema gate, the guarded deploy helper was
 run again against the same private Worker and D1 database.
 
+- Commit under test: `3aff05780f0c35ba6a51b44ba3242a29a63a0dd6`.
+
 - `pnpm test`: passed; workspace tests completed with 9 usage-core, 364 collector, and 570 web tests.
 - `node --test skills/tokenboard/scripts/*.test.mjs`: passed; 310 tests.
 - `pnpm typecheck`: passed for all workspace packages.
