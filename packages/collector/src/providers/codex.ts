@@ -21,6 +21,7 @@ const MAX_CODEX_BATCH_SIZE = 1000
 export type CollectCodexUsageOptions = {
   timezone?: string
   collectedAt?: string
+  since?: string
   codexHome?: string
   runner?: CommandRunner
   stderr?: (line: string) => void
@@ -41,7 +42,7 @@ export async function collectCodexUsage(
     })
   }
 
-  const since = readSince()
+  const since = options.since ?? readSince()
   const until = process.env.TOKENBOARD_UNTIL
   const rangeArgs = buildRangeArgs({ since, until })
   const usesScopedScan = since === 'all' || Boolean(since) || Boolean(until)

@@ -221,8 +221,9 @@ async function collectAllSnapshots(context: CollectionContext) {
   const sourceFailures: SourceFailure[] = []
   const hookMode = env.TOKENBOARD_HOOK_MODE === '1'
   const failFast = hookMode
-  await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr }), snapshots, collectedSources, sourceFailures, deps, { failFast })
-  await collectOptionalSource('codex', () => deps.collectCodexUsage({ timezone, stderr: deps.stderr }), snapshots, collectedSources, sourceFailures, deps, { failFast })
+  const standardContext = { timezone, since, stderr: deps.stderr }
+  await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage(standardContext), snapshots, collectedSources, sourceFailures, deps, { failFast })
+  await collectOptionalSource('codex', () => deps.collectCodexUsage(standardContext), snapshots, collectedSources, sourceFailures, deps, { failFast })
   if (hookMode) {
     return { snapshots, collectedSources, sourceFailures }
   }
@@ -255,8 +256,9 @@ function collectSingleSource(
   context: CollectionContext
 ) {
   const { cursorScope, deps, env, since, timezone } = context
-  if (source === 'claude-code') return deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr })
-  if (source === 'codex') return deps.collectCodexUsage({ timezone, stderr: deps.stderr })
+  const standardContext = { timezone, since, stderr: deps.stderr }
+  if (source === 'claude-code') return deps.collectClaudeCodeUsage(standardContext)
+  if (source === 'codex') return deps.collectCodexUsage(standardContext)
   const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)

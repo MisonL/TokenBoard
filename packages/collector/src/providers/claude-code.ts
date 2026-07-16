@@ -14,6 +14,7 @@ import { mergeSnapshots } from './session-cursor'
 export type CollectUsageOptions = {
   timezone?: string
   collectedAt?: string
+  since?: string
   runner?: CommandRunner
   stderr?: (line: string) => void
 }
@@ -37,7 +38,7 @@ export async function collectClaudeCodeUsage(
   }
 
   const rangeArgs = buildRangeArgs({
-    since: process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || '',
+    since: options.since ?? process.env.TOKENBOARD_SINCE ?? process.env.TOKENBOARD_DEFAULT_SINCE ?? '',
     until: process.env.TOKENBOARD_UNTIL || ''
   })
 

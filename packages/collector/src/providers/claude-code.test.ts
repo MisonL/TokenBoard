@@ -117,6 +117,25 @@ describe('collectClaudeCodeUsage', () => {
     ])
   })
 
+  test('prefers an explicit since window over process environment', async () => {
+    const calls: string[][] = []
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_SINCE', '20260509')
+
+    await collectClaudeCodeUsage({
+      since: '20260708',
+      async runner(_command, args) {
+        calls.push(args)
+        return { data: [] }
+      }
+    })
+
+    expect(calls).toEqual([
+      ['ccusage@20.0.14', 'claude', 'daily', '--json', '--breakdown', '--since', '20260708'],
+      ['ccusage@20.0.14', 'claude', 'session', '--json', '--since', '20260708']
+    ])
+  })
+
   test('allows explicit full scan without passing all to ccusage', async () => {
     const calls: Array<{ command: string; args: string[] }> = []
     vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')

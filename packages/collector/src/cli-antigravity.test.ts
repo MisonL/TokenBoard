@@ -761,13 +761,21 @@ describe('runCollectorCli Antigravity source', () => {
     expect(acknowledged).toEqual(collected)
   })
 
-  test('passes an explicit since date to every Antigravity collector', async () => {
+  test('passes an explicit since date to every collector', async () => {
     const seen: Array<{ source: string; since: string | undefined }> = []
 
     const result = await runCollectorCli(
       ['preview', '--source', 'all', '--since', '20260708'],
       { TOKENBOARD_STATE_DIR: '/state' },
       deps({
+        collectClaudeCodeUsage: async (options) => {
+          seen.push({ source: 'claude-code', since: options?.since })
+          return []
+        },
+        collectCodexUsage: async (options) => {
+          seen.push({ source: 'codex', since: options?.since })
+          return []
+        },
         collectAntigravityCliUsage: async (options) => {
           seen.push({ source: 'antigravity-cli', since: options?.since })
           return []
@@ -785,9 +793,42 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(0)
     expect(seen).toEqual([
+      { source: 'claude-code', since: '20260708' },
+      { source: 'codex', since: '20260708' },
       { source: 'antigravity-cli', since: '20260708' },
       { source: 'antigravity', since: '20260708' },
       { source: 'antigravity-ide', since: '20260708' }
+    ])
+  })
+
+  test('passes an explicit since date to selected Claude and Codex collectors', async () => {
+    const seen: Array<{ source: string; since: string | undefined }> = []
+    const collectorDeps = deps({
+      collectClaudeCodeUsage: async (options) => {
+        seen.push({ source: 'claude-code', since: options?.since })
+        return []
+      },
+      collectCodexUsage: async (options) => {
+        seen.push({ source: 'codex', since: options?.since })
+        return []
+      }
+    })
+
+    const claudeResult = await runCollectorCli(
+      ['preview', '--source', 'claude-code', '--since', '20260708'],
+      { TOKENBOARD_STATE_DIR: '/state' },
+      collectorDeps
+    )
+    const codexResult = await runCollectorCli(
+      ['preview', '--source', 'codex', '--since', '20260708'],
+      { TOKENBOARD_STATE_DIR: '/state' },
+      collectorDeps
+    )
+
+    expect([claudeResult, codexResult]).toEqual([0, 0])
+    expect(seen).toEqual([
+      { source: 'claude-code', since: '20260708' },
+      { source: 'codex', since: '20260708' }
     ])
   })
 
