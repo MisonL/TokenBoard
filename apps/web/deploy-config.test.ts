@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -73,22 +73,94 @@ describe('Wrangler deploy config', () => {
     expect(example).not.toMatch(/"database_id":\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i)
   })
 
-  test('manual production deploy helper applies migrations before Worker deploy', () => {
+  test('manual production deploy helper verifies migrated schema before Worker deploy', () => {
     const deployScript = readPackageFile('scripts/deploy.mjs')
+    const schemaCheckCommand = "'d1', 'execute', 'DB', '--remote', '--file', 'db/verify-critical-schema.sql', '--config', configPath"
 
     expect(deployScript).toContain('wrangler.production.ci.jsonc')
     expect(deployScript).toContain('scripts/write-production-config.mjs')
     expect(deployScript).toContain('scripts/check-production-config.mjs')
     expect(deployScript).toContain("runPnpm(['run', 'build'])")
     expect(deployScript).toContain("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
+    expect(deployScript).toContain(schemaCheckCommand)
     expect(deployScript).toContain("'deploy', '--config', configPath")
     expect(deployScript.indexOf("runPnpm(['run', 'build'])")).toBeLessThan(
       deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
     )
     expect(deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")).toBeLessThan(
+      deployScript.indexOf(schemaCheckCommand)
+    )
+    expect(deployScript.indexOf(schemaCheckCommand)).toBeLessThan(
       deployScript.indexOf("'deploy', '--config', configPath")
     )
     expect(deployScript).not.toContain('--config wrangler.jsonc')
+  })
+
+  test('critical production schema check covers device identity and legacy upload tokens', () => {
+    const schemaCheckPath = resolve(packageDir, 'db/verify-critical-schema.sql')
+
+    expect(existsSync(schemaCheckPath)).toBe(true)
+    if (!existsSync(schemaCheckPath)) return
+
+    const schemaCheck = readFileSync(schemaCheckPath, 'utf8')
+    expect(schemaCheck).toContain('FROM device_installations')
+    expect(schemaCheck).toContain('install_claim_hash')
+    expect(schemaCheck).toContain('installation_id')
+    expect(schemaCheck).toContain('supersedes_token_id')
+    expect(schemaCheck).toContain('FROM pairing_codes')
+    expect(schemaCheck).toContain('pairing_type')
+    expect(schemaCheck).toContain('FROM audit_logs')
+  })
+
+  test('critical production schema check rejects pre-device schema and accepts current migrations', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-schema-gate-'))
+    const legacyDb = join(tempDir, 'legacy.db')
+    const currentDb = join(tempDir, 'current.db')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const schemaCheck = readPackageFile('db/verify-critical-schema.sql')
+    const migrations = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+
+    try {
+      for (const migration of migrations) {
+        const sql = readFileSync(join(migrationsDir, migration), 'utf8')
+        if (migration < '0022_') runSqlite(legacyDb, sql)
+        runSqlite(currentDb, sql)
+      }
+
+      const legacyCheck = runSqlite(legacyDb, schemaCheck, false)
+      expect(legacyCheck.status).not.toBe(0)
+      expect(legacyCheck.stderr).toMatch(/installation_id|device_installations/)
+
+      const currentCheck = runSqlite(currentDb, schemaCheck, false)
+      expect(currentCheck.status).toBe(0)
+      expect(currentCheck.stderr).toBe('')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('manual production workflow requires confirmation and runs the guarded deploy helper', () => {
+    const workflowPath = resolve(packageDir, '../../.github/workflows/manual-production-deploy.yml')
+
+    expect(existsSync(workflowPath)).toBe(true)
+    if (!existsSync(workflowPath)) return
+
+    const workflow = readFileSync(workflowPath, 'utf8')
+    expect(workflow).toContain('workflow_dispatch:')
+    expect(workflow).not.toMatch(/^\s*push:/m)
+    expect(workflow).not.toMatch(/^\s*pull_request:/m)
+    expect(workflow).toContain('environment: production')
+    expect(workflow).toContain('MIGRATE_AND_DEPLOY')
+    expect(workflow).toContain('CLOUDFLARE_API_TOKEN')
+    expect(workflow).toContain('CLOUDFLARE_ACCOUNT_ID')
+    expect(workflow).toContain('D1_DATABASE_ID')
+    expect(workflow).toContain('TOKENBOARD_WORKER_ROUTE')
+    expect(workflow).toContain('BETTER_AUTH_URL')
+    expect(workflow).toContain('wrangler d1 time-travel info')
+    expect(workflow).toContain('pnpm --filter @tokenboard/web run deploy')
+    expect(workflow).toContain('"$BETTER_AUTH_URL/api/v1/health"')
   })
 
   test('Drizzle schema declares webhook migration indexes', () => {
@@ -734,4 +806,15 @@ function resourceControlDefault(name: string) {
   if (name === 'TOKENBOARD_COLLECTOR_REPO_URL') return 'https://github.com/MisonL/TokenBoard.git'
   if (name === 'TOKENBOARD_COLLECTOR_REF') return 'master'
   throw new Error(`Unknown resource control variable ${name}`)
+}
+
+function runSqlite(dbPath: string, sql: string, requireSuccess = true) {
+  const result = spawnSync('sqlite3', [dbPath], {
+    encoding: 'utf8',
+    input: sql
+  })
+  if (requireSuccess && result.status !== 0) {
+    throw new Error(result.stderr || `sqlite3 exited with status ${result.status}`)
+  }
+  return result
 }

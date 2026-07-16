@@ -182,13 +182,27 @@ pnpm run deploy
 ```
 
 The deploy script validates the production Wrangler config, builds the Worker, applies pending remote
-D1 migrations, and deploys. For Cloudflare Workers Builds, use the same command:
+D1 migrations, verifies the critical production schema, and deploys. For Cloudflare Workers Builds,
+use the same command:
 
 ```bash
 pnpm --filter @tokenboard/web run deploy
 ```
 
 If the Workers Build root directory is `apps/web`, use `pnpm run deploy`.
+
+The repository also provides a manual-only GitHub Actions workflow named
+`Manual Production Migration and Deploy`. It never runs on pushes or pull requests. Before using it:
+
+1. Create or select the GitHub Environment named `production`.
+2. Configure the Cloudflare secrets and production variables listed below in that environment or repository.
+3. Open **Actions**, select the manual production workflow, and choose **Run workflow**.
+4. Enter `MIGRATE_AND_DEPLOY` as the confirmation value.
+5. Confirm the log records a D1 Time Travel restore point, passes tests, applies migrations, verifies the
+   critical schema, deploys the Worker, and receives a successful `/api/v1/health` response.
+
+Do not deploy with a raw `wrangler deploy` command when migrations are pending. The guarded helper and
+manual workflow intentionally apply migrations before changing the Worker version.
 
 Required production secrets:
 
@@ -221,6 +235,10 @@ GitHub Actions variables:
 | `TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT` | `50` | `1` to `500` summary keys per cron tick |
 | `TOKENBOARD_USAGE_SUMMARY_STRICT` | `false` | set `true` only after summary backfill completes |
 
+`TOKENBOARD_COLLECTOR_REPO_URL` and `TOKENBOARD_COLLECTOR_REF` default to the upstream repository and
+`master` in the manual workflow. Set them explicitly only when the deployed install prompt must use a
+different repository or ref.
+
 `wrangler.production.example.jsonc` is the production template. GitHub Actions and clean Workers
 Builds generate the ignored `apps/web/wrangler.production.ci.jsonc` from environment variables. For
 manual deploys, copy the template to the ignored `apps/web/wrangler.production.jsonc`, fill the route,
@@ -235,6 +253,9 @@ Production config validation requires:
 - a GitHub collector repository URL and branch/ref for generated install prompts
 - the `*/15 * * * *` notification cron trigger
 - numeric retention, cron batch, and summary backfill values
+
+For production recovery after code was deployed without its D1 migrations, follow
+[`docs/reviews/UPSTREAM-PRODUCTION-RECOVERY-2026-07-16.md`](docs/reviews/UPSTREAM-PRODUCTION-RECOVERY-2026-07-16.md).
 
 Cron times are UTC. User-facing report times are evaluated against each subscription's configured
 timezone.

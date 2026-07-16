@@ -1,0 +1,122 @@
+name: Manual Production Migration and Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type MIGRATE_AND_DEPLOY to confirm the production migration and deployment
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    name: Verify, migrate, and deploy
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: tokenboard-production-migrations
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+      TOKENBOARD_WRANGLER_CONFIG: wrangler.production.ci.jsonc
+      TOKENBOARD_WORKER_ROUTE: ${{ vars.TOKENBOARD_WORKER_ROUTE }}
+      BETTER_AUTH_URL: ${{ vars.BETTER_AUTH_URL }}
+      TOKENBOARD_COLLECTOR_REPO_URL: ${{ vars.TOKENBOARD_COLLECTOR_REPO_URL || 'https://github.com/evepupil/TokenBoard.git' }}
+      TOKENBOARD_COLLECTOR_REF: ${{ vars.TOKENBOARD_COLLECTOR_REF || 'master' }}
+      TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: ${{ vars.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS }}
+      TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT: ${{ vars.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT }}
+      TOKENBOARD_USAGE_SUMMARY_STRICT: ${{ vars.TOKENBOARD_USAGE_SUMMARY_STRICT }}
+      TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: ${{ vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS }}
+      TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE: ${{ vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE }}
+
+    steps:
+      - name: Validate confirmation and deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$DEPLOY_CONFIRMATION" != "MIGRATE_AND_DEPLOY" ]]; then
+            echo "confirmation must be MIGRATE_AND_DEPLOY" >&2
+            exit 1
+          fi
+          missing=()
+          for name in \
+            CLOUDFLARE_API_TOKEN \
+            CLOUDFLARE_ACCOUNT_ID \
+            D1_DATABASE_ID \
+            TOKENBOARD_WORKER_ROUTE \
+            BETTER_AUTH_URL; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing production configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.21.0
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+
+      - name: Install sqlite3
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Test skill scripts
+        run: node --test skills/tokenboard/scripts/*.test.mjs
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Create production Wrangler config
+        working-directory: apps/web
+        run: node scripts/write-production-config.mjs wrangler.production.example.jsonc "$TOKENBOARD_WRANGLER_CONFIG"
+
+      - name: Validate production Wrangler config
+        working-directory: apps/web
+        run: node scripts/check-production-config.mjs
+
+      - name: Record D1 Time Travel restore point
+        working-directory: apps/web
+        shell: bash
+        run: |
+          set -euo pipefail
+          timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "Restore timestamp: $timestamp"
+          pnpm exec wrangler d1 time-travel info DB \
+            --timestamp "$timestamp" \
+            --json \
+            --config "$TOKENBOARD_WRANGLER_CONFIG"
+
+      - name: Migrate and deploy
+        run: pnpm --filter @tokenboard/web run deploy
+
+      - name: Verify health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent \
+            --retry 5 \
+            --retry-all-errors \
+            "$BETTER_AUTH_URL/api/v1/health"

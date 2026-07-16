@@ -61,3 +61,21 @@ The collector emitted three expected diagnostics where Codex subagent correction
 ## Conclusion
 
 The private Cloudflare deployment, both pending D1 migrations, public and authenticated route boundaries, responsive pages, client navigation, and real collector ingest all passed. The branch is ready for final review before opening the upstream pull request. The npm audit endpoint failure remains an external tooling limitation rather than a passing security result.
+
+## Production Guard Follow-up
+
+After adding the manual production workflow and critical schema gate, the guarded deploy helper was
+run again against the same private Worker and D1 database.
+
+- `pnpm test`: passed; workspace tests completed with 9 usage-core, 364 collector, and 570 web tests.
+- `node --test skills/tokenboard/scripts/*.test.mjs`: passed; 310 tests.
+- `pnpm typecheck`: passed for all workspace packages.
+- `pnpm build`: passed; client and Worker bundles built.
+- D1 Time Travel restore point recorded before the deploy.
+- Remote migration step reported `No migrations to apply!`.
+- `db/verify-critical-schema.sql`: passed with four queries and zero rows written.
+- Worker version: `197153c1-bf32-47fa-beef-a1ec2bb24be2`.
+- Post-deploy `/api/v1/health`: HTTP 200 with `{"ok":true,"name":"TokenBoard"}`.
+- Post-deploy home page: HTTP 200 and `TokenBoard` document title.
+- Unauthenticated `/dashboard/details` and `/settings/devices`: HTTP 302 to `/auth/sign-in`.
+- Remote migration list: no migrations to apply.
