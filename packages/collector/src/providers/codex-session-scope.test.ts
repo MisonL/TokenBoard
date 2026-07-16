@@ -89,6 +89,27 @@ describe('createCodexSessionScope', () => {
     }
   })
 
+  test('keeps the previous UTC-day candidate for downstream positive-timezone filtering', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    const edgeFile = join(codexHome, 'sessions', '2026', '07', '07', 'positive-offset-edge.jsonl')
+    try {
+      await writeJsonl(edgeFile, [tokenCountEvent('2026-07-07T16:30:00.000Z')])
+      await utimes(edgeFile, new Date('2026-07-01T00:00:00.000Z'), new Date('2026-07-01T00:00:00.000Z'))
+
+      const scope = await createCodexSessionScope({ codexHome, since: '20260708' })
+      expect(scope).not.toBeNull()
+      try {
+        await expect(
+          readFile(join(scope!.codexHome, 'sessions', '2026', '07', '07', 'positive-offset-edge.jsonl'), 'utf8')
+        ).resolves.toContain('token_count')
+      } finally {
+        await scope?.cleanup()
+      }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
   test('falls back to file mtime when no token_count timestamp is available', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
     const activeFile = join(codexHome, 'sessions', '2026', '03', '25', 'mtime-active.jsonl')
@@ -116,7 +137,7 @@ describe('createCodexSessionScope', () => {
     }
   })
 
-  test('treats until as inclusive for the entire local day', async () => {
+  test('keeps the next UTC-day candidate for downstream negative-timezone filtering', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
     try {
       await writeJsonl(
@@ -124,8 +145,12 @@ describe('createCodexSessionScope', () => {
         [tokenCountEvent('2026-05-09T23:59:59.999Z')]
       )
       await writeJsonl(
-        join(codexHome, 'sessions', '2026', '05', '10', 'excluded.jsonl'),
-        [tokenCountEvent('2026-05-10T00:00:00.000Z')]
+        join(codexHome, 'sessions', '2026', '05', '10', 'negative-offset-edge.jsonl'),
+        [tokenCountEvent('2026-05-10T07:30:00.000Z')]
+      )
+      await writeJsonl(
+        join(codexHome, 'sessions', '2026', '05', '11', 'excluded.jsonl'),
+        [tokenCountEvent('2026-05-11T00:00:00.000Z')]
       )
 
       const scope = await createCodexSessionScope({ codexHome, until: '20260509' })
@@ -135,7 +160,10 @@ describe('createCodexSessionScope', () => {
           readFile(join(scope!.codexHome, 'sessions', '2026', '05', '09', 'included.jsonl'), 'utf8')
         ).resolves.toContain('token_count')
         await expect(
-          stat(join(scope!.codexHome, 'sessions', '2026', '05', '10', 'excluded.jsonl'))
+          readFile(join(scope!.codexHome, 'sessions', '2026', '05', '10', 'negative-offset-edge.jsonl'), 'utf8')
+        ).resolves.toContain('token_count')
+        await expect(
+          stat(join(scope!.codexHome, 'sessions', '2026', '05', '11', 'excluded.jsonl'))
         ).rejects.toThrow()
       } finally {
         await scope?.cleanup()
@@ -145,8 +173,13 @@ describe('createCodexSessionScope', () => {
     }
   })
 
-  test('rejects invalid date filters', async () => {
-    await expect(createCodexSessionScope({ since: '2026/05/09' })).rejects.toThrow(/Invalid Codex usage date filter/)
+  test.each(['2026/05/09', '2026--05-09', '20260230'])('rejects invalid date filter %s', async (since) => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    try {
+      await expect(createCodexSessionScope({ codexHome, since })).rejects.toThrow(/Invalid Codex usage date filter/)
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
   })
 
   test('streams full scans in bounded batches', async () => {

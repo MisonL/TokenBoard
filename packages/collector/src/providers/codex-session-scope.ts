@@ -269,17 +269,26 @@ function parseFilterDate(value: string | undefined, boundary: 'start' | 'end') {
     return undefined
   }
 
-  const compact = value.replaceAll('-', '').trim()
-  if (!/^\d{8}$/.test(compact)) {
+  const trimmed = value.trim()
+  if (!/^\d{8}$/.test(trimmed) && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     throw new Error(`Invalid Codex usage date filter: ${value}. Expected YYYYMMDD or YYYY-MM-DD.`)
   }
+  const compact = trimmed.replaceAll('-', '')
 
   const year = Number.parseInt(compact.slice(0, 4), 10)
   const month = Number.parseInt(compact.slice(4, 6), 10) - 1
   const day = Number.parseInt(compact.slice(6, 8), 10)
   const date = new Date(Date.UTC(year, month, day))
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month || date.getUTCDate() !== day) {
+    throw new Error(`Invalid Codex usage date filter: ${value}. Expected YYYYMMDD or YYYY-MM-DD.`)
+  }
+
+  // This scan is only a timezone-agnostic prefilter; ccusage applies the exact local date window.
   if (boundary === 'end') {
     date.setUTCHours(23, 59, 59, 999)
+    date.setUTCDate(date.getUTCDate() + 1)
+  } else {
+    date.setUTCDate(date.getUTCDate() - 1)
   }
   return date
 }

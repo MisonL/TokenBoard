@@ -112,11 +112,12 @@ describe('collectCodexUsage', () => {
     vi.stubEnv('TOKENBOARD_SINCE', '20260501')
 
     try {
-      await writeJsonl(join(codexHome, 'sessions', '2026', '07', '08', 'active.jsonl'), [
-        tokenCountEvent('2026-07-08T04:24:07.234Z', 10)
+      await writeJsonl(join(codexHome, 'sessions', '2026', '07', '07', 'active.jsonl'), [
+        tokenCountEvent('2026-07-07T16:30:00.000Z', 10)
       ])
       await collectCodexUsage({
         codexHome,
+        timezone: 'Asia/Shanghai',
         since: '20260708',
         async runner(_command, args) {
           calls.push(args)
