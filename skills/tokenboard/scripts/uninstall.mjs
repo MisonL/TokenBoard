@@ -5,6 +5,7 @@ import { resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectorDir, configDir, configPath, parseArgs } from './config.mjs'
 import { deviceLinkPath } from './device-link.mjs'
+import { errorMessage } from './error-message.mjs'
 import { uninstallHooks } from './hooks.mjs'
 import { uninstallSchedule } from './uninstall-schedule.mjs'
 
@@ -13,10 +14,13 @@ export function uninstallClient(options = {}) {
   const plan = createUninstallPlan(flags)
   const runtime = createUninstallRuntime(options)
 
-  if (plan.removeHooks) {
-    runtime.uninstallHooks(options.hookOptions || {})
-  }
+  const hookResult = plan.removeHooks
+    ? runtime.uninstallHooks(options.hookOptions || {})
+    : null
   runtime.uninstallSchedule(options.scheduleOptions || {})
+  if (hasIncompleteHookRemoval(hookResult)) {
+    throw new Error('Antigravity statusline restoration is incomplete; local recovery state was preserved')
+  }
 
   const removed = {
     hook: plan.removeHooks,
@@ -48,6 +52,10 @@ export function uninstallClient(options = {}) {
 
   runtime.log('TokenBoard client uninstall completed.')
   return removed
+}
+
+function hasIncompleteHookRemoval(result) {
+  return result?.hooks?.some((hook) => hook?.incomplete === true) === true
 }
 
 function createUninstallPlan(flags) {
@@ -109,7 +117,7 @@ function runCli() {
   try {
     uninstallClient()
   } catch (error) {
-    console.error(error.message)
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }

@@ -1,13 +1,23 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { PassThrough } from 'node:stream'
+import { describe, expect, test, vi } from 'vitest'
 import {
   createAntigravityLanguageServerClient,
   formatMetadataRequestHttpError,
+  formatMetadataRequestTransportError,
   listAntigravityCascades,
+  requestGeneratorMetadata,
   type AntigravityCascadeFileSystem
 } from './antigravity-gui-client'
+import type { AntigravityFileScanState } from './antigravity-file-scan'
+
+const metadataResponseLimitBytes = 8 * 1024 * 1024
+const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }))
+
+vi.mock('node:https', () => ({ request: requestMock }))
 
 describe('createAntigravityLanguageServerClient', () => {
   test('does not include raw response bodies in metadata HTTP errors', () => {
@@ -23,6 +33,98 @@ describe('createAntigravityLanguageServerClient', () => {
     expect(message).not.toContain('/Users/test/private/project/file.ts')
     expect(message).not.toContain('user@example.com')
     expect(message).not.toContain('raw local content')
+  })
+
+  test('formats metadata transport errors with a stable source prefix', () => {
+    expect(formatMetadataRequestTransportError('antigravity', new Error('socket hang up')))
+      .toBe('Antigravity metadata request transport failed for antigravity: socket hang up')
+    expect(formatMetadataRequestTransportError('antigravity', new Error('')))
+      .toBe('Antigravity metadata request transport failed for antigravity: Error')
+    expect(formatMetadataRequestTransportError('antigravity', Object.create(null)))
+      .toBe('Antigravity metadata request transport failed for antigravity: Unknown error')
+  })
+
+  test('rejects and aborts metadata responses larger than the response limit', async () => {
+    const response = Object.assign(new PassThrough(), { statusCode: 200 })
+    const request = new EventEmitter()
+    const expectedMessage = `Antigravity metadata response exceeded the ${metadataResponseLimitBytes}-byte limit for antigravity`
+    const destroy = vi.spyOn(response, 'destroy')
+
+    try {
+      Object.assign(request, { end: vi.fn() })
+      requestMock.mockImplementation((_options, callback) => {
+        callback(response)
+        return request
+      })
+
+      const metadata = requestGeneratorMetadata({
+        source: 'antigravity',
+        cascadeId: cascadeId(1),
+        port: 1,
+        csrfToken: 'test-csrf-token'
+      })
+      response.write(Buffer.alloc(metadataResponseLimitBytes, 0x61))
+      expect(destroy).not.toHaveBeenCalled()
+      response.end(Buffer.from('a'))
+
+      await expect(metadata).rejects.toThrow(expectedMessage)
+      expect(destroy).toHaveBeenCalledWith()
+    } finally {
+      requestMock.mockReset()
+    }
+  })
+
+  test('aborts non-success metadata responses instead of draining them', async () => {
+    const response = Object.assign(new PassThrough(), { statusCode: 500 })
+    const request = new EventEmitter()
+    const destroy = vi.spyOn(response, 'destroy')
+
+    try {
+      Object.assign(request, { end: vi.fn() })
+      requestMock.mockImplementation((_options, callback) => {
+        callback(response)
+        return request
+      })
+
+      const metadata = requestGeneratorMetadata({
+        source: 'antigravity',
+        cascadeId: cascadeId(2),
+        port: 1,
+        csrfToken: 'test-csrf-token'
+      })
+
+      await expect(metadata).rejects.toThrow('Antigravity metadata request failed for antigravity: HTTP 500')
+      expect(destroy).toHaveBeenCalledWith()
+    } finally {
+      requestMock.mockReset()
+    }
+  })
+
+  test('reports metadata timeouts without transport-error wrapping', async () => {
+    const request = new EventEmitter()
+    const destroy = vi.fn((error?: Error) => {
+      request.emit('error', error ?? new Error('socket hang up'))
+    })
+
+    try {
+      Object.assign(request, { destroy, end: vi.fn() })
+      requestMock.mockImplementation(() => request)
+
+      const metadata = requestGeneratorMetadata({
+        source: 'antigravity',
+        cascadeId: cascadeId(3),
+        port: 1,
+        csrfToken: 'test-csrf-token'
+      })
+      request.emit('timeout')
+
+      await expect(metadata).rejects.toMatchObject({
+        message: 'Antigravity metadata request timed out for antigravity'
+      })
+      expect(destroy).toHaveBeenCalledWith()
+    } finally {
+      requestMock.mockReset()
+    }
   })
 
   test.skipIf(process.platform === 'win32')('closes the language server process when startup times out', async () => {
@@ -79,6 +181,37 @@ describe('createAntigravityLanguageServerClient', () => {
 
       await client.close()
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.skipIf(process.platform === 'win32')('does not treat an unrelated port diagnostic as readiness', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-port-diagnostic-'))
+    const previousTimeout = process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS
+    try {
+      const serverPath = join(root, 'server.mjs')
+      await writeFile(serverPath, [
+        '#!/usr/bin/env node',
+        'const portIndex = process.argv.indexOf("--https_server_port")',
+        'const port = process.argv[portIndex + 1]',
+        'process.stderr.write(`diagnostic: retrying upstream at 127.0.0.1:${port}`)',
+        'setInterval(() => undefined, 1000)'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+      process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS = '300'
+
+      const result = await createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      }).then(async (client) => {
+        await client.close()
+        return 'resolved'
+      }, (error) => error)
+
+      expect(result).toBeInstanceOf(Error)
+      expect((result as Error).message).toContain('Timed out starting Antigravity language server')
+    } finally {
+      restoreEnv('TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS', previousTimeout)
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -150,7 +283,7 @@ describe('listAntigravityCascades', () => {
     expect(statPaths.some((path) => path.includes(cascadeId(2)))).toBe(true)
   })
 
-  test('selects newest cascades from the full directory before applying the request limit', async () => {
+  test('bounds metadata stats while retaining candidates from both ends of the directory', async () => {
     const listed: string[] = []
     const statPaths: string[] = []
     const fileSystem: AntigravityCascadeFileSystem = {
@@ -182,7 +315,7 @@ describe('listAntigravityCascades', () => {
     })
 
     expect(listed).toHaveLength(500)
-    expect(statPaths).toHaveLength(1000)
+    expect(statPaths.length).toBeLessThanOrEqual(130)
     expect(cascades).toHaveLength(2)
     expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(499), cascadeId(498)])
   })
@@ -252,8 +385,141 @@ describe('listAntigravityCascades', () => {
     })
 
     expect(listed).toHaveLength(500)
+    expect(statPaths.length).toBeLessThanOrEqual(130)
     expect(cascades.map((cascade) => cascade.id)).toEqual([requiredId])
     expect(statPaths.some((path) => path.includes(requiredId))).toBe(true)
+  })
+
+  test('keeps metadata stats bounded without truncating newer directory entries', async () => {
+    const listed: string[] = []
+    const statPaths: string[] = []
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 2_000; index += 1) {
+          const name = `${cascadeId(index)}.pb`
+          listed.push(name)
+          yield { name, isFile: () => true }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        return { mtimeMs: Number(id?.slice(-12) ?? 0), size: 20 }
+      }
+    }
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-bounded-cascades',
+      limit: 2,
+      fileSystem
+    })
+
+    expect(listed).toHaveLength(2_000)
+    expect(statPaths).toHaveLength(128)
+    expect(cascades.map((cascade) => cascade.id)).toEqual([cascadeId(1_999), cascadeId(1_998)])
+  })
+
+  test('rotates bounded metadata scans until middle cascades are indexed', async () => {
+    const scanState: AntigravityFileScanState = { nextSequence: 0, files: {} }
+    let statCount = 0
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index < 200; index += 1) {
+          yield { name: `${cascadeId(index)}.pb`, isFile: () => true }
+        }
+      },
+      stat: async (path) => {
+        statCount += 1
+        if (path.endsWith('.db')) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        const index = Number(id?.slice(-12) ?? 0)
+        return { mtimeMs: index === 100 ? 10_000 : index, size: 20 }
+      }
+    }
+    let foundMiddle = false
+
+    for (let run = 0; run < 6; run += 1) {
+      statCount = 0
+      const cascades = await listAntigravityCascades({
+        source: 'antigravity',
+        conversationDir: '/tmp/tokenboard-antigravity-rotating-cascades',
+        limit: 2,
+        fileSystem,
+        scanState
+      })
+      expect(statCount).toBeLessThanOrEqual(128)
+      foundMiddle ||= cascades.some((cascade) => cascade.id === cascadeId(100))
+    }
+
+    expect(Object.keys(scanState.files)).toHaveLength(200)
+    expect(foundMiddle).toBe(true)
+  })
+
+  test('refreshes known cascades while unseen files fill the discovery budget', async () => {
+    const scanState: AntigravityFileScanState = { nextSequence: 0, files: {} }
+    const knownId = cascadeId(0)
+    let includeUnseen = false
+    const statPaths: string[] = []
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        yield { name: `${knownId}.pb`, isFile: () => true }
+        if (!includeUnseen) return
+        for (let index = 1; index <= 100; index += 1) {
+          yield { name: `${cascadeId(index)}.pb`, isFile: () => true }
+        }
+      },
+      stat: async (path) => {
+        statPaths.push(path)
+        if (path.endsWith('.db')) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+        const id = path.match(/[0-9a-f-]{36}/)?.[0]
+        const index = Number(id?.slice(-12) ?? 0)
+        return { mtimeMs: id === knownId && includeUnseen ? 10_000 : index, size: 20 }
+      }
+    }
+
+    await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-refresh-cascades',
+      limit: 2,
+      fileSystem,
+      scanState
+    })
+    includeUnseen = true
+    statPaths.length = 0
+
+    const cascades = await listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-refresh-cascades',
+      limit: 2,
+      fileSystem,
+      scanState
+    })
+
+    expect(statPaths).toContain(`/tmp/tokenboard-antigravity-refresh-cascades/${knownId}.pb`)
+    expect(cascades[0]?.id).toBe(knownId)
+  })
+
+  test('fails visibly instead of truncating directories beyond the safety bound', async () => {
+    let listed = 0
+    const fileSystem: AntigravityCascadeFileSystem = {
+      listFiles: async function * () {
+        for (let index = 0; index <= 10_000; index += 1) {
+          listed += 1
+          yield { name: `${cascadeId(index)}.pb`, isFile: () => true }
+        }
+      },
+      stat: async () => ({ mtimeMs: 1, size: 1 })
+    }
+
+    await expect(listAntigravityCascades({
+      source: 'antigravity',
+      conversationDir: '/tmp/tokenboard-antigravity-overflow-cascades',
+      limit: 2,
+      fileSystem
+    })).rejects.toThrow('Antigravity conversations directory exceeds the 10000-entry scan limit')
+    expect(listed).toBe(10_001)
   })
 })
 

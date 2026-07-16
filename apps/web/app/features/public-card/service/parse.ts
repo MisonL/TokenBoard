@@ -30,7 +30,8 @@ export function parseTopModels(value: unknown) {
         totalTokens,
         totalTokensWithoutCacheRead
       }),
-      costUsd: readNumber(row, 'topModels.costUsd')
+      costUsd: readNumber(row, 'topModels.costUsd'),
+      costAvailable: readBoolean(row, 'topModels.costAvailable')
     }
   })
 }
@@ -70,4 +71,11 @@ function readNumber(row: Record<string, unknown>, column: string) {
     throw new Error(`Invalid public usage ${column}`)
   }
   return value
+}
+
+function readBoolean(row: Record<string, unknown>, column: string) {
+  const value = row[column.slice(column.lastIndexOf('.') + 1)]
+  if (value === true || value === 1) return true
+  if (value === false || value === 0) return false
+  throw new Error(`Invalid public usage ${column}`)
 }

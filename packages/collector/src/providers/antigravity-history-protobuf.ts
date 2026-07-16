@@ -22,7 +22,10 @@ type AntigravityRawUsage = {
   responseId: string
 }
 
+class MalformedProtobufError extends Error {}
+
 const maxTokenValue = 1_000_000_000
+const maxModelLength = 160
 const placeholderModelPrefix = 'MODEL_PLACEHOLDER_'
 
 export function parseAntigravityGeneratorMetadataBlob(
@@ -42,12 +45,13 @@ export function parseAntigravityGeneratorMetadataBlobEvents(
   const usages = readUsages(chatModel)
   if (usages.length === 0) return []
   const createdAt = readCreatedAt(chatModel, options.fallbackCreatedAt)
-  const model = readModel(chatModel)
+  const { model, modelAliases } = readModel(chatModel)
   return usages.map((usage) => ({
     cascadeHash: hash(options.cascadeId),
     eventHash: historyEventHash({ root, usage, options, createdAt, model }),
     createdAt,
     model,
+    ...(modelAliases.length > 0 ? { modelAliases } : {}),
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheCreationTokens: 0,
@@ -78,9 +82,19 @@ function historyEventHash(input: {
 function readUsages(chatModel: ProtoMessage) {
   const usages = [
     readUsage(readMessage(chatModel, 4)),
-    readUsage(readNestedMessage(chatModel, [17, 2]))
+    readUsage(readOptionalNestedUsageMessage(chatModel, [17, 2]))
   ].filter((usage): usage is AntigravityRawUsage => Boolean(usage))
   return dedupeUsages(usages)
+}
+
+function readOptionalNestedUsageMessage(message: ProtoMessage, path: number[]) {
+  try {
+    // Only malformed optional wire data may be ignored; semantic validation errors must propagate.
+    return readNestedMessage(message, path)
+  } catch (error) {
+    if (error instanceof MalformedProtobufError) return null
+    throw error
+  }
 }
 
 function dedupeUsages(usages: AntigravityRawUsage[]) {
@@ -105,10 +119,13 @@ function readUsage(message: ProtoMessage | null): AntigravityRawUsage | null {
 }
 
 function readCreatedAt(chatModel: ProtoMessage, fallback: string | undefined) {
-  const timestamp = readNestedMessage(chatModel, [9, 4])
-  const seconds = readOptionalNumber(timestamp, 1)
-  const nanos = readOptionalNumber(timestamp, 2)
-  if (seconds !== undefined) {
+  const timestamp = readTimestamp(chatModel)
+  if (timestamp) {
+    const seconds = readTimestampNumber(timestamp, 1)
+    const nanos = readTimestampNumber(timestamp, 2)
+    if (seconds === undefined) {
+      throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
+    }
     if (nanos !== undefined && nanos >= 1_000_000_000) {
       throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
     }
@@ -122,15 +139,37 @@ function readCreatedAt(chatModel: ProtoMessage, fallback: string | undefined) {
   throw new Error('Invalid Antigravity generator metadata blob: createdAt is required')
 }
 
+function readTimestamp(chatModel: ProtoMessage) {
+  const startMetadata = readTimestampPathMessage(chatModel, 9)
+  return startMetadata ? readTimestampPathMessage(startMetadata, 4) : null
+}
+
+function readTimestampPathMessage(message: ProtoMessage, field: number) {
+  const fields = message.get(field)
+  if (!fields) return null
+  const value = fields.find((item): item is Extract<ProtoField, { wireType: 2 }> => item.wireType === 2)
+  if (!value) {
+    throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
+  }
+  return parseProtoMessage(value.bytes)
+}
+
 function readModel(chatModel: ProtoMessage) {
   const candidates = [
     readString(chatModel, 19),
     readString(chatModel, 21)
   ].filter((value): value is string => Boolean(value))
+  if (candidates.some((value) => value.length > maxModelLength)) {
+    throw new Error('Invalid Antigravity generator metadata blob: model is invalid')
+  }
   const model = candidates.find((value) => !value.startsWith(placeholderModelPrefix))
   const fallback = candidates[0]
   if (!model && !fallback) throw new Error('Invalid Antigravity generator metadata blob: model is required')
-  return model ?? fallback
+  const selected = model ?? fallback
+  const modelAliases = [...new Set(candidates.filter((value) => (
+    value !== selected && !value.startsWith(placeholderModelPrefix)
+  )))]
+  return { model: selected, modelAliases }
 }
 
 function sameUsage(left: AntigravityRawUsage, right: AntigravityRawUsage) {
@@ -149,9 +188,13 @@ function readOptionalToken(message: ProtoMessage, field: number) {
   return Number(value.value)
 }
 
-function readOptionalNumber(message: ProtoMessage | null, field: number) {
-  const value = message?.get(field)?.find((item): item is Extract<ProtoField, { wireType: 0 }> => item.wireType === 0)
-  if (!value) return undefined
+function readTimestampNumber(message: ProtoMessage, field: number) {
+  const fields = message.get(field)
+  if (!fields) return undefined
+  const value = fields.find((item): item is Extract<ProtoField, { wireType: 0 }> => item.wireType === 0)
+  if (!value) {
+    throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
+  }
   if (value.value > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('Invalid Antigravity generator metadata blob: createdAt is invalid')
   }
@@ -168,11 +211,7 @@ function readNestedMessage(message: ProtoMessage, path: number[]) {
 function readMessage(message: ProtoMessage, field: number) {
   const bytes = message.get(field)?.find((item): item is Extract<ProtoField, { wireType: 2 }> => item.wireType === 2)?.bytes
   if (!bytes) return null
-  try {
-    return parseProtoMessage(bytes)
-  } catch {
-    return null
-  }
+  return parseProtoMessage(bytes)
 }
 
 function readString(message: ProtoMessage, field: number) {
@@ -196,7 +235,7 @@ function parseProtoMessage(input: Uint8Array): ProtoMessage {
 }
 
 function readField(buffer: Buffer, offset: number, field: number, wireType: number, fields: ProtoMessage) {
-  if (field <= 0) throw new Error('Invalid protobuf field number')
+  if (field <= 0) throw new MalformedProtobufError('Invalid protobuf field number')
   if (wireType === 0) {
     const value = readVarint(buffer, offset)
     pushField(fields, field, { wireType, value: value.value })
@@ -205,11 +244,11 @@ function readField(buffer: Buffer, offset: number, field: number, wireType: numb
   if (wireType === 1 || wireType === 5) {
     return readFixedField(buffer, offset, field, wireType, fields)
   }
-  if (wireType !== 2) throw new Error(`Unsupported protobuf wire type: ${wireType}`)
+  if (wireType !== 2) throw new MalformedProtobufError(`Unsupported protobuf wire type: ${wireType}`)
   const length = readVarint(buffer, offset)
   const start = length.next
   const end = start + Number(length.value)
-  if (end > buffer.length) throw new Error('Invalid protobuf length-delimited field')
+  if (end > buffer.length) throw new MalformedProtobufError('Invalid protobuf length-delimited field')
   pushField(fields, field, { wireType, bytes: buffer.subarray(start, end) })
   return end
 }
@@ -217,7 +256,7 @@ function readField(buffer: Buffer, offset: number, field: number, wireType: numb
 function readFixedField(buffer: Buffer, offset: number, field: number, wireType: 1 | 5, fields: ProtoMessage) {
   const width = wireType === 1 ? 8 : 4
   const end = offset + width
-  if (end > buffer.length) throw new Error('Invalid protobuf fixed-width field')
+  if (end > buffer.length) throw new MalformedProtobufError('Invalid protobuf fixed-width field')
   pushField(fields, field, { wireType, bytes: buffer.subarray(offset, end) })
   return end
 }
@@ -230,9 +269,9 @@ function readVarint(buffer: Buffer, offset: number) {
     value |= BigInt(byte & 127) << shift
     if ((byte & 128) === 0) return { value, next: index + 1 }
     shift += 7n
-    if (shift > 70n) throw new Error('Invalid protobuf varint')
+    if (shift > 70n) throw new MalformedProtobufError('Invalid protobuf varint')
   }
-  throw new Error('Truncated protobuf varint')
+  throw new MalformedProtobufError('Truncated protobuf varint')
 }
 
 function pushField(fields: ProtoMessage, field: number, value: ProtoField) {

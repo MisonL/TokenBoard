@@ -109,8 +109,43 @@ describe('usageDetailsToCsv', () => {
 
     expect(csv).toBe(
       [
-        'date,source,model,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,cache_read_rate,total_tokens_without_cache_read,total_tokens,cost_usd,session_count',
-        '2026-04-29,claude-code,"claude, ""sonnet""",1,2,3,4,0.4,6,10,0.25,1'
+        'date,source,model,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,cache_read_rate,total_tokens_without_cache_read,total_tokens,cost_usd,cost_available,session_count',
+        '2026-04-29,claude-code,"claude, ""sonnet""",1,2,3,4,0.4,6,10,0.25,true,1'
+      ].join('\n')
+    )
+  })
+
+  test('exports unavailable Antigravity cost as blank with an availability flag', () => {
+    const csv = usageDetailsToCsv({
+      summary: {
+        totalTokens: 10,
+        totalTokensWithoutCacheRead: 6,
+        cacheReadRate: 0.4,
+        costUsd: 0,
+        sessionCount: 1,
+        activeDays: 1
+      },
+      dailyRows: [],
+      modelRows: [{
+        usageDate: '2026-04-29',
+        source: 'antigravity-ide',
+        model: 'gemini-3.5-flash',
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheCreationTokens: 3,
+        cacheReadTokens: 4,
+        cacheReadRate: 0.4,
+        totalTokens: 10,
+        totalTokensWithoutCacheRead: 6,
+        costUsd: 0,
+        sessionCount: 1
+      }]
+    })
+
+    expect(csv).toBe(
+      [
+        'date,source,model,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,cache_read_rate,total_tokens_without_cache_read,total_tokens,cost_usd,cost_available,session_count',
+        '2026-04-29,antigravity-ide,gemini-3.5-flash,1,2,3,4,0.4,6,10,,false,1'
       ].join('\n')
     )
   })

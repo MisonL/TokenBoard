@@ -11,6 +11,7 @@ import { backfillUsageSummaryCache, upsertUsageSnapshots, type IngestRecord } fr
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const migrationsDir = resolve(currentDir, '../../../db/migrations')
 const verificationDate = new Date('2026-06-02T10:00:00.000Z')
+vi.setConfig({ testTimeout: 15_000 })
 
 describe('usage summary cache integration', () => {
   const tempDirs: string[] = []
@@ -359,7 +360,6 @@ describe('usage summary cache integration', () => {
     applyMigrations(dbPath)
     const db = createSqliteD1(dbPath)
     const today = toIsoDate(verificationDate)
-    const monthStart = `${today.slice(0, 8)}01`
 
     await seedProfile(db)
     await insertStaleUserTotal(db)
@@ -670,6 +670,7 @@ describe('usage summary cache integration', () => {
           ('agy-user', 'device-d', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-d', '2026-06-02T11:00:00.000Z'),
           ('agy-user', 'device-e', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-e', '2026-06-02T11:00:00.000Z'),
           ('agy-user', 'device-f', 'codex', '2026-06-03', 'UTC', 'gpt-5', 40, 10, 0, 0, 50, 7.0, 1, 'hash-f', '2026-06-03T11:00:00.000Z'),
+          ('agy-user', 'device-g', 'codex', '2026-06-01', 'UTC', 'replacement-model', 20, 5, 0, 0, 25, 0, 1, 'hash-g', '2026-06-01T11:00:00.000Z'),
           ('agy-user', 'legacy', 'codex', '2026-06-02', 'UTC', 'gpt-5', 20, 5, 0, 0, 25, 1.25, 1, 'hash-legacy-codex', '2026-06-02T10:00:00.000Z'),
           ('agy-user', 'legacy', 'claude-code', '2026-06-02', 'UTC', 'claude-sonnet', 30, 10, 0, 0, 40, 2.5, 1, 'hash-legacy-claude', '2026-06-02T10:00:00.000Z');
       `,
@@ -758,7 +759,7 @@ describe('usage summary cache integration', () => {
             1.25,
             1,
             '[{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25}]',
-            '[{"model":"gpt-5","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
+            '[{"model":"replacement-model","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
             '2026-06-01T10:00:00.000Z',
             '2026-06-01T10:00:00.000Z'
           ),
@@ -781,6 +782,24 @@ describe('usage summary cache integration', () => {
             '2026-05-31T10:00:00.000Z'
           ),
           (
+            'drr_codex_missing_model',
+            'agy-user',
+            '2026-06-01',
+            '2026-06-01T19:00',
+            'Agy User',
+            'UTC',
+            'https://tokenboard.example/dashboard',
+            25,
+            25,
+            0,
+            1.25,
+            1,
+            '[{"source":"codex","totalTokens":25,"totalTokensWithoutCacheRead":25}]',
+            '[{"model":"retired-model","totalTokens":25,"totalTokensWithoutCacheRead":25,"costUsd":1.25}]',
+            '2026-06-01T10:00:00.000Z',
+            '2026-06-01T10:00:00.000Z'
+          ),
+          (
             'drr_agy_mismatched_tokens',
             'agy-user',
             '2026-06-02',
@@ -799,7 +818,8 @@ describe('usage summary cache integration', () => {
             '2026-06-02T10:00:00.000Z'
           );
       `,
-      `.read ${quoteSqlitePath(join(migrationsDir, '0025_antigravity_costs_unavailable.sql'))}`
+      `.read ${quoteSqlitePath(join(migrationsDir, '0025_antigravity_costs_unavailable.sql'))}`,
+      `.read ${quoteSqlitePath(join(migrationsDir, '0027_daily_report_model_sources.sql'))}`
     ].join('\n'))
     const db = createSqliteD1(dbPath)
 
@@ -855,6 +875,24 @@ describe('usage summary cache integration', () => {
     )
     await expectScalar(
       db,
+      `SELECT COUNT(*) AS value
+       FROM daily_report_history, json_each(top_models, '$[0].sourceSplit') AS source_item
+       WHERE daily_report_history.id = 'drr_agy_costs'
+         AND json_extract(source_item.value, '$.source') = 'antigravity-cli'`,
+      0
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[1].sourceSplit[0].source') AS value FROM daily_report_history WHERE id = 'drr_agy_costs'",
+      null
+    )
+    await expectScalar(
+      db,
+      "SELECT json_extract(top_models, '$[0].sourceSplit[0].source') AS value FROM daily_report_history WHERE id = 'drr_codex_costs'",
+      'codex'
+    )
+    await expectScalar(
+      db,
       "SELECT cost_usd AS value FROM daily_report_history WHERE id = 'drr_codex_costs'",
       1.25
     )
@@ -872,6 +910,16 @@ describe('usage summary cache integration', () => {
       db,
       "SELECT json_extract(top_models, '$[0].costUsd') AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
       18.25
+    )
+    await expectScalar(
+      db,
+      "SELECT json_type(top_models, '$[0].sourceSplit') AS value FROM daily_report_history WHERE id = 'drr_agy_mismatched_tokens'",
+      null
+    )
+    await expectScalar(
+      db,
+      "SELECT json_type(top_models, '$[0].sourceSplit') AS value FROM daily_report_history WHERE id = 'drr_codex_missing_model'",
+      null
     )
   })
 

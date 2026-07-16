@@ -2,7 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Button } from '../../components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table'
 import { formatPercentRate } from '../../lib/usage-metrics'
-import { formatCostWithAvailability, formatSource } from '../usage/source-format'
+import { formatCostWithAvailability, formatModelCostWithAvailability, formatSource } from '../usage/source-format'
 import type { DailyReportHistoryItem } from './report-history-item'
 
 export function DailyReportHistoryCard(props: {
@@ -142,7 +142,7 @@ function HistoryDetails(props: { item: DailyReportHistoryItem }) {
         <HistoryList
           title="主要模型"
           items={props.item.topModels.map((model) => (
-            `${model.model}: ${formatInteger(model.totalTokensWithoutCacheRead)} / ${formatInteger(model.totalTokens)} tokens, ${formatCostWithAvailability(model.costUsd, model.sourceSplit ?? props.item.sourceSplit)}`
+            `${model.model}: ${formatInteger(model.totalTokensWithoutCacheRead)} / ${formatInteger(model.totalTokens)} tokens, ${formatModelCostWithAvailability(model.costUsd, model.sourceSplit, props.item.sourceSplit)}`
           ))}
         />
       </div>

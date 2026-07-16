@@ -77,7 +77,10 @@ function earliestAvailableOccurrence(
   for (const statuslineKey of statuslineKeys) {
     const bucket = index.get(statuslineKey)
     if (!bucket) continue
-    while (bucket.nextIndex < bucket.ordered.length && !bucket.available.has(bucket.ordered[bucket.nextIndex])) {
+    while (
+      bucket.nextIndex < bucket.ordered.length &&
+      !bucket.available.has(bucket.ordered[bucket.nextIndex])
+    ) {
       bucket.nextIndex += 1
     }
     const key = bucket.ordered[bucket.nextIndex]

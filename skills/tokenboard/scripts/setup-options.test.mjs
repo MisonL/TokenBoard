@@ -6,9 +6,59 @@ import {
   buildWarmHookCursorArgs,
   createPairingCodeFromDeviceLink,
   readSetupBaseUrl,
+  resolveSetupInstallOptions,
   shouldUseDeviceLink,
   shouldWarmHookCursorsBeforeInstall
 } from './setup-options.mjs'
+
+test('setup install options inherit saved server profile values', () => {
+  assert.deepEqual(
+    resolveSetupInstallOptions({
+      flags: {},
+      env: {},
+      profile: {
+        repoUrl: 'https://github.com/example/private.git',
+        repoRef: 'release-branch',
+        packageManager: 'bun',
+        scheduleTimes: ['07:15', '19:45']
+      },
+      defaultScheduleTimes: ['00:00']
+    }),
+    {
+      repoUrl: 'https://github.com/example/private.git',
+      repoRef: 'release-branch',
+      packageManager: 'bun',
+      scheduleTimesInput: '07:15,19:45'
+    }
+  )
+})
+
+test('explicit setup flags override saved server profile values', () => {
+  assert.deepEqual(
+    resolveSetupInstallOptions({
+      flags: {
+        'repo-url': 'https://github.com/example/override.git',
+        'repo-ref': 'override-branch',
+        'package-manager': 'npm',
+        'schedule-times': '08:30,20:30'
+      },
+      env: {},
+      profile: {
+        repoUrl: 'https://github.com/example/private.git',
+        repoRef: 'release-branch',
+        packageManager: 'bun',
+        scheduleTimes: ['07:15', '19:45']
+      },
+      defaultScheduleTimes: ['00:00']
+    }),
+    {
+      repoUrl: 'https://github.com/example/override.git',
+      repoRef: 'override-branch',
+      packageManager: 'npm',
+      scheduleTimesInput: '08:30,20:30'
+    }
+  )
+})
 
 test('initial setup sync uses a full history scan by default', () => {
   assert.deepEqual(
@@ -69,14 +119,18 @@ test('device-link reconnect setup is explicit opt-in', () => {
 test('device-link reconnect exchanges local claim for a pairing code', async () => {
   const requests = []
   const writes = []
+  let requestedServerOrigin = null
   const pairingCode = await createPairingCodeFromDeviceLink({
     baseUrl: 'https://tokenboard.example.com',
-    readDeviceLink: () => ({
-      serverOrigin: 'https://tokenboard.example.com',
-      deviceId: 'dev_1',
-      installationId: 'inst_1',
-      installClaim: 'claim-secret'
-    }),
+    readDeviceLink: (options) => {
+      requestedServerOrigin = options?.serverOrigin
+      return {
+        serverOrigin: 'https://tokenboard.example.com',
+        deviceId: 'dev_1',
+        installationId: 'inst_1',
+        installClaim: 'claim-secret'
+      }
+    },
     writeDeviceLink: (link) => writes.push(link),
     fetcher: async (url, init) => {
       requests.push({ url, init })
@@ -85,6 +139,7 @@ test('device-link reconnect exchanges local claim for a pairing code', async () 
   })
 
   assert.equal(pairingCode, 'pairing-code')
+  assert.equal(requestedServerOrigin, 'https://tokenboard.example.com')
   assert.deepEqual(writes, [])
   assert.equal(requests[0].url, 'https://tokenboard.example.com/api/v1/device/reconnect-pairing-codes')
   assert.deepEqual(JSON.parse(requests[0].init.body), {

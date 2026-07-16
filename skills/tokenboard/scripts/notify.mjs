@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configDir, parseArgs, readConfig } from './config.mjs'
 import { coordinatedSync } from './coordinator.mjs'
+import { errorMessage } from './error-message.mjs'
 
 const cooldownMs = 300_000
 const maxTrailingLockAcquireAttempts = 3
@@ -112,7 +113,7 @@ async function runCli() {
       version: config.updatedAt || config.createdAt || 'unknown'
     })
   } catch (error) {
-    console.error(error.message)
+    console.error(errorMessage(error))
     process.exit(1)
   } finally {
     releaseTrailingLock(trailingLockPath, trailingRuntime({}))
@@ -142,10 +143,6 @@ function formatSyncFailure(result) {
 function normalizeChildOutput(value) {
   const text = Array.isArray(value) ? value.join('') : String(value || '')
   return text.trim().replace(/\s+/g, ' ')
-}
-
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function trailingRuntime(options = {}) {

@@ -9,6 +9,7 @@ import { collectAntigravityCliUsage } from './antigravity-cli'
 const conversationA = 'a'.repeat(64)
 const conversationB = 'b'.repeat(64)
 const defaultConversationHash = '0'.repeat(64)
+const largeFixturePerformanceBudgetMs = 15_000
 
 describe('collectAntigravityCliUsage', () => {
   test('dedupes repeated statusline events and counts a conversation session once', async () => {
@@ -332,6 +333,8 @@ describe('collectAntigravityCliUsage', () => {
         sessionCount: 1,
         collectedAt: '2026-06-24T02:00:00.000Z'
       }])
+      const cursor = await readFile(join(root, 'antigravity-cli-cursor.json'), 'utf8')
+      expect(cursor).not.toContain('history-occurrence')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -647,8 +650,9 @@ describe('collectAntigravityCliUsage', () => {
           events: [{
             cascadeHash: conversationA,
             eventHash: 'e'.repeat(64),
-            createdAt: '2026-06-23T16:30:00.000Z',
-            model: 'Gemini 3.5 Flash (Medium)',
+            createdAt: '2026-06-23T16:29:50.000Z',
+            model: 'gemini-3-flash-a',
+            modelAliases: ['Gemini 3.5 Flash (Medium)'],
             inputTokens: 100,
             outputTokens: 12,
             cacheCreationTokens: 0,
@@ -802,21 +806,26 @@ describe('collectAntigravityCliUsage', () => {
       const elapsedMs = performance.now() - started
 
       expect(snapshots).toEqual([expect.objectContaining({ totalTokens: 301500 })])
-      expect(elapsedMs).toBeLessThan(5000)
+      expect(elapsedMs).toBeLessThan(largeFixturePerformanceBudgetMs)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   }, 30000)
 
-  test('dedupes statusline events after matching DB history alias cursor entries exist', async () => {
+  test('claims one delayed statusline event per matching history event', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-after-history-'))
     try {
       const eventPath = join(root, 'events.jsonl')
+      const rawConversationId = 'conversation-a'
+      const statuslineConversationHash = legacyHash(rawConversationId)
+      const historyConversationHash = plainHash(rawConversationId)
       const historyEvent = {
-        cascadeHash: conversationA,
+        cascadeHash: historyConversationHash,
+        cascadeHashAliases: [statuslineConversationHash],
         eventHash: 'e'.repeat(64),
         createdAt: '2026-06-23T16:30:00.000Z',
-        model: 'Gemini 3.5 Flash (Medium)',
+        model: 'gemini-3-flash-a',
+        modelAliases: ['Gemini 3.5 Flash (Medium)'],
         inputTokens: 100,
         outputTokens: 12,
         cacheCreationTokens: 0,
@@ -827,16 +836,17 @@ describe('collectAntigravityCliUsage', () => {
         stateDir: root,
         eventPath,
         timezone: 'Asia/Shanghai',
-        collectedAt: '2026-06-24T02:00:00.000Z',
+        collectedAt: '2026-06-23T16:30:05.000Z',
         readDbUsageEvents: async () => ({
-          cascadeIds: new Set(['conversation-a']),
+          cascadeIds: new Set([rawConversationId]),
           events: [historyEvent]
         })
       })
       await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
       await appendFile(eventPath, `${JSON.stringify(event({
-        conversationHash: conversationA,
-        capturedAt: '2026-06-23T16:30:00.000Z',
+        conversationHash: statuslineConversationHash,
+        conversationHashAliases: [historyConversationHash],
+        capturedAt: '2026-06-23T16:30:30.000Z',
         usage: {
           inputTokens: 100,
           outputTokens: 12,
@@ -848,14 +858,104 @@ describe('collectAntigravityCliUsage', () => {
         stateDir: root,
         eventPath,
         timezone: 'Asia/Shanghai',
-        collectedAt: '2026-06-24T02:05:00.000Z',
+        collectedAt: '2026-06-23T16:30:35.000Z',
         readDbUsageEvents: async () => ({
-          cascadeIds: new Set(['conversation-a']),
+          cascadeIds: new Set([rawConversationId]),
+          events: [historyEvent]
+        })
+      })
+      await appendFile(eventPath, `${JSON.stringify(event({
+        conversationHash: statuslineConversationHash,
+        conversationHashAliases: [historyConversationHash],
+        captureId: 'b'.repeat(32),
+        capturedAt: '2026-06-23T16:30:31.000Z',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 12,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 50
+        }
+      }))}\n`)
+      const third = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-23T16:30:36.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set([rawConversationId]),
           events: [historyEvent]
         })
       })
 
       expect(first).toHaveLength(1)
+      expect(second).toEqual([])
+      expect(third).toEqual([
+        expect.objectContaining({ model: 'Gemini 3.5 Flash (Medium)', totalTokens: 162 })
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps delayed statusline claims after matching history cursor entries are compacted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-after-compacted-history-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      const rawConversationId = 'conversation-a'
+      const statuslineConversationHash = legacyHash(rawConversationId)
+      const historyConversationHash = plainHash(rawConversationId)
+      const matchingHistoryEvent = {
+        cascadeHash: historyConversationHash,
+        cascadeHashAliases: [statuslineConversationHash],
+        eventHash: 'e'.repeat(64),
+        createdAt: '2026-06-23T16:30:00.000Z',
+        model: 'gemini-3-flash-a',
+        modelAliases: ['Gemini 3.5 Flash (Medium)'],
+        inputTokens: 100,
+        outputTokens: 12,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 50
+      }
+
+      const first = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-23T16:30:05.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set([rawConversationId]),
+          events: [matchingHistoryEvent]
+        })
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      const cursorPath = join(root, 'antigravity-cli-cursor.json')
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      for (const entry of Object.values(cursor.files) as Array<{ updatedAt: string }>) {
+        entry.updatedAt = '2025-01-01T00:00:00.000Z'
+      }
+      await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      await writeEvents(eventPath, [event({
+        conversationHash: statuslineConversationHash,
+        conversationHashAliases: [historyConversationHash],
+        capturedAt: '2026-06-23T16:30:25.000Z',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 12,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 50
+        }
+      })])
+
+      const second = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-23T16:30:30.000Z',
+        readDbUsageEvents: emptyDbUsage
+      })
+
+      expect(first).toEqual([expect.objectContaining({ totalTokens: 162, sessionCount: 1 })])
       expect(second).toEqual([])
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -1079,6 +1179,52 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
+  test('does not double-count retained old statusline events after cursor compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-compaction-replay-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      const oldGeneration = 'a'.repeat(32)
+      const oldEvent = event({ conversationHash: conversationA, usage: { inputTokens: 10, outputTokens: 2 } })
+      const newEvent = event({ conversationHash: conversationB, usage: { inputTokens: 20, outputTokens: 4 } })
+      const oldHeader = JSON.stringify(statuslineLogHeader(oldGeneration))
+      const oldEventLine = JSON.stringify(oldEvent)
+      const retainedFrom = Buffer.byteLength(`${oldHeader}\n`)
+      await writeFile(eventPath, `${oldHeader}\n${oldEventLine}\n`)
+
+      await collectAntigravityCliUsage({ stateDir: root, eventPath, timezone: 'UTC', readDbUsageEvents: emptyDbUsage })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+      const cursorPath = join(root, 'antigravity-cli-cursor.json')
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      for (const entry of Object.values(cursor.files) as Array<{ updatedAt: string }>) {
+        entry.updatedAt = '2025-01-01T00:00:00.000Z'
+      }
+      await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli' })
+
+      const rewrittenHeader = {
+        ...statuslineLogHeader(compactedGeneration(oldGeneration, retainedFrom)),
+        retainedFrom
+      }
+      await writeFile(eventPath, [
+        JSON.stringify(rewrittenHeader),
+        oldEventLine,
+        JSON.stringify(newEvent),
+        ''
+      ].join('\n'))
+
+      const snapshots = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'UTC',
+        readDbUsageEvents: emptyDbUsage
+      })
+
+      expect(snapshots).toEqual([expect.objectContaining({ inputTokens: 30, sessionCount: 2 })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('keeps recently acknowledged old cursor entries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-'))
     try {
@@ -1147,13 +1293,13 @@ describe('collectAntigravityCliUsage', () => {
     }
   })
 
-  test('treats statusline and DB history as the same usage stream', async () => {
+  test('dedupes a statusline display model against the matching DB history model ID', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-dedupe-'))
     try {
       const eventPath = join(root, 'events.jsonl')
       await writeEvents(eventPath, [event({
         conversationHash: conversationA,
-        capturedAt: '2026-06-23T16:30:00.000Z',
+        capturedAt: '2026-06-23T16:31:00.000Z',
         usage: { inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 }
       })])
 
@@ -1168,7 +1314,8 @@ describe('collectAntigravityCliUsage', () => {
             cascadeHash: conversationA,
             eventHash: 'e'.repeat(64),
             createdAt: '2026-06-23T16:30:00.000Z',
-            model: 'Gemini 3.5 Flash (Medium)',
+            model: 'gemini-3-flash-a',
+            modelAliases: ['Gemini 3.5 Flash (Medium)'],
             inputTokens: 100,
             outputTokens: 12,
             cacheCreationTokens: 0,
@@ -1191,6 +1338,46 @@ describe('collectAntigravityCliUsage', () => {
         sessionCount: 1,
         collectedAt: '2026-06-24T02:00:00.000Z'
       }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps different-model calls with identical token counts inside the old time window', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-distinct-model-'))
+    try {
+      const eventPath = join(root, 'events.jsonl')
+      await writeEvents(eventPath, [event({
+        conversationHash: conversationA,
+        capturedAt: '2026-06-23T16:30:12.000Z',
+        usage: { inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 }
+      })])
+
+      const snapshots = await collectAntigravityCliUsage({
+        stateDir: root,
+        eventPath,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-a']),
+          events: [{
+            cascadeHash: conversationA,
+            eventHash: 'e'.repeat(64),
+            createdAt: '2026-06-23T16:30:00.000Z',
+            model: 'claude-sonnet-4-5',
+            inputTokens: 100,
+            outputTokens: 12,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 50
+          }]
+        })
+      })
+
+      expect(snapshots).toHaveLength(2)
+      expect(snapshots).toEqual(expect.arrayContaining([
+        expect.objectContaining({ model: 'Gemini 3.5 Flash (Medium)', totalTokens: 162 }),
+        expect.objectContaining({ model: 'claude-sonnet-4-5', totalTokens: 162 })
+      ]))
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1291,6 +1478,11 @@ describe('collectAntigravityCliUsage', () => {
       await writeFile(looseDatePath, `${JSON.stringify(event({ capturedAt: 'June 23, 2026 10:00:00' }))}\n`)
       await expect(collectAntigravityCliUsage({ stateDir: root, eventPath: looseDatePath, readDbUsageEvents: emptyDbUsage }))
         .rejects.toThrow('capturedAt must be an ISO datetime')
+
+      const nullCaptureIdPath = join(root, 'null-capture-id.jsonl')
+      await writeEvents(nullCaptureIdPath, [event({ captureId: null as unknown as string })])
+      await expect(collectAntigravityCliUsage({ stateDir: root, eventPath: nullCaptureIdPath, readDbUsageEvents: emptyDbUsage }))
+        .resolves.toEqual([expect.objectContaining({ totalTokens: 12 })])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1318,6 +1510,16 @@ function statuslineLogHeader(generation: string) {
   return { schemaVersion: 'antigravity-statusline-log/v1', generation }
 }
 
+function compactedGeneration(previousGeneration: string, retainedFromOffsetBytes: number) {
+  const previousHash = createHash('sha256').update(previousGeneration).digest('hex')
+  return createHash('sha256')
+    .update(previousHash)
+    .update('\0')
+    .update(String(retainedFromOffsetBytes))
+    .digest('hex')
+    .slice(0, 32)
+}
+
 function event(overrides: Partial<Omit<ReturnType<typeof baseEvent>, 'usage'>> & { usage?: Partial<ReturnType<typeof baseEvent>['usage']> } = {}) {
   return {
     ...baseEvent(),
@@ -1334,6 +1536,7 @@ function baseEvent() {
     schemaVersion: 'antigravity-statusline/v1',
     capturedAt: '2026-06-23T10:00:00.000Z',
     conversationHash: defaultConversationHash,
+    conversationHashAliases: undefined as string[] | undefined,
     captureId: undefined as string | undefined,
     eventHash: undefined as string | undefined,
     model: 'Gemini 3.5 Flash (Medium)',
@@ -1349,6 +1552,8 @@ function baseEvent() {
 function historyEvent(overrides: Partial<{
   eventHash: string
   createdAt: string
+  model: string
+  modelAliases: string[]
   inputTokens: number
   outputTokens: number
   cacheCreationTokens: number

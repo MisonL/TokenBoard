@@ -5,6 +5,7 @@ import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configDir, readConfig } from './config.mjs'
+import { errorMessage } from './error-message.mjs'
 import { dailyScheduleTimes, launchAgentLabel, serviceName, timerName } from './schedule.mjs'
 
 export function uninstallSchedule(options = {}) {
@@ -107,7 +108,7 @@ function runCli() {
   try {
     uninstallSchedule()
   } catch (error) {
-    console.error(error.message)
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }

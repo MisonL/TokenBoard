@@ -45,6 +45,34 @@ describe('runCollectorCli', () => {
     expect(uploaded).toEqual([])
   })
 
+  test.each([
+    {
+      label: 'environment endpoint',
+      args: ['preview', '--source', 'codex'],
+      env: { TOKENBOARD_ENDPOINT: 'not a URL', TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }
+    },
+    {
+      label: 'command endpoint',
+      args: ['preview', '--source', 'codex', '--endpoint', 'not a URL'],
+      env: { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }
+    }
+  ])('previews when the $label is invalid', async ({ args, env }) => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(args, env, {
+      stdout: (line) => stdout.push(line),
+      stderr: () => undefined,
+      collectClaudeCodeUsage: async () => [claudeSnapshot],
+      collectCodexUsage: async () => [codexSnapshot],
+      uploadSnapshots: async () => {
+        throw new Error('preview must not upload')
+      }
+    })
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([codexSnapshot])
+  })
+
   test('syncs selected source to the configured endpoint with the upload token', async () => {
     const uploaded: Array<{ endpoint: string; uploadToken: string; snapshots: UsageSnapshot[] }> = []
 
@@ -79,6 +107,31 @@ describe('runCollectorCli', () => {
         snapshots: [codexSnapshot]
       }
     ])
+  })
+
+  test('normalizes empty top-level upload errors', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual(['Error'])
   })
 
   test('warms hook cursor high-water after a non-hook sync succeeds', async () => {
@@ -274,6 +327,50 @@ describe('runCollectorCli', () => {
 
     expect(result).toBe(0)
     expect(acks).toEqual(['/state:codex'])
+  })
+
+  test('holds the collector run lock through collection, upload, and acknowledgement', async () => {
+    const events: string[] = []
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_HOOK_MODE: '1',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        withCursorLock: async (path, callback) => {
+          events.push(`lock:${path}`)
+          const value = await callback()
+          events.push('unlock')
+          return value
+        },
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => {
+          events.push('collect')
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          events.push('upload')
+          return { upserted: 1 }
+        },
+        clearPendingUploadCursors: async () => {
+          events.push('ack')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(events).toEqual([
+      'lock:/state/collector-run',
+      'collect',
+      'upload',
+      'ack',
+      'unlock'
+    ])
   })
 
   test('acks hook cursor in configured config dir when state dir is unset', async () => {

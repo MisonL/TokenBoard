@@ -84,6 +84,8 @@ describe('NotificationsPage', () => {
 
     expect(html).toContain('WEBHOOK_ENCRYPTION_KEY')
     expect(html).toContain('disabled')
+    expect(html).toMatch(/<input[^>]*name="provider"[^>]*disabled/)
+    expect(html).toMatch(/<button[^>]*id="provider-menu-button"[^>]*disabled/)
     expect(html).toContain('data-submitting-label="正在保存 Webhook..."')
   })
 

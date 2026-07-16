@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -73,22 +73,72 @@ describe('Wrangler deploy config', () => {
     expect(example).not.toMatch(/"database_id":\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i)
   })
 
-  test('manual production deploy helper applies migrations before Worker deploy', () => {
+  test('manual production deploy helper verifies migrated schema before Worker deploy', () => {
     const deployScript = readPackageFile('scripts/deploy.mjs')
+    const schemaCheckCommand = "'d1', 'execute', 'DB', '--remote', '--file', 'db/verify-critical-schema.sql', '--config', configPath"
 
     expect(deployScript).toContain('wrangler.production.ci.jsonc')
     expect(deployScript).toContain('scripts/write-production-config.mjs')
     expect(deployScript).toContain('scripts/check-production-config.mjs')
     expect(deployScript).toContain("runPnpm(['run', 'build'])")
     expect(deployScript).toContain("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
+    expect(deployScript).toContain(schemaCheckCommand)
     expect(deployScript).toContain("'deploy', '--config', configPath")
     expect(deployScript.indexOf("runPnpm(['run', 'build'])")).toBeLessThan(
       deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
     )
     expect(deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")).toBeLessThan(
+      deployScript.indexOf(schemaCheckCommand)
+    )
+    expect(deployScript.indexOf(schemaCheckCommand)).toBeLessThan(
       deployScript.indexOf("'deploy', '--config', configPath")
     )
     expect(deployScript).not.toContain('--config wrangler.jsonc')
+  })
+
+  test('critical production schema check covers device identity and legacy upload tokens', () => {
+    const schemaCheckPath = resolve(packageDir, 'db/verify-critical-schema.sql')
+
+    expect(existsSync(schemaCheckPath)).toBe(true)
+    if (!existsSync(schemaCheckPath)) return
+
+    const schemaCheck = readFileSync(schemaCheckPath, 'utf8')
+    expect(schemaCheck).toContain('FROM device_installations')
+    expect(schemaCheck).toContain('install_claim_hash')
+    expect(schemaCheck).toContain('installation_id')
+    expect(schemaCheck).toContain('supersedes_token_id')
+    expect(schemaCheck).toContain('FROM pairing_codes')
+    expect(schemaCheck).toContain('pairing_type')
+    expect(schemaCheck).toContain('FROM audit_logs')
+  })
+
+  test('critical production schema check rejects pre-device schema and accepts current migrations', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-schema-gate-'))
+    const legacyDb = join(tempDir, 'legacy.db')
+    const currentDb = join(tempDir, 'current.db')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const schemaCheck = readPackageFile('db/verify-critical-schema.sql')
+    const migrations = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+
+    try {
+      for (const migration of migrations) {
+        const sql = readFileSync(join(migrationsDir, migration), 'utf8')
+        if (migration < '0022_') runSqlite(legacyDb, sql)
+        runSqlite(currentDb, sql)
+      }
+
+      const legacyCheck = runSqlite(legacyDb, schemaCheck, false)
+      expect(legacyCheck.status).not.toBe(0)
+      expect(legacyCheck.stderr).toMatch(/installation_id|device_installations/)
+
+      const currentCheck = runSqlite(currentDb, schemaCheck, false)
+      expect(currentCheck.status).toBe(0)
+      expect(currentCheck.stderr).toBe('')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 
   test('Drizzle schema declares webhook migration indexes', () => {
@@ -212,6 +262,15 @@ describe('Wrangler deploy config', () => {
     expect(migration).toContain('ON upload_tokens(supersedes_token_id)')
     expect(migration).toContain('supersedes_token_id IS NOT NULL')
     expect(migration).toContain('revoked_at IS NULL')
+  })
+
+  test('upload token user lookup migration adds the matching schema index', () => {
+    const schema = readDrizzleSchema()
+    const migration = readPackageFile('db/migrations/0026_upload_tokens_user_id.sql')
+
+    expect(schema).toContain("index('upload_tokens_user_id_idx').on(table.userId)")
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS upload_tokens_user_id_idx')
+    expect(migration).toContain('ON upload_tokens(user_id)')
   })
 
   test('usage summary migration creates cache tables without blocking backfill work', () => {
@@ -343,6 +402,8 @@ describe('Wrangler deploy config', () => {
         ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
         ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
         ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://secret@github.com/MisonL/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://github.com:8443/MisonL/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
         ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
@@ -375,7 +436,7 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 15000)
 
   test('production config checker rejects unreplaced resource control placeholders', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-retention-placeholder-config-'))
@@ -417,6 +478,8 @@ describe('Wrangler deploy config', () => {
         ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
         ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
         ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://secret@github.com/MisonL/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://github.com:8443/MisonL/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
         ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'vars.TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
@@ -439,7 +502,7 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 15000)
 
   test('deploy helper generates production config for clean Cloudflare builds', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-clean-deploy-'))
@@ -721,4 +784,15 @@ function resourceControlDefault(name: string) {
   if (name === 'TOKENBOARD_COLLECTOR_REPO_URL') return 'https://github.com/MisonL/TokenBoard.git'
   if (name === 'TOKENBOARD_COLLECTOR_REF') return 'master'
   throw new Error(`Unknown resource control variable ${name}`)
+}
+
+function runSqlite(dbPath: string, sql: string, requireSuccess = true) {
+  const result = spawnSync('sqlite3', [dbPath], {
+    encoding: 'utf8',
+    input: sql
+  })
+  if (requireSuccess && result.status !== 0) {
+    throw new Error(result.stderr || `sqlite3 exited with status ${result.status}`)
+  }
+  return result
 }

@@ -2,9 +2,37 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSyn
 import { join } from 'node:path'
 import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import { appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
+import { errorMessage } from './error-message.mjs'
 
 const defaultLockTimeoutMs = 60_000
 const defaultMaxFollowUps = 3
+const defaultMaxRunLogs = 1_024
+
+class SuccessfulSyncCheckpointError extends Error {
+  constructor(cause, completedResult) {
+    super(errorMessage(cause))
+    this.name = 'SuccessfulSyncCheckpointError'
+    this.cause = cause
+    this.completedResult = completedResult
+  }
+
+  withCleanupFailure(cleanupError) {
+    const combined = new AggregateError(
+      [this.cause, cleanupError],
+      `${this.message}; sync lock release failed: ${errorMessage(cleanupError)}`
+    )
+    return new SuccessfulSyncCheckpointError(combined, this.completedResult)
+  }
+}
+
+class CompletedSyncCleanupError extends Error {
+  constructor(cause, completedResult) {
+    super(errorMessage(cause))
+    this.name = 'CompletedSyncCleanupError'
+    this.cause = cause
+    this.completedResult = completedResult
+  }
+}
 
 export function coordinatedSync(trigger, options) {
   const runtime = buildRuntime(options)
@@ -13,12 +41,23 @@ export function coordinatedSync(trigger, options) {
   runtime.mkdir(runtime.stateDir, { recursive: true })
 
   let completed
+  let checkpointError
+  let hasCheckpointError = false
   try {
     completed = runCoordinator(trigger, runtime, result)
   } catch (error) {
-    completed = { ...result, error: errorMessage(error) }
+    const failedResult = error instanceof SuccessfulSyncCheckpointError ||
+      error instanceof CompletedSyncCleanupError
+      ? error.completedResult
+      : result
+    completed = { ...failedResult, error: errorMessage(error) }
+    if (error instanceof SuccessfulSyncCheckpointError) {
+      hasCheckpointError = true
+      checkpointError = error.cause instanceof Error ? error.cause : error
+    }
   }
   writeRunLog(completed, startedAtMs, runtime)
+  if (hasCheckpointError) throw checkpointError
   return completed
 }
 
@@ -30,6 +69,8 @@ function runCoordinator(trigger, runtime, result) {
     return lock.result
   }
 
+  let coordinatorError
+  let completedResult
   try {
     const pendingSources = readSignalSources(runtime)
     if (lock.waited && pendingSources.length === 0) {
@@ -41,9 +82,25 @@ function runCoordinator(trigger, runtime, result) {
       return skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock })
     }
 
-    return { ...result, ...runLockedCycles(trigger, runtime, syncSources), waitedForLock: lock.waited }
+    const completed = { ...result, ...runLockedCycles(trigger, runtime, syncSources), waitedForLock: lock.waited }
+    completedResult = completed
+    writeSuccessfulSyncCheckpoint(completed, runtime)
+    return completed
+  } catch (error) {
+    coordinatorError = error
+    throw error
   } finally {
-    if (lock.acquired) releaseLock(lockPath, runtime)
+    if (lock.acquired) {
+      try {
+        releaseLock(lockPath, runtime)
+      } catch (error) {
+        if (coordinatorError instanceof SuccessfulSyncCheckpointError) {
+          throw coordinatorError.withCleanupFailure(error)
+        }
+        if (completedResult) throw new CompletedSyncCleanupError(error, completedResult)
+        throw error
+      }
+    }
   }
 }
 
@@ -183,6 +240,7 @@ function buildRuntime(options = {}) {
     cooldownMs: numberOrDefault(options.cooldownMs, 300_000),
     lockTimeoutMs: numberOrDefault(options.lockTimeoutMs, defaultLockTimeoutMs),
     maxFollowUps: numberOrDefault(options.maxFollowUps, defaultMaxFollowUps),
+    maxRunLogs: positiveIntegerOrDefault(options.maxRunLogs, defaultMaxRunLogs),
     trailingProcess: options.trailingProcess === true,
     version: options.version || 'unknown',
     now: options.now || Date.now,
@@ -193,6 +251,7 @@ function buildRuntime(options = {}) {
     readFile: options.readFile || ((path) => readFileSync(path, 'utf8')),
     writeFile: options.writeFile || writeFileSync,
     readdir: options.readdir || (hasCustomFileOps ? undefined : readdirSync),
+    listRunLogs: options.listRunLogs || (hasCustomFileOps ? undefined : readdirSync),
     rename: options.rename || (hasCustomFileOps ? undefined : renameSync),
     unlink: options.unlink || unlinkSync,
     exists: options.exists || existsSync
@@ -246,7 +305,37 @@ function scheduleTrailingSources(trigger, sources, runtime, remainingMs) {
     runtime.scheduleTrailing({ ...trigger, source }, remainingMs) || scheduled, false)
 }
 
+function writeSuccessfulSyncCheckpoint(result, runtime) {
+  if (deriveStatus(result) !== 'success') return
+  try {
+    runtime.writeFile(
+      join(runtime.stateDir, 'last-success.json'),
+      new Date(runtime.now()).toISOString()
+    )
+  } catch (error) {
+    throw new SuccessfulSyncCheckpointError(error, result)
+  }
+}
+
 function writeRunLog(result, startedAtMs, runtime) {
+  const lockPath = join(runtime.stateDir, 'run-logs.lock')
+  acquireRunLogLock(lockPath, runtime)
+  try {
+    writeRunLogEntry(result, startedAtMs, runtime)
+  } finally {
+    releaseLock(lockPath, runtime)
+  }
+}
+
+function acquireRunLogLock(lockPath, runtime) {
+  if (acquireLock(lockPath, runtime)) return
+  const wait = waitForLock(lockPath, runtime)
+  if (!wait.acquired) {
+    throw new Error(`run log ${wait.error || 'lock timeout'}`)
+  }
+}
+
+function writeRunLogEntry(result, startedAtMs, runtime) {
   const completedAtMs = runtime.now()
   const status = deriveStatus(result)
   const entry = {
@@ -270,13 +359,41 @@ function writeRunLog(result, startedAtMs, runtime) {
     status,
     ...(result.error ? { error: result.error } : {})
   }
-  const runsDir = join(runtime.stateDir, 'runs')
-  runtime.mkdir(runsDir, { recursive: true })
+  const runsDir = prepareRunLogDirectory(result.runId, runtime)
   const json = `${JSON.stringify(entry, null, 2)}\n`
   runtime.writeFile(join(runsDir, `${result.runId}.json`), json)
+  pruneRunLogs(runsDir, runtime)
   runtime.writeFile(join(runtime.stateDir, 'last-run.json'), json)
-  if (status === 'success') {
-    runtime.writeFile(join(runtime.stateDir, 'last-success.json'), entry.completedAt)
+}
+
+function prepareRunLogDirectory(runId, runtime) {
+  const runsDir = join(runtime.stateDir, 'runs')
+  const markerPath = join(runsDir, '.bounded-v1')
+  if (runtime.rename && runtime.exists(runsDir) && !runtime.exists(markerPath)) {
+    try {
+      runtime.rename(runsDir, join(runtime.stateDir, `runs.unbounded-${runId}`))
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
+  runtime.mkdir(runsDir, { recursive: true })
+  if (!runtime.exists(markerPath)) {
+    runtime.writeFile(markerPath, 'TokenBoard bounded run logs v1\n')
+  }
+  return runsDir
+}
+
+function pruneRunLogs(runsDir, runtime) {
+  if (!runtime.listRunLogs) return
+  const names = runtime.listRunLogs(runsDir).filter((name) => name.endsWith('.json'))
+  if (names.length <= runtime.maxRunLogs) return
+  names.sort((left, right) => right.localeCompare(left))
+  for (const name of names.slice(runtime.maxRunLogs)) {
+    try {
+      runtime.unlink(join(runsDir, name))
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
   }
 }
 
@@ -289,9 +406,11 @@ function deriveStatus(result) {
 
 function numberOrDefault(value, fallback) { return typeof value === 'number' && Number.isFinite(value) ? value : fallback }
 
+function positiveIntegerOrDefault(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback
+}
+
 function sleepSync(ms) {
   const timeout = Math.max(0, ms)
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, timeout)
 }
-
-function errorMessage(error) { return error instanceof Error ? error.message : String(error) }

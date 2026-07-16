@@ -8,12 +8,14 @@ import {
   cursorFileName,
   readCursor,
   stripCollectedAt,
+  withCursorLock,
   writeCursor,
   type CursorEntry,
   type CursorSnapshot,
   type CursorState
 } from './session-cursor-store'
 import { walkJsonlFiles } from './session-file-walk'
+import { resolveAntigravityCollectionRange } from './antigravity-since'
 
 export type ChangedSessionFile = {
   absolutePath: string
@@ -199,19 +201,154 @@ export async function clearPendingUploadCursors(input: {
   stateDir: string
   source: UsageSource
   cursorScope?: string
+  since?: string
+  timezone?: string
 }) {
   const cursorPath = join(input.stateDir, cursorFileName(input.source, input.cursorScope))
-  const cursor = await readCursor(cursorPath, input.source)
-  let changed = false
-  for (const entry of Object.values(cursor.files)) {
-    if (!entry.pendingUpload) continue
-    entry.pendingUpload = false
-    changed = true
-  }
-  if (changed) {
-    await writeCursor(cursorPath, cursor)
-  }
+  await withCursorLock(cursorPath, async () => {
+    const cursor = await readCursor(cursorPath, input.source)
+    const isAntigravity = input.source.startsWith('antigravity')
+    const range = isAntigravity
+      ? resolveAntigravityCollectionRange({
+          since: input.since ?? 'all',
+          timezone: input.timezone ?? 'UTC',
+          env: {}
+        })
+      : null
+    let changed = false
+    for (const entry of Object.values(cursor.files)) {
+      if (!entry.pendingUpload) continue
+      if (range && !cursorEntryIsInRange(entry, range.sinceDate, range.includesTimestamp)) continue
+      entry.pendingUpload = false
+      entry.updatedAt = new Date().toISOString()
+      changed = true
+    }
+    if (isAntigravity) {
+      changed = compactAcknowledgedAntigravityUsage(cursor) || changed
+    }
+    if (changed) await writeCursor(cursorPath, cursor)
+  })
 }
+
+function cursorEntryIsInRange(
+  entry: CursorEntry,
+  sinceDate: string | undefined,
+  includesTimestamp: (value: string) => boolean
+) {
+  if (!sinceDate) return true
+  if (entry.snapshots.length > 0) {
+    return entry.snapshots.some((snapshot) => snapshot.usageDate >= sinceDate)
+  }
+  if (entry.mtimeMs <= 0) return true
+  return includesTimestamp(new Date(entry.mtimeMs).toISOString())
+}
+
+function compactAcknowledgedAntigravityUsage(cursor: CursorState) {
+  const cutoffMs = Date.now() - antigravityUsageCursorRetentionMs
+  const aggregateInputs = new Map<string, { mtimeMs: number; snapshots: CursorSnapshot[] }>()
+  const compactedAt = new Date().toISOString()
+  let changed = false
+
+  for (const [key, entry] of Object.entries(cursor.files)) {
+    if (entry.compactedIdentity && entry.snapshots.length === 0 &&
+        !entry.pendingUpload && isAntigravityReplayIdentityKey(key)) continue
+    const retainedAtMs = Date.parse(entry.updatedAt)
+    if (entry.pendingUpload || !Number.isFinite(retainedAtMs) || retainedAtMs >= cutoffMs ||
+        !isAntigravityUsageStateKey(key)) continue
+    changed = true
+    for (const snapshot of entry.snapshots) {
+      const groupKey = cursorSnapshotGroupKey(snapshot)
+      const group = aggregateInputs.get(groupKey) ?? { mtimeMs: 0, snapshots: [] }
+      group.mtimeMs = Math.max(group.mtimeMs, entry.mtimeMs)
+      group.snapshots.push(snapshot)
+      aggregateInputs.set(groupKey, group)
+    }
+    if (isAntigravityReplayIdentityKey(key)) {
+      entry.size = 0
+      entry.snapshots = []
+      entry.missingCost = true
+      entry.pendingUpload = false
+      entry.compactedIdentity = true
+      entry.updatedAt = compactedAt
+    } else {
+      delete cursor.files[key]
+    }
+  }
+
+  for (const [groupKey, input] of aggregateInputs) {
+    // Ingest replaces daily model totals, so late events still need one compact baseline.
+    const key = `aggregate\0${hashValue(groupKey)}`
+    const existing = cursor.files[key]
+    const snapshots = [
+      ...(existing?.snapshots ?? []),
+      ...input.snapshots
+    ]
+    cursor.files[key] = {
+      size: 0,
+      mtimeMs: Math.max(existing?.mtimeMs ?? 0, input.mtimeMs),
+      sha256: hashValue(key),
+      snapshots: [mergeCursorSnapshotGroup(snapshots)],
+      missingCost: true,
+      pendingUpload: false,
+      updatedAt: new Date().toISOString()
+    }
+  }
+
+  return changed
+}
+
+function isAntigravityUsageStateKey(key: string) {
+  return antigravityUsageStatePrefixes.some((prefix) => key.startsWith(prefix))
+}
+
+function isAntigravityReplayIdentityKey(key: string) {
+  return antigravityReplayIdentityPrefixes.some((prefix) => key.startsWith(prefix))
+}
+
+function mergeCursorSnapshotGroup(snapshots: CursorSnapshot[]) {
+  const [first, ...rest] = snapshots
+  if (!first) throw new Error('Cannot compact an empty Antigravity cursor snapshot group')
+  const merged = { ...first }
+  for (const snapshot of rest) {
+    merged.inputTokens += snapshot.inputTokens
+    merged.outputTokens += snapshot.outputTokens
+    merged.cacheCreationTokens += snapshot.cacheCreationTokens
+    merged.cacheReadTokens += snapshot.cacheReadTokens
+    merged.totalTokens += snapshot.totalTokens
+    merged.costUsd += snapshot.costUsd
+    merged.sessionCount += snapshot.sessionCount
+  }
+  return merged
+}
+
+function cursorSnapshotGroupKey(snapshot: CursorSnapshot) {
+  return [snapshot.source, snapshot.usageDate, snapshot.timezone, snapshot.model].join('\0')
+}
+
+function hashValue(value: string) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+const antigravityUsageCursorRetentionMs = 90 * 24 * 60 * 60 * 1000
+const antigravityUsageStatePrefixes = [
+  'event\0',
+  'history-event\0',
+  'history-occurrence\0',
+  'history-statusline-claim\0',
+  'session\0',
+  'statusline-head\0',
+  'statusline-history-claim\0',
+  'statusline-occurrence\0'
+]
+const antigravityReplayIdentityPrefixes = [
+  'event\0',
+  'history-event\0',
+  'history-occurrence\0',
+  'history-statusline-claim\0',
+  'session\0',
+  'statusline-history-claim\0',
+  'statusline-occurrence\0'
+]
 
 export async function warmHookCursorHighWater(input: {
   stateDir: string
@@ -220,13 +357,13 @@ export async function warmHookCursorHighWater(input: {
   highWaterMs: number
 }) {
   const cursorPath = join(input.stateDir, cursorFileName(input.source))
-  const cursor = await readCursor(cursorPath, input.source)
-  const highWaterMs = Math.max(cursor.lastScanHighWaterMs ?? 0, input.highWaterMs)
-
-  if (highWaterMs !== cursor.lastScanHighWaterMs) {
+  await withCursorLock(cursorPath, async () => {
+    const cursor = await readCursor(cursorPath, input.source)
+    const highWaterMs = Math.max(cursor.lastScanHighWaterMs ?? 0, input.highWaterMs)
+    if (highWaterMs === cursor.lastScanHighWaterMs) return
     cursor.lastScanHighWaterMs = highWaterMs
     await writeCursor(cursorPath, cursor)
-  }
+  })
 }
 
 export function mergeSnapshots(snapshots: UsageSnapshot[]) {

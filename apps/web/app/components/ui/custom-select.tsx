@@ -15,6 +15,7 @@ export function CustomSelect(props: {
   wrapperClass?: string
   optionClass?: string
   inputAttrs?: Record<string, string>
+  disabled?: boolean
 }) {
   const selected = props.options.find((option) => option.value === props.value) ?? props.options[0]
   const buttonId = `${props.name}-menu-button`
@@ -26,6 +27,7 @@ export function CustomSelect(props: {
         name={props.name}
         value={selected?.value ?? ''}
         data-custom-select-value="true"
+        disabled={props.disabled}
         {...props.inputAttrs}
       />
       <button
@@ -36,6 +38,7 @@ export function CustomSelect(props: {
         aria-expanded="false"
         aria-controls={menuId}
         data-custom-select-button="true"
+        disabled={props.disabled}
       >
         <span data-custom-select-label="true">{selected?.label ?? ''}</span>
         <LucideIcon icon={ChevronDown} class="text-[var(--app-muted)]" size={16} />
@@ -53,6 +56,7 @@ export function CustomSelect(props: {
             selected={option.value === selected?.value}
             value={option.value}
             class={props.optionClass}
+            disabled={props.disabled}
           />
         ))}
       </div>
@@ -78,6 +82,7 @@ function CustomSelectOptionButton(props: {
   label: string
   selected: boolean
   value: string
+  disabled?: boolean
 }) {
   return (
     <button
@@ -88,6 +93,7 @@ function CustomSelectOptionButton(props: {
       data-custom-select-option="true"
       data-value={props.value}
       data-label={props.label}
+      disabled={props.disabled}
     >
       <span>{props.label}</span>
       <LucideIcon icon={Check} class={props.selected ? 'app-accent-text' : 'text-transparent'} size={16} />

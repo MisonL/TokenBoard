@@ -45,7 +45,7 @@ function createRecordingDb(
 
 describe('D1DevicePairingRepository', () => {
   test('stores reconnect pairing code only when the target has an active installation', async () => {
-    const { db, sqlStatements, bindings, batches } = createRecordingDb()
+    const { db, sqlStatements, bindings } = createRecordingDb()
     const repository = new D1DevicePairingRepository(db)
 
     await repository.createPairingCode({
@@ -432,7 +432,7 @@ describe('D1DevicePairingRepository', () => {
     ).rejects.toThrow('Device pairing was not recorded')
   })
 
-  test('consumes the source claim before creating reconnect credentials from device-link metadata', async () => {
+  test('guards the current pairing before consuming a device-link source claim', async () => {
     const { db, sqlStatements, bindings, batches } = createRecordingDb()
     const repository = new D1DevicePairingRepository(db)
 
@@ -457,35 +457,38 @@ describe('D1DevicePairingRepository', () => {
     })
 
     expect(sqlStatements.some((sql) => sql.includes('INSERT INTO devices'))).toBe(false)
-    expect(sqlStatements[0]).toContain('UPDATE device_installations')
-    expect(sqlStatements[0]).toContain('install_claim_hash = ?')
-    expect(sqlStatements[1]).toContain('INSERT INTO device_installations')
-    expect(sqlStatements[1]).toContain('JOIN pairing_codes pairing')
-    expect(sqlStatements[1]).toContain('source.install_claim_hash = ?')
-    expect(sqlStatements[2]).toContain('INSERT INTO upload_tokens')
-    expect(sqlStatements[2]).toContain('WHERE EXISTS')
-    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[0]).toContain('UPDATE pairing_codes')
+    expect(sqlStatements[0]).toContain("pairing_type = 'reconnect_device'")
+    expect(sqlStatements[1]).toContain('UPDATE device_installations')
+    expect(sqlStatements[1]).toContain('install_claim_hash = ?')
+    expect(sqlStatements[1]).toContain('FROM pairing_codes pairing')
+    expect(sqlStatements[2]).toContain('INSERT INTO device_installations')
+    expect(sqlStatements[2]).toContain('JOIN pairing_codes pairing')
+    expect(sqlStatements[2]).toContain('source.install_claim_hash = ?')
+    expect(sqlStatements[3]).toContain('INSERT INTO upload_tokens')
     expect(sqlStatements[3]).toContain('WHERE EXISTS')
+    expect(sqlStatements[4]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[4]).toContain('WHERE EXISTS')
     expect(batches).toHaveLength(1)
-    expect(batches[0]).toHaveLength(5)
+    expect(batches[0]).toHaveLength(6)
     expect(bindings[0]).toEqual([
-      'hash:claim-consumed',
-      '2026-06-30T10:00:00.000Z',
-      'inst_old',
+      'pair_1',
       'user_1',
       'dev_old',
-      'hash:old-claim'
+      '2026-06-30T10:00:00.000Z'
     ])
     expect(bindings[1]).toEqual([
-      'inst_1',
-      'pair_1',
+      'hash:claim-consumed',
       '2026-06-30T10:00:00.000Z',
+      'inst_old',
       'user_1',
       'dev_old',
-      'inst_old',
-      'inst_old',
-      'hash:claim-consumed',
-      'hash:claim-consumed',
+      'hash:old-claim',
+      'pair_1',
+      '2026-06-30T10:00:00.000Z'
+    ])
+    expect(bindings[2]).toEqual([
+      'inst_1',
       'dev_old',
       'linux',
       'Reinstalled',
@@ -493,7 +496,15 @@ describe('D1DevicePairingRepository', () => {
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
-      '2026-06-30T10:00:00.000Z'
+      '2026-06-30T10:00:00.000Z',
+      'pair_1',
+      '2026-06-30T10:00:00.000Z',
+      'user_1',
+      'dev_old',
+      'inst_old',
+      'inst_old',
+      'hash:claim-consumed',
+      'hash:claim-consumed'
     ])
   })
 
@@ -543,13 +554,14 @@ describe('D1DevicePairingRepository', () => {
       createdAt: '2026-06-30T10:00:00.000Z'
     })
 
-    expect(sqlStatements[0]).toContain('INSERT INTO device_installations')
-    expect(sqlStatements[0]).toContain('FROM device_installations source')
-    expect(sqlStatements[0]).toContain('source.revoked_at IS NULL')
-    expect(sqlStatements[0]).toContain('(? IS NULL OR source.id = ?)')
+    expect(sqlStatements[0]).toContain('UPDATE pairing_codes')
+    expect(sqlStatements[1]).toContain('INSERT INTO device_installations')
+    expect(sqlStatements[1]).toContain('FROM device_installations source')
+    expect(sqlStatements[1]).toContain('source.revoked_at IS NULL')
+    expect(sqlStatements[1]).toContain('(? IS NULL OR source.id = ?)')
     expect(batches).toHaveLength(1)
-    expect(batches[0]).toHaveLength(4)
-    expect(bindings[0]?.slice(5, 9)).toEqual([
+    expect(batches[0]).toHaveLength(5)
+    expect(bindings[1]?.slice(13, 17)).toEqual([
       null,
       null,
       null,
@@ -592,6 +604,7 @@ describe('D1DevicePairingRepository', () => {
     const { db } = createRecordingDb(
       null,
       [
+        { success: true, meta: { changes: 1 } },
         { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } },
@@ -627,6 +640,7 @@ describe('D1DevicePairingRepository', () => {
     const { db } = createRecordingDb(
       null,
       [
+        { success: true, meta: { changes: 1 } },
         { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } },
         { success: true, meta: { changes: 0 } },

@@ -6,6 +6,7 @@ import { assertAntigravitySettingsValid, getAntigravityHookStatus, installAntigr
 import { assertClaudeSettingsValid, getClaudeHookStatus, installClaudeHook, uninstallClaudeHook } from './claude-hook.mjs'
 import { configDir, parseArgs } from './config.mjs'
 import { assertCodexNotifyWritable, getCodexHookStatus, installCodexHook, uninstallCodexHook } from './codex-hook.mjs'
+import { errorMessage } from './error-message.mjs'
 import { antigravitySource, claudeSource, codexSource, isTokenBoardNotifyHandler, nodeFs, notifyHandlerMarker, readOptional, readSources, readUninstallSources, removeNotifyHandler } from './hooks-utils.mjs'
 
 export function hookPaths({ homeDir = homedir(), stateDir = configDir(), env = process.env } = {}) {
@@ -103,6 +104,7 @@ export function uninstallHooks(options = {}) {
         source: antigravitySource,
         action: 'skip',
         changed: false,
+        incomplete: true,
         detail: `Antigravity statusline not checked: ${errorMessage(error)}`
       })
       return finishUninstallHooks({ results, paths, fs, nodePath, platform })
@@ -292,13 +294,44 @@ function isSelfNotify(cmd) {
 function recordHandlerError(stage, error) {
   try {
     mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-    const message = error && error.message ? error.message : String(error);
+    const message = errorMessage(error);
     appendFileSync(join(STATE_DIR, "notify-handler-errors.log"), JSON.stringify({
       stage,
       message,
       at: new Date().toISOString(),
     }) + "\\n", "utf8");
   } catch (_) {}
+}
+
+function errorMessage(error) {
+  let isError = false;
+  try {
+    isError = error instanceof Error;
+  } catch (_) {}
+  if (!isError) return safeErrorString(error);
+
+  const message = safeErrorPropertyString(error, "message");
+  if (message.trim()) return message;
+  const name = safeErrorPropertyString(error, "name");
+  if (name.trim()) return name;
+  return "Unknown error";
+}
+
+function safeErrorPropertyString(error, property) {
+  try {
+    return String(error[property] ?? "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function safeErrorString(value) {
+  try {
+    const message = String(value);
+    return message.trim() ? message : "Unknown error";
+  } catch (_) {
+    return "Unknown error";
+  }
 }
 
 function isMissingFileError(error) {
@@ -354,10 +387,6 @@ function sourceWasExplicitlyRequested(value, source) {
     .includes(source)
 }
 
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function canRemoveNotifyHandler(status) {
   return status.codex === 'not-installed' && status.claudeCode === 'not-installed'
 }
@@ -389,7 +418,7 @@ function runCli(command) {
     const result = command()
     console.log(JSON.stringify(result, null, 2))
   } catch (error) {
-    console.error(error.message)
+    console.error(errorMessage(error))
     process.exit(1)
   }
 }

@@ -18,6 +18,20 @@ const antigravitySnapshot: UsageSnapshot = {
   collectedAt: '2026-06-23T10:00:00.000Z'
 }
 
+const claudeSnapshot: UsageSnapshot = {
+  ...antigravitySnapshot,
+  source: 'claude-code',
+  model: 'claude-sonnet-4-5',
+  costUsd: 0.01
+}
+
+const codexSnapshot: UsageSnapshot = {
+  ...antigravitySnapshot,
+  source: 'codex',
+  model: 'gpt-5',
+  costUsd: 0.02
+}
+
 describe('runCollectorCli Antigravity source', () => {
   test('previews the selected Antigravity CLI source', async () => {
     const stdout: string[] = []
@@ -54,6 +68,38 @@ describe('runCollectorCli Antigravity source', () => {
     )
 
     expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([{ ...antigravitySnapshot, source: 'antigravity' }])
+  })
+
+  test.each([
+    {
+      label: 'environment endpoint',
+      args: ['preview', '--source', 'antigravity'],
+      env: { TOKENBOARD_ENDPOINT: 'not a URL', TOKENBOARD_STATE_DIR: '/state' }
+    },
+    {
+      label: 'command endpoint',
+      args: ['preview', '--source', 'antigravity', '--endpoint', 'not a URL'],
+      env: { TOKENBOARD_STATE_DIR: '/state' }
+    }
+  ])('previews Antigravity without parsing an invalid $label', async ({ args, env }) => {
+    const stdout: string[] = []
+    const cursorScopes: Array<string | undefined> = []
+
+    const result = await runCollectorCli(
+      args,
+      env,
+      deps({
+        stdout: (line) => stdout.push(line),
+        collectAntigravityUsage: async (options) => {
+          cursorScopes.push(options?.cursorScope)
+          return [{ ...antigravitySnapshot, source: 'antigravity' }]
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(cursorScopes).toEqual([undefined])
     expect(JSON.parse(stdout[0])).toEqual([{ ...antigravitySnapshot, source: 'antigravity' }])
   })
 
@@ -94,6 +140,38 @@ describe('runCollectorCli Antigravity source', () => {
     expect(stderr).toEqual([
       'Antigravity collection: source=antigravity-cli status=unavailable category=statusline-unavailable'
     ])
+  })
+
+  test.each([
+    {
+      label: 'endpoint',
+      env: { TOKENBOARD_STATE_DIR: '/state', TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token' },
+      missing: 'TOKENBOARD_ENDPOINT'
+    },
+    {
+      label: 'upload token',
+      env: { TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest', TOKENBOARD_STATE_DIR: '/state' },
+      missing: 'TOKENBOARD_UPLOAD_TOKEN'
+    }
+  ])('does not collect Antigravity before a required sync $label is validated', async ({ env, missing }) => {
+    const stderr: string[] = []
+    const calls: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity'],
+      env,
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          calls.push('antigravity')
+          return [{ ...antigravitySnapshot, source: 'antigravity' }]
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(calls).toEqual([])
+    expect(stderr[0]).toContain(missing)
   })
 
   test('does not fail strict all mode when Antigravity products are not installed', async () => {
@@ -361,6 +439,100 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
+  test('uploads fatal partial Antigravity snapshots before failing all sync', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+    const snapshot = { ...antigravitySnapshot, source: 'antigravity' as const }
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new AntigravityPartialUsageError(
+            'Antigravity language server collection failed after DB history was collected: Invalid Antigravity generator metadata item 3',
+            [snapshot],
+            undefined,
+            true
+          )
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[snapshot]])
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=partial category=invalid-metadata',
+      'One or more sources failed: antigravity: status=partial category=invalid-metadata'
+    ])
+  })
+
+  test('fails all preview after printing healthy snapshots for a hard Antigravity error', async () => {
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {},
+      deps({
+        stdout: (line) => stdout.push(line),
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        collectAntigravityUsage: async () => {
+          throw new Error('Invalid Antigravity generator metadata item 3')
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(JSON.parse(stdout[0])).toEqual([claudeSnapshot, codexSnapshot])
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
+    ])
+  })
+
+  test('uploads healthy sources before failing all sync for a hard Antigravity error', async () => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new Error('Invalid Antigravity generator metadata item 3')
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[claudeSnapshot, codexSnapshot]])
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
+    ])
+  })
+
   test('fails strict all mode after uploading partial Antigravity DB snapshots', async () => {
     const stderr: string[] = []
     const uploaded: UsageSnapshot[][] = []
@@ -456,7 +628,40 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=failed category=invalid-metadata'
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
+    ])
+  })
+
+  test.each([
+    {
+      label: 'metadata response size-limit errors',
+      message: 'Antigravity metadata response exceeded the 8388608-byte limit for antigravity'
+    },
+    {
+      label: 'metadata HTTP errors',
+      message: 'Antigravity metadata request failed for antigravity: HTTP 500'
+    }
+  ])('classifies $label as language-server unavailable', async ({ message }) => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          throw new Error(message)
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=failed category=language-server-unavailable'
     ])
   })
 
@@ -486,9 +691,10 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=failed category=invalid-metadata'
+      'Antigravity collection: source=antigravity status=failed category=invalid-metadata',
+      'One or more sources failed: antigravity: status=failed category=invalid-metadata'
     ])
-    expect(uploaded).toEqual([])
+    expect(uploaded).toEqual([[]])
   })
 
   test('fails strict all mode for real Antigravity ENOENT failures', async () => {
@@ -511,7 +717,8 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=failed category=metadata-read-failed'
+      'Antigravity collection: source=antigravity status=failed category=metadata-read-failed',
+      'One or more sources failed: antigravity: status=failed category=metadata-read-failed'
     ])
   })
 
@@ -552,6 +759,121 @@ describe('runCollectorCli Antigravity source', () => {
       { source: 'antigravity-ide', cursorScope: 'https://tokenboard.example.com' }
     ])
     expect(acknowledged).toEqual(collected)
+  })
+
+  test.each(['20260708', '2026-07-08', 'all'])('passes an explicit since value of %s to every collector', async (since) => {
+    const seen: Array<{ source: string; since: string | undefined }> = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all', '--since', since],
+      { TOKENBOARD_STATE_DIR: '/state' },
+      deps({
+        collectClaudeCodeUsage: async (options) => {
+          seen.push({ source: 'claude-code', since: options?.since })
+          return []
+        },
+        collectCodexUsage: async (options) => {
+          seen.push({ source: 'codex', since: options?.since })
+          return []
+        },
+        collectAntigravityCliUsage: async (options) => {
+          seen.push({ source: 'antigravity-cli', since: options?.since })
+          return []
+        },
+        collectAntigravityUsage: async (options) => {
+          seen.push({ source: 'antigravity', since: options?.since })
+          return []
+        },
+        collectAntigravityIdeUsage: async (options) => {
+          seen.push({ source: 'antigravity-ide', since: options?.since })
+          return []
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(seen).toEqual([
+      { source: 'claude-code', since },
+      { source: 'codex', since },
+      { source: 'antigravity-cli', since },
+      { source: 'antigravity', since },
+      { source: 'antigravity-ide', since }
+    ])
+  })
+
+  test('uses the default since window when the primary environment value is empty', async () => {
+    const seen: Array<{ source: string; since: string | undefined }> = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {
+        TOKENBOARD_SINCE: '',
+        TOKENBOARD_DEFAULT_SINCE: '20260501',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      deps({
+        collectClaudeCodeUsage: async (options) => {
+          seen.push({ source: 'claude-code', since: options?.since })
+          return []
+        },
+        collectCodexUsage: async (options) => {
+          seen.push({ source: 'codex', since: options?.since })
+          return []
+        },
+        collectAntigravityCliUsage: async (options) => {
+          seen.push({ source: 'antigravity-cli', since: options?.since })
+          return []
+        },
+        collectAntigravityUsage: async (options) => {
+          seen.push({ source: 'antigravity', since: options?.since })
+          return []
+        },
+        collectAntigravityIdeUsage: async (options) => {
+          seen.push({ source: 'antigravity-ide', since: options?.since })
+          return []
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(seen).toEqual([
+      { source: 'claude-code', since: '20260501' },
+      { source: 'codex', since: '20260501' },
+      { source: 'antigravity-cli', since: '20260501' },
+      { source: 'antigravity', since: '20260501' },
+      { source: 'antigravity-ide', since: '20260501' }
+    ])
+  })
+
+  test('passes an explicit since date to selected Claude and Codex collectors', async () => {
+    const seen: Array<{ source: string; since: string | undefined }> = []
+    const collectorDeps = deps({
+      collectClaudeCodeUsage: async (options) => {
+        seen.push({ source: 'claude-code', since: options?.since })
+        return []
+      },
+      collectCodexUsage: async (options) => {
+        seen.push({ source: 'codex', since: options?.since })
+        return []
+      }
+    })
+
+    const claudeResult = await runCollectorCli(
+      ['preview', '--source', 'claude-code', '--since', '20260708'],
+      { TOKENBOARD_STATE_DIR: '/state' },
+      collectorDeps
+    )
+    const codexResult = await runCollectorCli(
+      ['preview', '--source', 'codex', '--since', '20260708'],
+      { TOKENBOARD_STATE_DIR: '/state' },
+      collectorDeps
+    )
+
+    expect([claudeResult, codexResult]).toEqual([0, 0])
+    expect(seen).toEqual([
+      { source: 'claude-code', since: '20260708' },
+      { source: 'codex', since: '20260708' }
+    ])
   })
 
   test('acks Antigravity cursors after a successful non-hook upload', async () => {

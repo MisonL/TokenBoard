@@ -1,5 +1,10 @@
 import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metrics'
-import { formatCostWithAvailability, formatSource, formatSourceCostNote } from '../usage/source-format'
+import {
+  formatCostWithAvailability,
+  formatModelCostWithAvailability,
+  formatSource,
+  formatSourceCostNote
+} from '../usage/source-format'
 import type { WebhookProvider } from './schema'
 
 const wecomMarkdownMaxBytes = 4096
@@ -336,7 +341,7 @@ function formatModelCost(
   item: DailyTokenReport['topModels'][number],
   report: DailyTokenReport
 ) {
-  return formatCostWithAvailability(item.costUsd, item.sourceSplit ?? report.sourceSplit)
+  return formatModelCostWithAvailability(item.costUsd, item.sourceSplit, report.sourceSplit)
 }
 
 function formatSourceCostSuffix(source: string) {

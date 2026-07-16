@@ -6,6 +6,17 @@ import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import type { Readable } from 'node:stream'
+import { errorMessage } from '../error-message'
+import {
+  beginAntigravityFileScan,
+  listAntigravityDirectoryFileNames,
+  markAntigravityFileScanned,
+  pruneAntigravityFileScanState,
+  readAntigravityFileScanEntry,
+  removeAntigravityFileScanEntry,
+  selectAntigravityFileScanIds,
+  type AntigravityFileScanState
+} from './antigravity-file-scan'
 import type { AntigravityGuiSource } from './antigravity-gui'
 
 const defaultLanguageServerPath = '/Applications/Antigravity.app/Contents/Resources/bin/language_server'
@@ -13,6 +24,7 @@ const apiServerUrl = 'https://generativelanguage.googleapis.com'
 const cloudCodeEndpoint = 'https://daily-cloudcode-pa.googleapis.com'
 const defaultReadyTimeoutMs = 30_000
 const requestTimeoutMs = 60_000
+const maxMetadataResponseBytes = 8 * 1024 * 1024
 const cascadeIdPattern = /^[0-9a-fA-F-]{8,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{12,}$/
 type LanguageServerProcess = ChildProcessByStdio<null, Readable, Readable>
 
@@ -73,12 +85,17 @@ export async function listAntigravityCascades(input: {
   limit?: number
   requiredCascadeIds?: Iterable<string>
   includeCascade?: (cascade: AntigravityCascadeRef) => boolean
+  compareCascades?: (left: AntigravityCascadeRef, right: AntigravityCascadeRef) => number
   fileSystem?: AntigravityCascadeFileSystem
+  scanState?: AntigravityFileScanState
 }) {
   const dir = input.conversationDir ?? defaultConversationDir(input.source)
   const fileSystem = input.fileSystem ?? nodeCascadeFileSystem
   const limit = normalizeCascadeLimit(input.limit)
   if (limit === 0) return []
+  const compareCascades = input.compareCascades ?? compareRecentCascades
+  const scanState = input.scanState ?? { nextSequence: 0, files: {} }
+  const checkedSequence = beginAntigravityFileScan(scanState)
 
   let entries
   try {
@@ -92,27 +109,34 @@ export async function listAntigravityCascades(input: {
 
   const cascades: AntigravityCascadeRef[] = []
   const seenIds = new Set<string>()
-  let foundCascade = false
+  const requiredCascades = new Map<string, AntigravityCascadeRef>()
   try {
     for (const id of input.requiredCascadeIds ?? []) {
       if (!cascadeIdPattern.test(id) || seenIds.has(id)) continue
       seenIds.add(id)
       const cascade = await cascadeRef(fileSystem, dir, id)
       if (!cascade) continue
-      foundCascade = true
-      if (input.includeCascade && !input.includeCascade(cascade)) continue
-      pushRecentCascade(cascades, cascade, limit)
+      requiredCascades.set(id, cascade)
+      markScanEntry(scanState, cascade, checkedSequence)
     }
-    for await (const entry of entries) {
-      if (!entry.isFile()) continue
-      const id = cascadeIdFromFile(entry.name)
-      if (!id || seenIds.has(id)) continue
-      seenIds.add(id)
+    const candidateLimit = directoryCandidateLimit(limit)
+    const directoryIds = await listDirectoryCascadeIds(entries, seenIds)
+    pruneAntigravityFileScanState(scanState, [...directoryIds, ...requiredCascades.keys()])
+    const scanIds = selectAntigravityFileScanIds(directoryIds, scanState, candidateLimit)
+    for (const id of scanIds) {
       const cascade = await cascadeRef(fileSystem, dir, id)
-      if (!cascade) continue
-      foundCascade = true
+      if (cascade) markScanEntry(scanState, cascade, checkedSequence)
+      else removeAntigravityFileScanEntry(scanState, id)
+    }
+    for (const id of directoryIds) {
+      const cascade = cachedCascadeRef(scanState, id)
+      if (!cascade || (input.includeCascade && !input.includeCascade(cascade))) continue
+      pushPreferredCascade(cascades, cascade, limit, compareCascades)
+    }
+    for (const [id, cascade] of requiredCascades) {
+      if (directoryIds.includes(id)) continue
       if (input.includeCascade && !input.includeCascade(cascade)) continue
-      pushRecentCascade(cascades, cascade, limit)
+      pushPreferredCascade(cascades, cascade, limit, compareCascades)
     }
   } catch (error) {
     if (isMissingFileError(error)) {
@@ -120,34 +144,78 @@ export async function listAntigravityCascades(input: {
     }
     throw error
   }
-  cascades.sort((left, right) => {
-    if (right.mtimeMs !== left.mtimeMs) return right.mtimeMs - left.mtimeMs
-    return left.id.localeCompare(right.id)
-  })
+  cascades.sort(compareCascades)
 
-  if (!foundCascade) {
+  if (cascades.length === 0 && Object.keys(scanState.files).length === 0) {
     throw new Error(`No Antigravity conversations found in ${dir}`)
   }
   return cascades
 }
 
-function pushRecentCascade(
+async function listDirectoryCascadeIds(
+  entries: AsyncIterable<{ name: string; isFile: () => boolean }>,
+  excludedIds: ReadonlySet<string>
+) {
+  const ids: string[] = []
+  const listedIds = new Set<string>()
+  for (const name of await listAntigravityDirectoryFileNames(entries)) {
+    const id = cascadeIdFromFile(name)
+    if (!id || excludedIds.has(id) || listedIds.has(id)) continue
+    listedIds.add(id)
+    ids.push(id)
+  }
+  return ids
+}
+
+function directoryCandidateLimit(limit: number) {
+  if (limit === Number.POSITIVE_INFINITY) return limit
+  return Math.max(64, limit * 20)
+}
+
+function markScanEntry(
+  state: AntigravityFileScanState,
+  cascade: AntigravityCascadeRef,
+  checkedSequence: number
+) {
+  markAntigravityFileScanned(state, cascade.id, {
+    mtimeMs: cascade.mtimeMs,
+    size: cascade.size,
+    hasDatabaseFile: cascade.hasDatabaseFile === true
+  }, checkedSequence)
+}
+
+function cachedCascadeRef(state: AntigravityFileScanState, id: string): AntigravityCascadeRef | null {
+  const entry = readAntigravityFileScanEntry(state, id)
+  if (!entry) return null
+  return {
+    id,
+    mtimeMs: entry.mtimeMs,
+    size: entry.size,
+    hasDatabaseFile: entry.hasDatabaseFile
+  }
+}
+
+function compareRecentCascades(left: AntigravityCascadeRef, right: AntigravityCascadeRef) {
+  if (right.mtimeMs !== left.mtimeMs) return right.mtimeMs - left.mtimeMs
+  return left.id.localeCompare(right.id)
+}
+
+function pushPreferredCascade(
   cascades: AntigravityCascadeRef[],
   cascade: AntigravityCascadeRef,
-  limit: number
+  limit: number,
+  compareCascades: (left: AntigravityCascadeRef, right: AntigravityCascadeRef) => number
 ) {
   if (limit === Number.POSITIVE_INFINITY || cascades.length < limit) {
     cascades.push(cascade)
     return
   }
-  const oldestIndex = cascades.reduce((selected, current, index) => {
-    const oldest = cascades[selected]
-    if (current.mtimeMs !== oldest.mtimeMs) return current.mtimeMs < oldest.mtimeMs ? index : selected
-    return current.id > oldest.id ? index : selected
+  const lowestPriorityIndex = cascades.reduce((selected, current, index) => {
+    const lowestPriority = cascades[selected]
+    return compareCascades(current, lowestPriority) > 0 ? index : selected
   }, 0)
-  const oldest = cascades[oldestIndex]
-  if (cascade.mtimeMs > oldest.mtimeMs || (cascade.mtimeMs === oldest.mtimeMs && cascade.id < oldest.id)) {
-    cascades[oldestIndex] = cascade
+  if (compareCascades(cascade, cascades[lowestPriorityIndex]) < 0) {
+    cascades[lowestPriorityIndex] = cascade
   }
 }
 
@@ -206,7 +274,7 @@ function waitForReady(server: LanguageServerProcess, port: number) {
       const text = chunk.toString('utf8')
       lines.push(text)
       output += text
-      if (output.includes(`fixed port at ${port} for HTTPS`) || output.includes(`:${port}`)) {
+      if (output.includes(`fixed port at ${port} for HTTPS`)) {
         cleanup()
         drainOutput(server)
         resolve()
@@ -245,9 +313,20 @@ function drainOutput(server: LanguageServerProcess) {
   server.stderr.resume()
 }
 
-function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & { port: number; csrfToken: string }) {
+export function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & { port: number; csrfToken: string }) {
   const body = JSON.stringify({ cascadeId: input.cascadeId })
   return new Promise<unknown>((resolve, reject) => {
+    let settled = false
+    const rejectOnce = (error: Error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    const resolveOnce = (value: unknown) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
     const req = request({
       hostname: '127.0.0.1',
       port: input.port,
@@ -262,29 +341,59 @@ function requestGeneratorMetadata(input: AntigravityGeneratorMetadataRequest & {
         'X-Codeium-Csrf-Token': input.csrfToken
       }
     }, (res) => {
+      const responseError = (error: unknown) => {
+        rejectOnce(new Error(formatMetadataRequestTransportError(input.source, error)))
+      }
+      res.once('error', responseError)
+      res.once('aborted', () => responseError(new Error('response aborted')))
+      if (res.statusCode !== 200) {
+        rejectOnce(new Error(formatMetadataRequestHttpError(input.source, res.statusCode)))
+        res.destroy()
+        return
+      }
       const chunks: Buffer[] = []
-      res.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8')
-        if (res.statusCode !== 200) {
-          reject(new Error(formatMetadataRequestHttpError(input.source, res.statusCode)))
+      let receivedBytes = 0
+      res.on('data', (chunk) => {
+        if (settled) return
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        receivedBytes += buffer.byteLength
+        if (receivedBytes > maxMetadataResponseBytes) {
+          chunks.length = 0
+          rejectOnce(new Error(formatMetadataResponseLimitError(input.source)))
+          res.destroy()
           return
         }
+        chunks.push(buffer)
+      })
+      res.on('end', () => {
+        if (settled) return
+        const text = Buffer.concat(chunks).toString('utf8')
         try {
-          resolve(JSON.parse(text))
+          resolveOnce(JSON.parse(text))
         } catch {
-          reject(new Error(`Antigravity metadata request returned invalid JSON for ${input.source}`))
+          rejectOnce(new Error(`Antigravity metadata request returned invalid JSON for ${input.source}`))
         }
       })
     })
-    req.on('timeout', () => req.destroy(new Error(`Antigravity metadata request timed out for ${input.source}`)))
-    req.on('error', reject)
+    req.on('timeout', () => {
+      rejectOnce(new Error(`Antigravity metadata request timed out for ${input.source}`))
+      req.destroy()
+    })
+    req.on('error', (error) => rejectOnce(new Error(formatMetadataRequestTransportError(input.source, error))))
     req.end(body)
   })
 }
 
+function formatMetadataResponseLimitError(source: AntigravityGuiSource) {
+  return `Antigravity metadata response exceeded the ${maxMetadataResponseBytes}-byte limit for ${source}`
+}
+
 export function formatMetadataRequestHttpError(source: AntigravityGuiSource, statusCode?: number) {
   return `Antigravity metadata request failed for ${source}: HTTP ${statusCode ?? 'unknown'}`
+}
+
+export function formatMetadataRequestTransportError(source: AntigravityGuiSource, error: unknown) {
+  return `Antigravity metadata request transport failed for ${source}: ${errorMessage(error)}`
 }
 
 async function closeLanguageServer(server: LanguageServerProcess) {

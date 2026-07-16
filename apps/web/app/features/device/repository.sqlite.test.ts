@@ -6,7 +6,13 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../test/sqlite-d1'
 import { D1DevicePairingRepository } from './repository'
-import { pairDevice, revokeDevice, revokeInstallation } from './service'
+import {
+  pairDevice,
+  renameDevice,
+  revokeDevice,
+  revokeInstallation,
+  revokeUploadToken
+} from './service'
 
 const crashFixturePath = fileURLToPath(
   new URL('../../test/fixtures/device-pairing-crash.ts', import.meta.url)
@@ -31,13 +37,15 @@ describe('device pairing sqlite contract', () => {
 
     expect(result.status, result.stderr).toBe(42)
     expect(readScalar(dbPath, "SELECT consumed_at FROM pairing_codes WHERE id = 'pair_1'")).toBeNull()
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM devices WHERE id = 'dev_attempt'"))
+      .toBe(0)
     expect(readCount(dbPath, "SELECT COUNT(*) FROM device_installations WHERE id = 'inst_attempt'"))
       .toBe(0)
     expect(readCount(dbPath, "SELECT COUNT(*) FROM upload_tokens WHERE id = 'ut_attempt'"))
       .toBe(0)
     expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE id = 'audit_attempt'"))
       .toBe(0)
-  })
+  }, 15000)
 
   test('creates credentials and consumes the pairing code in one batch', async () => {
     const { db, dbPath } = createDeviceDb(tempDirs)
@@ -86,6 +94,84 @@ describe('device pairing sqlite contract', () => {
     expect(readCount(dbPath, "SELECT COUNT(*) FROM upload_tokens WHERE id = 'ut_attempt'"))
       .toBe(0)
   })
+
+  test('reports an inactive reconnect target when it is revoked after pairing-code lookup', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedReconnectPairing(dbPath)
+    const repository = new D1DevicePairingRepository(db)
+    expect(await repository.findUsablePairingCode(
+      'hash:reconnect-pairing',
+      '2026-07-11T01:00:00.000Z'
+    )).not.toBeNull()
+    runSql(dbPath, `
+      UPDATE device_installations
+      SET revoked_at = '2026-07-11T01:00:01.000Z'
+      WHERE id = 'inst_old';
+    `)
+
+    await expect(repository.createUploadTokenAndInstallation({
+      pairingCodeId: 'pair_reconnect',
+      consumedAt: '2026-07-11T01:00:02.000Z',
+      uploadTokenId: 'ut_reconnect',
+      uploadTokenHash: 'hash:reconnect-upload',
+      deviceId: 'dev_old',
+      installationId: 'inst_reconnect',
+      installClaimHash: 'hash:reconnect-claim',
+      userId: 'user_1',
+      deviceName: 'Reinstalled',
+      platform: 'linux',
+      auditLogId: 'audit_reconnect',
+      auditAction: 'device.reconnect',
+      createdAt: '2026-07-11T01:00:02.000Z'
+    })).rejects.toThrow('Reconnect target is no longer active')
+
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM device_installations WHERE id = 'inst_reconnect'"))
+      .toBe(0)
+    expect(readScalar(dbPath, "SELECT consumed_at FROM pairing_codes WHERE id = 'pair_reconnect'"))
+      .toBeNull()
+  })
+
+  test('preserves a device-link claim when the pairing code is consumed after lookup', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedReconnectPairing(dbPath)
+    const repository = new D1DevicePairingRepository(db)
+    expect(await repository.findUsablePairingCode(
+      'hash:reconnect-pairing',
+      '2026-07-11T01:00:00.000Z'
+    )).not.toBeNull()
+    runSql(dbPath, `
+      UPDATE pairing_codes
+      SET consumed_at = '2026-07-11T01:00:01.000Z'
+      WHERE id = 'pair_reconnect';
+    `)
+
+    await expect(repository.createUploadTokenAndInstallation({
+      pairingCodeId: 'pair_reconnect',
+      consumedAt: '2026-07-11T01:00:02.000Z',
+      uploadTokenId: 'ut_reconnect',
+      uploadTokenHash: 'hash:reconnect-upload',
+      deviceId: 'dev_old',
+      installationId: 'inst_reconnect',
+      installClaimHash: 'hash:reconnect-claim',
+      userId: 'user_1',
+      deviceName: 'Reinstalled',
+      platform: 'linux',
+      auditLogId: 'audit_reconnect',
+      auditAction: 'device.reconnect',
+      createdAt: '2026-07-11T01:00:02.000Z',
+      sourceInstallationId: 'inst_old',
+      sourceInstallClaimHash: 'hash:old-claim',
+      consumedInstallClaimHash: 'hash:consumed-claim'
+    })).rejects.toThrow('Reconnect pairing code is no longer current')
+
+    expect(readColumn(
+      dbPath,
+      "SELECT install_claim_hash FROM device_installations WHERE id = 'inst_old'",
+      'install_claim_hash'
+    )).toBe('hash:old-claim')
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM device_installations WHERE id = 'inst_reconnect'"))
+      .toBe(0)
+  })
 })
 
 describe('device revocation sqlite contract', () => {
@@ -131,6 +217,54 @@ describe('device revocation sqlite contract', () => {
       .toBeNull()
     expect(readColumn(dbPath, 'SELECT revoked_at FROM device_installations WHERE id = \'inst_1\'', 'revoked_at'))
       .toBeNull()
+  })
+
+  test('rolls back a device rename when the audit insert fails', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    rejectAuditAction(dbPath, 'device.rename')
+
+    await expect(renameDevice(db, {
+      userId: 'user_1',
+      deviceId: 'dev_1',
+      name: 'Renamed',
+      now: '2026-07-11T01:00:00.000Z'
+    })).rejects.toThrow('audit failed')
+
+    expect(readColumn(dbPath, "SELECT name FROM devices WHERE id = 'dev_1'", 'name'))
+      .toBe('Workstation')
+  })
+
+  test('does not record a second installation audit when the state change loses a race', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    const input = {
+      userId: 'user_1',
+      installationId: 'inst_1',
+      now: '2026-07-11T01:00:00.000Z'
+    }
+
+    await revokeInstallation(db, input)
+    await expect(revokeInstallation(db, input)).rejects.toThrow('Installation not found')
+
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE action = 'installation.revoke'"))
+      .toBe(1)
+  })
+
+  test('does not record a second token audit when the state change loses a race', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    const input = {
+      userId: 'user_1',
+      uploadTokenId: 'ut_1',
+      now: '2026-07-11T01:00:00.000Z'
+    }
+
+    await revokeUploadToken(db, input)
+    await expect(revokeUploadToken(db, input)).rejects.toThrow('Upload token not found')
+
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE action = 'token.revoke'"))
+      .toBe(1)
   })
 })
 
@@ -239,11 +373,49 @@ function seedRevocationTarget(dbPath: string) {
   `)
 }
 
+function seedReconnectPairing(dbPath: string) {
+  runSql(dbPath, `
+    INSERT INTO users (id) VALUES ('user_1');
+    INSERT INTO devices (
+      id, user_id, name, platform, created_at, updated_at
+    ) VALUES (
+      'dev_old', 'user_1', 'Workstation', 'linux',
+      '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z'
+    );
+    INSERT INTO device_installations (
+      id, user_id, device_id, platform, install_claim_hash,
+      first_seen_at, created_at, updated_at
+    ) VALUES (
+      'inst_old', 'user_1', 'dev_old', 'linux', 'hash:old-claim',
+      '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z',
+      '2026-07-11T00:00:00.000Z'
+    );
+    INSERT INTO pairing_codes (
+      id, user_id, code_hash, pairing_type, target_device_id,
+      expires_at, created_at
+    ) VALUES (
+      'pair_reconnect', 'user_1', 'hash:reconnect-pairing', 'reconnect_device',
+      'dev_old', '2026-07-11T02:00:00.000Z', '2026-07-11T00:00:00.000Z'
+    );
+  `)
+}
+
 function rejectRevocationAudits(dbPath: string) {
   runSql(dbPath, `
     CREATE TRIGGER reject_revocation_audit
     BEFORE INSERT ON audit_logs
     WHEN NEW.action IN ('device.revoke', 'installation.revoke')
+    BEGIN
+      SELECT RAISE(ABORT, 'audit failed');
+    END;
+  `)
+}
+
+function rejectAuditAction(dbPath: string, action: string) {
+  runSql(dbPath, `
+    CREATE TRIGGER reject_selected_audit
+    BEFORE INSERT ON audit_logs
+    WHEN NEW.action = '${action}'
     BEGIN
       SELECT RAISE(ABORT, 'audit failed');
     END;

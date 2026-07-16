@@ -408,7 +408,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     if (hasSourceClaimMetadata && !shouldConsumeSourceClaim) {
       throw new Error('Reconnect source metadata is incomplete')
     }
-    const statements = []
+    const statements = [this.reconnectPairingCodeCurrentStatement(input)]
     if (shouldConsumeSourceClaim) {
       statements.push(this.reconnectSourceClaimConsumeStatement(input))
     }
@@ -422,14 +422,38 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
     const results = await this.db.batch(statements)
     assertBatchSucceeded(results, statements.length)
     let offset = 0
+    assertStatementChanged(results[offset], 'Reconnect pairing code is no longer current')
+    offset += 1
     if (shouldConsumeSourceClaim) {
-      assertStatementChanged(results[0], 'Reconnect source installation is no longer current')
-      offset = 1
+      assertStatementChanged(results[offset], 'Reconnect source installation is no longer current')
+      offset += 1
     }
     assertStatementChanged(results[offset], 'Reconnect target is no longer active')
     assertStatementChanged(results[offset + 1], 'Upload token was not created')
     assertStatementChanged(results[offset + 2], 'Device pairing was not recorded')
     assertStatementChanged(results[offset + 3], 'Pairing code is no longer current')
+  }
+
+  private reconnectPairingCodeCurrentStatement(input: ReconnectInstallationInput) {
+    return this.db
+      .prepare(
+        `
+          UPDATE pairing_codes
+          SET consumed_at = consumed_at
+          WHERE id = ?
+            AND user_id = ?
+            AND pairing_type = 'reconnect_device'
+            AND target_device_id = ?
+            AND consumed_at IS NULL
+            AND expires_at > ?
+        `
+      )
+      .bind(
+        input.pairingCodeId,
+        input.userId,
+        input.deviceId,
+        input.consumedAt
+      )
   }
 
   private reconnectSourceClaimConsumeStatement(input: ReconnectInstallationInput) {
@@ -443,6 +467,16 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             AND device_id = ?
             AND install_claim_hash = ?
             AND revoked_at IS NULL
+            AND EXISTS (
+              SELECT 1
+              FROM pairing_codes pairing
+              WHERE pairing.id = ?
+                AND pairing.user_id = device_installations.user_id
+                AND pairing.pairing_type = 'reconnect_device'
+                AND pairing.target_device_id = device_installations.device_id
+                AND pairing.consumed_at IS NULL
+                AND pairing.expires_at > ?
+            )
         `
       )
       .bind(
@@ -451,7 +485,9 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
         input.sourceInstallationId,
         input.userId,
         input.deviceId,
-        input.sourceInstallClaimHash
+        input.sourceInstallClaimHash,
+        input.pairingCodeId,
+        input.consumedAt
       )
   }
 
@@ -471,39 +507,26 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             created_at,
             updated_at
           )
-          VALUES (
-            ?,
-            (
-              SELECT source.user_id
-              FROM device_installations source
-              JOIN pairing_codes pairing
-                ON pairing.id = ?
-                AND pairing.user_id = source.user_id
-                AND pairing.pairing_type = 'reconnect_device'
-                AND pairing.target_device_id = source.device_id
-                AND pairing.consumed_at IS NULL
-                AND pairing.expires_at > ?
-              WHERE source.user_id = ?
-                AND source.device_id = ?
-                AND source.revoked_at IS NULL
-                AND (? IS NULL OR source.id = ?)
-                AND (? IS NULL OR source.install_claim_hash = ?)
-              LIMIT 1
-            ),
-            ?, ?, ?, ?, ?, ?, ?, ?
-          )
+          SELECT
+            ?, source.user_id, ?, ?, ?, ?, ?, ?, ?, ?
+          FROM device_installations source
+          JOIN pairing_codes pairing
+            ON pairing.id = ?
+            AND pairing.user_id = source.user_id
+            AND pairing.pairing_type = 'reconnect_device'
+            AND pairing.target_device_id = source.device_id
+            AND pairing.consumed_at IS NULL
+            AND pairing.expires_at > ?
+          WHERE source.user_id = ?
+            AND source.device_id = ?
+            AND source.revoked_at IS NULL
+            AND (? IS NULL OR source.id = ?)
+            AND (? IS NULL OR source.install_claim_hash = ?)
+          LIMIT 1
         `
       )
       .bind(
         input.installationId,
-        input.pairingCodeId,
-        input.consumedAt,
-        input.userId,
-        input.deviceId,
-        input.sourceInstallationId ?? null,
-        input.sourceInstallationId ?? null,
-        input.consumedInstallClaimHash ?? null,
-        input.consumedInstallClaimHash ?? null,
         input.deviceId,
         input.platform,
         input.deviceName,
@@ -511,7 +534,15 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
         input.createdAt,
         input.createdAt,
         input.createdAt,
-        input.createdAt
+        input.createdAt,
+        input.pairingCodeId,
+        input.consumedAt,
+        input.userId,
+        input.deviceId,
+        input.sourceInstallationId ?? null,
+        input.sourceInstallationId ?? null,
+        input.consumedInstallClaimHash ?? null,
+        input.consumedInstallClaimHash ?? null
       )
   }
 

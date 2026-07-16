@@ -5,6 +5,7 @@ import {
   collectChangedSessionFiles,
   updateCursorFile
 } from './session-cursor'
+import { withCursorLock } from './session-cursor-store'
 import { parseSessionJsonlLines } from './session-jsonl-parser'
 
 type HookInput = {
@@ -24,10 +25,15 @@ export type HookIncrementalResult = {
 }
 
 export async function collectHookIncremental(input: HookInput): Promise<HookIncrementalResult> {
+  const cursorPath = join(readStateDir(), input.cursorName)
+  return withCursorLock(cursorPath, () => collectHookIncrementalLocked(input, cursorPath))
+}
+
+async function collectHookIncrementalLocked(input: HookInput, cursorPath: string): Promise<HookIncrementalResult> {
   const changed = await collectChangedSessionFiles({
     source: input.source,
     sessionsDir: input.sessionsDir,
-    cursorPath: join(readStateDir(), input.cursorName)
+    cursorPath
   })
 
   if (changed.hasUnreadableChangedFile) {

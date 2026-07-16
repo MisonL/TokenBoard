@@ -1,0 +1,87 @@
+import { createHash } from 'node:crypto'
+import { readAntigravityDbUsageEvents, type AntigravityDbUsageResult } from './antigravity-history-db'
+import {
+  defaultConversationDir
+} from './antigravity-gui-environment'
+import {
+  lastSeenDbRowIndexByCascadeHash
+} from './antigravity-gui-cursor'
+import type { CollectAntigravityGuiUsageOptions } from './antigravity-gui'
+import type { AntigravityCollectionRange } from './antigravity-since'
+import type { readCursor } from './session-cursor-store'
+
+export async function readAntigravityGuiLocalDbUsage(
+  options: CollectAntigravityGuiUsageOptions,
+  cursor: Awaited<ReturnType<typeof readCursor>>,
+  range: AntigravityCollectionRange,
+  timezone: string
+): Promise<{
+  usage: AntigravityDbUsageResult
+  error?: unknown
+}> {
+  try {
+    return {
+      usage: filterDbUsageByRange(
+        await readAntigravityGuiLocalDbUsageOrThrow(options, cursor, range, timezone),
+        range
+      )
+    }
+  } catch (error) {
+    return {
+      usage: { cascadeIds: new Set<string>(), events: [] },
+      error
+    }
+  }
+}
+
+function filterDbUsageByRange(
+  usage: AntigravityDbUsageResult,
+  range: AntigravityCollectionRange
+): AntigravityDbUsageResult {
+  if (!range.sinceDate) return usage
+  const events = usage.events.filter((event) => range.includesTimestamp(event.createdAt))
+  const coveredHashes = new Set(events.flatMap((event) => [
+    event.cascadeHash,
+    ...(event.cascadeHashAliases ?? [])
+  ]))
+  const cascadeIds = new Set([...usage.cascadeIds].filter((cascadeId) => (
+    coveredHashes.has(createHash('sha256').update(cascadeId).digest('hex'))
+  )))
+  return { ...usage, cascadeIds, events }
+}
+
+async function readAntigravityGuiLocalDbUsageOrThrow(
+  options: CollectAntigravityGuiUsageOptions,
+  cursor: Awaited<ReturnType<typeof readCursor>>,
+  range: AntigravityCollectionRange,
+  timezone: string
+) {
+  const lastSeenRowIndexByCascadeHash = lastSeenDbRowIndexByCascadeHash({
+    cursor,
+    source: options.source,
+    historyScope: range.historyScope
+  })
+  if (options.readDbUsageEvents) {
+    return options.readDbUsageEvents({
+      lastSeenRowIndexByCascadeHash,
+      maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
+      sinceDate: range.sinceDate,
+      timezone
+    })
+  }
+  if (options.requestGeneratorMetadata) {
+    return { cascadeIds: new Set<string>(), events: [] }
+  }
+  return readAntigravityDbUsageEvents({
+    conversationDir: options.conversationDir ?? defaultConversationDir(options.source),
+    lastSeenRowIndexByCascadeHash,
+    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
+    scanState: cursor.antigravityDbFileScan,
+    sinceDate: range.sinceDate,
+    timezone
+  })
+}
+
+function resolveMaxDbFiles(value: number | null | undefined, range: AntigravityCollectionRange) {
+  return value === undefined ? (range.fullHistory ? null : undefined) : value
+}

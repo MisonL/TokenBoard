@@ -32,6 +32,24 @@ export function readSetupBaseUrl({ flags = {}, env = process.env } = {}) {
   return value ? String(value).replace(/\/$/, '') : null
 }
 
+export function resolveSetupInstallOptions({
+  flags = {},
+  env = process.env,
+  profile = {},
+  defaultScheduleTimes = []
+} = {}) {
+  const scheduleTimes = flags['schedule-times'] ||
+    env.TOKENBOARD_SCHEDULE_TIMES ||
+    profile.scheduleTimes ||
+    defaultScheduleTimes
+  return {
+    repoUrl: flags['repo-url'] || env.TOKENBOARD_REPO_URL || profile.repoUrl,
+    repoRef: flags['repo-ref'] || env.TOKENBOARD_REPO_REF || profile.repoRef,
+    packageManager: flags['package-manager'] || env.TOKENBOARD_PACKAGE_MANAGER || profile.packageManager || 'pnpm',
+    scheduleTimesInput: Array.isArray(scheduleTimes) ? scheduleTimes.join(',') : scheduleTimes
+  }
+}
+
 export function buildInstallCollectorArgs({ flags = {}, packageManager, installCollectorScript = './install-collector.mjs' } = {}) {
   const args = [installCollectorScript]
   if (flags['repo-url']) {
@@ -66,12 +84,15 @@ export async function createPairingCodeFromDeviceLink({
   if (!baseUrl) {
     throw new Error('Missing --base-url or TOKENBOARD_BASE_URL')
   }
-  const deviceLink = readDeviceLink()
+  const baseOrigin = serverOriginFromUrl(baseUrl)
+  if (!baseOrigin) {
+    throw new Error('TokenBoard device link belongs to a different server')
+  }
+  const deviceLink = readDeviceLink({ serverOrigin: baseOrigin })
   if (!deviceLink) {
     throw new Error('TokenBoard device link not found')
   }
-  const baseOrigin = serverOriginFromUrl(baseUrl)
-  if (!baseOrigin || deviceLink.serverOrigin !== baseOrigin) {
+  if (deviceLink.serverOrigin !== baseOrigin) {
     throw new Error('TokenBoard device link belongs to a different server')
   }
   const response = await fetcher(`${baseOrigin}/api/v1/device/reconnect-pairing-codes`, {

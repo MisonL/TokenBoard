@@ -33,6 +33,7 @@ export type PublicUsageProfile = {
     totalTokensWithoutCacheRead: number
     cacheReadRate: number
     costUsd: number
+    costAvailable: boolean
   }>
 }
 

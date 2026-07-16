@@ -4,7 +4,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { buildNotifyHandler } from './hooks.mjs'
+
+const backgroundResultTimeoutMs = 5_000
+const backgroundResultRetryMs = 25
 
 test('notify handler does not forward payload args to the TokenBoard background process', () => {
   const source = buildNotifyHandler({
@@ -71,6 +75,39 @@ test('notify handler records foreground failures for local diagnosis', () => {
   assert.match(source, /notify-handler-errors\.log/)
   assert.match(source, /recordHandlerError\("enqueue", error\)/)
   assert.match(source, /recordHandlerError\("background", error\)/)
+  assert.match(source, /function errorMessage\(error\)/)
+  assert.match(source, /function safeErrorString\(value\)/)
+  assert.doesNotMatch(source, /: String\(error\)/)
+  assert.match(source, /return "Unknown error"/)
+})
+
+test('notify handler formats hostile errors without throwing at runtime', () => {
+  const source = buildNotifyHandler({
+    stateDir: '/home/user/.tokenboard',
+    notifyScriptPath: '/repo/scripts/notify.mjs',
+    nodePath: '/usr/bin/node'
+  })
+  const helperStart = source.indexOf('function errorMessage(error)')
+  const helperEnd = source.indexOf('function isMissingFileError(error)')
+
+  assert.notEqual(helperStart, -1)
+  assert.notEqual(helperEnd, -1)
+  const results = runInNewContext(`
+    ${source.slice(helperStart, helperEnd)}
+    const hostileError = new Error("failed");
+    Object.defineProperties(hostileError, {
+      message: { get() { throw new Error("message failed"); } },
+      name: { get() { throw new Error("name failed"); } }
+    });
+    [
+      errorMessage(new Error("")),
+      errorMessage(Object.create(null)),
+      errorMessage({ toString() { throw new Error("toString failed"); } }),
+      errorMessage(hostileError)
+    ];
+  `)
+
+  assert.deepEqual(Array.from(results), ['Error', 'Unknown error', 'Unknown error', 'Unknown error'])
 })
 
 test('notify handler records invalid source without enqueueing background work', async () => {
@@ -105,12 +142,13 @@ test('notify handler records invalid source without enqueueing background work',
 
 async function readJsonFile(path) {
   let lastError
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  const deadline = Date.now() + backgroundResultTimeoutMs
+  while (Date.now() < deadline) {
     try {
       return JSON.parse(await readFile(path, 'utf8'))
     } catch (error) {
       lastError = error
-      await new Promise((resolve) => setTimeout(resolve, 25))
+      await new Promise((resolve) => setTimeout(resolve, backgroundResultRetryMs))
     }
   }
   throw lastError

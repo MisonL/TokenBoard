@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import test from 'node:test'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -13,6 +14,7 @@ import {
   withServerProfile,
   writeConfig
 } from './config.mjs'
+import { credentialsLockPath, withCredentialsLock } from './credentials-lock.mjs'
 
 test('strips UTF-8 BOM before parsing config content', () => {
   const parsed = JSON.parse(stripUtf8Bom('\ufeff{"configured":true}'))
@@ -24,6 +26,23 @@ test('leaves non-BOM config content unchanged', () => {
   const config = '{"configured":true}'
 
   assert.equal(stripUtf8Bom(config), config)
+})
+
+test('rejects config replacement after credentials lock ownership is lost', () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-lock-fence-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    assert.throws(() => withCredentialsLock(directory, () => {
+      writeFileSync(credentialsLockPath(directory), JSON.stringify({ pid: process.pid, token: 'replacement' }))
+      writeConfig({ activeServer: 'https://tokenboard.example', servers: {} })
+    }), /credentials lock ownership changed before write/)
+    assert.equal(statSync(join(directory, 'config.json'), { throwIfNoEntry: false }), undefined)
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('uses bun.exe on Windows package manager commands', () => {
@@ -70,6 +89,34 @@ test('writes active server profile while preserving other server credentials', (
   assert.equal(config.uploadToken, 'private-token')
   assert.equal(config.installationId, 'inst_private')
   assert.equal(config.servers['https://prod.example.com'].uploadToken, 'prod-token')
+})
+
+test('migrates legacy root credentials before activating another server profile', () => {
+  const config = withServerProfile(
+    {
+      endpoint: 'https://prod.example.com/api/v1/ingest',
+      uploadToken: 'prod-token',
+      deviceId: 'dev_prod',
+      installationId: 'inst_prod',
+      repoUrl: 'https://github.com/example/prod.git',
+      repoRef: 'prod-branch'
+    },
+    'https://private.example.com',
+    {
+      endpoint: 'https://private.example.com/api/v1/ingest',
+      uploadToken: 'private-token',
+      deviceId: 'dev_private',
+      installationId: 'inst_private'
+    }
+  )
+
+  assert.equal(config.activeServer, 'https://private.example.com')
+  assert.equal(config.uploadToken, 'private-token')
+  assert.equal(config.servers['https://prod.example.com'].uploadToken, 'prod-token')
+  assert.equal(config.servers['https://prod.example.com'].deviceId, 'dev_prod')
+  assert.equal(config.servers['https://prod.example.com'].repoUrl, 'https://github.com/example/prod.git')
+  assert.equal(config.servers['https://prod.example.com'].repoRef, 'prod-branch')
+  assert.equal(config.servers['https://private.example.com'].uploadToken, 'private-token')
 })
 
 test('normalizes config by mirroring the active server profile', () => {
@@ -535,3 +582,77 @@ test('writeConfig re-tightens existing config file permissions', { skip: process
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('mergeConfig preserves concurrent server profile updates across processes', async () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-concurrent-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    writeConfig({
+      activeServer: 'https://base.example.com',
+      servers: {
+        'https://base.example.com': {
+          endpoint: 'https://base.example.com/api/v1/ingest',
+          uploadToken: 'base-token'
+        }
+      }
+    })
+    const script = [
+      "import { mergeConfig } from './config.mjs'",
+      'mergeConfig(JSON.parse(process.env.TOKENBOARD_CONFIG_PATCH))'
+    ].join('\n')
+    const writers = Array.from({ length: 12 }, (_, index) => spawn(process.execPath, [
+      '--input-type=module',
+      '-e',
+      script
+    ], {
+      cwd: new URL('.', import.meta.url),
+      env: {
+        ...process.env,
+        TOKENBOARD_CONFIG_DIR: directory,
+        TOKENBOARD_CONFIG_PATCH: JSON.stringify({
+          servers: {
+            [`https://server-${index}.example.com`]: {
+              endpoint: `https://server-${index}.example.com/api/v1/ingest`,
+              uploadToken: `token-${index}`
+            }
+          }
+        })
+      },
+      stdio: ['ignore', 'ignore', 'pipe']
+    }))
+    const errors = await Promise.all(writers.map(collectChildExit))
+    assert.deepEqual(errors, Array(12).fill(''))
+
+    const config = readConfig()
+    assert.equal(Object.keys(config.servers).length, 13)
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('mergeConfig creates a missing config directory before locking', () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const parent = mkdtempSync(join(tmpdir(), 'tokenboard-config-first-write-'))
+  const directory = join(parent, 'nested', 'config')
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    mergeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
+    assert.equal(readConfig().endpoint, 'https://tokenboard.example/api/v1/ingest')
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+function collectChildExit(child) {
+  return new Promise((resolve, reject) => {
+    let stderr = ''
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', (status) => resolve(status === 0 ? '' : stderr || `exit ${status}`))
+  })
+}

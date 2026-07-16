@@ -3,10 +3,11 @@ import { open, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import type { UsageSnapshot } from '@tokenboard/usage-core'
+import { usageSnapshotSchema, type UsageSnapshot } from '@tokenboard/usage-core'
 import {
   cursorFileName,
   readCursor,
+  withCursorLock,
   writeCursor
 } from './session-cursor-store'
 import { mergeSnapshots } from './session-cursor'
@@ -14,9 +15,20 @@ import { readAntigravityDbUsageEvents, type AntigravityDbUsageResult } from './a
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseStatuslineEvent, type StatuslineEvent } from './antigravity-cli-statusline'
 import { buildCliStatuslineOccurrenceIndex } from './antigravity-cli-occurrence-index'
+import { buildCliHistoryOccurrenceIndex } from './antigravity-cli-history-index'
 import {
   lastSeenCliDbRowIndexByCascadeHash,
-  markCliDbRowsProcessed,
+  markCliDbRowsProcessed
+} from './antigravity-cli-db-cursor'
+import {
+  markCliStatuslineScanComplete,
+  readCliStatuslineScanStart
+} from './antigravity-cli-scan-cursor'
+import {
+  resolveAntigravityCollectionRange,
+  type AntigravityCollectionRange
+} from './antigravity-since'
+import {
   pushCliUsageEvent,
   pushCompleteCliCursorSnapshots
 } from './antigravity-cli-cursor'
@@ -33,10 +45,13 @@ export type CollectAntigravityCliUsageOptions = {
   eventPath?: string
   conversationDir?: string
   cursorScope?: string
+  since?: string
   maxDbFiles?: number | null
   readDbUsageEvents?: (input: {
     lastSeenRowIndexByCascadeHash: Map<string, number>
     maxDbFiles?: number | null
+    sinceDate?: string
+    timezone?: string
   }) => Promise<AntigravityDbUsageResult>
 }
 
@@ -47,41 +62,96 @@ export async function collectAntigravityCliUsage(
   const collectedAt = options.collectedAt ?? new Date().toISOString()
   const stateDir = options.stateDir ?? readStateDir()
   const eventPath = options.eventPath ?? process.env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_LOG ?? join(stateDir, statuslineFileName)
-  const eventStats = await readEventStats(eventPath)
-
   const cursorPath = join(stateDir, cursorFileName(source, options.cursorScope))
+  return withCursorLock(cursorPath, () => collectAntigravityCliUsageLocked({
+    options, timezone, collectedAt, eventPath, cursorPath
+  }))
+}
+
+async function collectAntigravityCliUsageLocked(input: {
+  options: CollectAntigravityCliUsageOptions
+  timezone: string
+  collectedAt: string
+  eventPath: string
+  cursorPath: string
+}) {
+  const { options, timezone, collectedAt, eventPath, cursorPath } = input
+  const eventStats = await readEventStats(eventPath)
   const cursor = await readCursor(cursorPath, source)
+  const range = resolveAntigravityCollectionRange({ since: options.since, timezone })
+  cursor.antigravityDbFileScan ??= { nextSequence: 0, files: {} }
   const emittedKeys = new Set<string>()
   const snapshots: UsageSnapshot[] = []
+  const statuslineAvailable = Boolean(eventStats)
+  const historyOccurrenceIndex = statuslineAvailable
+    ? buildCliHistoryOccurrenceIndex(cursor)
+    : undefined
 
   if (eventStats) {
     const eventSizeBytes = readEventSizeBytes(eventStats.size)
-    const generation = await readStatuslineLogGeneration(eventPath, eventSizeBytes)
-    const generationChanged = generation !== cursor.lastScanGeneration &&
-      (generation !== undefined || cursor.lastScanGeneration !== undefined)
-    const scanStartBytes = generationChanged
-      ? 0
-      : scanStartOffset(cursor.lastScanOffsetBytes, eventSizeBytes)
+    const logState = await readStatuslineLogState(eventPath, eventSizeBytes)
+    const scanStartBytes = readCliStatuslineScanStart({
+      cursor,
+      eventSizeBytes,
+      generation: logState?.generation,
+      previousGeneration: logState?.previousGeneration,
+      retainedFromOffsetBytes: logState?.retainedFromOffsetBytes,
+      compactLineage: logState?.compactLineage,
+      headerBytes: logState?.headerBytes,
+      historyScope: range.historyScope
+    })
     for await (const event of readStatuslineEvents(eventPath, scanStartBytes, eventSizeBytes)) {
-      pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt })
+      if (!range.includesTimestamp(event.capturedAt)) continue
+      pushCliUsageEvent({
+        event,
+        cursor,
+        snapshots,
+        emittedKeys,
+        timezone,
+        collectedAt,
+        origin: 'statusline',
+        historyOccurrenceIndex
+      })
     }
-    cursor.lastScanOffsetBytes = eventSizeBytes
-    cursor.lastScanGeneration = generation
+    markCliStatuslineScanComplete({
+      cursor,
+      eventSizeBytes,
+      generation: logState?.generation,
+      historyScope: range.historyScope,
+      collectedAt
+    })
   }
 
   const occurrenceIndex = buildCliStatuslineOccurrenceIndex(cursor)
-  const localDbUsage = await readOptionalLocalDbUsage(options, Boolean(eventStats), cursor)
-  for (const event of localDbUsage.events.map(historyEvent)) {
-    pushCliUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt, occurrenceIndex })
+  const localDbUsage = await readOptionalLocalDbUsage(options, statuslineAvailable, cursor, range, timezone)
+  for (const event of localDbUsage.events.filter((item) => range.includesTimestamp(item.createdAt)).map(historyEvent)) {
+    pushCliUsageEvent({
+      event,
+      cursor,
+      snapshots,
+      emittedKeys,
+      timezone,
+      collectedAt,
+      origin: 'history',
+      occurrenceIndex
+    })
   }
   markCliDbRowsProcessed({
     cursor,
-    lastReadRowIndexByCascade: localDbUsage.lastReadRowIndexByCascade
+    lastReadRowIndexByCascade: localDbUsage.lastReadRowIndexByCascade,
+    historyScope: range.historyScope
   })
 
-  pushCompleteCliCursorSnapshots(snapshots, cursor, collectedAt, emittedKeys)
+  pushCompleteCliCursorSnapshots(
+    snapshots,
+    cursor,
+    collectedAt,
+    emittedKeys,
+    (snapshot) => !range.sinceDate || snapshot.usageDate >= range.sinceDate
+  )
+  const merged = mergeSnapshots(snapshots).map((snapshot) => usageSnapshotSchema.parse(snapshot))
   await writeCursor(cursorPath, cursor)
-  return mergeSnapshots(snapshots)
+  return merged
 }
 
 async function readEventStats(eventPath: string) {
@@ -97,38 +167,49 @@ async function readEventStats(eventPath: string) {
 
 async function readLocalDbUsage(
   options: CollectAntigravityCliUsageOptions,
-  cursor: Awaited<ReturnType<typeof readCursor>>
+  cursor: Awaited<ReturnType<typeof readCursor>>,
+  range: AntigravityCollectionRange,
+  timezone: string
 ) {
-  const lastSeenRowIndexByCascadeHash = lastSeenCliDbRowIndexByCascadeHash({ cursor })
+  const lastSeenRowIndexByCascadeHash = lastSeenCliDbRowIndexByCascadeHash({
+    cursor,
+    historyScope: range.historyScope
+  })
   if (options.readDbUsageEvents) {
     return options.readDbUsageEvents({
       lastSeenRowIndexByCascadeHash,
-      maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
+      maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
+      sinceDate: range.sinceDate,
+      timezone
     })
   }
   return readAntigravityDbUsageEvents({
     conversationDir: options.conversationDir ?? defaultConversationDir(),
     lastSeenRowIndexByCascadeHash,
-    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles)
+    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
+    scanState: cursor.antigravityDbFileScan,
+    sinceDate: range.sinceDate,
+    timezone
   })
 }
 
-function resolveMaxDbFiles(value: number | null | undefined) {
-  return value === undefined ? defaultMaxDbFilesForCurrentRun() : value
+function resolveMaxDbFiles(value: number | null | undefined, range: AntigravityCollectionRange) {
+  return value === undefined ? defaultMaxDbFilesForCurrentRun(range) : value
 }
 
-function defaultMaxDbFilesForCurrentRun() {
-  const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
-  return since === 'all' ? null : undefined
+function defaultMaxDbFilesForCurrentRun(range: AntigravityCollectionRange) {
+  return range.fullHistory ? null : undefined
 }
 
 async function readOptionalLocalDbUsage(
   options: CollectAntigravityCliUsageOptions,
   statuslineAvailable: boolean,
-  cursor: Awaited<ReturnType<typeof readCursor>>
+  cursor: Awaited<ReturnType<typeof readCursor>>,
+  range: AntigravityCollectionRange,
+  timezone: string
 ) {
   try {
-    return await readLocalDbUsage(options, cursor)
+    return await readLocalDbUsage(options, cursor, range, timezone)
   } catch (error) {
     if (statuslineAvailable && isUnavailableDbError(error)) {
       return { cascadeIds: new Set<string>(), events: [] }
@@ -150,6 +231,7 @@ function historyEvent(event: AntigravityUsageEvent): StatuslineEvent {
     conversationHashAliases: event.cascadeHashAliases,
     eventHash: event.eventHash,
     model: event.model,
+    modelAliases: event.modelAliases,
     inputTokens: event.inputTokens,
     outputTokens: event.outputTokens,
     cacheCreationTokens: event.cacheCreationTokens,
@@ -170,15 +252,20 @@ async function * readStatuslineEvents(eventPath: string, startBytes: number, end
   }
 }
 
-async function readStatuslineLogGeneration(eventPath: string, sizeBytes: number) {
+async function readStatuslineLogState(eventPath: string, sizeBytes: number) {
   if (sizeBytes === 0) return undefined
   const file = await open(eventPath, 'r')
   try {
     const buffer = Buffer.alloc(Math.min(statuslineLogHeaderBytes, sizeBytes))
     const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
-    const firstLine = buffer.subarray(0, bytesRead).toString('utf8').split(/\r?\n/, 1)[0]
+    const newlineIndex = buffer.subarray(0, bytesRead).indexOf(0x0a)
+    const headerEnd = newlineIndex === -1 ? bytesRead : newlineIndex
+    const firstLine = buffer.subarray(0, headerEnd).toString('utf8').replace(/\r$/, '')
     const header = parseStatuslineLogHeader(firstLine)
-    return header?.generation
+    return header ? {
+      ...header,
+      headerBytes: newlineIndex === -1 ? headerEnd : newlineIndex + 1
+    } : undefined
   } finally {
     await file.close()
   }
@@ -196,17 +283,44 @@ function parseStatuslineLogHeader(line: string) {
     return null
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const candidate = value as { schemaVersion?: unknown; generation?: unknown }
+  const candidate = value as {
+    schemaVersion?: unknown
+    generation?: unknown
+    previousGeneration?: unknown
+    retainedFromOffsetBytes?: unknown
+    retainedFrom?: unknown
+  }
   if (candidate.schemaVersion !== statuslineLogSchemaVersion) return null
   if (typeof candidate.generation !== 'string' || !/^[a-f0-9]{32}$/.test(candidate.generation)) {
     throw new Error('Invalid Antigravity statusline log generation')
   }
-  return { generation: candidate.generation }
-}
-
-function scanStartOffset(value: number | undefined, currentSize: number) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > currentSize) return 0
-  return value
+  const hasPrevious = candidate.previousGeneration !== undefined || candidate.retainedFromOffsetBytes !== undefined
+  const hasCompactLineage = candidate.retainedFrom !== undefined
+  if (!hasPrevious && !hasCompactLineage) return { generation: candidate.generation }
+  if (hasPrevious && hasCompactLineage) {
+    throw new Error('Invalid Antigravity statusline log lineage')
+  }
+  if (hasCompactLineage) {
+    if (typeof candidate.retainedFrom !== 'number' ||
+        !Number.isSafeInteger(candidate.retainedFrom) || candidate.retainedFrom < 0) {
+      throw new Error('Invalid Antigravity statusline log lineage')
+    }
+    return {
+      generation: candidate.generation,
+      retainedFromOffsetBytes: candidate.retainedFrom,
+      compactLineage: true
+    }
+  }
+  if (typeof candidate.previousGeneration !== 'string' || !/^[a-f0-9]{32}$/.test(candidate.previousGeneration) ||
+      typeof candidate.retainedFromOffsetBytes !== 'number' ||
+      !Number.isSafeInteger(candidate.retainedFromOffsetBytes) || candidate.retainedFromOffsetBytes < 0) {
+    throw new Error('Invalid Antigravity statusline log lineage')
+  }
+  return {
+    generation: candidate.generation,
+    previousGeneration: candidate.previousGeneration,
+    retainedFromOffsetBytes: candidate.retainedFromOffsetBytes
+  }
 }
 
 function readEventSizeBytes(value: unknown) {

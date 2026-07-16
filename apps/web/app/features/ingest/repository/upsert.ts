@@ -10,8 +10,7 @@ import {
   statementChanged,
   uniqueSummaryKeys,
   uniqueUserIds,
-  type IngestRecord,
-  type UsageSummaryKey
+  type IngestRecord
 } from './types'
 
 const snapshotUpsertBatchSize = 30

@@ -1,6 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { assertCredentialsLockOwnership, withCredentialsLock } from './credentials-lock.mjs'
 
 export function configDir() {
   return process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
@@ -64,8 +66,15 @@ function readRawConfig() {
 export function writeConfig(config) {
   mkdirSync(configDir(), { recursive: true })
   const file = configPath()
-  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-  chmodSync(file, 0o600)
+  const tempFile = `${file}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
+  try {
+    writeFileSync(tempFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
+    assertCredentialsLockOwnership(configDir())
+    renameSync(tempFile, file)
+  } catch (error) {
+    rmSync(tempFile, { force: true })
+    throw error
+  }
 }
 
 export function stripUtf8Bom(value) {
@@ -75,9 +84,24 @@ export function stripUtf8Bom(value) {
   return value
 }
 
-export function mergeConfig(patch) {
-  const current = existsSync(configPath()) ? readRawConfig() : {}
-  writeConfig(mergeConfigPatch(current, patch))
+export function mergeConfig(patch, options = {}) {
+  const transform = (current) => mergeConfigPatch(current, patch)
+  if (options.lockHeld) {
+    const current = existsSync(configPath()) ? readRawConfig() : {}
+    const next = transform(current)
+    writeConfig(next)
+    return next
+  }
+  return updateConfig(transform)
+}
+
+export function updateConfig(transform) {
+  return withCredentialsLock(configDir(), () => {
+    const current = existsSync(configPath()) ? readRawConfig() : {}
+    const next = transform(current)
+    writeConfig(next)
+    return next
+  })
 }
 
 export function serverOriginFromEndpoint(value) {
@@ -187,7 +211,7 @@ export function withUpdatedServerProfile(current, serverOrigin, profile) {
 }
 
 function mergedServerProfile(current, serverOrigin, profile) {
-  const servers = persistedServerProfiles(current.servers)
+  const servers = serverProfilesWithLegacyRoot(current)
   const definedProfile = persistedServerProfile(profile)
   const nextProfile = {
     ...persistedServerProfile(servers[serverOrigin]),
@@ -195,6 +219,18 @@ function mergedServerProfile(current, serverOrigin, profile) {
   }
   servers[serverOrigin] = nextProfile
   return { servers, nextProfile }
+}
+
+function serverProfilesWithLegacyRoot(current) {
+  const servers = persistedServerProfiles(current.servers)
+  if (hasActiveServerProfile(current) || !current?.endpoint) return servers
+  const legacyOrigin = serverOriginFromEndpoint(current.endpoint)
+  const legacyProfile = persistedServerProfile(current)
+  servers[legacyOrigin] = {
+    ...legacyProfile,
+    ...persistedServerProfile(servers[legacyOrigin])
+  }
+  return servers
 }
 
 function withoutUndefinedFields(value) {

@@ -8,20 +8,9 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import {
-  appendBoundedStatuslineEvent,
-  supportsReliableSignalZero
-} from './antigravity-statusline-log.mjs'
+import { appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
 
 const scriptPath = fileURLToPath(new URL('./antigravity-statusline.mjs', import.meta.url))
-
-test('statusline lock avoids broken Windows signal-zero Node releases', () => {
-  assert.equal(supportsReliableSignalZero('darwin', '22.12.0'), true)
-  assert.equal(supportsReliableSignalZero('win32', '22.12.0'), false)
-  assert.equal(supportsReliableSignalZero('win32', '22.16.0'), true)
-  assert.equal(supportsReliableSignalZero('win32', '23.11.0'), false)
-  assert.equal(supportsReliableSignalZero('win32', '24.0.0'), true)
-})
 
 test('statusline CLI compacts its private JSONL within the configured byte limit', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-bounded-'))
@@ -46,6 +35,57 @@ test('statusline CLI compacts its private JSONL within the configured byte limit
     const header = JSON.parse(lines[0])
     assert.equal(header.schemaVersion, 'antigravity-statusline-log/v1')
     assert.match(header.generation, /^[a-f0-9]{32}$/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline compaction records lineage for generation-aware cursor translation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-lineage-'))
+  try {
+    const logPath = join(root, 'events.jsonl')
+    const previousGeneration = 'a'.repeat(32)
+    await writeFile(logPath, `${JSON.stringify({
+      schemaVersion: 'antigravity-statusline-log/v1',
+      generation: previousGeneration
+    })}\n${JSON.stringify({ value: 'x'.repeat(160) })}\n`)
+
+    appendBoundedStatuslineEvent(logPath, { value: 'new-event' }, 240)
+
+    const header = JSON.parse((await readFile(logPath, 'utf8')).split('\n', 1)[0])
+    assert.equal(header.previousGeneration, undefined)
+    assert.equal(typeof header.retainedFrom, 'number')
+    assert.ok(header.retainedFrom > 0)
+    assert.equal(header.generation, compactedGeneration(previousGeneration, header.retainedFrom))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('statusline compaction leaves the original log untouched when lineage does not converge', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-lineage-exhausted-'))
+  try {
+    const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
+    const modulePath = join(root, 'antigravity-statusline-log.mjs')
+    const source = (await readFile(sourcePath, 'utf8'))
+      .replace('const compactionLineageMaxAttempts = 8', 'const compactionLineageMaxAttempts = 1')
+    await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
+
+    const logPath = join(root, 'events.jsonl')
+    const previousGeneration = 'a'.repeat(32)
+    const original = `${JSON.stringify({
+      schemaVersion: 'antigravity-statusline-log/v1',
+      generation: previousGeneration
+    })}\n${Array.from({ length: 8 }, (_, index) => JSON.stringify({ value: `${index}-${'x'.repeat(32)}` })).join('\n')}\n`
+    await writeFile(logPath, original)
+    const module = await import(`${pathToFileURL(modulePath).href}?lineage-exhausted-test`)
+
+    assert.throws(
+      () => module.appendBoundedStatuslineEvent(logPath, { value: 'new-event' }, 240),
+      /Antigravity statusline log compaction did not converge/
+    )
+    assert.equal(await readFile(logPath, 'utf8'), original)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -101,6 +141,7 @@ test('statusline log retry budget covers orphan lock recovery grace', async () =
     const source = (await readFile(sourcePath, 'utf8'))
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 600')
     await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
 
     const logPath = join(root, 'events.jsonl')
     await mkdir(`${logPath}.lock`)
@@ -122,6 +163,7 @@ test('statusline log keeps a fresh malformed lock until its recovery grace expir
     const source = (await readFile(sourcePath, 'utf8'))
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 600')
     await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
 
     const logPath = join(root, 'events.jsonl')
     const lockPath = `${logPath}.lock`
@@ -139,16 +181,16 @@ test('statusline log keeps a fresh malformed lock until its recovery grace expir
   }
 })
 
-test('statusline log recovers an expired lease even when its pid was reused', async () => {
+test('statusline log does not reclaim an old lock while its owner pid is alive', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-reused-pid-'))
   try {
     const sourcePath = fileURLToPath(new URL('./antigravity-statusline-log.mjs', import.meta.url))
     const modulePath = join(root, 'antigravity-statusline-log.mjs')
     const source = (await readFile(sourcePath, 'utf8'))
-      .replace(/const lockWaitTimeoutMs = [^\n]+/, 'const lockWaitTimeoutMs = 500')
+      .replace(/const lockWaitTimeoutMs = [^\n]+/, 'const lockWaitTimeoutMs = 100')
       .replace(/const orphanLockGraceMs = [^\n]+/, 'const orphanLockGraceMs = 20')
-      .replace(/const staleLockMs = [^\n]+/, 'const staleLockMs = 100')
     await writeFile(modulePath, source)
+    await writeFile(join(root, 'process-liveness.mjs'), await readFile(new URL('./process-liveness.mjs', import.meta.url)))
 
     const logPath = join(root, 'events.jsonl')
     const lockPath = `${logPath}.lock`
@@ -158,9 +200,12 @@ test('statusline log recovers an expired lease even when its pid was reused', as
     await utimes(lockPath, expiredAt, expiredAt)
     const module = await import(`${pathToFileURL(modulePath).href}?reused-pid-test`)
 
-    module.appendBoundedStatuslineEvent(logPath, { value: 'recovered-after-pid-reuse' }, 1024)
-
-    assert.match(await readFile(logPath, 'utf8'), /recovered-after-pid-reuse/)
+    assert.throws(
+      () => module.appendBoundedStatuslineEvent(logPath, { value: 'not-written' }, 1024),
+      /Timed out waiting for Antigravity statusline log lock/
+    )
+    assert.equal(await readFile(join(lockPath, 'pid'), 'utf8'), String(process.pid))
+    await assert.rejects(stat(logPath), { code: 'ENOENT' })
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -249,6 +294,16 @@ function legacyHash(value) {
     .update('tokenboard-antigravity-cli\0')
     .update(value)
     .digest('hex')
+}
+
+function compactedGeneration(previousGeneration, retainedFromOffsetBytes) {
+  const previousHash = createHash('sha256').update(previousGeneration).digest('hex')
+  return createHash('sha256')
+    .update(previousHash)
+    .update('\0')
+    .update(String(retainedFromOffsetBytes))
+    .digest('hex')
+    .slice(0, 32)
 }
 
 function runStatuslineProcess(root, logPath, conversationId) {

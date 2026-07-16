@@ -7,7 +7,6 @@ import { Input } from '../../components/ui/input'
 import { LucideIcon } from '../../components/ui/icon'
 import { requireUser } from '../../features/auth/middleware'
 import {
-  listDeviceAuditLogs,
   listLatestDeviceAuditLogs,
   listUserDevices,
   parseDeviceNameForm,
@@ -841,15 +840,6 @@ function DeviceCompactCard(props: { device: DeviceViewModel; state: DevicesPageS
         ) : null}
       </div>
     </article>
-  )
-}
-
-function DeviceMeta(props: { label: string; value: string }) {
-  return (
-    <div class="rounded-xl border border-[var(--app-border)] bg-[var(--app-panel)] p-3">
-      <dt class="text-xs font-black uppercase tracking-wide text-[var(--app-muted)]">{props.label}</dt>
-      <dd class="mt-1 break-words text-2xl font-black leading-none text-[var(--app-text)]">{props.value}</dd>
-    </div>
   )
 }
 

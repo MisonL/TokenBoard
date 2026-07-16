@@ -15,7 +15,7 @@ export function CreateSubscriptionForm(props: { timezone: string; disabled: bool
         名称
         <Input name="name" placeholder="每日日报" autocomplete="off" required disabled={props.disabled} />
       </Label>
-      <ProviderSelect />
+      <ProviderSelect disabled={props.disabled} />
       <Label>
         Webhook URL
         <Input name="webhookUrl" type="url" placeholder="https://..." autocomplete="off" required disabled={props.disabled} />
@@ -36,12 +36,13 @@ export function CreateSubscriptionForm(props: { timezone: string; disabled: bool
   )
 }
 
-function ProviderSelect() {
+function ProviderSelect(props: { disabled: boolean }) {
   return (
     <CustomSelect
       label="平台"
       name="provider"
       value="wecom"
+      disabled={props.disabled}
       options={[
         { value: 'wecom', label: '企微' },
         { value: 'dingtalk', label: '钉钉' },

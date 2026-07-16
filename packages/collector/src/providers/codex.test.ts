@@ -105,6 +105,35 @@ describe('collectCodexUsage', () => {
     ])
   })
 
+  test('prefers an explicit since window over process environment', async () => {
+    const calls: string[][] = []
+    const codexHome = await createEmptyCodexHome()
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_SINCE', '20260501')
+
+    try {
+      await writeJsonl(join(codexHome, 'sessions', '2026', '07', '07', 'active.jsonl'), [
+        tokenCountEvent('2026-07-07T16:30:00.000Z', 10)
+      ])
+      await collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        since: '20260708',
+        async runner(_command, args) {
+          calls.push(args)
+          return { data: [] }
+        }
+      })
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+
+    expect(calls).toEqual([
+      ['ccusage@20.0.14', 'codex', 'daily', '--json', '--since', '20260708'],
+      ['ccusage@20.0.14', 'codex', 'session', '--json', '--since', '20260708']
+    ])
+  })
+
   test('passes configured codex home to unscoped ccusage commands', async () => {
     const codexHome = await createEmptyCodexHome()
     const homes = new Set<string>()

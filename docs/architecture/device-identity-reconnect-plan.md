@@ -1,6 +1,6 @@
 # TokenBoard 设备身份与重新连接方案
 
-状态：Proposed
+状态：已实现，后续增强持续维护
 日期：2026-06-29
 
 ## 背景
@@ -9,7 +9,7 @@ TokenBoard client 通过 upload token 向 TokenBoard server 上传 AI token 用�
 
 本次 Antigravity 支持和私人 Cloudflare 环境验证暴露了一个产品缺口：client 在私人环境和正式环境之间切换时，当前单一 `config.json` 容易被覆盖。一旦旧 server 的 upload token 不再保存在本机，Web UI 也无法恢复它，因为服务端从不保存明文 token。正确恢复方式应是重新配对、重置 token 或重新连接旧设备，而不是查看历史 token。
 
-本文记录后续开发时应采用的设计：
+本文记录设备身份、重新连接和多 server profile 的已落地设计，同时保留未实现的后续增强边界：
 
 - 支持卸载、重装、换系统、切换 server 后重新连接旧逻辑设备；
 - 支持 Windows、Linux、macOS、黑苹果、WSL、虚拟机、系统重装等跨平台场景；
@@ -32,16 +32,29 @@ TokenBoard client 通过 upload token 向 TokenBoard server 上传 AI token 用�
 - 当系统全新重装且本地 TokenBoard 状态完全丢失时，不自动合并到旧设备。
 - 不把 GitHub OAuth 重新登录当成强 MFA 或 GitHub sudo mode。它最多只能作为弱账号连续性确认。
 
+## 当前实现
+
+当前分支已落地的主要实现位置：
+
+- D1 schema 与 migration：`apps/web/app/db/schema-identity.ts`、`apps/web/db/migrations/0022_device_installations.sql` 至 `0027_daily_report_model_sources.sql`。
+- 设备与凭据服务：`apps/web/app/features/device/service.ts`、`apps/web/app/features/device/repository.ts`。
+- client profile 与 device-link：`skills/tokenboard/scripts/config.mjs`、`skills/tokenboard/scripts/device-link.mjs`、`skills/tokenboard/scripts/setup.mjs`、`skills/tokenboard/scripts/rotate-token.mjs`。
+- 设备页与安装页：`apps/web/app/routes/settings/devices.tsx`、`apps/web/app/routes/settings/install.tsx`。
+
+pairing、reconnect、token rotate/revoke、installation/device revoke 均已接入审计日志和事务测试。当前仍未实现的增强只有 WebAuthn/TOTP step-up 和手动合并设备。
+
 ## 当前模型
 
 当前相关表：
 
 - `devices(id, user_id, name, platform, last_synced_at, created_at, updated_at)`
-- `upload_tokens(id, user_id, name, token_hash, device_id, last_used_at, created_at, revoked_at)`
-- `pairing_codes(id, user_id, code_hash, expires_at, consumed_at, created_at)`
+- `device_installations(id, user_id, device_id, platform, install_claim_hash, revoked_at, ...)`
+- `upload_tokens(id, user_id, name, token_hash, device_id, installation_id, supersedes_token_id, ...)`
+- `pairing_codes(id, user_id, code_hash, pairing_type, target_device_id, expires_at, consumed_at, ...)`
+- `audit_logs(id, user_id, action, target_type, target_id, metadata, created_at)`
 - `daily_usage` 主键包含 `user_id, device_id, source, usage_date, model`
 
-当前 client config 本质上是单 server 凭证：
+旧版 client config 只有单 server 凭证：
 
 ```json
 {
@@ -52,7 +65,8 @@ TokenBoard client 通过 upload token 向 TokenBoard server 上传 AI token 用�
 }
 ```
 
-这个结构不足以安全支持正式环境、私人环境、测试环境之间的来回切换。
+这个结构不足以安全支持正式环境、私人环境、测试环境之间的来回切换。当前 client 已通过下方的
+`servers` profile 结构兼容多个 server，并继续镜像 active profile 到这些旧字段。
 
 ## 设备身份模型
 
@@ -80,7 +94,7 @@ TokenBoard client 通过 upload token 向 TokenBoard server 上传 AI token 用�
 - 换 Linux 后的新安装实例；
 - 迁移到 macOS 或黑苹果后的新安装实例。
 
-建议表结构：
+迁移后的表结构：
 
 ```sql
 CREATE TABLE device_installations (
@@ -121,7 +135,7 @@ upload token 仍然只展示一次，服务端仍然只保存 `token_hash`。
 
 ## Client 多 server 配置
 
-应逐步从单 server config 迁移到多 server profile，同时保留旧字段，便于旧脚本、回滚和兼容。
+当前 client 使用多 server profile，同时保留旧字段，便于旧脚本、回滚和兼容。
 
 ```json
 {
@@ -463,12 +477,10 @@ Web UI 不允许查看历史 token。高危操作可以要求 step-up 验证。
 
 缓解：第一版至少记录审计日志；后续对 reconnect 和 token rotation 增加 step-up 验证。
 
-## 待确认问题
+## 后续增强
 
-- 重新连接旧设备时，默认只吊销旧 installation 的 token，还是吊销整个 device 的 token？
-- token 轮换是否需要灰度期，还是第一版坚持立即吊销？
-- 第一版是否提供手动合并设备，还是延后到审计 UI 更完善后？
-- `device-link.json` claim 何时接入自动辅助重连，以及需要怎样的用户确认和 step-up？
+- 增加 WebAuthn/TOTP 等真实 step-up 验证器。
+- 增加带审计和显式确认的手动设备合并。
 
 ## 决策摘要
 

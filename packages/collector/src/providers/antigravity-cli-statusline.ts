@@ -45,6 +45,7 @@ export type StatuslineEvent = {
   conversationHashAliases?: string[]
   eventHash?: string
   model: string
+  modelAliases?: string[]
   inputTokens: number
   outputTokens: number
   cacheCreationTokens: number
@@ -92,7 +93,7 @@ export function parseStatuslineEvent(line: string, lineNumber: number): Statusli
 }
 
 function readOptionalCaptureId(value: unknown, lineNumber: number): string | undefined {
-  if (value === undefined) return undefined
+  if (value === undefined || value === null) return undefined
   if (typeof value !== 'string' || !/^[a-f0-9]{32}$/.test(value)) {
     throw new Error(`Invalid Antigravity statusline event at line ${lineNumber}: captureId must be a local capture id`)
   }

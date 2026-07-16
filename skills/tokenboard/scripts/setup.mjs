@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { hostname, platform } from 'node:os'
 import {
+  configDir,
   configPath,
   parseArgs,
   readConfig,
@@ -11,8 +12,10 @@ import {
   withServerProfile,
   writeConfig
 } from './config.mjs'
+import { withCredentialsLock } from './credentials-lock.mjs'
 import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
+import { errorMessage } from './error-message.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
@@ -20,6 +23,7 @@ import {
   buildWarmHookCursorArgs,
   createPairingCodeFromDeviceLink,
   readSetupBaseUrl,
+  resolveSetupInstallOptions,
   shouldUseDeviceLink,
   shouldWarmHookCursorsBeforeInstall
 } from './setup-options.mjs'
@@ -29,8 +33,6 @@ let pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE
 const baseUrl = readSetupBaseUrl({ flags })
 const timezone = flags.timezone || process.env.TOKENBOARD_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone
 const deviceName = flags['device-name'] || `${hostname()} ${platform()}`
-const packageManager = readPackageManager(flags)
-const scheduleTimes = parseScheduleTimes(flags['schedule-times'] || process.env.TOKENBOARD_SCHEDULE_TIMES || dailyScheduleTimes.join(','))
 
 if (!baseUrl) {
   console.error('Missing --base-url or TOKENBOARD_BASE_URL')
@@ -44,9 +46,30 @@ if (!serverOrigin) {
 }
 const savedProfile = reusableServerProfile(currentConfig, serverOrigin)
 const useDeviceLink = shouldUseDeviceLink(flags)
+let activeProfile
 
 if (!pairingCode && !useDeviceLink && savedProfile) {
-  writeConfig(withServerProfile(currentConfig, serverOrigin, savedProfile))
+  withSetupCredentialsLock(() => {
+    const latestConfig = existsSync(configPath()) ? readConfig() : {}
+    const latestProfile = reusableServerProfile(latestConfig, serverOrigin)
+    if (!latestProfile) throw new Error('TokenBoard server profile changed during setup')
+    const installOptions = resolveSetupInstallOptions({
+      flags,
+      profile: latestProfile,
+      defaultScheduleTimes: dailyScheduleTimes
+    })
+    const profilePackageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
+    const profileScheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
+    const nextConfig = withServerProfile(latestConfig, serverOrigin, {
+      ...latestProfile,
+      repoUrl: installOptions.repoUrl,
+      repoRef: installOptions.repoRef,
+      packageManager: profilePackageManager,
+      scheduleTimes: profileScheduleTimes
+    })
+    writeConfig(nextConfig)
+    activeProfile = nextConfig.servers[serverOrigin]
+  })
   console.log('TokenBoard server profile activated.')
 } else {
   if (!pairingCode && useDeviceLink) {
@@ -57,7 +80,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
         writeDeviceLink
       })
     } catch (error) {
-      console.error(error.message)
+      console.error(errorMessage(error))
       process.exit(1)
     }
   }
@@ -88,29 +111,55 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
     console.error('Pairing response did not include a valid endpoint.')
     process.exit(1)
   }
-  const nextConfig = withServerProfile(currentConfig, pairedServerOrigin, {
-    endpoint: paired.endpoint,
-    uploadToken: paired.uploadToken,
-    deviceId: paired.deviceId,
-    installationId: paired.installationId,
-    timezone: paired.timezone,
-    source: 'all',
-    repoUrl: flags['repo-url'] || process.env.TOKENBOARD_REPO_URL,
-    repoRef: flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF,
-    packageManager,
-    scheduleTimes,
-    createdAt: new Date().toISOString()
-  })
-  writeConfig(nextConfig)
-  if (paired.installClaim) {
-    writeDeviceLink({
-      serverOrigin: pairedServerOrigin,
+  withSetupCredentialsLock(() => {
+    const latestConfig = existsSync(configPath()) ? readConfig() : {}
+    const existingProfile = latestConfig?.servers?.[pairedServerOrigin]
+    const installOptions = resolveSetupInstallOptions({
+      flags,
+      profile: existingProfile,
+      defaultScheduleTimes: dailyScheduleTimes
+    })
+    const pairedPackageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
+    const pairedScheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
+    const nextConfig = withServerProfile(latestConfig, pairedServerOrigin, {
+      endpoint: paired.endpoint,
+      uploadToken: paired.uploadToken,
       deviceId: paired.deviceId,
       installationId: paired.installationId,
-      installClaim: paired.installClaim
+      ...(paired.installClaim ? { installClaim: paired.installClaim } : {}),
+      timezone: paired.timezone,
+      source: 'all',
+      repoUrl: installOptions.repoUrl,
+      repoRef: installOptions.repoRef,
+      packageManager: pairedPackageManager,
+      scheduleTimes: pairedScheduleTimes,
+      createdAt: new Date().toISOString()
     })
-  }
+    writeConfig(nextConfig)
+    activeProfile = nextConfig.servers[pairedServerOrigin]
+    if (paired.installClaim) {
+      writeDeviceLink({
+        serverOrigin: pairedServerOrigin,
+        deviceId: paired.deviceId,
+        installationId: paired.installationId,
+        installClaim: paired.installClaim
+      }, { lockHeld: true })
+    }
+  })
   console.log('TokenBoard config written.')
+}
+
+const installOptions = resolveSetupInstallOptions({
+  flags,
+  profile: activeProfile,
+  defaultScheduleTimes: dailyScheduleTimes
+})
+const packageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
+const scheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
+const installFlags = {
+  ...flags,
+  ...(installOptions.repoUrl ? { 'repo-url': installOptions.repoUrl } : {}),
+  ...(installOptions.repoRef ? { 'repo-ref': installOptions.repoRef } : {})
 }
 
 function reusableServerProfile(config, serverOrigin) {
@@ -121,6 +170,15 @@ function reusableServerProfile(config, serverOrigin) {
   return profile
 }
 
+function withSetupCredentialsLock(callback) {
+  try {
+    return withCredentialsLock(configDir(), callback)
+  } catch (error) {
+    console.error(errorMessage(error))
+    process.exit(1)
+  }
+}
+
 function scriptPath(name) {
   return fileURLToPath(new URL(name, import.meta.url))
 }
@@ -129,7 +187,7 @@ if (!flags['skip-collector']) {
   const installCollector = spawnSync(
     process.execPath,
     buildInstallCollectorArgs({
-      flags,
+      flags: installFlags,
       packageManager,
       installCollectorScript: scriptPath('./install-collector.mjs')
     }),

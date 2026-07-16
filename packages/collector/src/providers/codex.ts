@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runJsonCommand, type CommandRunner } from '../command'
+import { errorMessage } from '../error-message'
 import { normalizeCcusageDailyJson } from '../normalize-ccusage'
 import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
 import { packageCommandOptions, readDailyTimeoutMs, readSessionTimeoutMs } from './codex-command-options'
@@ -20,6 +21,7 @@ const MAX_CODEX_BATCH_SIZE = 1000
 export type CollectCodexUsageOptions = {
   timezone?: string
   collectedAt?: string
+  since?: string
   codexHome?: string
   runner?: CommandRunner
   stderr?: (line: string) => void
@@ -40,7 +42,7 @@ export async function collectCodexUsage(
     })
   }
 
-  const since = readSince()
+  const since = options.since ?? readSince()
   const until = process.env.TOKENBOARD_UNTIL
   const rangeArgs = buildRangeArgs({ since, until })
   const usesScopedScan = since === 'all' || Boolean(since) || Boolean(until)
@@ -265,11 +267,4 @@ function readBatchSize() {
     return DEFAULT_CODEX_BATCH_SIZE
   }
   return Math.min(Math.floor(value), MAX_CODEX_BATCH_SIZE)
-}
-
-function errorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message
-  }
-  return String(error)
 }

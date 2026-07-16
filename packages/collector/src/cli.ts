@@ -2,16 +2,18 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
-import type { CollectorConfig } from './config'
+import { errorMessage } from './error-message'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
 import {
   collectAntigravityIdeUsage,
   collectAntigravityUsage,
   isAntigravityPartialUsageError
 } from './providers/antigravity-gui'
+import { isUnavailableLanguageServerError } from './providers/antigravity-gui-environment'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
+import { withCursorLock } from './providers/session-cursor-store'
 import { uploadSnapshots } from './upload'
 
 type CliCommand = 'preview' | 'sync' | 'warm-hooks'
@@ -20,11 +22,13 @@ type ConcreteCliSource = Exclude<CliSource, 'all'>
 
 type CliEnv = Partial<Record<string, string>>
 type SourceFailure = {
+  fatal: boolean
   source: ConcreteCliSource
   message: string
 }
 
 type CollectOptionalSourceOptions = {
+  deferFailure?: boolean
   failFast?: boolean
   failOnNonUnavailable?: boolean
   ignoreUnavailable?: boolean
@@ -32,6 +36,7 @@ type CollectOptionalSourceOptions = {
 
 type CollectionContext = {
   timezone: string
+  since: string
   cursorScope?: string
   deps: CliDeps
   env: CliEnv
@@ -48,6 +53,7 @@ type CliDeps = {
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
+  withCursorLock?: typeof withCursorLock
 }
 
 const defaultDeps: CliDeps = {
@@ -60,16 +66,23 @@ const defaultDeps: CliDeps = {
   collectAntigravityIdeUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
-  warmHookCursorHighWater
+  warmHookCursorHighWater,
+  withCursorLock
 }
 
 export async function runCollectorCli(
   args: string[],
   env: CliEnv = process.env,
   deps: CliDeps = defaultDeps
-) {
+): Promise<number> {
   try {
     const options = parseArgs(args, env)
+    if (deps.withCursorLock && env.TOKENBOARD_COLLECTOR_LOCK_HELD !== '1') {
+      return await deps.withCursorLock(
+        join(resolveStateDir(env), 'collector-run'),
+        () => runCollectorCli(args, { ...env, TOKENBOARD_COLLECTOR_LOCK_HELD: '1' }, deps)
+      )
+    }
     const startedAtMs = Date.now()
 
     if (options.command === 'warm-hooks') {
@@ -79,24 +92,33 @@ export async function runCollectorCli(
       return 0
     }
 
+    if (options.command === 'sync') {
+      const missing = [
+        options.endpoint ? null : 'TOKENBOARD_ENDPOINT',
+        options.uploadToken ? null : 'TOKENBOARD_UPLOAD_TOKEN'
+      ].filter((value): value is string => Boolean(value))
+      if (missing.length > 0) {
+        deps.stderr(`Missing required config for sync: ${missing.join(', ')}`)
+        return 1
+      }
+    }
+
     const collectionStartedAtMs = startedAtMs
-    const cursorScope = cursorScopeFromEndpoint(options.endpoint)
-    const collectionContext = { timezone: options.timezone, cursorScope, deps, env }
+    const cursorScope = options.command === 'sync' ? cursorScopeFromEndpoint(options.endpoint) : undefined
+    const collectionContext = { timezone: options.timezone, since: options.since, cursorScope, deps, env }
     const collection = await collectSnapshots(options.source, collectionContext)
+    const hasFatalSourceFailure = collection.sourceFailures.some((failure) => failure.fatal)
+    const shouldFailForSourceErrors = (options.failOnSourceError || options.source !== 'all') &&
+      collection.sourceFailures.length > 0
+    const collectionFailed = hasFatalSourceFailure || shouldFailForSourceErrors
 
     if (options.command === 'preview') {
       deps.stdout(JSON.stringify(collection.snapshots, null, 2))
+      if (collectionFailed) {
+        deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
+        return 1
+      }
       return 0
-    }
-
-    const missing = [
-      options.endpoint ? null : 'TOKENBOARD_ENDPOINT',
-      options.uploadToken ? null : 'TOKENBOARD_UPLOAD_TOKEN'
-    ].filter((value): value is string => Boolean(value))
-
-    if (missing.length > 0) {
-      deps.stderr(`Missing required config for sync: ${missing.join(', ')}`)
-      return 1
     }
 
     const result = await deps.uploadSnapshots(
@@ -110,18 +132,20 @@ export async function runCollectorCli(
     await ackUploadCursors({
       collectedSources: collection.collectedSources,
       cursorScope,
+      since: options.since,
+      timezone: options.timezone,
       deps,
       env
     })
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since)
     deps.stdout(JSON.stringify(result, null, 2))
-    if ((options.failOnSourceError || options.source !== 'all') && collection.sourceFailures.length > 0) {
+    if (collectionFailed) {
       deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
       return 1
     }
     return 0
   } catch (error) {
-    deps.stderr(error instanceof Error ? error.message : String(error))
+    deps.stderr(errorMessage(error))
     return 1
   }
 }
@@ -163,7 +187,7 @@ function parseArgs(args: string[], env: CliEnv) {
     timezone,
     endpoint: flags.endpoint ?? env.TOKENBOARD_ENDPOINT ?? '',
     uploadToken: flags.token ?? env.TOKENBOARD_UPLOAD_TOKEN ?? '',
-    since: env.TOKENBOARD_SINCE ?? env.TOKENBOARD_DEFAULT_SINCE ?? '',
+    since: flags.since ?? (env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE || ''),
     failOnSourceError: env.TOKENBOARD_FAIL_ON_SOURCE_ERROR === '1'
   }
 }
@@ -190,19 +214,20 @@ async function collectSnapshots(source: CliSource, context: CollectionContext) {
 }
 
 async function collectAllSnapshots(context: CollectionContext) {
-  const { cursorScope, deps, env, timezone } = context
+  const { cursorScope, deps, env, since, timezone } = context
   const snapshots: UsageSnapshot[] = []
   const collectedSources: CliSource[] = []
   const sourceFailures: SourceFailure[] = []
   const hookMode = env.TOKENBOARD_HOOK_MODE === '1'
   const failFast = hookMode
-  await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr }), snapshots, collectedSources, sourceFailures, deps, { failFast })
-  await collectOptionalSource('codex', () => deps.collectCodexUsage({ timezone, stderr: deps.stderr }), snapshots, collectedSources, sourceFailures, deps, { failFast })
+  const standardContext = { timezone, since, stderr: deps.stderr }
+  await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage(standardContext), snapshots, collectedSources, sourceFailures, deps, { failFast })
+  await collectOptionalSource('codex', () => deps.collectCodexUsage(standardContext), snapshots, collectedSources, sourceFailures, deps, { failFast })
   if (hookMode) {
     return { snapshots, collectedSources, sourceFailures }
   }
-  const antigravityOptions = { failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
-  const antigravityContext = { timezone, stateDir: resolveStateDir(env), cursorScope }
+  const antigravityOptions = { deferFailure: true, failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
+  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity', () => readAntigravityGuiCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity-ide', () => readAntigravityIdeCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
@@ -229,10 +254,11 @@ function collectSingleSource(
   source: ConcreteCliSource,
   context: CollectionContext
 ) {
-  const { cursorScope, deps, env, timezone } = context
-  if (source === 'claude-code') return deps.collectClaudeCodeUsage({ timezone, stderr: deps.stderr })
-  if (source === 'codex') return deps.collectCodexUsage({ timezone, stderr: deps.stderr })
-  const antigravityContext = { timezone, stateDir: resolveStateDir(env), cursorScope }
+  const { cursorScope, deps, env, since, timezone } = context
+  const standardContext = { timezone, since, stderr: deps.stderr }
+  if (source === 'claude-code') return deps.collectClaudeCodeUsage(standardContext)
+  if (source === 'codex') return deps.collectCodexUsage(standardContext)
+  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)
   return readAntigravityIdeCollector(deps)(antigravityContext)
@@ -255,7 +281,7 @@ async function collectOptionalSource(
     if (isAntigravityPartialUsageError(error)) {
       snapshots.push(...error.snapshots)
       collectedSources.push(source)
-      sourceFailures.push({ source, message: sourceFailureMessage(source, 'partial', message) })
+      sourceFailures.push({ source, message: sourceFailureMessage(source, 'partial', message), fatal: error.fatal })
       deps.stderr(formatAntigravityDiagnostic(source, 'partial', message))
       return
     }
@@ -263,10 +289,19 @@ async function collectOptionalSource(
       deps.stderr(formatAntigravityDiagnostic(source, 'unavailable', message))
       return
     }
-    if (options.failFast || options.failOnNonUnavailable) {
+    if (options.failFast || (options.failOnNonUnavailable && !options.deferFailure)) {
       throw safeSourceError(source, error, message)
     }
-    sourceFailures.push({ source, message })
+    const fatal = Boolean(options.failOnNonUnavailable)
+    sourceFailures.push({
+      source,
+      message: source.startsWith('antigravity') ? sourceFailureMessage(source, 'failed', message) : message,
+      fatal
+    })
+    if (source.startsWith('antigravity')) {
+      deps.stderr(formatAntigravityDiagnostic(source, 'failed', message))
+      return
+    }
     deps.stderr(`Skipping ${source} source: ${message}`)
   }
 }
@@ -274,6 +309,8 @@ async function collectOptionalSource(
 async function ackUploadCursors(input: {
   collectedSources: CliSource[]
   cursorScope?: string
+  since: string
+  timezone: string
   deps: CliDeps
   env: CliEnv
 }) {
@@ -286,7 +323,9 @@ async function ackUploadCursors(input: {
       await input.deps.clearPendingUploadCursors?.({
         stateDir,
         source,
-        cursorScope: source.startsWith('antigravity') ? input.cursorScope : undefined
+        cursorScope: source.startsWith('antigravity') ? input.cursorScope : undefined,
+        since: source.startsWith('antigravity') ? input.since : undefined,
+        timezone: source.startsWith('antigravity') ? input.timezone : undefined
       })
     } catch (error) {
       throw safeSourceError(source, error, errorMessage(error))
@@ -305,10 +344,6 @@ function resolveStateDir(env: CliEnv = process.env) {
 
 function cursorScopeFromEndpoint(endpoint: string) {
   return endpoint ? new URL(endpoint).origin : undefined
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 function formatAntigravityDiagnostic(
@@ -339,10 +374,8 @@ function antigravityErrorCategory(message: string) {
   if (message.includes('Antigravity SQLite reader unavailable')) return 'sqlite-reader-unavailable'
   if (message.includes('Antigravity conversations directory not found') ||
       message.includes('No Antigravity conversations found')) return 'history-unavailable'
-  if (message.includes('Antigravity language server exited before it was ready') ||
-      message.includes('Timed out starting Antigravity language server') ||
-      message.includes('Antigravity language server unavailable after DB history was collected') ||
-      message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null) {
+  if (message.includes('Antigravity language server unavailable after DB history was collected') ||
+      isUnavailableLanguageServerError(new Error(message))) {
     return 'language-server-unavailable'
   }
   if (message.includes('Invalid Antigravity')) return 'invalid-metadata'

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { errorMessage } from './error-message'
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000
@@ -94,13 +95,6 @@ function readRetryDelayMs() {
 function isRetryableCommandError(error: unknown) {
   const message = errorMessage(error).toLowerCase()
   return RETRYABLE_ERROR_PATTERNS.some((pattern) => message.includes(pattern))
-}
-
-function errorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message
-  }
-  return String(error)
 }
 
 function wait(delayMs: number) {

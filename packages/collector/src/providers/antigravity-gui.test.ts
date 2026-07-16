@@ -50,6 +50,32 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
+  test('persists hashed file scan state without raw cascade ids', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-scan-state-'))
+    const conversationDir = join(root, 'conversations')
+    const cascadeId = '11111111-1111-1111-1111-111111111111'
+    try {
+      await mkdir(conversationDir)
+      await writeFile(join(conversationDir, `${cascadeId}.pb`), 'cascade')
+      await collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        conversationDir,
+        timezone: 'UTC',
+        requestGeneratorMetadata: async () => generatorMetadataResponse()
+      })
+
+      const cursorText = await readFile(join(root, 'antigravity-cursor.json'), 'utf8')
+      expect(cursorText).not.toContain(cascadeId)
+      const cursor = JSON.parse(cursorText)
+      expect(Object.keys(cursor.antigravityCascadeFileScan.files)).toEqual([
+        expect.stringMatching(/^[a-f0-9]{64}$/)
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('retries pending Antigravity IDE snapshots until acknowledged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ide-'))
     try {
@@ -531,18 +557,20 @@ describe('collectAntigravityGuiUsage', () => {
         readDbUsageEvents: async () => ({ cascadeIds: new Set<string>(), events: [] })
       }
 
-      await expect(collectAntigravityGuiUsage({
+      const first = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
-      })).rejects.toThrow('metadata unavailable')
+      }))
       expect(calls).toEqual(['conversation-a', 'conversation-b'])
+      expect(first.snapshots).toHaveLength(1)
 
       calls.length = 0
-      await expect(collectAntigravityGuiUsage({
+      const second = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:05:00.000Z'
-      })).rejects.toThrow('metadata unavailable')
+      }))
       expect(calls).toEqual(['conversation-b'])
+      expect(second.snapshots).toHaveLength(1)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -649,10 +677,66 @@ describe('collectAntigravityGuiUsage', () => {
 
       expect(isAntigravityPartialUsageError(thrown)).toBe(true)
       if (!isAntigravityPartialUsageError(thrown)) throw thrown
+      expect(thrown.fatal).toBe(true)
       expect(thrown.snapshots).toEqual([
         expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
       ])
       expect((thrown as Error & { cause?: unknown }).cause).toBeInstanceOf(Error)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('persists partial DB snapshots when cascade enumeration fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-partial-list-'))
+    const dbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-06-23T16:30:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      let run = 0
+      const seenDbCursorSizes: number[] = []
+      const options = {
+        source: 'antigravity' as const,
+        stateDir: root,
+        timezone: 'UTC',
+        listCascades: async () => {
+          throw new Error('Failed to enumerate Antigravity cascades')
+        },
+        readDbUsageEvents: async (input?: { lastSeenRowIndexByCascadeHash?: Map<string, number> }) => {
+          seenDbCursorSizes.push(input?.lastSeenRowIndexByCascadeHash?.size ?? 0)
+          const firstRun = run++ === 0
+          return {
+            cascadeIds: firstRun ? new Set(['conversation-db']) : new Set<string>(),
+            events: firstRun ? [dbEvent] : [],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 3]])
+          }
+        }
+      }
+
+      const first = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:00:00.000Z'
+      }))
+      const second = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
+        ...options,
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      }))
+
+      expect(first.snapshots).toEqual([
+        expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
+      ])
+      expect(second.snapshots).toEqual([{
+        ...first.snapshots[0],
+        collectedAt: '2026-06-24T02:05:00.000Z'
+      }])
+      expect(seenDbCursorSizes).toEqual([0, 1])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -682,6 +766,41 @@ describe('collectAntigravityGuiUsage', () => {
         }),
         requestGeneratorMetadata: async () => {
           throw new Error('Antigravity metadata request failed for antigravity: HTTP 500')
+        }
+      }))
+
+      expect(snapshots).toEqual([
+        expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('preserves partial DB snapshots when the metadata transport disconnects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-partial-transport-'))
+    try {
+      const snapshots = await expectPartialAntigravitySnapshots(collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        timezone: 'UTC',
+        collectedAt: '2026-06-24T02:00:00.000Z',
+        listCascades: async () => [{ id: 'conversation-a', mtimeMs: 2000, size: 20 }],
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-db']),
+          events: [{
+            cascadeHash: 'c'.repeat(64),
+            eventHash: 'e'.repeat(64),
+            createdAt: '2026-06-23T16:30:00.000Z',
+            model: 'gemini-3-flash-a',
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 30
+          }]
+        }),
+        requestGeneratorMetadata: async () => {
+          throw new Error('Antigravity metadata request transport failed for antigravity: ECONNRESET')
         }
       }))
 
@@ -1065,6 +1184,13 @@ describe('collectAntigravityGuiUsage', () => {
         collectedAt: '2026-01-01T10:05:00.000Z'
       })
       await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      const cursorPath = join(root, 'antigravity-cursor.json')
+      const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      for (const entry of Object.values(cursor.files) as Array<{ updatedAt: string }>) {
+        entry.updatedAt = '2025-01-01T00:00:00.000Z'
+      }
+      await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
       const second = await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
@@ -1072,7 +1198,7 @@ describe('collectAntigravityGuiUsage', () => {
 
       expect(first).toHaveLength(1)
       expect(second).toEqual([])
-      const cursorText = await readFile(join(root, 'antigravity-cursor.json'), 'utf8')
+      const cursorText = await readFile(cursorPath, 'utf8')
       expect(cursorText).toContain('gemini-3-flash-a')
       expect(cursorText).not.toContain('conversation-db')
     } finally {
@@ -1388,6 +1514,18 @@ async function expectPartialAntigravitySnapshots(promise: Promise<unknown>) {
     expect(isAntigravityPartialUsageError(error)).toBe(true)
     if (!isAntigravityPartialUsageError(error)) throw error
     return error.snapshots
+  }
+}
+
+async function expectFatalPartialAntigravityUsage(promise: Promise<unknown>) {
+  try {
+    await promise
+    throw new Error('Expected fatal partial Antigravity usage error')
+  } catch (error) {
+    expect(isAntigravityPartialUsageError(error)).toBe(true)
+    if (!isAntigravityPartialUsageError(error)) throw error
+    expect(error.fatal).toBe(true)
+    return error
   }
 }
 

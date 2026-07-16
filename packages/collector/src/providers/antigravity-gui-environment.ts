@@ -1,6 +1,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { AntigravityGuiSource } from './antigravity-gui'
+export { errorMessage } from '../error-message'
 
 export function isUnavailableDbError(error: unknown) {
   if (!(error instanceof Error)) return false
@@ -13,13 +14,11 @@ export function isUnavailableLanguageServerError(error: unknown) {
   return error.message.includes('Antigravity language server exited before it was ready') ||
     error.message.includes('Timed out starting Antigravity language server') ||
     error.message.startsWith('Antigravity metadata request failed for ') ||
+    error.message.startsWith('Antigravity metadata request transport failed for ') ||
     error.message.startsWith('Antigravity metadata request timed out for ') ||
     error.message.startsWith('Antigravity metadata request returned invalid JSON for ') ||
+    error.message.startsWith('Antigravity metadata response exceeded the ') ||
     error.message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null
-}
-
-export function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
 }
 
 export function readStateDir() {

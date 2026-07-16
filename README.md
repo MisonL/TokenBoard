@@ -106,7 +106,9 @@ four-column, two-column, then single-column layout.
 ## Collector Behavior
 
 - Scheduled/manual sync uses a 7-day local-time lookback by default.
-- Explicit backfill uses `--since all`.
+- `--since` accepts `YYYYMMDD` and `YYYY-MM-DD` for every source; `--since all` performs an
+  explicit full-history backfill.
+- Hook mode ignores the external full-history setting and reconciles only the changed Claude Code and Codex session dates.
 - New collectors upload at most 30 snapshots per request to reduce D1 write pressure.
 - The server still accepts legacy 500-snapshot batches and chunks database writes internally.
 - `POST /api/v1/ingest/check` lets newer collectors skip unchanged snapshots.
@@ -150,6 +152,7 @@ pnpm install
 pnpm test
 pnpm typecheck
 pnpm build
+node --test skills/tokenboard/scripts/*.test.mjs
 ```
 
 Useful collector commands:
@@ -179,13 +182,15 @@ pnpm run deploy
 ```
 
 The deploy script validates the production Wrangler config, builds the Worker, applies pending remote
-D1 migrations, and deploys. For Cloudflare Workers Builds, use the same command:
+D1 migrations, verifies the critical production schema, and deploys. Cloudflare Workers Builds and
+GitHub Actions automatic deployment are intentionally not configured in this repository.
 
 ```bash
 pnpm --filter @tokenboard/web run deploy
 ```
 
-If the Workers Build root directory is `apps/web`, use `pnpm run deploy`.
+Do not deploy with a raw `wrangler deploy` command when migrations are pending. The guarded helper and
+the manual release procedure intentionally apply migrations before changing the Worker version.
 
 Required production secrets:
 
@@ -196,7 +201,7 @@ Required production secrets:
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret |
 | `WEBHOOK_ENCRYPTION_KEY` | 32-byte base64 webhook URL encryption key |
 
-GitHub Actions secrets:
+Manual deploy environment:
 
 | Secret | Purpose |
 | --- | --- |
@@ -204,7 +209,7 @@ GitHub Actions secrets:
 | `CLOUDFLARE_API_TOKEN` | API token with D1 edit and Worker deploy access |
 | `D1_DATABASE_ID` | Production D1 database UUID |
 
-GitHub Actions variables:
+Deployment variables:
 
 | Variable | Default | Notes |
 | --- | ---: | --- |
@@ -218,10 +223,12 @@ GitHub Actions variables:
 | `TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT` | `50` | `1` to `500` summary keys per cron tick |
 | `TOKENBOARD_USAGE_SUMMARY_STRICT` | `false` | set `true` only after summary backfill completes |
 
-`wrangler.production.example.jsonc` is the production template. GitHub Actions and clean Workers
-Builds generate the ignored `apps/web/wrangler.production.ci.jsonc` from environment variables. For
-manual deploys, copy the template to the ignored `apps/web/wrangler.production.jsonc`, fill the route,
-auth origin, and D1 database id, then run `pnpm run deploy`.
+Set `TOKENBOARD_COLLECTOR_REPO_URL` and `TOKENBOARD_COLLECTOR_REF` explicitly when the deployed install
+prompt must use a different repository or ref.
+
+`wrangler.production.example.jsonc` is the production template. Copy it to the ignored
+`apps/web/wrangler.production.jsonc`, fill the route, auth origin, and D1 database id, then run
+`pnpm run deploy`.
 
 Production config validation requires:
 
@@ -232,6 +239,9 @@ Production config validation requires:
 - a GitHub collector repository URL and branch/ref for generated install prompts
 - the `*/15 * * * *` notification cron trigger
 - numeric retention, cron batch, and summary backfill values
+
+For production recovery after code was deployed without its D1 migrations, follow
+[`docs/reviews/UPSTREAM-PRODUCTION-RECOVERY-2026-07-16.md`](docs/reviews/UPSTREAM-PRODUCTION-RECOVERY-2026-07-16.md).
 
 Cron times are UTC. User-facing report times are evaluated against each subscription's configured
 timezone.
