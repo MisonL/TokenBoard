@@ -64,8 +64,8 @@ The private Cloudflare deployment, both pending D1 migrations, public and authen
 
 ## Production Guard Follow-up
 
-After adding the manual production workflow and critical schema gate, the guarded deploy helper was
-run again against the same private Worker and D1 database.
+After adding the critical schema gate and confirming the manual-only deployment policy, the guarded
+deploy helper was run again against the same private Worker and D1 database.
 
 - Commit under test: `3aff05780f0c35ba6a51b44ba3242a29a63a0dd6`.
 

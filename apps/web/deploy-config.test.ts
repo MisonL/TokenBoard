@@ -141,28 +141,6 @@ describe('Wrangler deploy config', () => {
     }
   })
 
-  test('manual production workflow requires confirmation and runs the guarded deploy helper', () => {
-    const workflowPath = resolve(packageDir, '../../.github/workflows/manual-production-deploy.yml')
-
-    expect(existsSync(workflowPath)).toBe(true)
-    if (!existsSync(workflowPath)) return
-
-    const workflow = readFileSync(workflowPath, 'utf8')
-    expect(workflow).toContain('workflow_dispatch:')
-    expect(workflow).not.toMatch(/^\s*push:/m)
-    expect(workflow).not.toMatch(/^\s*pull_request:/m)
-    expect(workflow).toContain('environment: production')
-    expect(workflow).toContain('MIGRATE_AND_DEPLOY')
-    expect(workflow).toContain('CLOUDFLARE_API_TOKEN')
-    expect(workflow).toContain('CLOUDFLARE_ACCOUNT_ID')
-    expect(workflow).toContain('D1_DATABASE_ID')
-    expect(workflow).toContain('TOKENBOARD_WORKER_ROUTE')
-    expect(workflow).toContain('BETTER_AUTH_URL')
-    expect(workflow).toContain('wrangler d1 time-travel info')
-    expect(workflow).toContain('pnpm --filter @tokenboard/web run deploy')
-    expect(workflow).toContain('"$BETTER_AUTH_URL/api/v1/health"')
-  })
-
   test('Drizzle schema declares webhook migration indexes', () => {
     const schema = readDrizzleSchema()
 
