@@ -68,7 +68,7 @@ describe('hook sync collection', () => {
     }
   })
 
-  test('uses changed Codex session files to run narrow ccusage reconciliation', async () => {
+  test('uses changed Codex session files to run narrow ccusage reconciliation despite external since', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-sync-'))
     const codexHome = join(root, 'codex')
     const stateDir = join(root, 'state')
@@ -103,6 +103,7 @@ describe('hook sync collection', () => {
         codexHome,
         timezone: 'Asia/Shanghai',
         collectedAt: '2026-05-22T10:00:00.000Z',
+        since: 'all',
         async runner(_command, args) {
           calls.push(args)
           if (args.includes('session')) {

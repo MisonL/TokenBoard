@@ -188,7 +188,7 @@ function parseArgs(args: string[], env: CliEnv) {
     timezone,
     endpoint: flags.endpoint ?? env.TOKENBOARD_ENDPOINT ?? '',
     uploadToken: flags.token ?? env.TOKENBOARD_UPLOAD_TOKEN ?? '',
-    since: flags.since ?? env.TOKENBOARD_SINCE ?? env.TOKENBOARD_DEFAULT_SINCE ?? '',
+    since: flags.since ?? (env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE || ''),
     failOnSourceError: env.TOKENBOARD_FAIL_ON_SOURCE_ERROR === '1'
   }
 }

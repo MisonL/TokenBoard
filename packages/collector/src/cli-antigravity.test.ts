@@ -761,11 +761,11 @@ describe('runCollectorCli Antigravity source', () => {
     expect(acknowledged).toEqual(collected)
   })
 
-  test('passes an explicit since date to every collector', async () => {
+  test.each(['20260708', 'all'])('passes an explicit since value of %s to every collector', async (since) => {
     const seen: Array<{ source: string; since: string | undefined }> = []
 
     const result = await runCollectorCli(
-      ['preview', '--source', 'all', '--since', '20260708'],
+      ['preview', '--source', 'all', '--since', since],
       { TOKENBOARD_STATE_DIR: '/state' },
       deps({
         collectClaudeCodeUsage: async (options) => {
@@ -793,11 +793,55 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(0)
     expect(seen).toEqual([
-      { source: 'claude-code', since: '20260708' },
-      { source: 'codex', since: '20260708' },
-      { source: 'antigravity-cli', since: '20260708' },
-      { source: 'antigravity', since: '20260708' },
-      { source: 'antigravity-ide', since: '20260708' }
+      { source: 'claude-code', since },
+      { source: 'codex', since },
+      { source: 'antigravity-cli', since },
+      { source: 'antigravity', since },
+      { source: 'antigravity-ide', since }
+    ])
+  })
+
+  test('uses the default since window when the primary environment value is empty', async () => {
+    const seen: Array<{ source: string; since: string | undefined }> = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {
+        TOKENBOARD_SINCE: '',
+        TOKENBOARD_DEFAULT_SINCE: '20260501',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      deps({
+        collectClaudeCodeUsage: async (options) => {
+          seen.push({ source: 'claude-code', since: options?.since })
+          return []
+        },
+        collectCodexUsage: async (options) => {
+          seen.push({ source: 'codex', since: options?.since })
+          return []
+        },
+        collectAntigravityCliUsage: async (options) => {
+          seen.push({ source: 'antigravity-cli', since: options?.since })
+          return []
+        },
+        collectAntigravityUsage: async (options) => {
+          seen.push({ source: 'antigravity', since: options?.since })
+          return []
+        },
+        collectAntigravityIdeUsage: async (options) => {
+          seen.push({ source: 'antigravity-ide', since: options?.since })
+          return []
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(seen).toEqual([
+      { source: 'claude-code', since: '20260501' },
+      { source: 'codex', since: '20260501' },
+      { source: 'antigravity-cli', since: '20260501' },
+      { source: 'antigravity', since: '20260501' },
+      { source: 'antigravity-ide', since: '20260501' }
     ])
   })
 

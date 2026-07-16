@@ -38,7 +38,7 @@ export async function collectClaudeCodeUsage(
   }
 
   const rangeArgs = buildRangeArgs({
-    since: options.since ?? process.env.TOKENBOARD_SINCE ?? process.env.TOKENBOARD_DEFAULT_SINCE ?? '',
+    since: options.since ?? (process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''),
     until: process.env.TOKENBOARD_UNTIL || ''
   })
 

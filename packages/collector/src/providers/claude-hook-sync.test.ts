@@ -6,7 +6,7 @@ import { collectClaudeCodeUsage } from './claude-code'
 import { clearPendingUploadCursors } from './session-cursor'
 
 describe('Claude hook sync collection', () => {
-  test('uses changed Claude project files to run narrow ccusage reconciliation', async () => {
+  test('uses changed Claude project files to run narrow ccusage reconciliation despite external since', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-claude-hook-'))
     const claudeHome = join(root, 'claude')
     const stateDir = join(root, 'state')
@@ -37,6 +37,7 @@ describe('Claude hook sync collection', () => {
       const snapshots = await collectClaudeCodeUsage({
         timezone: 'Asia/Shanghai',
         collectedAt: '2026-05-22T10:00:00.000Z',
+        since: 'all',
         async runner(_command, args) {
           calls.push(args)
           if (args.includes('session')) {
