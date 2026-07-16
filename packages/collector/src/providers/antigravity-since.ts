@@ -14,7 +14,7 @@ export function resolveAntigravityCollectionRange(input: {
   env?: NodeJS.ProcessEnv
 }): AntigravityCollectionRange {
   const env = input.env ?? process.env
-  const since = input.since ?? env.TOKENBOARD_SINCE ?? env.TOKENBOARD_DEFAULT_SINCE ?? ''
+  const since = input.since ?? (env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE || '')
   if (!since) {
     return {
       fullHistory: false,
@@ -67,14 +67,17 @@ function parseBoundedHistoryScope(value: string) {
 }
 
 function parseCompactDate(value: string) {
-  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(value)
-  if (!match) throw new Error(`Invalid Antigravity since date: ${value}`)
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
+  const trimmed = value.trim()
+  if (!/^\d{8}$/.test(trimmed) && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    throw new Error(`Invalid Antigravity since date: ${value}. Expected YYYYMMDD or YYYY-MM-DD.`)
+  }
+  const compact = trimmed.replaceAll('-', '')
+  const year = Number(compact.slice(0, 4))
+  const month = Number(compact.slice(4, 6))
+  const day = Number(compact.slice(6, 8))
   const date = new Date(Date.UTC(year, month - 1, day))
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
-    throw new Error(`Invalid Antigravity since date: ${value}`)
+    throw new Error(`Invalid Antigravity since date: ${value}. Expected YYYYMMDD or YYYY-MM-DD.`)
   }
-  return `${match[1]}-${match[2]}-${match[3]}`
+  return `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`
 }

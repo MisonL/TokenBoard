@@ -761,7 +761,7 @@ describe('runCollectorCli Antigravity source', () => {
     expect(acknowledged).toEqual(collected)
   })
 
-  test.each(['20260708', 'all'])('passes an explicit since value of %s to every collector', async (since) => {
+  test.each(['20260708', '2026-07-08', 'all'])('passes an explicit since value of %s to every collector', async (since) => {
     const seen: Array<{ source: string; since: string | undefined }> = []
 
     const result = await runCollectorCli(
