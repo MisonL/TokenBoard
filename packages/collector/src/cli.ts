@@ -2,7 +2,6 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
-import type { CollectorConfig } from './config'
 import { errorMessage } from './error-message'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
 import {

@@ -1,10 +1,11 @@
+import { formatUsd } from '../../lib/money'
+import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metrics'
 import {
   defaultPublicCardConfig,
   parsePublicCardConfig,
   type PublicCardConfig,
   type PublicCardMetric
 } from './config'
-import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metrics'
 import { palettes, type Palette, type UsageCardInput } from './svg-types'
 
 export type { UsageCardInput } from './svg-types'
@@ -247,15 +248,6 @@ function metricBlock(input: {
 
 function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
-}
-
-function formatUsd(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value)
 }
 
 function escapeXml(value: string) {

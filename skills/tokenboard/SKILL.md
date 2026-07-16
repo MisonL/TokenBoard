@@ -77,7 +77,9 @@ If the user pasted a TokenBoard install prompt from the website, follow the prom
 
 ## Sync
 
-Daily and manual sync default to a 7-day lookback window. Use `--since all` only when the user explicitly asks for a full-history backfill.
+Daily and manual sync default to a 7-day lookback window. `--since` accepts `YYYYMMDD` or
+`YYYY-MM-DD` for every source. Use `--since all` only when the user explicitly asks for a
+full-history backfill.
 
 Sync runs a lightweight upgrade first by default. It updates the local collector checkout and this installed skill from the configured TokenBoard repo, then continues with collection. Hook syncs do not run this upgrade path; they only enqueue and reconcile usage. If Git upgrade fails, the script falls back to the GitHub ZIP archive path. If upgrade still fails, treat it as a warning unless sync itself fails. For troubleshooting only, skip the upgrade with `--skip-upgrade`, `TOKENBOARD_SKIP_UPGRADE=1`, or `TOKENBOARD_AUTO_UPGRADE=0`.
 

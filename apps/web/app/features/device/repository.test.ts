@@ -45,7 +45,7 @@ function createRecordingDb(
 
 describe('D1DevicePairingRepository', () => {
   test('stores reconnect pairing code only when the target has an active installation', async () => {
-    const { db, sqlStatements, bindings, batches } = createRecordingDb()
+    const { db, sqlStatements, bindings } = createRecordingDb()
     const repository = new D1DevicePairingRepository(db)
 
     await repository.createPairingCode({

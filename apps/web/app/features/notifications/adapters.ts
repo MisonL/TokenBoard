@@ -1,11 +1,9 @@
 import { cacheReadRateFromTotals, formatPercentRate } from '../../lib/usage-metrics'
-import { formatUsd } from '../../lib/money'
 import {
   formatCostWithAvailability,
   formatModelCostWithAvailability,
   formatSource,
-  formatSourceCostNote,
-  hasUnavailableCostSource
+  formatSourceCostNote
 } from '../usage/source-format'
 import type { WebhookProvider } from './schema'
 

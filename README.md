@@ -106,7 +106,9 @@ four-column, two-column, then single-column layout.
 ## Collector Behavior
 
 - Scheduled/manual sync uses a 7-day local-time lookback by default.
-- Explicit backfill uses `--since all`.
+- `--since` accepts `YYYYMMDD` and `YYYY-MM-DD` for every source; `--since all` performs an
+  explicit full-history backfill.
+- Hook mode ignores the external full-history setting and reconciles only the changed Claude Code and Codex session dates.
 - New collectors upload at most 30 snapshots per request to reduce D1 write pressure.
 - The server still accepts legacy 500-snapshot batches and chunks database writes internally.
 - `POST /api/v1/ingest/check` lets newer collectors skip unchanged snapshots.
@@ -150,6 +152,7 @@ pnpm install
 pnpm test
 pnpm typecheck
 pnpm build
+node --test skills/tokenboard/scripts/*.test.mjs
 ```
 
 Useful collector commands:

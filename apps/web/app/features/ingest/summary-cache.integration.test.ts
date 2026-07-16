@@ -360,7 +360,6 @@ describe('usage summary cache integration', () => {
     applyMigrations(dbPath)
     const db = createSqliteD1(dbPath)
     const today = toIsoDate(verificationDate)
-    const monthStart = `${today.slice(0, 8)}01`
 
     await seedProfile(db)
     await insertStaleUserTotal(db)

@@ -166,7 +166,7 @@ export function pushCompleteCliCursorSnapshots(
   includeSnapshot: (snapshot: CursorSnapshot) => boolean = () => true
 ) {
   const dirtyGroups = new Set<string>()
-  for (const [eventKey, entry] of Object.entries(cursor.files)) {
+  for (const entry of Object.values(cursor.files)) {
     if (!entry.pendingUpload || entry.snapshots.length === 0) continue
     for (const snapshot of entry.snapshots.filter(includeSnapshot)) {
       dirtyGroups.add(snapshotGroupKey(snapshot))
