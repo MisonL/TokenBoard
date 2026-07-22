@@ -119,7 +119,7 @@ node scripts/status.mjs
 
 The JSON output includes `activeServer`, `installationId`, `packageManager`, `collectorDir`, `scheduleTimes`, device-link presence, and hook status, including `antigravityCli`. It must not print upload tokens or install claims.
 
-Notifier hooks use `~/.tokenboard/bin/notify.cjs` and only enqueue a background sync signal. They must not run `ccusage`, scan files, or upload in the foreground hook process.
+Notifier hooks use `~/.tokenboard/bin/notify.cjs` and only enqueue a background sync signal. They must not run `ccusage`, scan files, or upload in the foreground hook process. On Windows, every process spawned by the notifier must set `windowsHide: true` so hook execution does not open a console window.
 
 Antigravity status line capture uses `skills/tokenboard/scripts/antigravity-statusline.mjs` and writes `~/.tokenboard/antigravity-cli-statusline.jsonl`. It must not use `~/.tokenboard/bin/notify.cjs`.
 

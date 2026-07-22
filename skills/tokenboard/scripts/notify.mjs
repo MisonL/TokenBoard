@@ -43,7 +43,7 @@ function executeTokenBoardSync(source, options = {}) {
   const result = spawn(
     options.nodePath || process.execPath,
     [scriptPath, '--mode', 'sync', '--source', source, '--hook'],
-    { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' }
+    { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', windowsHide: true }
   )
   if (result.error) {
     throw result.error
@@ -70,6 +70,7 @@ function scheduleTrailingNotify(trigger, delayMs, options = {}) {
       {
         detached: true,
         stdio: 'ignore',
+        windowsHide: true,
         env: {
           ...process.env,
           TOKENBOARD_CONFIG_DIR: runtime.configDir,

@@ -14,6 +14,7 @@ test('notify handler only enqueues signal and spawns background notify script', 
   assert.match(source, /writeQueuedSignal\(signalPayload\)/)
   assert.match(source, /spawn\(NODE_PATH, \[NOTIFY_SCRIPT/)
   assert.match(source, /detached: true/)
+  assert.equal(source.match(/windowsHide: true/g)?.length, 2)
   assert.doesNotMatch(source, /ccusage/)
 })
 

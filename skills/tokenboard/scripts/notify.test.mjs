@@ -27,6 +27,32 @@ test('notify runs source-specific sync through coordinator', () => {
   assert.deepEqual(calls, [{ kind: 'notify', source: 'codex' }])
 })
 
+test('notify hides the sync child process on Windows', () => {
+  const spawned = []
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    stateDir: '/state',
+    cooldownMs: 0,
+    mkdir: () => {},
+    exists: () => false,
+    readFile: () => {
+      const error = new Error('ENOENT')
+      error.code = 'ENOENT'
+      throw error
+    },
+    writeFile: () => {},
+    unlink: () => {},
+    spawn: (command, args, options) => {
+      spawned.push({ command, args, options })
+      return { status: 0, stderr: '' }
+    }
+  })
+
+  assert.equal(result.skippedSync, false)
+  assert.equal(spawned.length, 1)
+  assert.equal(spawned[0].options.windowsHide, true)
+})
+
 test('notify replaces malformed trailing lock during cooldown', () => {
   const files = new Map([
     ['/state/last-success.json', '2026-05-22T10:00:00.000Z'],
@@ -53,8 +79,8 @@ test('notify replaces malformed trailing lock during cooldown', () => {
       pid: 503,
       kill: () => true
     },
-    spawnDetached: () => {
-      spawned.push('spawned')
+    spawnDetached: (command, args, options) => {
+      spawned.push({ command, args, options })
       return { pid: 704, unref: () => {} }
     },
     executeSync: () => {
@@ -63,7 +89,8 @@ test('notify replaces malformed trailing lock during cooldown', () => {
   })
 
   assert.equal(result.trailingScheduled, true)
-  assert.deepEqual(spawned, ['spawned'])
+  assert.equal(spawned.length, 1)
+  assert.equal(spawned[0].options.windowsHide, true)
   assert.equal(JSON.parse(files.get('/state/trailing.lock')).pid, 704)
 })
 

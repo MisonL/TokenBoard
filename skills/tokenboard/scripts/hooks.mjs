@@ -241,6 +241,7 @@ try {
   const child = spawn(NODE_PATH, [NOTIFY_SCRIPT, "--source", source], {
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
     env: {
       ...process.env,
       TOKENBOARD_CONFIG_DIR: STATE_DIR,
@@ -264,6 +265,7 @@ if (source === "codex") {
       const child = spawn(cmd[0], [...cmd.slice(1), ...payloadArgs], {
         detached: true,
         stdio: "ignore",
+        windowsHide: true,
         env: { ...process.env },
       });
       child.unref();
