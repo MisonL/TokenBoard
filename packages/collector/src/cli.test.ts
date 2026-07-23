@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
+import { join } from 'node:path'
 import { runCollectorCli } from './cli'
 
 const claudeSnapshot: UsageSnapshot = {
@@ -162,7 +163,7 @@ describe('runCollectorCli', () => {
       )
 
       expect(result).toBe(0)
-      expect(warmed).toEqual(['/state:codex:/codex-home/sessions:1234'])
+      expect(warmed).toEqual([`/state:codex:${join('/codex-home', 'sessions')}:1234`])
     } finally {
       now.mockRestore()
     }
@@ -196,7 +197,7 @@ describe('runCollectorCli', () => {
       )
 
       expect(result).toBe(0)
-      expect(warmed).toEqual(['/custom-tokenboard:codex:/codex-home/sessions:1234'])
+      expect(warmed).toEqual([`/custom-tokenboard:codex:${join('/codex-home', 'sessions')}:1234`])
     } finally {
       now.mockRestore()
     }
@@ -293,8 +294,8 @@ describe('runCollectorCli', () => {
 
       expect(result).toBe(0)
       expect(warmed).toEqual([
-        '/state:claude-code:/claude/projects:1234',
-        '/state:codex:/codex/sessions:1234'
+        `/state:claude-code:${join('/claude', 'projects')}:1234`,
+        `/state:codex:${join('/codex', 'sessions')}:1234`
       ])
     } finally {
       now.mockRestore()
@@ -365,7 +366,7 @@ describe('runCollectorCli', () => {
 
     expect(result).toBe(0)
     expect(events).toEqual([
-      'lock:/state/collector-run',
+      `lock:${join('/state', 'collector-run')}`,
       'collect',
       'upload',
       'ack',

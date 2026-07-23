@@ -220,7 +220,7 @@ describe('collectChangedSessionFiles', () => {
 
     try {
       await writeSession(file, 'one', '2026-05-22T01:00:00.000Z')
-      await symlink(sessionsDir, cursorPath)
+      await symlink(sessionsDir, cursorPath, process.platform === 'win32' ? 'junction' : 'dir')
 
       await expect(collectChangedSessionFiles({
         source: 'codex',

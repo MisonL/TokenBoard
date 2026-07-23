@@ -30,6 +30,11 @@ function runNode(args, extraEnv) {
 }
 
 function runPnpm(args, extraEnv) {
+  const packageManagerCli = process.env.TOKENBOARD_PNPM_CLI?.trim() || process.env.npm_execpath?.trim()
+  if (packageManagerCli) {
+    run(process.execPath, [packageManagerCli, ...args], extraEnv)
+    return
+  }
   run(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', args, extraEnv)
 }
 
@@ -40,6 +45,7 @@ function run(command, args, extraEnv) {
     cwd: process.cwd()
   })
   if (result.status !== 0) {
+    if (result.error) console.error(`Failed to start ${command}: ${result.error.message}`)
     process.exit(result.status ?? 1)
   }
 }

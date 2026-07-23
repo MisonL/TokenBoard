@@ -497,7 +497,7 @@ describe('listAntigravityCascades', () => {
       scanState
     })
 
-    expect(statPaths).toContain(`/tmp/tokenboard-antigravity-refresh-cascades/${knownId}.pb`)
+    expect(statPaths).toContain(join('/tmp/tokenboard-antigravity-refresh-cascades', `${knownId}.pb`))
     expect(cascades[0]?.id).toBe(knownId)
   })
 

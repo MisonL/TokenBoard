@@ -1,4 +1,4 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -507,7 +507,7 @@ describe('Wrangler deploy config', () => {
   test('deploy helper generates production config for clean Cloudflare builds', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-clean-deploy-'))
     const scriptDir = join(tempDir, 'scripts')
-    const pnpmStub = join(tempDir, 'pnpm')
+    const pnpmStub = join(tempDir, 'pnpm-stub.mjs')
 
     try {
       mkdirSync(scriptDir)
@@ -515,15 +515,14 @@ describe('Wrangler deploy config', () => {
       copyFileSync(resolve(packageDir, 'scripts/check-production-config.mjs'), join(scriptDir, 'check-production-config.mjs'))
       copyFileSync(resolve(packageDir, 'scripts/write-production-config.mjs'), join(scriptDir, 'write-production-config.mjs'))
       copyFileSync(resolve(packageDir, 'wrangler.production.example.jsonc'), join(tempDir, 'wrangler.production.example.jsonc'))
-      writeFileSync(pnpmStub, '#!/bin/sh\nexit 0\n')
-      chmodSync(pnpmStub, 0o755)
+      writeFileSync(pnpmStub, 'process.exit(0)\n')
 
       const result = spawnSync(process.execPath, ['scripts/deploy.mjs'], {
         cwd: tempDir,
         encoding: 'utf8',
         env: {
           ...process.env,
-          PATH: `${tempDir}:${process.env.PATH ?? ''}`,
+          TOKENBOARD_PNPM_CLI: pnpmStub,
           TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
           BETTER_AUTH_URL: 'https://tokenboard.example.com',
           TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
@@ -537,7 +536,7 @@ describe('Wrangler deploy config', () => {
         }
       })
 
-      expect(result.status).toBe(0)
+      expect(result.status, result.stderr || result.stdout).toBe(0)
 
       const generated = readFileSync(join(tempDir, 'wrangler.production.ci.jsonc'), 'utf8')
       expect(generated).toContain('"pattern": "tokenboard.example.com"')

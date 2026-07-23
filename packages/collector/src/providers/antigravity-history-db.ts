@@ -47,9 +47,12 @@ export type AntigravityDbUsageResult = {
   lastReadRowIndexByCascade?: Map<string, number>
 }
 
+type ReadSqlite = (dbFile: string, sql: string) => Promise<string>
+
 export async function readAntigravityDbUsageEvents(input: {
   conversationDir: string
   sqliteBin?: string
+  readSqlite?: ReadSqlite
   lastSeenRowIndexByCascadeHash?: Map<string, number>
   maxDbFiles?: number | null
   statFile?: StatFile
@@ -80,6 +83,7 @@ export async function readAntigravityDbUsageEvents(input: {
     let lastReadRowIndex = normalizeLastSeenRowIndex(lastSeenRowIndex)
     for await (const row of readGeneratorMetadataRows(dbFile.filePath, {
       sqliteBin: input.sqliteBin,
+      readSqlite: input.readSqlite,
       lastSeenRowIndex
     })) {
       const events = parseAntigravityGeneratorMetadataBlobEvents(row.data, {
@@ -236,6 +240,7 @@ async function * readGeneratorMetadataRows(
   dbFile: string,
   options: {
     sqliteBin?: string
+    readSqlite?: ReadSqlite
     lastSeenRowIndex?: number
   } = {}
 ) {
@@ -244,6 +249,7 @@ async function * readGeneratorMetadataRows(
   while (true) {
     const rows = await readGeneratorMetadataRowPage(dbFile, {
       sqliteBin,
+      readSqlite: options.readSqlite,
       lastSeenRowIndex
     })
     if (rows.length === 0) return
@@ -263,17 +269,20 @@ async function readGeneratorMetadataRowPage(
   dbFile: string,
   options: {
     sqliteBin: string
+    readSqlite?: ReadSqlite
     lastSeenRowIndex: number
   }
 ) {
   const sql = `select idx, hex(data) from gen_metadata where idx > ${options.lastSeenRowIndex} order by idx limit ${generatorMetadataRowsPageSize}`
   let stdout
   try {
-    stdout = (await execFileAsync(options.sqliteBin, ['-batch', dbFile, sql], {
-      maxBuffer: maxSqliteOutputBytes,
-      timeout: sqliteTimeoutMs,
-      killSignal: 'SIGKILL'
-    })).stdout
+    stdout = options.readSqlite
+      ? await options.readSqlite(dbFile, sql)
+      : (await execFileAsync(options.sqliteBin, ['-batch', dbFile, sql], {
+          maxBuffer: maxSqliteOutputBytes,
+          timeout: sqliteTimeoutMs,
+          killSignal: 'SIGKILL'
+        })).stdout
   } catch (error) {
     if (isMissingFileError(error)) {
       throw new Error(`Antigravity SQLite reader unavailable: ${options.sqliteBin} not found`)
