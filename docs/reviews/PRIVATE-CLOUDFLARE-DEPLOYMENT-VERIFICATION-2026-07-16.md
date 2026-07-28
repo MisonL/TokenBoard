@@ -129,3 +129,29 @@ account data, device identifiers, credentials, command contents, or clipboard da
 The current candidate therefore has private D1/schema, anonymous boundary, authenticated page,
 client navigation, copy-control, and real collector-ingest evidence. Commit, push, and pull-request
 publication remain separate release-preparation work and are not claimed by this section.
+
+## Isolated Private Preview Deployment Evidence - 2026-07-29
+
+This is a separate verification of the committed `fix/post-merge-reliability-followups` candidate
+at `3230289`. It used an isolated private `workers.dev` Worker and D1 database. It did not deploy
+to the upstream custom domain, touch the upstream D1 database, or change any upstream Worker
+configuration.
+
+- A private D1 Time Travel restore point was recorded before migrations. Its identifier is retained
+  only in the private deployment record.
+- Migrations `0022` through `0029` applied successfully. The remote critical-schema verification
+  passed, and a subsequent migration check reported no pending migrations.
+- `WEBHOOK_ENCRYPTION_KEY` and `BETTER_AUTH_SECRET` were verified as Worker secrets rather than
+  plain Wrangler variables. Their values were not read or recorded.
+- `GET /api/v1/health` returned HTTP 200. Anonymous `/api/v1/me` returned HTTP 401, while
+  anonymous `/dashboard` and `/settings/devices` redirected to sign-in as expected.
+- A temporary preview-only identity and upload token performed a real ingest and snapshot-hash
+  check successfully. Remote D1 showed the expected usage, summary, token, device, and
+  installation updates. All temporary records, including their rate-limit rows, were removed and
+  a follow-up count check returned zero.
+
+The isolated preview deliberately did not receive GitHub OAuth client secrets, so it does not
+claim a GitHub OAuth callback check. GitHub's own OAuth login page is provider-hosted and is not
+styled or served by TokenBoard; its appearance is outside the Worker deployment surface. This
+section is deployment evidence for the current candidate, not evidence of an upstream production
+release.
