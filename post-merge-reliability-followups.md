@@ -16,7 +16,7 @@ D1 migration、质量安全、独立复核、私人 Cloudflare 验证、原子�
 的最新事实、依赖顺序、验收证据和停止条件为准；它们共同约束同一个 active Goal，而不是两个
 可以并行完成的目标。
 
-### Reset Snapshot (2026-07-21)
+### Historical Reset Snapshot (2026-07-21)
 
 - `T01` 至 `T06` 已完成；`T07`、`T08`、`T09`、`T10` 尚未完成，绝不能因历史 preview、旧部署
   或旧 review 结果提前标记完成。
@@ -35,6 +35,26 @@ D1 migration、质量安全、独立复核、私人 Cloudflare 验证、原子�
   时代码及直接支持测试变动使此前 T08 的完整门禁和人工安全审阅失效。必须从零重跑门禁和审阅，之后
   才能恢复 T07 的最小补偿及 hash 复核，再执行 T09 的只读外部复核；只有所有 confirmed finding 已闭环并重新验证后，
   才可执行 T10 的私人 Cloudflare migration/deploy/rollback 验证和中文 PR 收尾。
+
+### Current Completion Snapshot (2026-07-29)
+
+- 上节是重设当日的历史门禁状态，不描述当前完成度。`T01` 至 `T10` 的最终状态和各自证据以本文件
+  后续对应章节为准；本次快照未将任何旧部署、历史 preview 或外部审查缓存作为新证据。
+- 已重新执行 `git fetch --all --prune`。当前分支相对 `upstream/master` 领先 3 个提交、相对 fork
+  远端无领先或落后；运行时代码最后变更于 `12f3a20`，其后的提交仅更新发布和验证文档。草稿 PR #21
+  仍为 `CLEAN`，且 GitGuardian check 成功。
+- 脱敏本机状态确认 collector、设备身份、四个每日时段和 Codex、Claude Code、Antigravity hooks
+  均已配置。最近一次 Codex 尾随 hook 完成实际当天同步，运行记录为 success、无 cycle error，且
+  `sync.lock`、`collector-run.lock` 与 `trailing.lock` 均已释放。
+- 使用一次性 state directory 的正式入口近月 preview 生成 139 个快照：Claude Code 38、Codex 96、
+  Antigravity CLI 5，普通 Antigravity 与 Antigravity IDE 均为 0 且没有 source diagnostic。Claude
+  Code 的 38 个 hash 全部匹配；Antigravity CLI 的 `--since all` canonical preview 生成 25 个快照，
+  全部匹配且无缺失或诊断。Codex 的活动会话差异由产品自身 hash-filtered sync 处理，先后只写入变化
+  快照并跳过未变化快照，随后由成功的当天 hook 继续收敛；未重配对、未删除 cursor 或配置，也未输出
+  原始 usage、凭证或会话内容。
+- 对公开 `/auth/sign-in` 做桌面和 390 px 视觉核验，没有横向溢出、遮挡或失效控件。点击后跳转到
+  GitHub 托管的 OAuth 登录页；该页面的视觉样式不由 TokenBoard Worker 或 CSS 提供，不能作为本仓库
+  的样式缺陷处理。
 
 ### Authority, Baseline And Preservation
 

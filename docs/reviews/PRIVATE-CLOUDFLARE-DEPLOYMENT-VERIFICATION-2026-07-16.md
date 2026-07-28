@@ -155,3 +155,13 @@ claim a GitHub OAuth callback check. GitHub's own OAuth login page is provider-h
 styled or served by TokenBoard; its appearance is outside the Worker deployment surface. This
 section is deployment evidence for the current candidate, not evidence of an upstream production
 release.
+
+## Public Sign-In Presentation Boundary - 2026-07-29
+
+The public TokenBoard sign-in route was rendered again at desktop and 390 px mobile widths. Its
+navigation, primary GitHub button, and responsive layout had no horizontal overflow, overlap, or
+unusable control. Activating the button redirected to GitHub's provider-hosted OAuth login page.
+That page is not served by the Worker and does not consume TokenBoard CSS, so a visual difference
+there must be investigated through GitHub or the user's browser environment rather than by changing
+the TokenBoard application. This check did not export browser state, account data, credentials, or
+cookies.
