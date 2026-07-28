@@ -1146,7 +1146,7 @@ CodeRabbit 仅覆盖 packages 分目录，不能替代 Claude 的全量只读结
 
 ## T10 Private Cloudflare Deployment Commit And PR
 
-状态：进行中
+状态：已完成
 
 内容：仅在 T01 至 T09 完成后，对用户私人 Cloudflare 执行 guarded deploy，随后提交、
 推送并建立或更新中文 PR。
@@ -1196,6 +1196,14 @@ profile 对应 upload token 的最近使用时间和设备最近同步时间均�
 私人 D1/schema、匿名边界、认证页面、client navigation、复制控件和真实 collector ingest 的部署
 验收现已齐全。T10 仍为进行中，仅因尚需完成差异复核、原子提交、推送分支和中文 PR；不得将本段
 浏览器证据误写为已提交或已发布 PR。
+
+2026-07-28 收尾完成：当前候选以 `12f3a20` 提交，推送至维护者 fork 的
+`fix/post-merge-reliability-followups` 分支，并已建立面向上游 `master` 的中文草稿 PR #21。PR
+描述包含迁移前置条件、受保护部署顺序、验证、回滚和旧 client 兼容性边界，且经过新增行凭证标记
+扫描。当前 `pnpm test` 为 usage-core `9/9`、Web `580/580`、collector `628/628`；`pnpm typecheck`、
+`pnpm build`、`node --test skills/tokenboard/scripts/*.test.mjs`（`362/362`）、
+`pnpm audit --audit-level=high` 和当前差异格式检查均通过。GitHub 上的 GitGuardian Security Checks
+已成功；PR 保持草稿，尚未声称已获上游审阅或合并。
 
 ## Final Acceptance
 
