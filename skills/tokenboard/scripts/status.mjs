@@ -8,19 +8,40 @@ import { hookStatus } from './hooks.mjs'
 export function buildStatus({ configPath, config, hooks = hookStatus(), deviceLink = deviceLinkStatus() }) {
   return {
     configured: true,
-    configPath,
-    activeServer: config.activeServer,
-    endpoint: config.endpoint,
-    deviceId: config.deviceId,
-    installationId: config.installationId,
+    activeServerConfigured: hasValue(config.activeServer),
+    collectorConfigured: hasValue(config.collectorDir),
+    deviceIdentityConfigured: hasValue(config.deviceId) && hasValue(config.installationId),
+    deviceLinkPresent: deviceLink.present === true,
     timezone: config.timezone,
     source: config.source,
     packageManager: config.packageManager || 'pnpm',
-    collectorDir: config.collectorDir,
     scheduleTimes: Array.isArray(config.scheduleTimes) ? config.scheduleTimes : [],
-    deviceLink,
-    hooks
+    hooks: publicHookStatus(hooks)
   }
+}
+
+function hasValue(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function publicHookStatus(hooks) {
+  return {
+    notifyHandler: hookState(hooks?.notifyHandler),
+    codex: hookState(hooks?.codex),
+    claudeCode: hookState(hooks?.claudeCode),
+    antigravityCli: hookState(hooks?.antigravityCli),
+    antigravityIde: hookState(hooks?.antigravityIde),
+    antigravity: hookState(hooks?.antigravity)
+  }
+}
+
+function hookState(value) {
+  return value === 'installed' ||
+    value === 'installed-local-history' ||
+    value === 'not-installed' ||
+    value === 'error'
+    ? value
+    : 'unknown'
 }
 
 function runCli() {

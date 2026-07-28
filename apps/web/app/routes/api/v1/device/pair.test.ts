@@ -4,6 +4,7 @@ import {
   clientIpRateLimitSubject,
   enforceRateLimit
 } from '../../../../lib/rate-limit'
+import { ApiError } from '../../../../lib/errors'
 import { POST } from './pair'
 
 vi.mock('../../../../features/device/repository', () => ({
@@ -88,5 +89,36 @@ describe('device pair route', () => {
       },
       { endpoint: 'https://tokenboard.example/api/v1/ingest' }
     )
+  })
+
+  test('preserves inactive reconnect targets as a not-found response', async () => {
+    const request = new Request('https://tokenboard.example/api/v1/device/pair', {
+      method: 'POST',
+      headers: { 'cf-connecting-ip': '203.0.113.10' }
+    })
+    const context = {
+      env: { DB: {} },
+      req: {
+        raw: request,
+        url: request.url,
+        json: vi.fn(async () => ({ pairingCode: 'pair_123' }))
+      },
+      header: vi.fn(),
+      json: vi.fn((body: unknown, status = 200) => Response.json(body, { status }))
+    }
+    mockedPairDevice.mockRejectedValue(
+      new ApiError('NOT_FOUND', 'Device has no active installation', 404)
+    )
+
+    const response = await POST[0](context as never, async () => undefined) as Response
+
+    expect(response.status).toBe(404)
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'Device has no active installation'
+      }
+    })
+    expect(context.header).not.toHaveBeenCalled()
   })
 })

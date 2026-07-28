@@ -1,0 +1,115 @@
+import { access, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+import { collectCodexUsage } from './codex'
+import { createEmptyCodexHome, tokenCountEvent, writeJsonl } from './codex-test-helpers'
+
+describe('Codex bounded canonical attribution batches', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('runs every bounded report in configured frozen session batches', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-bounded-batches-'))
+    const first = join(codexHome, 'sessions', '2026', '05', '20', 'first.jsonl')
+    const second = join(codexHome, 'sessions', '2026', '05', '20', 'second.jsonl')
+    const canonicalBatches: Array<{ first: boolean; second: boolean }> = []
+    const commandArgs: string[][] = []
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_CODEX_BATCH_SIZE', '1')
+
+    try {
+      await Promise.all([
+        writeJsonl(first, [tokenCountEvent('2026-05-20T04:24:07.234Z', 10)]),
+        writeJsonl(second, [tokenCountEvent('2026-05-20T04:25:07.234Z', 10)])
+      ])
+
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        since: '20260515',
+        async runner(_command, args, options) {
+          commandArgs.push(args)
+          const scopedHome = String(options?.env?.CODEX_HOME)
+          if (scopedHome === codexHome) {
+            throw new Error('Bounded collection must not run ccusage against the live Codex home')
+          }
+          const batch = {
+            first: await exists(join(scopedHome, 'sessions', '2026', '05', '20', 'first.jsonl')),
+            second: await exists(join(scopedHome, 'sessions', '2026', '05', '20', 'second.jsonl'))
+          }
+          if (args.includes('--since') && args.includes('session')) {
+            if (batch.first === batch.second) {
+              throw new Error('Frozen bounded batch must contain exactly one selected session')
+            }
+            return boundedSessionResultFor(batch.first ? 'first' : 'second')
+          }
+          if (args.includes('daily')) {
+            if (batch.first === batch.second) {
+              throw new Error('Frozen bounded batch must contain exactly one selected session')
+            }
+            return dailyResult(10)
+          }
+          canonicalBatches.push(batch)
+          if (batch.first === batch.second) {
+            throw new Error('Canonical attribution batch must contain exactly one bounded session')
+          }
+          return canonicalSessionResult(batch.first ? 'first' : 'second')
+        }
+      })
+
+      expect(canonicalBatches).toHaveLength(2)
+      expect(commandArgs).toHaveLength(6)
+      expect(commandArgs.every((args) => args.includes('--single-thread'))).toBe(true)
+      expect(canonicalBatches).toContainEqual({ first: true, second: false })
+      expect(canonicalBatches).toContainEqual({ first: false, second: true })
+      expect(snapshots).toContainEqual(expect.objectContaining({
+        source: 'codex',
+        usageDate: '2026-05-21',
+        model: 'gpt-5.6',
+        totalTokens: 20,
+        sessionCount: 2
+      }))
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+})
+
+function dailyResult(totalTokens: number) {
+  return {
+    data: [
+      {
+        date: '2026-05-21',
+        models: { 'gpt-5.6': { inputTokens: totalTokens, totalTokens } }
+      }
+    ]
+  }
+}
+
+function boundedSessionResultFor(sessionFile: string) {
+  return { sessions: [sessionRow(sessionFile, '2026-05-20T04:24:07.234Z')] }
+}
+
+function canonicalSessionResult(sessionFile: string) {
+  return {
+    sessions: [sessionRow(sessionFile, '2026-05-21T04:24:07.234Z', 'gpt-5.6')]
+  }
+}
+
+function sessionRow(sessionFile: string, lastActivity: string, model = 'gpt-5.4') {
+  return {
+    directory: '2026/05/20',
+    sessionFile,
+    lastActivity,
+    models: { [model]: { inputTokens: 10, totalTokens: 10 } }
+  }
+}
+
+async function exists(filePath: string) {
+  return access(filePath).then(() => true).catch(() => false)
+}

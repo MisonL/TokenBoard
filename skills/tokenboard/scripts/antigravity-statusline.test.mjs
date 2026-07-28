@@ -39,6 +39,26 @@ test('preserves a local capture id for distinct statusline calls', () => {
   assert.equal(event.captureId, 'a'.repeat(32))
 })
 
+test('hashes a stable upstream statusline identifier without persisting it', () => {
+  const rawMessageId = 'raw-provider-message-id'
+  const raw = JSON.stringify(statuslinePayload({ message_id: rawMessageId }))
+
+  const event = extractStatuslineEvent(raw, '2026-06-23T10:00:00.000Z')
+
+  assert.equal(event.statuslineEventHash, statuslineEventHash('message_id', rawMessageId))
+  assert.doesNotMatch(JSON.stringify(event), /raw-provider-message-id/)
+})
+
+test('keeps valid usage when an optional upstream event identifier is too long', () => {
+  const raw = JSON.stringify(statuslinePayload({ message_id: 'x'.repeat(4097) }))
+
+  const event = extractStatuslineEvent(raw, '2026-06-23T10:00:00.000Z')
+
+  assert.equal(event.model, 'Gemini 3.5 Flash (Medium)')
+  assert.equal(event.usage.inputTokens, 100)
+  assert.equal(event.statuslineEventHash, undefined)
+})
+
 test('statusline CLI writes sanitized JSONL and preserves original command output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-'))
   try {
@@ -582,6 +602,15 @@ async function readErrorRecords(errorPath) {
 
 function plainHash(value) {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function statuslineEventHash(field, value) {
+  return createHash('sha256')
+    .update('tokenboard-antigravity-statusline-event\0')
+    .update(field)
+    .update('\0')
+    .update(value)
+    .digest('hex')
 }
 
 function isProcessAlive(pid) {

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { win32 as windowsPath } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { buildNotifyHandler, hookPaths, hookStatus, installHooks, uninstallHooks } from './hooks.mjs'
 
 test('notify handler only enqueues signal and spawns background notify script', () => {
@@ -9,12 +11,11 @@ test('notify handler only enqueues signal and spawns background notify script', 
     nodePath: '/usr/bin/node'
   })
 
-  assert.match(source, /appendFileSync\(join\(STATE_DIR, "notify\.signal"\)/)
   assert.match(source, /const SIGNAL_DIR = join\(STATE_DIR, "notify\.signal\.d"\)/)
-  assert.match(source, /writeQueuedSignal\(signalPayload\)/)
+  assert.match(source, /writeQueuedSignal\(signalPayload, source\)/)
   assert.match(source, /spawn\(NODE_PATH, \[NOTIFY_SCRIPT/)
   assert.match(source, /detached: true/)
-  assert.equal(source.match(/windowsHide: true/g)?.length, 2)
+  assert.equal(source.match(/windowsHide: true/g)?.length, 3)
   assert.doesNotMatch(source, /ccusage/)
 })
 
@@ -26,7 +27,7 @@ test('notify handler preserves legacy signal append when queued signal rename fa
   })
 
   assert.match(source, /let queueError;/)
-  assert.match(source, /appendFileSync\(join\(STATE_DIR, "notify\.signal"\), signalPayload, "utf8"\);/)
+  assert.match(source, /if \(queueError\) \{\s+appendFileSync\(join\(STATE_DIR, "notify\.signal"\), signalPayload, "utf8"\);/)
   assert.match(source, /unlinkSync\(tempPath\);/)
 })
 
@@ -50,6 +51,25 @@ test('notify handler uses the runtime node executable for the background process
 
   assert.match(source, /const NODE_PATH = process\.execPath;/)
   assert.doesNotMatch(source, /const NODE_PATH = "\/old\/node"/)
+})
+
+test('notify handler resolves Windows tasklist from an absolute System32 path instead of PATH', () => {
+  const source = buildNotifyHandler({
+    stateDir: '/home/user/.tokenboard',
+    notifyScriptPath: '/repo/scripts/notify.mjs',
+    nodePath: '/usr/bin/node'
+  })
+
+  assert.match(source, /System32[\s\S]*tasklist\.exe/)
+  assert.match(source, /windowsPath\.isAbsolute\(process\.env\.SystemRoot \|\| ""\)/)
+  assert.doesNotMatch(source, /TASKLIST_COMMAND = process\.platform/)
+  assert.doesNotMatch(source, /:\s*"tasklist";/)
+})
+
+test('notify handler falls back to an absolute Windows system root for missing or drive-relative SystemRoot', () => {
+  assertTasklistPaths(generatedTasklistPaths(), 'C:\\Windows')
+  assertTasklistPaths(generatedTasklistPaths('C:relative'), 'C:\\Windows')
+  assertTasklistPaths(generatedTasklistPaths('D:\\Windows'), 'D:\\Windows')
 })
 
 test('notify handler forwards Codex payload args to the preserved original notify command', () => {
@@ -101,6 +121,31 @@ test('hook paths include Antigravity CLI, IDE, and standalone homes', () => {
   assert.equal(paths.antigravityIdePath, '/custom/agy-ide')
   assert.equal(paths.antigravityPath, '/custom/agy-app')
 })
+
+function generatedTasklistPaths(systemRoot) {
+  const source = buildNotifyHandler({
+    stateDir: '/home/user/.tokenboard',
+    notifyScriptPath: '/repo/scripts/notify.mjs',
+    nodePath: '/usr/bin/node'
+  })
+  const declarations = source.match(/const SYSTEM_ROOT = [\s\S]*?\n\);\n(?=const NODE_PATH)/)?.[0]
+  assert.ok(declarations)
+  const context = {
+    process: { env: systemRoot === undefined ? {} : { SystemRoot: systemRoot } },
+    windowsPath,
+    result: undefined
+  }
+
+  runInNewContext(`${declarations}\nresult = { systemRoot: SYSTEM_ROOT, command: TASKLIST_COMMAND };`, context)
+  return context.result
+}
+
+function assertTasklistPaths(result, systemRoot) {
+  assert.equal(result.systemRoot, systemRoot)
+  assert.equal(result.command, `${systemRoot}\\System32\\tasklist.exe`)
+  assert.equal(windowsPath.isAbsolute(result.systemRoot), true)
+  assert.equal(windowsPath.isAbsolute(result.command), true)
+}
 
 test('status detects Antigravity GUI products with local history support', () => {
   const paths = createPaths()

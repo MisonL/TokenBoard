@@ -1,19 +1,24 @@
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
+import { errorMessage } from './error-message.mjs'
 
 export function appendSignal(runtime, trigger) {
   const payload = `${JSON.stringify({ source: trigger.source, requestedAt: new Date(runtime.now()).toISOString() })}\n`
+  let queued = false
   let queueError
   try {
-    writeQueuedSignal(runtime, payload)
+    queued = writeQueuedSignal(runtime, payload, trigger.source)
   } catch (error) {
     queueError = error
   }
-  runtime.writeFile(
-    signalPath(runtime),
-    payload,
-    { flag: 'a' }
-  )
-  if (queueError) throw queueError
+  if (!queued || queueError) {
+    runtime.writeFile(
+      signalPath(runtime),
+      payload,
+      { flag: 'a' }
+    )
+    if (queueError) throw queueError
+  }
 }
 
 export function truncateSignal(runtime) {
@@ -33,22 +38,17 @@ function drainLegacySignalSources(runtime) {
     return sources
   }
 
+  const drainPaths = retainedLegacyDrainPaths(runtime)
   const path = signalPath(runtime)
-  const drainPath = `${path}.${runtime.process.pid}.${runtime.now()}.drain`
+  const drainPath = signalDrainPath(path, runtime)
   try {
     runtime.rename(path, drainPath)
+    drainPaths.push(drainPath)
   } catch (error) {
-    if (error.code === 'ENOENT') return []
-    throw error
+    if (error.code !== 'ENOENT') throw error
   }
 
-  try {
-    return readSourcesFromText(runtime.readFile(drainPath))
-  } finally {
-    try {
-      runtime.unlink(drainPath)
-    } catch {}
-  }
+  return consumeDrainedSignalSources(drainPaths, runtime)
 }
 
 export function readSignalSources(runtime) {
@@ -56,10 +56,11 @@ export function readSignalSources(runtime) {
 }
 
 function readLegacySignalSources(runtime) {
+  const sources = readRetainedLegacySignalSources(runtime)
   try {
-    return readSourcesFromText(runtime.readFile(signalPath(runtime)))
+    return mergeSources(sources, readSourcesFromText(runtime.readFile(signalPath(runtime))))
   } catch (error) {
-    if (error.code === 'ENOENT') return []
+    if (error.code === 'ENOENT') return sources
     throw error
   }
 }
@@ -70,8 +71,8 @@ function removeTempSignal(runtime, tempPath) {
   } catch {}
 }
 
-function writeQueuedSignal(runtime, payload) {
-  if (typeof runtime.rename !== 'function') return
+function writeQueuedSignal(runtime, payload, source) {
+  if (typeof runtime.rename !== 'function') return false
   const dir = signalQueueDir(runtime)
   if (typeof runtime.mkdir !== 'function') {
     throw new Error('coordinator signal queue requires mkdir when rename is available')
@@ -79,38 +80,41 @@ function writeQueuedSignal(runtime, payload) {
   runtime.mkdir(dir, { recursive: true })
   const name = `${runtime.now()}-${runtime.process.pid}-${Math.random().toString(36).slice(2)}`
   const tempPath = join(dir, `${name}.tmp`)
-  const finalPath = join(dir, `${name}.json`)
+  const finalPath = join(dir, `${signalSourceName(source)}.json`)
   runtime.writeFile(tempPath, payload, { flag: 'wx' })
   try {
     runtime.rename(tempPath, finalPath)
+    return true
   } catch (error) {
     removeTempSignal(runtime, tempPath)
     throw error
   }
 }
 
+function signalSourceName(source) {
+  if (source === 'codex' || source === 'claude-code') return source
+  throw new Error('Unsupported TokenBoard signal source')
+}
+
 function drainQueuedSignalSources(runtime) {
   if (typeof runtime.readdir !== 'function' || typeof runtime.rename !== 'function') return []
-  const sources = []
+  const drainPaths = []
   for (const name of readQueueEntries(runtime)) {
     const path = join(signalQueueDir(runtime), name)
-    const drainPath = `${path}.${runtime.process.pid}.${runtime.now()}.drain`
+    if (isDrainedSignalEntry(name)) {
+      drainPaths.push(path)
+      continue
+    }
+    const drainPath = signalDrainPath(path, runtime)
     try {
       runtime.rename(path, drainPath)
     } catch (error) {
       if (error.code === 'ENOENT') continue
       throw error
     }
-
-    try {
-      sources.push(...readSourcesFromText(runtime.readFile(drainPath)))
-    } finally {
-      try {
-        runtime.unlink(drainPath)
-      } catch {}
-    }
+    drainPaths.push(drainPath)
   }
-  return mergeSources(sources, [])
+  return consumeDrainedSignalSources(drainPaths, runtime)
 }
 
 function readQueuedSignalSources(runtime) {
@@ -129,12 +133,76 @@ function readQueuedSignalSources(runtime) {
 function readQueueEntries(runtime) {
   try {
     return runtime.readdir(signalQueueDir(runtime))
-      .filter((name) => name.endsWith('.json'))
+      .filter(isQueuedSignalEntry)
       .sort()
   } catch (error) {
     if (error.code === 'ENOENT') return []
     throw error
   }
+}
+
+function isQueuedSignalEntry(name) {
+  return name === 'codex.json' || name === 'claude-code.json' || isDrainedSignalEntry(name)
+}
+
+function isDrainedSignalEntry(name) {
+  return /^(codex|claude-code)\.json\.[^.]+\.[^.]+(?:\.[^.]+)?\.drain$/.test(name)
+}
+
+function retainedLegacyDrainPaths(runtime) {
+  if (typeof runtime.readdir !== 'function') return []
+  try {
+    return runtime.readdir(runtime.stateDir)
+      .filter(isLegacyDrainedSignalEntry)
+      .sort()
+      .map((name) => join(runtime.stateDir, name))
+  } catch (error) {
+    if (error.code === 'ENOENT') return []
+    throw error
+  }
+}
+
+function readRetainedLegacySignalSources(runtime) {
+  return retainedLegacyDrainPaths(runtime)
+    .flatMap((path) => readSourcesFromText(runtime.readFile(path)))
+}
+
+function isLegacyDrainedSignalEntry(name) {
+  return /^notify\.signal\.[^.]+\.[^.]+(?:\.[^.]+)?\.drain$/.test(name)
+}
+
+function signalDrainPath(path, runtime) {
+  return `${path}.${runtime.process.pid}.${runtime.now()}.${randomBytes(8).toString('hex')}.drain`
+}
+
+function consumeDrainedSignalSources(paths, runtime) {
+  const drained = paths.map((path) => ({
+    path,
+    sources: readSourcesFromText(runtime.readFile(path))
+  }))
+  const sources = mergeSources(drained.flatMap(({ sources }) => sources), [])
+  try {
+    for (const { path } of drained) removeDrainedSignal(path, runtime)
+  } catch (error) {
+    restoreDrainedSignalSources(sources, runtime, error)
+  }
+  return sources
+}
+
+function removeDrainedSignal(path, runtime) {
+  runtime.unlink(path)
+}
+
+function restoreDrainedSignalSources(sources, runtime, removalError) {
+  try {
+    for (const source of sources) appendSignal(runtime, { source })
+  } catch (restoreError) {
+    throw new AggregateError(
+      [removalError, restoreError],
+      `TokenBoard signal cleanup and recovery failed: ${errorMessage(removalError)}; ${errorMessage(restoreError)}`
+    )
+  }
+  throw removalError
 }
 
 function readSourcesFromText(text) {

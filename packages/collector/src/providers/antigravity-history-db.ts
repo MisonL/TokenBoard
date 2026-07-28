@@ -44,7 +44,22 @@ const nodeListFiles: ListFiles = async function * (directoryPath) {
 export type AntigravityDbUsageResult = {
   cascadeIds: Set<string>
   events: AntigravityUsageEvent[]
+  knownCascadeIds?: Set<string>
   lastReadRowIndexByCascade?: Map<string, number>
+}
+
+export class AntigravityDbRowCursorResetError extends Error {
+  readonly dbFile: string
+
+  constructor(dbFile: string) {
+    super(`Antigravity SQLite metadata cursor reset detected for ${dbFile}`)
+    this.name = 'AntigravityDbRowCursorResetError'
+    this.dbFile = dbFile
+  }
+}
+
+export function isAntigravityDbRowCursorResetError(error: unknown): error is AntigravityDbRowCursorResetError {
+  return error instanceof AntigravityDbRowCursorResetError
 }
 
 type ReadSqlite = (dbFile: string, sql: string) => Promise<string>
@@ -60,22 +75,26 @@ export async function readAntigravityDbUsageEvents(input: {
   scanState?: AntigravityFileScanState
   sinceDate?: string
   timezone?: string
+  detectRowCursorReset?: boolean
+  requireCompleteDirectoryScan?: boolean
 }): Promise<AntigravityDbUsageResult> {
-  const dbFiles = await listDbFiles({
+  const dbListing = await listDbFiles({
     conversationDir: input.conversationDir,
     maxDbFiles: normalizeMaxDbFiles(input.maxDbFiles),
     statFile: input.statFile ?? stat,
     listFiles: input.listFiles ?? nodeListFiles,
     lastSeenRowIndexByCascadeHash: input.lastSeenRowIndexByCascadeHash ?? new Map(),
     scanState: input.scanState,
-    includeFileMtime: buildFileMtimeFilter(input.sinceDate, input.timezone)
+    includeFileMtime: buildFileMtimeFilter(input.sinceDate, input.timezone),
+    requireCompleteDirectoryScan: input.requireCompleteDirectoryScan ?? false
   })
   const result: AntigravityDbUsageResult = {
     cascadeIds: new Set(),
     events: [],
+    knownCascadeIds: dbListing.knownCascadeIds,
     lastReadRowIndexByCascade: new Map()
   }
-  for (const dbFile of dbFiles) {
+  for (const dbFile of dbListing.dbFiles) {
     const cascadeId = basename(dbFile.filePath, '.db')
     const fallbackCreatedAt = new Date(dbFile.mtimeMs).toISOString()
     const beforeCount = result.events.length
@@ -84,7 +103,8 @@ export async function readAntigravityDbUsageEvents(input: {
     for await (const row of readGeneratorMetadataRows(dbFile.filePath, {
       sqliteBin: input.sqliteBin,
       readSqlite: input.readSqlite,
-      lastSeenRowIndex
+      lastSeenRowIndex,
+      detectRowCursorReset: input.detectRowCursorReset
     })) {
       const events = parseAntigravityGeneratorMetadataBlobEvents(row.data, {
         cascadeId,
@@ -126,6 +146,7 @@ async function listDbFiles(input: {
   lastSeenRowIndexByCascadeHash: Map<string, number>
   scanState?: AntigravityFileScanState
   includeFileMtime: (mtimeMs: number) => boolean
+  requireCompleteDirectoryScan: boolean
 }) {
   let names
   try {
@@ -138,12 +159,23 @@ async function listDbFiles(input: {
     throw error
   }
   if (input.maxDbFiles === null) {
-    const candidates = (await Promise.all(names
-      .map((name) => readDbFileCandidate(join(input.conversationDir, name), input.statFile))))
+    const candidates = await Promise.all(names
+      .map((name) => readDbFileCandidate(join(input.conversationDir, name), input.statFile)))
+    if (input.requireCompleteDirectoryScan && candidates.some((candidate) => candidate === null)) {
+      throw new Error('Antigravity CLI full history scan could not read every enumerated SQLite database; retry after the conversations directory is stable')
+    }
+    const includedCandidates = candidates
       .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => (
-        candidate !== null && input.includeFileMtime(candidate.mtimeMs)
+        candidate !== null && shouldIncludeDbCandidate(
+          candidate,
+          input.lastSeenRowIndexByCascadeHash,
+          input.includeFileMtime
+        )
       ))
-    return sortDbCandidates(candidates)
+    return {
+      dbFiles: sortDbCandidates(includedCandidates),
+      knownCascadeIds: new Set(names.map((name) => basename(name, '.db')))
+    }
   }
   const scanState = input.scanState ?? { nextSequence: 0, files: {} }
   const checkedSequence = beginAntigravityFileScan(scanState)
@@ -170,17 +202,33 @@ async function listDbFiles(input: {
       return entry ? { filePath: join(input.conversationDir, `${id}.db`), mtimeMs: entry.mtimeMs, size: entry.size } : null
     })
     .filter((candidate): candidate is { filePath: string; mtimeMs: number; size: number } => (
-      candidate !== null && input.includeFileMtime(candidate.mtimeMs)
+      candidate !== null && shouldIncludeDbCandidate(
+        candidate,
+        input.lastSeenRowIndexByCascadeHash,
+        input.includeFileMtime
+      )
     ))
   const sorted = sortDbCandidates(candidates)
   const unread = sorted.filter((candidate) => !hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
   const processed = sorted.filter((candidate) => hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
-  return selectDbReadCandidates(unread, processed, input.maxDbFiles, checkedSequence)
+  return {
+    dbFiles: selectDbReadCandidates(unread, processed, input.maxDbFiles, checkedSequence),
+    knownCascadeIds: new Set(ids)
+  }
 }
 
 function buildFileMtimeFilter(sinceDate?: string, timezone?: string) {
   if (!sinceDate || !timezone) return () => true
   return (mtimeMs: number) => formatDate(new Date(mtimeMs), timezone) >= sinceDate
+}
+
+function shouldIncludeDbCandidate(
+  candidate: { filePath: string; mtimeMs: number },
+  lastSeenRowIndexByCascadeHash: Map<string, number>,
+  includeFileMtime: (mtimeMs: number) => boolean
+) {
+  return !hasDbRowCursor(candidate.filePath, lastSeenRowIndexByCascadeHash) ||
+    includeFileMtime(candidate.mtimeMs)
 }
 
 function sortDbCandidates(candidates: Array<{ filePath: string; mtimeMs: number; size: number }>) {
@@ -242,6 +290,7 @@ async function * readGeneratorMetadataRows(
     sqliteBin?: string
     readSqlite?: ReadSqlite
     lastSeenRowIndex?: number
+    detectRowCursorReset?: boolean
   } = {}
 ) {
   const sqliteBin = options.sqliteBin ?? process.env.TOKENBOARD_SQLITE_BIN ?? 'sqlite3'
@@ -252,7 +301,19 @@ async function * readGeneratorMetadataRows(
       readSqlite: options.readSqlite,
       lastSeenRowIndex
     })
-    if (rows.length === 0) return
+    if (rows.length === 0) {
+      if (options.detectRowCursorReset && lastSeenRowIndex >= 0) {
+        const highestRowIndex = await readHighestGeneratorMetadataRowIndex(
+          dbFile,
+          sqliteBin,
+          options.readSqlite
+        )
+        if (highestRowIndex < lastSeenRowIndex) {
+          throw new AntigravityDbRowCursorResetError(dbFile)
+        }
+      }
+      return
+    }
     for (const row of rows) {
       yield row
     }
@@ -274,25 +335,39 @@ async function readGeneratorMetadataRowPage(
   }
 ) {
   const sql = `select idx, hex(data) from gen_metadata where idx > ${options.lastSeenRowIndex} order by idx limit ${generatorMetadataRowsPageSize}`
-  let stdout
+  const stdout = await readSqliteOutput(dbFile, options.sqliteBin, sql, options.readSqlite)
+  return stdout
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => parseSqliteRow(line, dbFile))
+}
+
+async function readHighestGeneratorMetadataRowIndex(dbFile: string, sqliteBin: string, readSqlite?: ReadSqlite) {
+  const stdout = await readSqliteOutput(dbFile, sqliteBin, 'select max(idx) from gen_metadata', readSqlite)
+  const value = stdout.trim()
+  if (!value) return -1
+  const index = Number.parseInt(value, 10)
+  if (!Number.isSafeInteger(index) || index < 0 || String(index) !== value) {
+    throw new Error(`Invalid Antigravity SQLite metadata row index in ${dbFile}`)
+  }
+  return index
+}
+
+async function readSqliteOutput(dbFile: string, sqliteBin: string, sql: string, readSqlite?: ReadSqlite) {
   try {
-    stdout = options.readSqlite
-      ? await options.readSqlite(dbFile, sql)
-      : (await execFileAsync(options.sqliteBin, ['-batch', dbFile, sql], {
+    return readSqlite
+      ? await readSqlite(dbFile, sql)
+      : (await execFileAsync(sqliteBin, ['-batch', dbFile, sql], {
           maxBuffer: maxSqliteOutputBytes,
           timeout: sqliteTimeoutMs,
           killSignal: 'SIGKILL'
         })).stdout
   } catch (error) {
-    if (isMissingFileError(error)) {
-      throw new Error(`Antigravity SQLite reader unavailable: ${options.sqliteBin} not found`)
+    if (!readSqlite && isMissingFileError(error)) {
+      throw new Error(`Antigravity SQLite reader unavailable: ${sqliteBin} not found`)
     }
     throw new Error(`Failed to read Antigravity SQLite metadata from ${dbFile}: ${errorMessage(error)}`)
   }
-  return stdout
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => parseSqliteRow(line, dbFile))
 }
 
 function normalizeLastSeenRowIndex(value: number | undefined) {
@@ -310,9 +385,10 @@ function parseSqliteRow(line: string, dbFile: string) {
   if (delimiter <= 0) {
     throw new Error(`Invalid Antigravity SQLite metadata row in ${dbFile}`)
   }
-  const index = Number.parseInt(line.slice(0, delimiter), 10)
+  const rawIndex = line.slice(0, delimiter)
+  const index = Number(rawIndex)
   const hex = line.slice(delimiter + 1)
-  if (!Number.isSafeInteger(index) || !/^[0-9A-F]*$/.test(hex)) {
+  if (!/^[0-9]+$/.test(rawIndex) || !Number.isSafeInteger(index) || !/^[0-9A-F]*$/.test(hex)) {
     throw new Error(`Invalid Antigravity SQLite metadata row in ${dbFile}`)
   }
   return { index, data: Buffer.from(hex, 'hex') }

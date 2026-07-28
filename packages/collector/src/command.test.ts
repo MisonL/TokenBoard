@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
-import { commandShellOption, runJsonCommand } from './command'
+import { assertWindowsShellSafeInvocation, commandShellOption, runJsonCommand } from './command'
 
 describe('runJsonCommand', () => {
   test('passes arguments directly without shell parsing', async () => {
@@ -82,5 +82,12 @@ describe('runJsonCommand', () => {
     expect(commandShellOption('pnpm.bat', 'win32')).toBe(true)
     expect(commandShellOption('pnpm', 'win32')).toBe(false)
     expect(commandShellOption('npm.cmd', 'linux')).toBe(false)
+  })
+
+  test('rejects shell metacharacters before invoking a Windows command shim', () => {
+    expect(() => assertWindowsShellSafeInvocation('npm.cmd', ['exec', 'ccusage', '--timezone', 'UTC&whoami'], true))
+      .toThrow('Refusing to pass shell metacharacters')
+    expect(() => assertWindowsShellSafeInvocation('npm.cmd', ['exec', 'ccusage', '--timezone', 'Asia/Shanghai'], true))
+      .not.toThrow()
   })
 })

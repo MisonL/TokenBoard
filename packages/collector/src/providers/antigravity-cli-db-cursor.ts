@@ -20,6 +20,7 @@ export function lastSeenCliDbRowIndexByCascadeHash(input: {
 
 export function markCliDbRowsProcessed(input: {
   cursor: CursorState
+  knownCascadeIds?: Set<string>
   lastReadRowIndexByCascade?: Map<string, number>
   historyScope?: string
 }) {
@@ -55,6 +56,9 @@ export function markCliDbRowsProcessed(input: {
       updatedAt: new Date().toISOString()
     }
   }
+  if (input.knownCascadeIds) {
+    pruneAbsentCliDbRowCursors(input.cursor, input.knownCascadeIds)
+  }
 }
 
 function cliDbCascadeCursorPrefixForScope(historyScope: string) {
@@ -79,9 +83,32 @@ function parseCliDbCascadeHash(key: string, historyScope: string) {
     return /^[a-f0-9]{64}$/.test(cascadeHash) ? cascadeHash : null
   }
 
+  if (key.startsWith(cliDbCascadeCursorPrefix)) {
+    const cascadeHash = key.slice(cliDbCascadeCursorPrefix.length)
+    if (/^[a-f0-9]{64}$/.test(cascadeHash)) return cascadeHash
+  }
+
   const parsed = parseCliDbBoundedKey(key)
   if (!parsed || !isReusableAntigravityHistoryScope(parsed.scope, historyScope)) return null
   return parsed.cascadeHash
+}
+
+function pruneAbsentCliDbRowCursors(cursor: CursorState, knownCascadeIds: Set<string>) {
+  const knownCascadeHashes = new Set([...knownCascadeIds].map(hash))
+  for (const key of Object.keys(cursor.files)) {
+    const cascadeHash = parseAnyCliDbCascadeHash(key)
+    if (cascadeHash && !knownCascadeHashes.has(cascadeHash)) {
+      delete cursor.files[key]
+    }
+  }
+}
+
+function parseAnyCliDbCascadeHash(key: string) {
+  if (key.startsWith(cliDbCascadeCursorPrefix)) {
+    const cascadeHash = key.slice(cliDbCascadeCursorPrefix.length)
+    if (/^[a-f0-9]{64}$/.test(cascadeHash)) return cascadeHash
+  }
+  return parseCliDbBoundedKey(key)?.cascadeHash ?? null
 }
 
 function parseCliDbBoundedKey(key: string) {

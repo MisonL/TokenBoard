@@ -4,6 +4,25 @@ const DEFAULT_DAILY_TIMEOUT_MS = 900_000
 const DEFAULT_SESSION_TIMEOUT_MS = 900_000
 const DEFAULT_PACKAGE_COMMAND_RETRIES = 2
 
+export function codexCommandArgs({
+  report,
+  rangeArgs = [],
+  singleThread = false
+}: {
+  report: 'daily' | 'session'
+  rangeArgs?: string[]
+  singleThread?: boolean
+}) {
+  return [
+    'codex',
+    report,
+    '--json',
+    '--offline',
+    ...(singleThread ? ['--single-thread'] : []),
+    ...rangeArgs
+  ]
+}
+
 export function packageCommandOptions({
   env,
   timeoutMs,

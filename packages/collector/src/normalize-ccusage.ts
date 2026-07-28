@@ -1,23 +1,31 @@
 import { usageSnapshotSchema, type UsageSnapshot, type UsageSource } from '@tokenboard/usage-core'
+import { assertValidIsoCalendarDate } from './iso-calendar-date'
 
 type NormalizeOptions = {
   source: UsageSource
   timezone: string
   collectedAt?: string
   sessions?: unknown
+  includeSessionOnlySnapshots?: boolean
 }
 
 type UnknownRecord = Record<string, unknown>
+export type CcusageSessionAttribution = {
+  usageDate: string
+  model: string
+}
+
 type SessionCountState = {
   provided: boolean
   counts: Map<string, number>
+  attributions: Map<string, CcusageSessionAttribution>
 }
 
 export function normalizeCcusageDailyJson(input: unknown, options: NormalizeOptions): UsageSnapshot[] {
   const collectedAt = options.collectedAt ?? new Date().toISOString()
   const sessionCounts = getSessionCounts(options.sessions, options.timezone)
 
-  return extractDailyRows(input).flatMap((row) =>
+  const snapshots = extractDailyRows(input).flatMap((row) =>
     extractModelRows(row).map(({ model, metrics, parent }) =>
       usageSnapshotSchema.parse({
         source: options.source,
@@ -48,24 +56,68 @@ export function normalizeCcusageDailyJson(input: unknown, options: NormalizeOpti
       })
     )
   )
+  return appendSessionOnlySnapshots(snapshots, sessionCounts, {
+    source: options.source,
+    timezone: options.timezone,
+    collectedAt,
+    includeSessionOnlySnapshots: options.includeSessionOnlySnapshots ?? false
+  })
 }
 
 function getSessionCounts(input: unknown, timezone: string) {
   const counts = new Map<string, number>()
+  const attributions = new Map<string, CcusageSessionAttribution>()
 
   for (const row of extractDailyRows(input)) {
-    const date = readSessionDate(row, timezone)
-    if (!date) continue
-
-    const model = readSessionCountModel(row)
-    const key = sessionCountKey(date, model)
+    const attribution = readCcusageSessionAttribution(row, timezone)
+    if (!attribution) continue
+    const key = sessionCountKey(attribution.usageDate, attribution.model)
     counts.set(key, (counts.get(key) ?? 0) + 1)
+    attributions.set(key, attribution)
   }
 
   return {
     provided: input !== undefined,
-    counts
+    counts,
+    attributions
   }
+}
+
+function appendSessionOnlySnapshots(
+  snapshots: UsageSnapshot[],
+  sessionCounts: SessionCountState,
+  input: {
+    source: UsageSource
+    timezone: string
+    collectedAt: string
+    includeSessionOnlySnapshots: boolean
+  }
+) {
+  if (!input.includeSessionOnlySnapshots || !sessionCounts.provided || sessionCounts.counts.size === 0) {
+    return snapshots
+  }
+  const existing = new Set(snapshots.map((snapshot) => sessionCountKey(snapshot.usageDate, snapshot.model)))
+  const sessionOnly: UsageSnapshot[] = []
+  for (const [key, sessionCount] of sessionCounts.counts) {
+    if (existing.has(key) || sessionCount <= 0) continue
+    const attribution = sessionCounts.attributions.get(key)
+    if (!attribution) continue
+    sessionOnly.push(usageSnapshotSchema.parse({
+      source: input.source,
+      usageDate: attribution.usageDate,
+      timezone: input.timezone,
+      model: attribution.model,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      sessionCount,
+      collectedAt: input.collectedAt
+    }))
+  }
+  return [...snapshots, ...sessionOnly]
 }
 
 function readSessionCount(input: {
@@ -87,6 +139,19 @@ function readSessionDate(row: UnknownRecord, timezone: string) {
     return null
   }
   return formatDate(value, timezone)
+}
+
+export function readCcusageSessionAttribution(
+  row: unknown,
+  timezone: string
+): CcusageSessionAttribution | null {
+  if (!isRecord(row)) return null
+  const usageDate = readSessionDate(row, timezone)
+  if (!usageDate) return null
+  return {
+    usageDate,
+    model: readSessionCountModel(row)
+  }
 }
 
 function readSessionCountModel(row: UnknownRecord) {
@@ -231,6 +296,7 @@ function readCostUsd(row: UnknownRecord, parent: UnknownRecord) {
 }
 
 function normalizeDate(value: string) {
+  assertValidIsoCalendarDate(value, 'Invalid ccusage date')
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return value
   }
@@ -251,6 +317,7 @@ function normalizeDate(value: string) {
 }
 
 function formatDate(value: string, timezone: string) {
+  assertValidIsoCalendarDate(value, 'Invalid ccusage date')
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return value
   }

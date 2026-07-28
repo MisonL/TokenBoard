@@ -109,6 +109,10 @@ export function runUpgrade({
   const collectorExists = exists(collector)
   const collectorIsGitRepo = exists(join(collector, '.git'))
 
+  if (collectorExists && collectorIsGitRepo) {
+    assertCleanGitWorktree({ collectorDir: collector, spawn })
+  }
+
   try {
     for (const step of buildUpgradePlan({
       collectorDir: collector,
@@ -153,6 +157,21 @@ export function runUpgrade({
   })
   log(`TokenBoard upgraded from ${repoUrl}${repoRef ? `#${repoRef}` : ''}`)
   return { collectorDir: collector, skillDir, repoUrl, repoRef, packageManager }
+}
+
+export function assertCleanGitWorktree({ collectorDir, spawn = spawnSync }) {
+  const result = spawn('git', ['status', '--porcelain', '--untracked-files=all'], {
+    cwd: collectorDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    shell: false
+  })
+  if (result.status !== 0) {
+    throw new Error('Unable to inspect the TokenBoard collector worktree before upgrade')
+  }
+  if (String(result.stdout ?? '').trim()) {
+    throw new Error('Refusing to upgrade a collector checkout with uncommitted changes')
+  }
 }
 
 export function resolveArchiveUrls({ flags = {}, env = process.env, config = {}, repoUrl = defaultRepoUrl, repoRef = null } = {}) {

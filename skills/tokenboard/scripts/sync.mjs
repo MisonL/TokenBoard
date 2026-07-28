@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -15,25 +15,48 @@ import { readSince } from './sync-options.mjs'
 import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
 import { runUpgrade } from './upgrade.mjs'
 import { errorMessage } from './error-message.mjs'
+import { acquireLock, lockHasToken, releaseLock, waitForLock } from './coordinator-lock.mjs'
+
+const defaultSyncLockTimeoutMs = 60_000
 
 if (isMain()) {
-  const flags = parseArgs(process.argv.slice(2))
-  const config = readConfig()
-  const homeDir = homedir()
-  const invocation = buildSyncInvocation({
-    flags,
-    config,
-    pathEnv: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
-    homeDir,
-    nodePath: process.execPath,
-    platform: process.platform
-  })
-  const logs = createScheduledLogRuntime({
-    env: process.env,
-    homeDir,
-    scheduled: flags.scheduled === true
-  })
+  process.exit(runCli())
+}
 
+function runCli() {
+  let logs
+  try {
+    const flags = parseArgs(process.argv.slice(2))
+    const config = readConfig()
+    const homeDir = homedir()
+    const invocation = buildSyncInvocation({
+      flags,
+      config,
+      pathEnv: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+      homeDir,
+      nodePath: process.execPath,
+      platform: process.platform
+    })
+    logs = createScheduledLogRuntime({
+      env: process.env,
+      homeDir,
+      scheduled: flags.scheduled === true
+    })
+
+    return runWithSyncLock({
+      flags,
+      stateDir: configDirFromInvocation(invocation, homeDir),
+      run: () => runSync({ flags, invocation, logs })
+    })
+  } catch (error) {
+    console.error(`TokenBoard sync failed: ${errorMessage(error)}`)
+    return 1
+  } finally {
+    closeScheduledLogRuntime(logs)
+  }
+}
+
+function runSync({ flags, invocation, logs }) {
   if (shouldRunUpgrade({ flags, env: process.env })) {
     try {
       runUpgrade({
@@ -50,8 +73,7 @@ if (isMain()) {
   if (!existsSync(invocation.repoDir)) {
     console.error(`TokenBoard collector is not installed: ${invocation.repoDir}`)
     console.error('Run setup.mjs again or run install-collector.mjs.')
-    closeScheduledLogRuntime(logs)
-    process.exit(1)
+    return 1
   }
 
   const result = spawnSync(
@@ -67,12 +89,10 @@ if (isMain()) {
 
   if (result.error) {
     console.error(`Failed to run ${invocation.command}: ${errorMessage(result.error)}`)
-    closeScheduledLogRuntime(logs)
-    process.exit(1)
+    return 1
   }
 
-  closeScheduledLogRuntime(logs)
-  process.exit(result.status ?? 1)
+  return result.status ?? 1
 }
 
 export function shouldRunUpgrade({ flags = {}, env = process.env } = {}) {
@@ -106,6 +126,11 @@ export function buildSyncInvocation({
   const packageManager = readPackageManager(flags, config)
   const since = readSince({ flags, config, env })
   const delimiter = platform === 'win32' ? ';' : ':'
+  const {
+    TOKENBOARD_COORDINATOR_LOCK_HELD: _coordinatorLockHeld,
+    TOKENBOARD_COORDINATOR_LOCK_TOKEN: _coordinatorLockToken,
+    ...collectorEnv
+  } = env
   return {
     command: nodePath,
     args: ['--import', 'tsx', 'src/cli.ts', mode, '--source', source],
@@ -113,7 +138,7 @@ export function buildSyncInvocation({
     repoDir,
     shell: false,
     env: {
-      ...env,
+      ...collectorEnv,
       PATH: normalizePathEnv({
         pathEnv,
         homeDir,
@@ -136,6 +161,69 @@ export function buildSyncInvocation({
       } : {})
     }
   }
+}
+
+export function runWithSyncLock({
+  flags = {},
+  env = process.env,
+  stateDir,
+  runtime = syncLockRuntime(),
+  run
+}) {
+  if (typeof run !== 'function') {
+    throw new Error('runWithSyncLock requires run')
+  }
+  if (typeof stateDir !== 'string' || !stateDir.trim()) {
+    throw new Error('runWithSyncLock requires stateDir')
+  }
+  runtime.mkdir(stateDir, { recursive: true })
+  const lockPath = join(stateDir, 'sync.lock')
+  if (isCoordinatorLockHeld({ flags, env, lockPath, runtime })) {
+    return run()
+  }
+
+  let owner = acquireLock(lockPath, runtime)
+  if (!owner) {
+    const wait = waitForLock(lockPath, runtime)
+    if (!wait.acquired) {
+      throw new Error(`Timed out waiting for TokenBoard sync lock: ${lockPath}`)
+    }
+    owner = wait.owner
+  }
+  try {
+    return run()
+  } finally {
+    releaseLock(lockPath, runtime, owner)
+  }
+}
+
+function isCoordinatorLockHeld({ flags, env, lockPath, runtime }) {
+  return flags.hook === true &&
+    env.TOKENBOARD_COORDINATOR_LOCK_HELD === '1' &&
+    lockHasToken(lockPath, env.TOKENBOARD_COORDINATOR_LOCK_TOKEN, runtime)
+}
+
+function configDirFromInvocation(invocation, homeDir) {
+  return invocation.env.TOKENBOARD_STATE_DIR || invocation.env.TOKENBOARD_CONFIG_DIR || join(homeDir, '.tokenboard')
+}
+
+function syncLockRuntime() {
+  return {
+    lockTimeoutMs: defaultSyncLockTimeoutMs,
+    mkdir: (path, options) => mkdirSync(path, options),
+    now: Date.now,
+    process,
+    readFile: (path) => readFileSync(path, 'utf8'),
+    rename: renameSync,
+    link: linkSync,
+    sleep: sleepSync,
+    unlink: unlinkSync,
+    writeFile: writeFileSync
+  }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms))
 }
 
 function isMain() {

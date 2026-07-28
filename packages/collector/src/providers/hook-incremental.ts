@@ -5,15 +5,33 @@ import {
   collectChangedSessionFiles,
   updateCursorFile
 } from './session-cursor'
-import { withCursorLock } from './session-cursor-store'
+import { readCursor, withCursorLock, writeCursor } from './session-cursor-store'
 import { parseSessionJsonlLines } from './session-jsonl-parser'
 
 type HookInput = {
   source: UsageSource
   sessionsDir: string
   cursorName: string
+  cursorProfileHash?: string
+  stateDir?: string
+  stderr?: (line: string) => void
   timezone: string
   collectedAt: string
+  scanSinceMs?: number
+  includePendingSnapshotEntries?: boolean
+  includeReconciliationFileEntries?: boolean
+  skipSessionScan?: boolean
+}
+
+export type HookPendingSnapshotEntry = {
+  relativePath: string
+  sha256: string
+  snapshot: UsageSnapshot
+}
+
+export type HookReconciliationFileEntry = {
+  relativePath: string
+  sha256: string
 }
 
 export type HookIncrementalResult = {
@@ -22,18 +40,57 @@ export type HookIncrementalResult = {
   changedDates: string[]
   changedKeys: Array<{ usageDate: string; model: string }>
   cachedSnapshots: UsageSnapshot[]
+  pendingSnapshotEntries?: HookPendingSnapshotEntry[]
+  reconciliationFileEntries?: HookReconciliationFileEntry[]
 }
 
 export async function collectHookIncremental(input: HookInput): Promise<HookIncrementalResult> {
-  const cursorPath = join(readStateDir(), input.cursorName)
-  return withCursorLock(cursorPath, () => collectHookIncrementalLocked(input, cursorPath))
+  const cursorPath = join(input.stateDir ?? readStateDir(), input.cursorName)
+  return withCursorLock(cursorPath, () => input.skipSessionScan
+    ? collectPendingHookCursorLocked(input, cursorPath)
+    : collectHookIncrementalLocked(input, cursorPath)
+  )
+}
+
+async function collectPendingHookCursorLocked(input: HookInput, cursorPath: string): Promise<HookIncrementalResult> {
+  const cursor = await readCursor(cursorPath, input.source)
+  const pendingSnapshotEntries: HookPendingSnapshotEntry[] = []
+  let cleanedSnapshotlessPending = false
+  for (const [relativePath, entry] of Object.entries(cursor.files)) {
+    if (!entry.pendingUpload) continue
+    if (entry.snapshots.length === 0) {
+      delete cursor.files[relativePath]
+      cleanedSnapshotlessPending = true
+      continue
+    }
+    for (const snapshot of entry.snapshots) {
+      pendingSnapshotEntries.push({
+        relativePath,
+        sha256: entry.sha256,
+        snapshot: { ...snapshot, collectedAt: input.collectedAt }
+      })
+    }
+  }
+  if (cleanedSnapshotlessPending) await writeCursor(cursorPath, cursor)
+  return withPendingSnapshotEntries({
+    rangeArgs: [],
+    changed: pendingSnapshotEntries.length > 0,
+    changedDates: [],
+    changedKeys: [],
+    cachedSnapshots: pendingSnapshotEntries.map((entry) => entry.snapshot)
+  }, {
+    pendingSnapshotEntries: input.includePendingSnapshotEntries ? pendingSnapshotEntries : undefined,
+    reconciliationFileEntries: input.includeReconciliationFileEntries ? [] : undefined
+  })
 }
 
 async function collectHookIncrementalLocked(input: HookInput, cursorPath: string): Promise<HookIncrementalResult> {
   const changed = await collectChangedSessionFiles({
     source: input.source,
     sessionsDir: input.sessionsDir,
-    cursorPath
+    cursorPath,
+    cursorProfileHash: input.cursorProfileHash,
+    scanSinceMs: input.scanSinceMs
   })
 
   if (changed.hasUnreadableChangedFile) {
@@ -45,26 +102,41 @@ async function collectHookIncrementalLocked(input: HookInput, cursorPath: string
   }
 
   const cachedSnapshots = restoreCachedPendingSnapshots(changed.missingPendingSnapshots, input.collectedAt)
+  const pendingSnapshotEntries = input.includePendingSnapshotEntries
+    ? restorePendingSnapshotEntries(changed.missingPendingSnapshotEntries, input.collectedAt)
+    : undefined
   if (changed.files.length === 0) {
     if (cachedSnapshots.length > 0) {
-      if (changed.hasCursorCleanup) {
+      if (hasCursorMaintenance(changed)) {
         await changed.commit()
       }
-      return {
+      return withPendingSnapshotEntries({
         rangeArgs: [],
         changed: true,
         changedDates: [],
         changedKeys: [],
         cachedSnapshots
-      }
+      }, {
+        pendingSnapshotEntries,
+        reconciliationFileEntries: input.includeReconciliationFileEntries ? [] : undefined
+      })
     }
     if (changed.hasPendingUpload) {
       throw new Error(`${input.source} hook has pending upload entries but no readable changed session files`)
     }
-    if (changed.hasCursorCleanup) {
+    if (hasCursorMaintenance(changed)) {
       await changed.commit()
     }
-    return { rangeArgs: [], changed: false, changedDates: [], changedKeys: [], cachedSnapshots: [] }
+    return withPendingSnapshotEntries({
+      rangeArgs: [],
+      changed: false,
+      changedDates: [],
+      changedKeys: [],
+      cachedSnapshots: []
+    }, {
+      pendingSnapshotEntries,
+      reconciliationFileEntries: input.includeReconciliationFileEntries ? [] : undefined
+    })
   }
 
   const parsed = await parseChangedFiles(input, changed)
@@ -76,14 +148,22 @@ async function collectHookIncrementalLocked(input: HookInput, cursorPath: string
     changed.markPendingUpload(parsed.pendingUploadPaths)
   }
   await changed.commit()
+  reportSkippedOversizedRows(input, parsed)
 
-  return {
+  return withPendingSnapshotEntries({
     rangeArgs: buildDateRangeArgs(parsed.changedDates),
     changed: parsed.changedDates.size > 0 || cachedSnapshots.length > 0,
     changedDates: [...parsed.changedDates].sort(),
     changedKeys: [...parsed.changedKeys.values()].sort(compareSnapshotKeys),
     cachedSnapshots
-  }
+  }, {
+    pendingSnapshotEntries,
+    reconciliationFileEntries: input.includeReconciliationFileEntries ? parsed.reconciliationFileEntries : undefined
+  })
+}
+
+function hasCursorMaintenance(changed: Awaited<ReturnType<typeof collectChangedSessionFiles>>) {
+  return changed.hasCursorCleanup || changed.hasCursorMetadataUpdate || changed.hasCursorProfileUpdate
 }
 
 function restoreCachedPendingSnapshots(
@@ -95,13 +175,41 @@ function restoreCachedPendingSnapshots(
   )
 }
 
+function restorePendingSnapshotEntries(
+  missingPendingSnapshots: Array<{ relativePath: string; sha256: string; snapshots: Array<Omit<UsageSnapshot, 'collectedAt'>> }>,
+  collectedAt: string
+): HookPendingSnapshotEntry[] {
+  return missingPendingSnapshots.flatMap((entry) => entry.snapshots.map((snapshot) => ({
+    relativePath: entry.relativePath,
+    sha256: entry.sha256,
+    snapshot: { ...snapshot, collectedAt }
+  })))
+}
+
+function withPendingSnapshotEntries(
+  result: Omit<HookIncrementalResult, 'pendingSnapshotEntries' | 'reconciliationFileEntries'>,
+  entries: {
+    pendingSnapshotEntries: HookPendingSnapshotEntry[] | undefined
+    reconciliationFileEntries: HookReconciliationFileEntry[] | undefined
+  }
+): HookIncrementalResult {
+  return {
+    ...result,
+    ...(entries.pendingSnapshotEntries === undefined ? {} : { pendingSnapshotEntries: entries.pendingSnapshotEntries }),
+    ...(entries.reconciliationFileEntries === undefined ? {} : { reconciliationFileEntries: entries.reconciliationFileEntries })
+  }
+}
+
 async function parseChangedFiles(input: HookInput, changed: Awaited<ReturnType<typeof collectChangedSessionFiles>>) {
   const changedDates = new Set<string>()
   const changedKeys = new Map<string, { usageDate: string; model: string }>()
   let malformedRows = 0
   let pendingFilesWithoutSnapshots = 0
   const pendingUploadPaths = new Set<string>()
+  const reconciliationFileEntries: HookReconciliationFileEntry[] = []
   let unparsedTokenLikeRows = 0
+  let skippedOversizedRows = 0
+  let largestSkippedOversizedRowBytes = 0
 
   for (const file of changed.files) {
     const parsed = await parseSessionJsonlLines({
@@ -117,16 +225,46 @@ async function parseChangedFiles(input: HookInput, changed: Awaited<ReturnType<t
     }
     if (parsed.snapshots.length > 0) {
       pendingUploadPaths.add(file.relativePath)
+      reconciliationFileEntries.push({ relativePath: file.relativePath, sha256: file.sha256 })
     }
     if (file.pendingUpload && parsed.snapshots.length === 0 && parsed.ignoredUploadSafeRows === 0) {
       pendingFilesWithoutSnapshots += 1
     }
     malformedRows += parsed.malformedRows
     unparsedTokenLikeRows += parsed.unparsedTokenLikeRows
+    skippedOversizedRows += parsed.skippedOversizedRows ?? 0
+    largestSkippedOversizedRowBytes = Math.max(
+      largestSkippedOversizedRowBytes,
+      parsed.largestSkippedOversizedRowBytes ?? 0
+    )
     updateCursorFile(changed.cursor, file, parsed)
   }
 
-  return { changedDates, changedKeys, malformedRows, pendingFilesWithoutSnapshots, pendingUploadPaths, unparsedTokenLikeRows }
+  return {
+    changedDates,
+    changedKeys,
+    malformedRows,
+    pendingFilesWithoutSnapshots,
+    pendingUploadPaths,
+    reconciliationFileEntries,
+    unparsedTokenLikeRows,
+    skippedOversizedRows,
+    largestSkippedOversizedRowBytes
+  }
+}
+
+function reportSkippedOversizedRows(
+  input: HookInput,
+  parsed: {
+    skippedOversizedRows: number
+    largestSkippedOversizedRowBytes: number
+  }
+) {
+  if (parsed.skippedOversizedRows === 0) return
+  const suffix = parsed.skippedOversizedRows === 1 ? '' : 's'
+  input.stderr?.(
+    `Skipped ${parsed.skippedOversizedRows} oversized ${input.source} session JSONL row${suffix} without token or usage metadata (largest ${parsed.largestSkippedOversizedRowBytes} bytes)`
+  )
 }
 
 function assertNoMalformedRows(source: UsageSource, count: number) {

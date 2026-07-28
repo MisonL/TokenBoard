@@ -302,6 +302,7 @@ test('does not archive-replace an existing git checkout after git upgrade fails'
   assert.deepEqual(
     calls.map((call) => call.args),
     [
+      ['status', '--porcelain', '--untracked-files=all'],
       ['remote', 'set-url', 'origin', 'https://github.com/example/TokenBoard.git'],
       ['ls-remote', '--symref', 'origin', 'HEAD'],
       ['config', '--replace-all', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
@@ -314,6 +315,67 @@ test('does not archive-replace an existing git checkout after git upgrade fails'
       ['pull', '--ff-only']
     ]
   )
+})
+
+test('refuses to upgrade a dirty collector checkout before changing repository state', () => {
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      flags: {},
+      env: {},
+      readConfigFile: () => ({
+        collectorDir: '/home/user/.tokenboard/TokenBoard',
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: (...args) => calls.push({ command: 'mergeConfig', args }),
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === '/home/user/.tokenboard/TokenBoard' || path === '/home/user/.tokenboard/TokenBoard/.git',
+      spawn: (command, args) => {
+        calls.push({ command, args })
+        if (command === 'git' && args[0] === 'status') {
+          return { status: 0, stdout: ' M packages/collector/src/cli.ts\n' }
+        }
+        return { status: 0 }
+      },
+      log: () => {}
+    }),
+    /Refusing to upgrade a collector checkout with uncommitted changes/
+  )
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['status', '--porcelain', '--untracked-files=all']
+  ])
+})
+
+test('refuses to upgrade when the collector worktree cannot be inspected', () => {
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      flags: {},
+      env: {},
+      readConfigFile: () => ({
+        collectorDir: '/home/user/.tokenboard/TokenBoard',
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: (...args) => calls.push({ command: 'mergeConfig', args }),
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === '/home/user/.tokenboard/TokenBoard' || path === '/home/user/.tokenboard/TokenBoard/.git',
+      spawn: (command, args) => {
+        calls.push({ command, args })
+        return { status: 1 }
+      },
+      log: () => {}
+    }),
+    /Unable to inspect the TokenBoard collector worktree before upgrade/
+  )
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['status', '--porcelain', '--untracked-files=all']
+  ])
 })
 
 test('default branch guard checks out origin default branch from detached head', () => {

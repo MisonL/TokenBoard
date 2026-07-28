@@ -399,9 +399,15 @@ describe('DevicesPage layout', () => {
 
     expect(html).toContain('新的上传凭证只显示一次')
     expect(html).toContain('tb_upload_new_secret')
-    expect(html).toContain('旧 install claim 已失效')
+    expect(html).toContain('旧 upload token 和 install claim 已失效')
     expect(html).toContain('macOS / Linux / Git Bash')
     expect(html).toContain('Windows PowerShell')
+    expect(html).toContain('data-copy-target="rotated-upload-token-text"')
+    expect(html).toContain('data-copy-target="rotated-token-bash-command-text"')
+    expect(html).toContain('data-copy-target="rotated-token-powershell-command-text"')
+    expect(html).toContain('aria-label="复制新的 upload token"')
+    expect(html).toContain('aria-label="复制 macOS / Linux / Git Bash 令牌更新命令"')
+    expect(html).toContain('aria-label="复制 Windows PowerShell 令牌更新命令"')
     expect(html).toContain('rotate-token.mjs')
     expect(html).toContain('--server-origin &#39;https://tokenboard.example.com&#39;')
     expect(html).toContain('--upload-token &#39;tb_upload_new_secret&#39;')
@@ -410,5 +416,10 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('--server-origin &quot;https://tokenboard.example.com&quot;')
     expect(html).toContain('--upload-token &quot;tb_upload_new_secret&quot;')
     expect(html).toContain('--install-claim &quot;tb_install_new_secret&quot;')
+
+    const statusRegion = html.match(/<div role="status">([\s\S]*?)<\/div>/)?.[1]
+    expect(statusRegion).toContain('新的上传凭证只显示一次')
+    expect(statusRegion).not.toContain('tb_upload_new_secret')
+    expect(statusRegion).not.toContain('rotate-token.mjs')
   })
 })

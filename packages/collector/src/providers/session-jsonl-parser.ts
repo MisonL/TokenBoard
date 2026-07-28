@@ -8,6 +8,10 @@ import {
   readTimestamp,
   type UnknownRecord
 } from './session-jsonl-parser-utils'
+import {
+  isSkippedOversizedSessionJsonlLine,
+  type SessionJsonlLine
+} from './session-jsonl-line-reader'
 import { hasUnparsedTokenMetricField } from './session-jsonl-token-fields'
 
 type ParseInput = {
@@ -19,7 +23,7 @@ type ParseInput = {
 }
 
 type ParseLinesInput = Omit<ParseInput, 'content'> & {
-  lines: AsyncIterable<string>
+  lines: AsyncIterable<SessionJsonlLine>
 }
 
 type ParseContext = Omit<ParseInput, 'content'>
@@ -27,6 +31,8 @@ type ParseContext = Omit<ParseInput, 'content'>
 type ParseState = {
   rows: Map<string, AggregateRow>
   ignoredUploadSafeRows: number
+  skippedOversizedRows: number
+  largestSkippedOversizedRowBytes: number
   malformedRows: number
   missingCost: boolean
   unparsedTokenLikeRows: number
@@ -65,6 +71,14 @@ export function parseSessionJsonl(input: ParseInput): {
 export async function parseSessionJsonlLines(input: ParseLinesInput) {
   const state = createParseState()
   for await (const line of input.lines) {
+    if (isSkippedOversizedSessionJsonlLine(line)) {
+      state.skippedOversizedRows += 1
+      state.largestSkippedOversizedRowBytes = Math.max(
+        state.largestSkippedOversizedRowBytes,
+        line.byteLength
+      )
+      continue
+    }
     consumeLine(state, input, line)
   }
   return finishParseState(state, input)
@@ -74,6 +88,8 @@ function createParseState(): ParseState {
   return {
     rows: new Map(),
     ignoredUploadSafeRows: 0,
+    skippedOversizedRows: 0,
+    largestSkippedOversizedRowBytes: 0,
     malformedRows: 0,
     missingCost: false,
     unparsedTokenLikeRows: 0
@@ -104,6 +120,10 @@ function consumeLine(state: ParseState, input: ParseContext, line: string) {
 function finishParseState(state: ParseState, input: ParseContext) {
   return {
     ignoredUploadSafeRows: state.ignoredUploadSafeRows,
+    ...(state.skippedOversizedRows === 0 ? {} : {
+      skippedOversizedRows: state.skippedOversizedRows,
+      largestSkippedOversizedRowBytes: state.largestSkippedOversizedRowBytes
+    }),
     malformedRows: state.malformedRows,
     missingCost: state.missingCost,
     unparsedTokenLikeRows: state.unparsedTokenLikeRows,

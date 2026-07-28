@@ -1,8 +1,10 @@
 import { usageSnapshotSchema, type UsageSnapshot } from '@tokenboard/usage-core'
 import { formatDate } from './session-jsonl-parser-utils'
 import {
+  antigravityGuiDbResetCorrectionPrefix,
   readCursor,
   stripCollectedAt,
+  type AntigravityUsageOrigin,
   type CursorEntry,
   type CursorSnapshot
 } from './session-cursor-store'
@@ -67,6 +69,7 @@ function mergeBoundedGuiCursorEntry(
 
 export function pushGuiUsageEvent(input: {
   event: AntigravityUsageEvent
+  origin: AntigravityUsageOrigin
   cursor: AntigravityGuiCursor
   snapshots: UsageSnapshot[]
   emittedKeys: Set<string>
@@ -85,7 +88,8 @@ export function pushGuiUsageEvent(input: {
     snapshots: [stripCollectedAt(snapshot)],
     marker: eventKey,
     mtimeMs: Date.parse(input.event.createdAt),
-    pendingUpload: true
+    pendingUpload: true,
+    antigravityOrigin: input.origin
   })
   input.snapshots.push(snapshot)
   input.emittedKeys.add(eventKey)
@@ -199,6 +203,77 @@ export function lastSeenDbRowIndexByCascadeHash(input: {
   return indexes
 }
 
+export function resetGuiDbCursorState(input: {
+  cursor: AntigravityGuiCursor
+  source: AntigravityGuiSource
+}) {
+  assertGuiDbResetStateIsClassified(input)
+  assertGuiDbResetHasNoPendingDatabaseUsage(input)
+  const corrections = collectGuiDbResetCorrections(input.cursor)
+  const rowPrefix = dbCascadeCursorPrefix(input.source)
+  const coveredPrefix = dbCoveredCascadeCursorPrefix(input.source)
+  for (const key of Object.keys(input.cursor.files)) {
+    if (key.startsWith(rowPrefix) || key.startsWith(coveredPrefix)) {
+      delete input.cursor.files[key]
+    }
+  }
+  for (const [key, entry] of Object.entries(input.cursor.files)) {
+    if (isDatabaseGuiUsageEntry(key, entry)) {
+      delete input.cursor.files[key]
+    }
+  }
+  for (const [key, entry] of Object.entries(input.cursor.files)) {
+    if (isGuiSessionKey(key, input.source) && entry.antigravityOrigin === 'database') {
+      delete input.cursor.files[key]
+    }
+  }
+  input.cursor.antigravityDbFileScan = { nextSequence: 0, files: {} }
+  return corrections
+}
+
+export function queueGuiDbResetCorrections(input: {
+  cursor: AntigravityGuiCursor
+  corrections: CursorSnapshot[]
+  collectedAt: string
+}) {
+  for (const snapshot of input.corrections) {
+    const key = guiDbResetCorrectionKey(snapshot)
+    input.cursor.files[key] = newCursorEntry({
+      snapshots: [snapshot],
+      marker: key,
+      mtimeMs: Date.parse(input.collectedAt),
+      pendingUpload: true,
+      antigravityOrigin: 'database',
+      updatedAt: input.collectedAt
+    })
+  }
+}
+
+function assertGuiDbResetStateIsClassified(input: {
+  cursor: AntigravityGuiCursor
+  source: AntigravityGuiSource
+}) {
+  for (const [key, entry] of Object.entries(input.cursor.files)) {
+    if (isGuiUsageStateKey(key, input.source) && entry.antigravityOrigin === undefined) {
+      throw new Error(
+        'Antigravity SQLite metadata cursor reset cannot safely classify legacy database or language-server usage state'
+      )
+    }
+  }
+}
+
+export function assertGuiDbResetHasNoPendingDatabaseUsage(input: {
+  cursor: AntigravityGuiCursor
+  source: AntigravityGuiSource
+}) {
+  for (const [key, entry] of Object.entries(input.cursor.files)) {
+    if (!entry.pendingUpload) continue
+    if (entry.antigravityOrigin === 'database' && !isGuiDbResetCorrectionKey(key)) {
+      throw new Error('Antigravity SQLite metadata cursor reset cannot discard pending database usage')
+    }
+  }
+}
+
 export function markDbCascadeRowsProcessed(input: {
   cursor: AntigravityGuiCursor
   coveredCascadeIds?: Set<string>
@@ -240,6 +315,7 @@ export function markDbCascadeRowsProcessed(input: {
 
 function buildSnapshot(input: {
   event: AntigravityUsageEvent
+  origin: AntigravityUsageOrigin
   cursor: AntigravityGuiCursor
   timezone: string
   collectedAt: string
@@ -253,7 +329,8 @@ function buildSnapshot(input: {
       snapshots: [],
       marker: sessionKey,
       mtimeMs: Date.parse(input.event.createdAt),
-      pendingUpload: true
+      pendingUpload: true,
+      antigravityOrigin: input.origin
     })
   }
   return usageSnapshotSchema.parse({
@@ -291,6 +368,8 @@ function newCursorEntry(input: {
   mtimeMs: number
   pendingUpload: boolean
   size?: number
+  antigravityOrigin?: AntigravityUsageOrigin
+  updatedAt?: string
 }): CursorEntry {
   return {
     size: input.size ?? 0,
@@ -299,12 +378,72 @@ function newCursorEntry(input: {
     snapshots: input.snapshots,
     missingCost: true,
     pendingUpload: input.pendingUpload,
-    updatedAt: new Date().toISOString()
+    ...(input.antigravityOrigin ? { antigravityOrigin: input.antigravityOrigin } : {}),
+    updatedAt: input.updatedAt ?? new Date().toISOString()
   }
 }
 
 function usageEventKey(event: AntigravityUsageEvent) {
   return ['event', event.cascadeHash, event.eventHash].join('\0')
+}
+
+function isDatabaseGuiUsageEntry(key: string, entry: CursorEntry) {
+  return entry.antigravityOrigin === 'database' &&
+    (isGuiUsageEventKey(key) || isGuiAggregateEntry(key))
+}
+
+export function isGuiDbResetCorrectionKey(key: string) {
+  return key.startsWith(antigravityGuiDbResetCorrectionPrefix)
+}
+
+function collectGuiDbResetCorrections(cursor: AntigravityGuiCursor) {
+  const corrections = new Map<string, CursorSnapshot>()
+  for (const [key, entry] of Object.entries(cursor.files)) {
+    if (!isDatabaseGuiUsageEntry(key, entry)) continue
+    for (const snapshot of entry.snapshots) {
+      const correction = zeroGuiSnapshot(snapshot)
+      corrections.set(snapshotGroupKey(correction), correction)
+    }
+  }
+  return [...corrections.values()]
+}
+
+function zeroGuiSnapshot(snapshot: CursorSnapshot): CursorSnapshot {
+  return {
+    source: snapshot.source,
+    usageDate: snapshot.usageDate,
+    timezone: snapshot.timezone,
+    model: snapshot.model,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    sessionCount: 0
+  }
+}
+
+function guiDbResetCorrectionKey(snapshot: CursorSnapshot) {
+  return `${antigravityGuiDbResetCorrectionPrefix}${hash(snapshotGroupKey(snapshot))}`
+}
+
+function isGuiUsageEventKey(key: string) {
+  const [kind, cascadeHash, eventHash] = key.split('\0')
+  return kind === 'event' && /^[a-f0-9]{64}$/.test(cascadeHash ?? '') && /^[a-f0-9]{64}$/.test(eventHash ?? '')
+}
+
+function isGuiAggregateEntry(key: string) {
+  return key.startsWith('aggregate\0')
+}
+
+function isGuiSessionKey(key: string, source: AntigravityGuiSource) {
+  const parts = key.split('\0')
+  return parts[0] === 'session' && parts[1] === source && /^[a-f0-9]{64}$/.test(parts[4] ?? '')
+}
+
+function isGuiUsageStateKey(key: string, source: AntigravityGuiSource) {
+  return isGuiUsageEventKey(key) || isGuiSessionKey(key, source) || isGuiAggregateEntry(key)
 }
 
 function cascadeCursorKey(source: AntigravityGuiSource, cascadeId: string, historyScope: string) {
@@ -320,9 +459,14 @@ function emptyCascadeFrontierCursorKey(source: AntigravityGuiSource, historyScop
 }
 
 function dbCoveredCascadeCursorKey(source: AntigravityGuiSource, cascadeId: string, historyScope: string) {
+  const prefix = dbCoveredCascadeCursorPrefix(source)
   return historyScope === 'all'
-    ? ['db-covered', source, hash(cascadeId)].join('\0')
-    : ['db-covered', source, `since:${historyScope}`, hash(cascadeId)].join('\0')
+    ? `${prefix}${hash(cascadeId)}`
+    : `${prefix}since:${historyScope}\0${hash(cascadeId)}`
+}
+
+function dbCoveredCascadeCursorPrefix(source: AntigravityGuiSource) {
+  return ['db-covered', source, ''].join('\0')
 }
 
 function dbCascadeCursorPrefix(source: AntigravityGuiSource) {

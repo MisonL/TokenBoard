@@ -1,6 +1,45 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { runNotify } from './notify.mjs'
+import { claimDispatchLock, executeTokenBoardSync, releaseDispatchLock, runNotify, runNotifyCli } from './notify.mjs'
+
+test('notify passes the coordinator lock token to its child sync', () => {
+  let invocation
+
+  const result = executeTokenBoardSync('codex', {
+    nodePath: '/usr/bin/node',
+    syncScriptPath: '/repo/sync.mjs',
+    env: { TOKENBOARD_STATE_DIR: '/state' },
+    lockToken: 'coordinator-token',
+    spawn: (command, args, options) => {
+      invocation = { command, args, options }
+      return { status: 0 }
+    }
+  })
+
+  assert.deepEqual(result, { source: 'codex', exitCode: 0 })
+  assert.equal(invocation.command, '/usr/bin/node')
+  assert.deepEqual(invocation.args, ['/repo/sync.mjs', '--mode', 'sync', '--source', 'codex', '--hook'])
+  assert.equal(invocation.options.env.TOKENBOARD_COORDINATOR_LOCK_HELD, '1')
+  assert.equal(invocation.options.env.TOKENBOARD_COORDINATOR_LOCK_TOKEN, 'coordinator-token')
+  assert.equal(invocation.options.env.TOKENBOARD_STATE_DIR, '/state')
+})
+
+test('notify refuses to start a hook sync without coordinator lock ownership', () => {
+  assert.throws(
+    () => executeTokenBoardSync('codex', {
+      spawn: () => {
+        throw new Error('should not spawn')
+      }
+    }),
+    /coordinator lock token is required/
+  )
+})
 
 test('notify runs source-specific sync through coordinator', () => {
   const calls = []
@@ -17,14 +56,231 @@ test('notify runs source-specific sync through coordinator', () => {
     },
     writeFile: () => {},
     unlink: () => {},
-    executeSync: (trigger) => {
-      calls.push(trigger)
+    executeSync: (trigger, lockToken) => {
+      calls.push({ lockToken, trigger })
       return { source: trigger.source }
     }
   })
 
   assert.equal(result.skippedSync, false)
-  assert.deepEqual(calls, [{ kind: 'notify', source: 'codex' }])
+  assert.deepEqual(calls.map(({ trigger }) => trigger), [{ kind: 'notify', source: 'codex' }])
+  assert.match(calls[0].lockToken, /^[a-f0-9]{32}$/)
+})
+
+test('releaseDispatchLock only removes the matching dispatcher owner', () => {
+  const workerPath = '/state/notify.dispatch.worker'
+  const files = new Map([
+    ['/state/notify.dispatch.lock', JSON.stringify({ pid: 10, token: 'owner-a' })],
+    [workerPath, JSON.stringify({ pid: 11, token: 'owner-a' })]
+  ])
+  const fileOps = memoryFileOps(files)
+
+  assert.equal(releaseDispatchLock('/state/notify.dispatch.lock', 'owner-b', { ...fileOps, workerPath }), false)
+  assert.equal(files.has('/state/notify.dispatch.lock'), true)
+  assert.equal(files.has(workerPath), true)
+  assert.equal(releaseDispatchLock('/state/notify.dispatch.lock', 'owner-a', { ...fileOps, workerPath }), true)
+  assert.equal(files.has('/state/notify.dispatch.lock'), false)
+  assert.equal(files.has(workerPath), false)
+})
+
+test('notify releases dispatcher ownership when config loading fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-dispatch-cleanup-'))
+  const lockPath = join(root, 'notify.dispatch.lock')
+  const token = 'test-owner'
+
+  try {
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }))
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./notify.mjs', import.meta.url)), '--source', 'codex'],
+      {
+        env: {
+          ...process.env,
+          TOKENBOARD_CONFIG_DIR: root,
+          TOKENBOARD_STATE_DIR: root,
+          TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH: lockPath,
+          TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN: token
+        }
+      }
+    )
+
+    assert.equal(result.status, 1)
+    assert.equal(existsSync(lockPath), false)
+    assert.equal(existsSync(`${lockPath}.worker`), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('notify releases dispatcher ownership after a cooldown skip', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-dispatch-cooldown-'))
+  const lockPath = join(root, 'notify.dispatch.lock')
+  const token = 'test-owner'
+
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ updatedAt: new Date().toISOString() }))
+    await writeFile(join(root, 'last-success.json'), new Date().toISOString())
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }))
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./notify.mjs', import.meta.url)), '--source', 'codex'],
+      {
+        env: {
+          ...process.env,
+          TOKENBOARD_CONFIG_DIR: root,
+          TOKENBOARD_STATE_DIR: root,
+          TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: '1',
+          TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH: lockPath,
+          TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN: token
+        }
+      }
+    )
+
+    assert.equal(result.status, 0)
+    assert.equal(existsSync(lockPath), false)
+    assert.equal(existsSync(`${lockPath}.worker`), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('notify releases dispatcher ownership when a cooldown schedules trailing work', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-dispatch-trailing-'))
+  const lockPath = join(root, 'notify.dispatch.lock')
+  const trailingLockPath = join(root, 'trailing.lock')
+  const token = 'test-owner'
+  let trailingPid
+
+  try {
+    await writeFile(join(root, 'config.json'), JSON.stringify({ updatedAt: new Date().toISOString() }))
+    await writeFile(join(root, 'last-success.json'), new Date().toISOString())
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }))
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./notify.mjs', import.meta.url)), '--source', 'codex'],
+      {
+        env: {
+          ...process.env,
+          TOKENBOARD_CONFIG_DIR: root,
+          TOKENBOARD_STATE_DIR: root,
+          TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH: lockPath,
+          TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN: token
+        }
+      }
+    )
+
+    assert.equal(result.status, 0)
+    trailingPid = JSON.parse(await readFile(trailingLockPath, 'utf8')).pid
+    assert.equal(existsSync(lockPath), false)
+    assert.equal(existsSync(`${lockPath}.worker`), false)
+  } finally {
+    if (trailingPid) {
+      try { process.kill(trailingPid, 'SIGTERM') } catch {}
+    }
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('dispatch worker claim stops when the foreground lock is replaced', () => {
+  const files = new Map([
+    ['/state/notify.dispatch.lock', JSON.stringify({ pid: 10, token: 'owner-a' })]
+  ])
+  const fileOps = memoryFileOps(files)
+  const writeFile = (path, value) => {
+    files.set(path, String(value))
+    if (path.endsWith('.worker')) {
+      files.set('/state/notify.dispatch.lock', JSON.stringify({ pid: 20, token: 'owner-b' }))
+    }
+  }
+
+  assert.equal(claimDispatchLock('/state/notify.dispatch.lock', 'owner-a', {
+    ...fileOps,
+    writeFile,
+    pid: 11,
+    now: () => Date.parse('2026-05-22T10:00:00.000Z')
+  }), false)
+  assert.equal(files.has('/state/notify.dispatch.lock.worker'), false)
+  assert.equal(JSON.parse(files.get('/state/notify.dispatch.lock')).token, 'owner-b')
+})
+
+test('releaseDispatchLock preserves a newer worker marker', () => {
+  const files = new Map([
+    ['/state/notify.dispatch.lock', JSON.stringify({ pid: 20, token: 'owner-b' })],
+    ['/state/notify.dispatch.lock.worker', JSON.stringify({ pid: 21, token: 'owner-b' })]
+  ])
+  const fileOps = memoryFileOps(files)
+
+  assert.equal(releaseDispatchLock('/state/notify.dispatch.lock', 'owner-a', fileOps), false)
+  assert.equal(JSON.parse(files.get('/state/notify.dispatch.lock')).token, 'owner-b')
+  assert.equal(JSON.parse(files.get('/state/notify.dispatch.lock.worker')).token, 'owner-b')
+})
+
+test('releaseDispatchLock preserves a replacement created after it quarantines its lock', () => {
+  const lockPath = '/state/notify.dispatch.lock'
+  const workerPath = `${lockPath}.worker`
+  const files = new Map([
+    [lockPath, JSON.stringify({ pid: 10, token: 'owner-a' })],
+    [workerPath, JSON.stringify({ pid: 11, token: 'owner-a' })]
+  ])
+  const fileOps = memoryFileOps(files)
+  const rename = (from, to) => {
+    fileOps.rename(from, to)
+    if (from === lockPath) {
+      files.set(lockPath, JSON.stringify({ pid: 20, token: 'owner-b' }))
+      files.set(workerPath, JSON.stringify({ pid: 21, token: 'owner-b' }))
+    }
+  }
+
+  assert.equal(releaseDispatchLock(lockPath, 'owner-a', { ...fileOps, rename, workerPath }), true)
+  assert.equal(JSON.parse(files.get(lockPath)).token, 'owner-b')
+  assert.equal(JSON.parse(files.get(workerPath)).token, 'owner-b')
+})
+
+test('trailing notifier preserves a replacement lock during cleanup', async () => {
+  const stateDir = '/state'
+  const lockPath = join(stateDir, 'trailing.lock')
+  const replacement = JSON.stringify({ pid: 902, token: 'replacement' })
+  const files = new Map([
+    [lockPath, JSON.stringify({ pid: 901, token: 'original' })]
+  ])
+  let replaced = false
+  const replaceOwner = () => {
+    if (replaced) return
+    replaced = true
+    files.set(lockPath, replacement)
+  }
+  const runtime = {
+    stateDir,
+    configDir: stateDir,
+    now: () => Date.parse('2026-07-18T10:00:00.000Z'),
+    process: { pid: 901, kill: () => true },
+    readFile: (path) => readMemoryFile(files, path),
+    rename: (from, to) => {
+      replaceOwner()
+      moveMemoryFile(files, from, to)
+    },
+    link: (from, to) => linkMemoryFile(files, from, to),
+    unlink: (path) => {
+      replaceOwner()
+      removeMemoryFile(files, path)
+    }
+  }
+
+  const exitCode = await runNotifyCli({
+    env: {
+      TOKENBOARD_CONFIG_DIR: stateDir,
+      TOKENBOARD_STATE_DIR: stateDir,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: lockPath
+    },
+    configDir: () => stateDir,
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    trailingRuntime: runtime,
+    waitTrailingDelay: async () => {},
+    runNotify: () => ({ trailingScheduled: false })
+  })
+
+  assert.equal(exitCode, 0)
+  assert.equal(files.get(lockPath), replacement)
 })
 
 test('notify hides the sync child process on Windows', () => {
@@ -62,6 +318,7 @@ test('notify replaces malformed trailing lock during cooldown', () => {
   const result = runNotify({
     argv: ['--source', 'codex'],
     stateDir: '/state',
+    ...memoryFileOps(files),
     now: () => Date.parse('2026-05-22T10:01:00.000Z'),
     mkdir: () => {},
     exists: (path) => files.has(path),
@@ -94,7 +351,7 @@ test('notify replaces malformed trailing lock during cooldown', () => {
   assert.equal(JSON.parse(files.get('/state/trailing.lock')).pid, 704)
 })
 
-test('trailing process reschedules itself when pending signals remain in cooldown', () => {
+test('trailing process retains its lock when pending signals remain in cooldown', () => {
   const files = new Map([
     ['/state/last-success.json', '2026-05-22T10:02:00.000Z'],
     ['/state/notify.signal', `${JSON.stringify({ source: 'codex' })}\n`],
@@ -104,6 +361,7 @@ test('trailing process reschedules itself when pending signals remain in cooldow
   const result = runNotify({
     argv: ['--source', 'codex'],
     stateDir: '/state',
+    ...memoryFileOps(files),
     now: () => Date.parse('2026-05-22T10:03:00.000Z'),
     mkdir: () => {},
     exists: (path) => files.has(path),
@@ -133,6 +391,160 @@ test('trailing process reschedules itself when pending signals remain in cooldow
 
   assert.equal(result.skippedReason, 'cooldown')
   assert.equal(result.trailingScheduled, true)
-  assert.deepEqual(spawned, ['spawned'])
-  assert.equal(JSON.parse(files.get('/state/trailing.lock')).pid, 801)
+  assert.deepEqual(spawned, [])
+  assert.equal(JSON.parse(files.get('/state/trailing.lock')).pid, 800)
 })
+
+test('trailing CLI waits under its existing lock and completes pending work without spawning again', async () => {
+  const stateDir = '/state'
+  const trailingLockPath = join(stateDir, 'trailing.lock')
+  let nowMs = Date.parse('2026-05-22T10:00:05.000Z')
+  const files = new Map([
+    [join(stateDir, 'last-success.json'), '2026-05-22T10:00:00.000Z'],
+    [join(stateDir, 'notify.signal'), `${JSON.stringify({ source: 'codex' })}\n`],
+    [trailingLockPath, JSON.stringify({ pid: 800 })]
+  ])
+  const waits = []
+  const spawned = []
+  const synced = []
+  const readFile = (path) => {
+    if (!files.has(path)) {
+      const error = new Error(`ENOENT: ${path}`)
+      error.code = 'ENOENT'
+      throw error
+    }
+    return files.get(path)
+  }
+  const writeFile = (path, value, options = {}) => {
+    if (options.flag === 'wx' && files.has(path)) {
+      const error = new Error(`EEXIST: ${path}`)
+      error.code = 'EEXIST'
+      throw error
+    }
+    files.set(path, String(value))
+  }
+  const runtime = {
+    stateDir,
+    configDir: stateDir,
+    now: () => nowMs,
+    process: { pid: 800, kill: () => true },
+    readFile,
+    writeFile,
+    unlink: (path) => files.delete(path),
+    rename: memoryFileOps(files).rename,
+    link: memoryFileOps(files).link
+  }
+
+  const exitCode = await runNotifyCli({
+    env: {
+      TOKENBOARD_CONFIG_DIR: stateDir,
+      TOKENBOARD_STATE_DIR: stateDir,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: trailingLockPath,
+      TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: '0'
+    },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => stateDir,
+    trailingRuntime: runtime,
+    waitTrailingDelay: async (delayMs) => {
+      waits.push(delayMs)
+      nowMs += Math.max(0, delayMs)
+    },
+    runNotify: (options) => runNotify({
+      ...options,
+      argv: ['--source', 'codex'],
+      cooldownMs: 10_000,
+      now: () => nowMs,
+      mkdir: () => {},
+      exists: (path) => files.has(path),
+      readFile,
+      writeFile,
+      unlink: (path) => files.delete(path),
+      rename: memoryFileOps(files).rename,
+      link: memoryFileOps(files).link,
+      process: runtime.process,
+      spawnDetached: () => {
+        spawned.push('spawned')
+        return { pid: 801, unref: () => {} }
+      },
+      executeSync: (trigger) => {
+        synced.push(trigger.source)
+        return { source: trigger.source }
+      }
+    })
+  })
+
+  assert.equal(exitCode, 0)
+  assert.deepEqual(waits, [0, 5_000])
+  assert.deepEqual(synced, ['codex'])
+  assert.deepEqual(spawned, [])
+  assert.equal(files.has(trailingLockPath), false)
+})
+
+function memoryFileOps(files) {
+  return {
+    readFile: (path) => {
+      const value = files.get(path)
+      if (value !== undefined) return value
+      const error = new Error(`ENOENT: ${path}`)
+      error.code = 'ENOENT'
+      throw error
+    },
+    rename: (from, to) => {
+      const value = files.get(from)
+      if (value === undefined) {
+        const error = new Error(`ENOENT: ${from}`)
+        error.code = 'ENOENT'
+        throw error
+      }
+      files.set(to, value)
+      files.delete(from)
+    },
+    link: (from, to) => {
+      const value = files.get(from)
+      if (value === undefined) {
+        const error = new Error(`ENOENT: ${from}`)
+        error.code = 'ENOENT'
+        throw error
+      }
+      if (files.has(to)) {
+        const error = new Error(`EEXIST: ${to}`)
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(to, value)
+    },
+    unlink: (path) => removeMemoryFile(files, path)
+  }
+}
+
+function readMemoryFile(files, path) {
+  const value = files.get(path)
+  if (value !== undefined) return value
+  const error = new Error(`ENOENT: ${path}`)
+  error.code = 'ENOENT'
+  throw error
+}
+
+function moveMemoryFile(files, from, to) {
+  const value = readMemoryFile(files, from)
+  files.set(to, value)
+  files.delete(from)
+}
+
+function linkMemoryFile(files, from, to) {
+  if (files.has(to)) {
+    const error = new Error(`EEXIST: ${to}`)
+    error.code = 'EEXIST'
+    throw error
+  }
+  files.set(to, readMemoryFile(files, from))
+}
+
+function removeMemoryFile(files, path) {
+  if (!files.has(path)) {
+    const error = new Error(`ENOENT: ${path}`)
+    error.code = 'ENOENT'
+    throw error
+  }
+  files.delete(path)
+}

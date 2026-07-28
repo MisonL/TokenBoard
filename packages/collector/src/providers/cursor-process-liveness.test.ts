@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  cursorTasklistCommand,
   probeCursorProcessLiveness,
   supportsReliableCursorSignalZero,
   tasklistContainsCursorPid
@@ -18,6 +19,23 @@ describe('cursor process liveness', () => {
     expect(tasklistContainsCursorPid('"node.exe","123","Console","1","10,000 K"\r\n', 123)).toBe(true)
     expect(tasklistContainsCursorPid('INFO: No tasks match.', 123)).toBe(false)
     expect(tasklistContainsCursorPid('信息: 没有运行的任务匹配。', 123)).toBe(false)
+  })
+
+  test('uses the System32 tasklist executable for legacy Windows checks', () => {
+    let command = ''
+
+    expect(cursorTasklistCommand({ SystemRoot: 'D:\\Windows' })).toBe('D:\\Windows\\System32\\tasklist.exe')
+    expect(cursorTasklistCommand({ SystemRoot: 'C:relative' })).toBe('C:\\Windows\\System32\\tasklist.exe')
+    expect(probeCursorProcessLiveness(123, {
+      platform: 'win32',
+      nodeVersion: '22.12.0',
+      env: { SystemRoot: 'D:\\Windows' },
+      runTasklist: (candidate) => {
+        command = candidate
+        return { status: 0, stdout: 'INFO: no match' }
+      }
+    })).toBe('dead')
+    expect(command).toBe('D:\\Windows\\System32\\tasklist.exe')
   })
 
   test('keeps unknown old-Windows owners and distinguishes alive from dead', () => {

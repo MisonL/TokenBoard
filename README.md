@@ -120,6 +120,9 @@ four-column, two-column, then single-column layout.
 - Generated install and upgrade commands resolve the remote default branch from `origin/HEAD`.
   Explicit repo refs try branch checkout first, including all-hex branch names, then fall back to raw
   ref checkout.
+- Legacy multi-profile Codex configuration uses a comma-separated `CODEX_HOME`. When a home path
+  itself contains a comma, use `TOKENBOARD_CODEX_HOMES_JSON` with a non-empty JSON array of paths
+  instead of an ambiguous `CODEX_HOME` value.
 - Antigravity collection reads local metadata only and emits `costUsd: 0`. Web, public, report, and
   leaderboard surfaces label those costs as unavailable.
 
@@ -131,8 +134,24 @@ Notifier hooks:
 | Claude Code | `~/.claude/settings.json` `hooks.SessionEnd` |
 | Antigravity CLI | `~/.gemini/antigravity-cli/settings.json` `statusLine.command`, explicit opt-in only |
 
-Hooks append `~/.tokenboard/notify.signal`, start background `notify.mjs`, use `sync.lock`, skip
-auto-upgrade, and coalesce bursts with a 5-minute cooldown plus a trailing run.
+Hooks coalesce pending work by source in `~/.tokenboard/notify.signal.d`, start at most one background
+`notify.mjs` dispatcher or reuse a live cooldown trailing process, and skip auto-upgrade. The legacy
+`~/.tokenboard/notify.signal` file is retained only as a visible fallback when atomic queueing fails.
+Scheduled, manual, preview, and hook collection share `sync.lock`; a hook child reuses the lock held
+by its coordinator. Signals received during a running collection are retained and coalesced into one
+trailing run after the 5-minute cooldown instead of immediately repeating a full reconciliation.
+For verified append-only Claude Code and Codex JSONL files, hook collection reads only the appended
+suffix and reconciles only newly affected dates. A missing cursor file hash or trailing-newline
+marker, truncation, or replacement falls back to the full-file path.
+Bounded Antigravity collection also retries up to 30 older pending daily-model groups per run, and
+only acknowledges groups that were included in the successful upload.
+Antigravity CLI token totals are derived only from local SQLite history. Its optional status line
+handler writes a bounded, sanitized local diagnostic log and never contributes snapshots or uploads.
+After acknowledgement, recent SQLite event identities are retained for incremental reconciliation;
+older identities are compacted with a persisted frontier. A bounded scan that encounters an unknown
+event at or before that frontier stops and requires `--since all`. A full-history scan rebuilds the
+canonical daily-model snapshot from SQLite rather than adding a retained local aggregate, keeping
+replays idempotent without raw conversation identifiers or unbounded cursor state.
 
 Logs:
 

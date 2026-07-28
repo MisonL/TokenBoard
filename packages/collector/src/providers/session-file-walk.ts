@@ -1,15 +1,42 @@
-import { readdir } from 'node:fs/promises'
+import { lstat, readdir, realpath } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 
+export type SessionJsonlFiles = {
+  rootDir: string
+  files: AsyncGenerator<string>
+}
+
+export async function resolveSessionJsonlFiles(rootDir: string): Promise<SessionJsonlFiles | null> {
+  const resolvedRoot = await resolveSessionRoot(rootDir)
+  if (!resolvedRoot) return null
+  return {
+    rootDir: resolvedRoot,
+    files: walkDirectory(resolvedRoot, resolvedRoot)
+  }
+}
+
 export async function* walkJsonlFiles(rootDir: string): AsyncGenerator<string> {
-  yield* walkDirectory(rootDir, rootDir)
+  const resolved = await resolveSessionJsonlFiles(rootDir)
+  if (!resolved) return
+  yield* resolved.files
+}
+
+async function resolveSessionRoot(rootDir: string) {
+  return realpath(rootDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null
+    throw new Error(`Unable to resolve session directory ${rootDir}: ${error.message}`, { cause: error })
+  })
 }
 
 async function* walkDirectory(rootDir: string, currentDir: string): AsyncGenerator<string> {
+  if (!await assertSessionDirectory(currentDir)) return
   const entries = await readDirectoryEntries(currentDir)
   if (!entries) return
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     const entryPath = join(currentDir, entry.name)
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Unable to read session entry ${entryPath}: symbolic links are not supported`)
+    }
     if (entry.isDirectory()) {
       yield* walkDirectory(rootDir, entryPath)
       continue
@@ -18,6 +45,21 @@ async function* walkDirectory(rootDir: string, currentDir: string): AsyncGenerat
       yield normalizeRelativePath(relative(rootDir, entryPath))
     }
   }
+}
+
+async function assertSessionDirectory(path: string) {
+  const details = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null
+    throw new Error(`Unable to inspect session directory ${path}: ${error.message}`, { cause: error })
+  })
+  if (!details) return false
+  if (details.isSymbolicLink()) {
+    throw new Error(`Unable to inspect session directory ${path}: symbolic links are not supported`)
+  }
+  if (!details.isDirectory()) {
+    throw new Error(`Unable to inspect session directory ${path}: path is not a directory`)
+  }
+  return true
 }
 
 async function readDirectoryEntries(currentDir: string) {

@@ -124,6 +124,52 @@ describe('normalizeCcusageDailyJson', () => {
     ])
   })
 
+  test('rejects an impossible ISO date in daily usage', () => {
+    expect(() => normalizeCcusageDailyJson(
+      {
+        data: [
+          {
+            date: '2026-02-30',
+            model: 'gpt-5',
+            inputTokens: 1,
+            totalTokens: 1
+          }
+        ]
+      },
+      { source: 'codex', timezone: 'UTC', collectedAt }
+    )).toThrow('Invalid ccusage date')
+  })
+
+  test('rejects an impossible ISO date in session metadata', () => {
+    expect(() => normalizeCcusageDailyJson(
+      {
+        data: [
+          {
+            date: '2026-04-28',
+            model: 'gpt-5',
+            inputTokens: 1,
+            totalTokens: 1
+          }
+        ]
+      },
+      {
+        source: 'codex',
+        timezone: 'UTC',
+        collectedAt,
+        sessions: {
+          data: [
+            {
+              lastActivity: '2026-04-31T12:00:00.000Z',
+              model: 'gpt-5',
+              inputTokens: 1,
+              totalTokens: 1
+            }
+          ]
+        }
+      }
+    )).toThrow('Invalid ccusage date')
+  })
+
   test('accepts cache input token aliases from companion CLIs', () => {
     const snapshots = normalizeCcusageDailyJson(
       {

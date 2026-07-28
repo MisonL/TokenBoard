@@ -285,50 +285,72 @@ describe('D1DevicePairingRepository', () => {
     })
 
     expect(sqlStatements[0]).toContain('INSERT INTO devices')
+    expect(sqlStatements[0]).toContain('SELECT ?, pairing.user_id')
+    expect(sqlStatements[0]).toContain("pairing_type = 'new_device'")
+    expect(sqlStatements[0]).toContain('pairing.consumed_at IS NULL')
     expect(sqlStatements[1]).toContain('INSERT INTO device_installations')
     expect(sqlStatements[1]).toContain('install_claim_hash')
+    expect(sqlStatements[1]).toContain('JOIN pairing_codes pairing')
     expect(sqlStatements[2]).toContain('INSERT INTO upload_tokens')
     expect(sqlStatements[2]).toContain('installation_id')
+    expect(sqlStatements[2]).toContain('JOIN pairing_codes pairing')
     expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[3]).toContain('JOIN pairing_codes pairing')
     expect(sqlStatements[4]).toContain('UPDATE pairing_codes')
+    expect(sqlStatements[4]).toContain('pairing_type = ?')
     expect(batches).toHaveLength(1)
     expect(batches[0]).toHaveLength(5)
     expect(bindings[0]).toEqual([
       'dev_1',
-      'pair_1',
-      'user_1',
-      '2026-06-30T10:00:00.000Z',
       'Workstation',
       'darwin',
       '2026-06-30T10:00:00.000Z',
+      '2026-06-30T10:00:00.000Z',
+      'pair_1',
+      'user_1',
       '2026-06-30T10:00:00.000Z'
     ])
     expect(bindings[1]).toEqual([
       'inst_1',
-      'user_1',
-      'dev_1',
       'darwin',
       'Workstation',
       'hash:claim',
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
       '2026-06-30T10:00:00.000Z',
-      '2026-06-30T10:00:00.000Z'
+      '2026-06-30T10:00:00.000Z',
+      'pair_1',
+      '2026-06-30T10:00:00.000Z',
+      'dev_1',
+      'user_1'
+    ])
+    expect(bindings[2]).toEqual([
+      'ut_1',
+      'Workstation',
+      'hash:upload',
+      '2026-06-30T10:00:00.000Z',
+      'pair_1',
+      '2026-06-30T10:00:00.000Z',
+      'inst_1',
+      'user_1',
+      'dev_1'
     ])
     expect(bindings[3]).toEqual([
       'audit_1',
-      'user_1',
-      'user',
       'device.pair',
-      'device',
-      'dev_1',
       '{"installationId":"inst_1","platform":"darwin"}',
-      '2026-06-30T10:00:00.000Z'
+      '2026-06-30T10:00:00.000Z',
+      'pair_1',
+      '2026-06-30T10:00:00.000Z',
+      'inst_1',
+      'user_1',
+      'dev_1'
     ])
     expect(bindings[4]).toEqual([
       '2026-06-30T10:00:00.000Z',
       'pair_1',
       'user_1',
+      'new_device',
       '2026-06-30T10:00:00.000Z',
       'ut_1',
       'user_1',

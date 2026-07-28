@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
-import { assertHookReconciliationSnapshots } from './hook-incremental'
+import { assertHookReconciliationSnapshots, collectHookIncremental } from './hook-incremental'
 import { clearPendingUploadCursors } from './session-cursor'
 
 const canDenyFileReadWithModeBits = process.platform !== 'win32' && process.getuid?.() !== 0
@@ -62,6 +62,55 @@ describe('hook sync collection', () => {
       })
 
       await expect(readFile(join(configDir, 'codex-cursor.json'), 'utf8')).resolves.toContain('session.jsonl')
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('persists a legacy cursor newline marker once without reprocessing a stable session file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-cursor-metadata-'))
+    const sessionsDir = join(root, 'codex', 'sessions')
+    const stateDir = join(root, 'state')
+    const cursorPath = join(stateDir, 'codex-cursor.json')
+    const sessionFile = join(sessionsDir, '2026', '05', '22', 'session.jsonl')
+    const input = {
+      source: 'codex' as const,
+      sessionsDir,
+      cursorName: 'codex-cursor.json',
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-05-22T10:00:00.000Z'
+    }
+
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-22T01:00:00.000Z', 15)])
+      await collectHookIncremental(input)
+      await clearPendingUploadCursors({ stateDir, source: 'codex' })
+
+      const legacyCursor = JSON.parse(await readFile(cursorPath, 'utf8'))
+      delete legacyCursor.files['2026/05/22/session.jsonl'].endsWithNewline
+      await writeFile(cursorPath, `${JSON.stringify(legacyCursor)}\n`)
+
+      await expect(collectHookIncremental(input)).resolves.toEqual({
+        rangeArgs: [],
+        changed: false,
+        changedDates: [],
+        changedKeys: [],
+        cachedSnapshots: []
+      })
+      const upgradedCursor = await readFile(cursorPath, 'utf8')
+      expect(JSON.parse(upgradedCursor).files['2026/05/22/session.jsonl'].endsWithNewline).toBe(true)
+
+      await expect(collectHookIncremental(input)).resolves.toEqual({
+        rangeArgs: [],
+        changed: false,
+        changedDates: [],
+        changedKeys: [],
+        cachedSnapshots: []
+      })
+      await expect(readFile(cursorPath, 'utf8')).resolves.toBe(upgradedCursor)
     } finally {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
@@ -138,8 +187,8 @@ describe('hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.14', 'codex', 'daily', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.14', 'codex', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        ['ccusage@20.0.18', 'codex', 'daily', '--json', '--offline', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -167,6 +216,101 @@ describe('hook sync collection', () => {
 
       expect(second).toEqual([])
       expect(calls).toHaveLength(2)
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('reconciles only newly appended Codex usage dates while retaining prior session snapshots', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-sync-'))
+    const codexHome = join(root, 'codex')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(codexHome, 'sessions', '2026', '05', '22', 'session.jsonl')
+    const calls: string[][] = []
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-22T01:00:00.000Z', 15)])
+      await collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        async runner(_command, args) {
+          calls.push(args)
+          return args.includes('session')
+            ? sessionResult('2026-05-22T01:00:00.000Z', 15)
+            : dailyResult('2026-05-22', 15)
+        }
+      })
+      await clearPendingUploadCursors({ stateDir, source: 'codex' })
+
+      await writeFile(sessionFile, `${JSON.stringify(tokenCountEvent('2026-05-23T01:00:00.000Z', 25))}\n`, { flag: 'a' })
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-23T10:00:00.000Z',
+        async runner(_command, args) {
+          calls.push(args)
+          return args.includes('session')
+            ? sessionResult('2026-05-23T01:00:00.000Z', 25)
+            : dailyResult('2026-05-23', 25)
+        }
+      })
+
+      expect(calls.slice(2)).toEqual([
+        ['ccusage@20.0.18', 'codex', 'daily', '--json', '--offline', '--since', '20260523', '--until', '20260523', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--since', '20260523', '--until', '20260523', '--timezone', 'Asia/Shanghai']
+      ])
+      expect(snapshots).toEqual([
+        expect.objectContaining({ usageDate: '2026-05-23', totalTokens: 25 })
+      ])
+      const cursor = JSON.parse(await readFile(join(stateDir, 'codex-cursor.json'), 'utf8'))
+      expect(cursor.files['2026/05/22/session.jsonl'].snapshots.map((snapshot: { usageDate: string }) => snapshot.usageDate)).toEqual([
+        '2026-05-22',
+        '2026-05-23'
+      ])
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('accumulates same-day appended Codex last token usage while retaining one session', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-sync-'))
+    const codexHome = join(root, 'codex')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(codexHome, 'sessions', '2026', '05', '22', 'session.jsonl')
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-22T01:00:00.000Z', 15)])
+      await collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        runner: sameDayIncrementRunner(15)
+      })
+      await clearPendingUploadCursors({ stateDir, source: 'codex' })
+
+      await writeFile(sessionFile, `${JSON.stringify(tokenCountEvent('2026-05-22T01:05:00.000Z', 25))}\n`, { flag: 'a' })
+      await collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:05:00.000Z',
+        runner: sameDayIncrementRunner(40)
+      })
+
+      const cursor = JSON.parse(await readFile(join(stateDir, 'codex-cursor.json'), 'utf8'))
+      expect(cursor.files['2026/05/22/session.jsonl'].snapshots).toEqual([
+        expect.objectContaining({ totalTokens: 40, sessionCount: 1 })
+      ])
     } finally {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
@@ -242,8 +386,8 @@ describe('hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.14', 'codex', 'daily', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.14', 'codex', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        ['ccusage@20.0.18', 'codex', 'daily', '--json', '--offline', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -1175,4 +1319,57 @@ describe('hook sync collection', () => {
 async function writeJsonl(file: string, rows: unknown[]) {
   await mkdir(dirname(file), { recursive: true })
   await writeFile(file, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`)
+}
+
+function tokenCountEvent(timestamp: string, totalTokens: number) {
+  return {
+    type: 'event_msg',
+    timestamp,
+    payload: {
+      type: 'token_count',
+      info: {
+        model: 'gpt-5',
+        last_token_usage: {
+          input_tokens: totalTokens,
+          output_tokens: 0,
+          total_tokens: totalTokens
+        }
+      }
+    }
+  }
+}
+
+function sameDayIncrementRunner(totalTokens: number) {
+  return async (_command: string, args: string[]) => args.includes('session')
+    ? sessionResult('2026-05-22T01:05:00.000Z', totalTokens)
+    : dailyResult('2026-05-22', totalTokens)
+}
+
+function dailyResult(date: string, totalTokens: number) {
+  return {
+    data: [{
+      date,
+      model: 'gpt-5',
+      inputTokens: totalTokens,
+      outputTokens: 0,
+      totalTokens,
+      costUSD: 0.01
+    }]
+  }
+}
+
+function sessionResult(lastActivity: string, totalTokens: number) {
+  return {
+    data: [{
+      sessionId: 'session',
+      lastActivity,
+      models: {
+        'gpt-5': {
+          inputTokens: totalTokens,
+          outputTokens: 0,
+          totalTokens
+        }
+      }
+    }]
+  }
 }

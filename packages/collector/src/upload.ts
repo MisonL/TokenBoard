@@ -14,6 +14,8 @@ const snapshotBatchSize = 30
 const transientFetchAttempts = 3
 const defaultRetryDelayMs = 250
 const maxRetryDelayMs = 5_000
+const defaultRequestTimeoutMs = 30_000
+const maxRequestTimeoutMs = 120_000
 const usageDatePattern = /^\d{4}-\d{2}-\d{2}$/
 const snapshotHashPattern = /^[a-f0-9]{64}$/
 
@@ -104,14 +106,22 @@ async function fetchExistingSnapshotHashes(
     return { existing: [] }
   }
 
-  const response = await fetchWithRetries(fetcher, `${config.endpoint}/check`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${config.uploadToken}`,
-      'content-type': 'application/json'
+  const { response, value } = await fetchWithRetries(
+    fetcher,
+    `${config.endpoint}/check`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.uploadToken}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ keys })
     },
-    body: JSON.stringify({ keys })
-  })
+    async (candidate) => {
+      if (isUnsupportedSnapshotCheckResponse(candidate) || !candidate.ok) return undefined
+      return parseExistingSnapshotHashResponse(await candidate.json())
+    }
+  )
 
   if (isUnsupportedSnapshotCheckResponse(response)) {
     return { existing: [] }
@@ -121,7 +131,7 @@ async function fetchExistingSnapshotHashes(
     throw new Error(`Snapshot check failed with status ${response.status}`)
   }
 
-  return parseExistingSnapshotHashResponse(await response.json())
+  return value as { existing: ExistingSnapshotHash[] }
 }
 
 function isUnsupportedSnapshotCheckResponse(response: Response) {
@@ -133,20 +143,28 @@ async function uploadSnapshotBatch(
   snapshots: UsageSnapshot[],
   fetcher: Fetcher
 ) {
-  const response = await fetchWithRetries(fetcher, config.endpoint, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${config.uploadToken}`,
-      'content-type': 'application/json'
+  const { response, value } = await fetchWithRetries(
+    fetcher,
+    config.endpoint,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.uploadToken}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ snapshots })
     },
-    body: JSON.stringify({ snapshots })
-  })
+    async (candidate) => {
+      if (!candidate.ok) return undefined
+      return parseUploadResponse(await candidate.json())
+    }
+  )
 
   if (!response.ok) {
     throw new Error(`Upload failed with status ${response.status}`)
   }
 
-  return parseUploadResponse(await response.json())
+  return value as number
 }
 
 function chunkSnapshots(snapshots: UsageSnapshot[], size: number) {
@@ -157,16 +175,36 @@ function chunkSnapshots(snapshots: UsageSnapshot[], size: number) {
   return batches
 }
 
-async function fetchWithRetries(fetcher: Fetcher, url: string, init: RequestInit) {
+async function fetchWithRetries<T>(
+  fetcher: Fetcher,
+  url: string,
+  init: RequestInit,
+  parseResponse: (response: Response) => Promise<T>
+) {
   let lastError: unknown
   for (let attempt = 0; attempt < transientFetchAttempts; attempt += 1) {
     try {
-      const response = await fetcher.call(globalThis, url, init)
-      if (!isRetryableResponse(response) || attempt === transientFetchAttempts - 1) {
-        return response
+      const result = await runWithinRequestDeadline(fetcher, url, init, async (response) => {
+        if (isRetryableResponse(response)) {
+          return { response, parsed: false as const }
+        }
+        try {
+          return {
+            response,
+            parsed: true as const,
+            value: await parseResponse(response)
+          }
+        } catch (error) {
+          if (error instanceof RequestTimeoutError) throw error
+          throw new ResponseParsingError(error)
+        }
+      })
+      if (result.parsed || attempt === transientFetchAttempts - 1) {
+        return result
       }
-      await wait(readRetryDelayMs(response, attempt))
+      await wait(readRetryDelayMs(result.response, attempt))
     } catch (error) {
+      if (error instanceof ResponseParsingError) throw error.cause
       lastError = error
       if (attempt < transientFetchAttempts - 1) {
         await wait(readRetryDelayMs(undefined, attempt))
@@ -174,6 +212,71 @@ async function fetchWithRetries(fetcher: Fetcher, url: string, init: RequestInit
     }
   }
   throw lastError
+}
+
+class RequestTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`TokenBoard request timed out after ${timeoutMs}ms`)
+  }
+}
+
+class ResponseParsingError extends Error {
+  constructor(readonly cause: unknown) {
+    super('TokenBoard response parsing failed')
+  }
+}
+
+async function runWithinRequestDeadline<T>(
+  fetcher: Fetcher,
+  url: string,
+  init: RequestInit,
+  consumeResponse: (response: Response) => Promise<T>
+) {
+  const timeoutMs = readRequestTimeoutMs()
+  const controller = new AbortController()
+  const detachCallerAbort = forwardAbort(init.signal, controller)
+  const timeoutError = new RequestTimeoutError(timeoutMs)
+  const timeout = setTimeout(() => controller.abort(timeoutError), timeoutMs)
+
+  try {
+    const response = await awaitWithAbort(
+      fetcher.call(globalThis, url, { ...init, signal: controller.signal }),
+      controller.signal
+    )
+    return await awaitWithAbort(consumeResponse(response), controller.signal)
+  } finally {
+    clearTimeout(timeout)
+    detachCallerAbort()
+  }
+}
+
+function forwardAbort(signal: AbortSignal | null | undefined, controller: AbortController) {
+  if (!signal) return () => undefined
+  const abort = () => controller.abort(signal.reason)
+  if (signal.aborted) {
+    abort()
+    return () => undefined
+  }
+  signal.addEventListener('abort', abort, { once: true })
+  return () => signal.removeEventListener('abort', abort)
+}
+
+function awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      }
+    )
+  })
 }
 
 function parseExistingSnapshotHashResponse(value: unknown) {
@@ -257,6 +360,12 @@ function readDefaultRetryDelayMs(attempt: number) {
   const configured = Number.parseInt(process.env.TOKENBOARD_FETCH_RETRY_DELAY_MS || '', 10)
   const base = Number.isFinite(configured) && configured >= 0 ? configured : defaultRetryDelayMs
   return Math.min(maxRetryDelayMs, base * 2 ** attempt)
+}
+
+function readRequestTimeoutMs() {
+  const configured = Number.parseInt(process.env.TOKENBOARD_FETCH_TIMEOUT_MS || '', 10)
+  if (!Number.isFinite(configured) || configured <= 0) return defaultRequestTimeoutMs
+  return Math.min(maxRequestTimeoutMs, configured)
 }
 
 function wait(delayMs: number) {

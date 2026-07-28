@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { collectAntigravityGuiUsage } from './antigravity-gui'
+import { AntigravityDbRowCursorResetError } from './antigravity-history-db'
 import {
   lastSeenDbRowIndexByCascadeHash,
   prepareGuiHistoryScope
@@ -95,7 +96,11 @@ describe('collectAntigravityGuiUsage since ranges', () => {
         listCascades: async () => [],
         readDbUsageEvents
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({
+        stateDir: root,
+        source: 'antigravity',
+        timezone: 'Asia/Shanghai'
+      })
       const full = await collectAntigravityGuiUsage({
         ...baseOptions(root),
         since: 'all',
@@ -106,6 +111,30 @@ describe('collectAntigravityGuiUsage since ranges', () => {
       expect(cursorSizes).toEqual([0, 0])
       expect(bounded).toEqual([expect.objectContaining({ model: 'gemini-new' })])
       expect(full).toEqual([expect.objectContaining({ model: 'gemini-old' })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('retries a pending GUI snapshot group outside the current bounded range', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-pending-retry-'))
+    try {
+      const options = {
+        ...baseOptions(root),
+        readDbUsageEvents: async () => ({ cascadeIds: new Set<string>(), events: [] }),
+        requestGeneratorMetadata: async () => metadataResponse()
+      }
+      await collectAntigravityGuiUsage({ ...options, since: 'all' })
+      await clearPendingUploadCursors({
+        stateDir: root,
+        source: 'antigravity',
+        since: '20260624',
+        timezone: 'Asia/Shanghai'
+      })
+
+      const retry = await collectAntigravityGuiUsage({ ...options, since: '20260624' })
+
+      expect(retry).toEqual([expect.objectContaining({ model: 'gemini-ls-old', inputTokens: 30 })])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -149,6 +178,362 @@ describe('collectAntigravityGuiUsage since ranges', () => {
     }
   })
 
+  test('rebuilds a recreated GUI database during an explicit full history scan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-db-reset-'))
+    try {
+      let reads = 0
+      const diagnostics: string[] = []
+      const readDbUsageEvents = async (input?: {
+        lastSeenRowIndexByCascadeHash?: Map<string, number>
+        detectRowCursorReset?: boolean
+      }) => {
+        reads += 1
+        if (reads === 1) {
+          return {
+            cascadeIds: new Set(['conversation-db']),
+            events: [dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-retained', 10, 'conversation-db')],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 41]])
+          }
+        }
+        if ((input?.lastSeenRowIndexByCascadeHash?.size ?? 0) > 0) {
+          expect(input?.detectRowCursorReset).toBe(true)
+          throw new AntigravityDbRowCursorResetError('recreated.db')
+        }
+        expect(input?.detectRowCursorReset).toBe(false)
+        return {
+          cascadeIds: new Set(['conversation-db']),
+          events: [
+            dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-retained', 10, 'conversation-db'),
+            dbEvent('c', '2026-06-24T00:00:00.000Z', 'gemini-rebuilt', 20, 'conversation-db')
+          ],
+          lastReadRowIndexByCascade: new Map([['conversation-db', 2]])
+        }
+      }
+
+      await collectAntigravityGuiUsage({
+        ...baseOptions(root),
+        since: 'all',
+        listCascades: async () => [],
+        readDbUsageEvents,
+        stderr: (line) => diagnostics.push(line)
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'Asia/Shanghai' })
+
+      const rebuilt = await collectAntigravityGuiUsage({
+        ...baseOptions(root),
+        since: 'all',
+        listCascades: async () => [],
+        readDbUsageEvents,
+        stderr: (line) => diagnostics.push(line)
+      })
+
+      expect(reads).toBe(3)
+      expect(diagnostics).toEqual([
+        'Antigravity SQLite metadata cursor reset detected; rebuilding full local database history once'
+      ])
+      expect(rebuilt).toEqual(expect.arrayContaining([
+        expect.objectContaining({ model: 'gemini-retained', inputTokens: 10 }),
+        expect.objectContaining({ model: 'gemini-rebuilt', inputTokens: 20 })
+      ]))
+      expect(rebuilt).toHaveLength(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('does not discard a recreated database row cursor during a bounded scan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-bounded-db-reset-'))
+    try {
+      let reads = 0
+      const readDbUsageEvents = async (input?: {
+        lastSeenRowIndexByCascadeHash?: Map<string, number>
+      }) => {
+        reads += 1
+        if (reads === 1) {
+          return {
+            cascadeIds: new Set<string>(),
+            events: [],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 41]])
+          }
+        }
+        expect(input?.lastSeenRowIndexByCascadeHash?.size).toBe(1)
+        throw new AntigravityDbRowCursorResetError('recreated.db')
+      }
+
+      await collectAntigravityGuiUsage({
+        ...baseOptions(root),
+        since: '20260624',
+        listCascades: async () => [],
+        readDbUsageEvents
+      })
+
+      await expect(collectAntigravityGuiUsage({
+        ...baseOptions(root),
+        since: '20260624',
+        listCascades: async () => [],
+        readDbUsageEvents
+      })).rejects.toThrow('Antigravity SQLite metadata cursor reset detected for recreated.db')
+
+      expect(reads).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('reopens stale database coverage after a full database reset', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-db-reset-coverage-'))
+    const cascade = { id: 'conversation-db', mtimeMs: Date.parse('2026-06-24T00:00:00.000Z'), size: 20 }
+    try {
+      let reads = 0
+      const requests: string[] = []
+      const readDbUsageEvents = async (input?: {
+        lastSeenRowIndexByCascadeHash?: Map<string, number>
+      }) => {
+        reads += 1
+        if (reads === 1) {
+          return {
+            cascadeIds: new Set([cascade.id]),
+            events: [dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-retained', 10, cascade.id)],
+            lastReadRowIndexByCascade: new Map([[cascade.id, 41]])
+          }
+        }
+        if ((input?.lastSeenRowIndexByCascadeHash?.size ?? 0) > 0) {
+          throw new AntigravityDbRowCursorResetError('recreated.db')
+        }
+        return {
+          cascadeIds: new Set<string>(),
+          events: [],
+          lastReadRowIndexByCascade: new Map([[cascade.id, -1]])
+        }
+      }
+      const options = {
+        ...baseOptions(root),
+        since: 'all',
+        listCascades: async () => [cascade],
+        readDbUsageEvents,
+        requestGeneratorMetadata: async (input: { cascadeId: string }) => {
+          requests.push(input.cascadeId)
+          return {
+            generatorMetadata: [
+              metadataItem('2026-06-24T00:00:00.000Z', 'gemini-recovered', '20', 'response-recovered')
+            ]
+          }
+        }
+      }
+
+      await collectAntigravityGuiUsage(options)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'Asia/Shanghai' })
+      const recovered = await collectAntigravityGuiUsage(options)
+
+      expect(reads).toBe(3)
+      expect(requests).toEqual([cascade.id])
+      expect(recovered).toEqual(expect.arrayContaining([
+        expect.objectContaining({ model: 'gemini-recovered', inputTokens: 20 }),
+        expect.objectContaining({
+          model: 'gemini-retained',
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          sessionCount: 0
+        })
+      ]))
+      expect(recovered).toHaveLength(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rebuilds an acknowledged daily model total without duplicating old database events', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-db-reset-acknowledged-'))
+    try {
+      let reads = 0
+      const readDbUsageEvents = async (input?: {
+        lastSeenRowIndexByCascadeHash?: Map<string, number>
+      }) => {
+        reads += 1
+        if (reads === 1) {
+          return {
+            cascadeIds: new Set(['conversation-db']),
+            events: [dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-rebuilt', 10, 'conversation-db')],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 41]])
+          }
+        }
+        if ((input?.lastSeenRowIndexByCascadeHash?.size ?? 0) > 0) {
+          throw new AntigravityDbRowCursorResetError('recreated.db')
+        }
+        return {
+          cascadeIds: new Set(['conversation-db']),
+          events: [
+            dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-rebuilt', 10, 'conversation-db'),
+            dbEvent('c', '2026-06-24T00:01:00.000Z', 'gemini-rebuilt', 20, 'conversation-db')
+          ],
+          lastReadRowIndexByCascade: new Map([['conversation-db', 2]])
+        }
+      }
+      const options = {
+        ...baseOptions(root),
+        since: 'all',
+        listCascades: async () => [],
+        readDbUsageEvents
+      }
+
+      await collectAntigravityGuiUsage(options)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'Asia/Shanghai' })
+      const rebuilt = await collectAntigravityGuiUsage(options)
+
+      expect(reads).toBe(3)
+      expect(rebuilt).toEqual([expect.objectContaining({
+        model: 'gemini-rebuilt',
+        inputTokens: 30,
+        sessionCount: 1
+      })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('replaces an acknowledged daily model total when a recreated database no longer has the old event', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-db-reset-replace-'))
+    try {
+      let reads = 0
+      const readDbUsageEvents = async (input?: {
+        lastSeenRowIndexByCascadeHash?: Map<string, number>
+      }) => {
+        reads += 1
+        if (reads === 1) {
+          return {
+            cascadeIds: new Set(['conversation-db']),
+            events: [dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-rebuilt', 10, 'conversation-db')],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 41]])
+          }
+        }
+        if ((input?.lastSeenRowIndexByCascadeHash?.size ?? 0) > 0) {
+          throw new AntigravityDbRowCursorResetError('recreated.db')
+        }
+        return {
+          cascadeIds: new Set(['conversation-db']),
+          events: [dbEvent('c', '2026-06-24T00:01:00.000Z', 'gemini-rebuilt', 20, 'conversation-db')],
+          lastReadRowIndexByCascade: new Map([['conversation-db', 2]])
+        }
+      }
+      const options = {
+        ...baseOptions(root),
+        since: 'all',
+        listCascades: async () => [],
+        readDbUsageEvents
+      }
+
+      await collectAntigravityGuiUsage(options)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'Asia/Shanghai' })
+      const rebuilt = await collectAntigravityGuiUsage(options)
+
+      expect(reads).toBe(3)
+      expect(rebuilt).toEqual([expect.objectContaining({
+        model: 'gemini-rebuilt',
+        inputTokens: 20,
+        sessionCount: 1
+      })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('refuses a database reset while an affected database event is pending upload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-db-reset-pending-'))
+    try {
+      let reads = 0
+      const readDbUsageEvents = async (input?: {
+        lastSeenRowIndexByCascadeHash?: Map<string, number>
+      }) => {
+        reads += 1
+        if (reads === 1) {
+          return {
+            cascadeIds: new Set(['conversation-db']),
+            events: [dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-rebuilt', 10, 'conversation-db')],
+            lastReadRowIndexByCascade: new Map([['conversation-db', 41]])
+          }
+        }
+        if ((input?.lastSeenRowIndexByCascadeHash?.size ?? 0) > 0) {
+          throw new AntigravityDbRowCursorResetError('recreated.db')
+        }
+        throw new Error('A pending database reset must stop before an uncursorized reread')
+      }
+      const options = {
+        ...baseOptions(root),
+        since: 'all',
+        listCascades: async () => [],
+        readDbUsageEvents
+      }
+
+      await collectAntigravityGuiUsage(options)
+      await expect(collectAntigravityGuiUsage(options)).rejects.toThrow(
+        'Antigravity SQLite metadata cursor reset cannot discard pending database usage'
+      )
+
+      expect(reads).toBe(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('preserves language-server state while replacing database history after a reset', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-db-reset-mixed-'))
+    const databaseCascade = 'conversation-db'
+    const languageServerCascade = 'conversation-language-server'
+    try {
+      let reads = 0
+      let requests = 0
+      const readDbUsageEvents = async (input?: {
+        lastSeenRowIndexByCascadeHash?: Map<string, number>
+      }) => {
+        reads += 1
+        if (reads === 1) {
+          return {
+            cascadeIds: new Set([databaseCascade]),
+            events: [dbEvent('a', '2026-06-24T00:00:00.000Z', 'gemini-db', 10, databaseCascade)],
+            lastReadRowIndexByCascade: new Map([[databaseCascade, 41]])
+          }
+        }
+        if ((input?.lastSeenRowIndexByCascadeHash?.size ?? 0) > 0) {
+          throw new AntigravityDbRowCursorResetError('recreated.db')
+        }
+        return {
+          cascadeIds: new Set([databaseCascade]),
+          events: [dbEvent('c', '2026-06-24T00:01:00.000Z', 'gemini-db', 20, databaseCascade)],
+          lastReadRowIndexByCascade: new Map([[databaseCascade, 2]])
+        }
+      }
+      const options = {
+        ...baseOptions(root),
+        since: 'all',
+        listCascades: async () => [{
+          id: languageServerCascade,
+          mtimeMs: Date.parse('2026-06-24T01:00:00.000Z'),
+          size: 20
+        }],
+        readDbUsageEvents,
+        requestGeneratorMetadata: async () => {
+          requests += 1
+          return {
+            generatorMetadata: [
+              metadataItem('2026-06-24T00:00:00.000Z', 'gemini-ls', '30', 'response-ls')
+            ]
+          }
+        }
+      }
+
+      await collectAntigravityGuiUsage(options)
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'Asia/Shanghai' })
+      const rebuilt = await collectAntigravityGuiUsage(options)
+
+      expect(reads).toBe(3)
+      expect(requests).toBe(1)
+      expect(rebuilt).toEqual([expect.objectContaining({ model: 'gemini-db', inputTokens: 20, sessionCount: 1 })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('can backfill language-server events after an earlier bounded cascade cursor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-since-ls-backfill-'))
     try {
@@ -163,7 +548,11 @@ describe('collectAntigravityGuiUsage since ranges', () => {
       }
 
       const bounded = await collectAntigravityGuiUsage({ ...options, since: '20260624' })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({
+        stateDir: root,
+        source: 'antigravity',
+        timezone: 'Asia/Shanghai'
+      })
       const full = await collectAntigravityGuiUsage({ ...options, since: 'all' })
 
       expect(requests).toBe(2)
@@ -224,9 +613,15 @@ function baseOptions(stateDir: string) {
   }
 }
 
-function dbEvent(hash: string, createdAt: string, model: string, inputTokens: number) {
+function dbEvent(
+  hash: string,
+  createdAt: string,
+  model: string,
+  inputTokens: number,
+  cascadeId?: string
+) {
   return {
-    cascadeHash: 'a'.repeat(64),
+    cascadeHash: cascadeId ? createHash('sha256').update(cascadeId).digest('hex') : 'a'.repeat(64),
     eventHash: hash.repeat(64),
     createdAt,
     model,

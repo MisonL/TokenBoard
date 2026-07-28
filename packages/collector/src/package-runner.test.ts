@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { ccusagePackageSpecifier, resolvePackageRunner } from './package-runner'
 
-const expectedCcusagePackageSpecifier = 'ccusage@20.0.14'
+const expectedCcusagePackageSpecifier = 'ccusage@20.0.18'
 const packageJsonPath = join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json')
 
 describe('resolvePackageRunner', () => {

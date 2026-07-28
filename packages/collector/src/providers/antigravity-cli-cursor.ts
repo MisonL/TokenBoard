@@ -1,161 +1,49 @@
 import { createHash } from 'node:crypto'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
+import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { formatDate } from './session-jsonl-parser-utils'
 import {
   readCursor,
   stripCollectedAt,
   type CursorEntry,
+  type CursorState,
   type CursorSnapshot
 } from './session-cursor-store'
-import type { StatuslineEvent } from './antigravity-cli-statusline'
-import {
-  hasIndexedStatuslineOccurrences,
-  historyStatuslineClaimKey,
-  takeIndexedStatuslineOccurrence,
-  type CliStatuslineOccurrenceIndex
-} from './antigravity-cli-occurrence-index'
-import {
-  historyOccurrenceClaimKey,
-  historyOccurrenceKey,
-  shouldTrackHistoryOccurrence,
-  takeIndexedHistoryOccurrence,
-  type CliHistoryOccurrenceIndex
-} from './antigravity-cli-history-index'
 
 const source = 'antigravity-cli'
+const historyEventPrefix = 'history-event\0'
+const sessionPrefix = `session\0${source}\0`
+const aggregatePrefix = 'aggregate\0'
 
 type AntigravityCliCursor = Awaited<ReturnType<typeof readCursor>>
 
-export function pushCliUsageEvent(input: {
-  event: StatuslineEvent
+export function pushCliHistoryUsageEvent(input: {
+  event: AntigravityUsageEvent
   cursor: AntigravityCliCursor
   snapshots: UsageSnapshot[]
   emittedKeys: Set<string>
   timezone: string
   collectedAt: string
-  origin: 'statusline' | 'history'
-  occurrenceIndex?: CliStatuslineOccurrenceIndex
-  historyOccurrenceIndex?: CliHistoryOccurrenceIndex
 }) {
-  if (!input.event.eventHash) {
-    pushStatuslineUsageEvent(input)
-    return
-  }
-  const eventKeys = usageEventKeys(input.event)
-  const primaryKey = eventKeys[0]
-  const existingKey = findExistingEventKey(input.event, eventKeys, input.cursor, input.occurrenceIndex)
-  const existing = existingKey ? input.cursor.files[existingKey] : undefined
-  if (existing && existingKey) {
-    if (existing.pendingUpload) {
-      pushCachedSnapshots(input.snapshots, existing, input.collectedAt, input.emittedKeys, existingKey)
-    }
-    if (input.event.eventHash && existingKey !== primaryKey) {
-      markHistoryEventCoveredByStatusline({
-        cursor: input.cursor,
-        event: input.event,
-        primaryKey,
-        statuslineKey: existingKey
-      })
-    }
-    return
-  }
-
-  const snapshot = buildSnapshot(input)
-  input.cursor.files[primaryKey] = newCursorEntry({
-    snapshots: [stripCollectedAt(snapshot)],
-    marker: primaryKey,
-    mtimeMs: Date.parse(input.event.capturedAt),
-    pendingUpload: true
-  })
-  for (const aliasKey of eventKeys.slice(1)) {
-    input.cursor.files[aliasKey] ??= newCursorEntry({
-      snapshots: [],
-      marker: aliasKey,
-      mtimeMs: Date.parse(input.event.capturedAt),
-      pendingUpload: false
-    })
-  }
-  input.snapshots.push(snapshot)
-  input.emittedKeys.add(primaryKey)
-  if (
-    input.origin === 'history' &&
-    shouldTrackHistoryOccurrence(input.event.capturedAt, input.collectedAt)
-  ) {
-    markHistoryOccurrences(input.cursor, input.event, eventKeys.slice(1))
-  }
-}
-
-function pushStatuslineUsageEvent(input: {
-  event: StatuslineEvent
-  cursor: AntigravityCliCursor
-  snapshots: UsageSnapshot[]
-  emittedKeys: Set<string>
-  timezone: string
-  collectedAt: string
-  historyOccurrenceIndex?: CliHistoryOccurrenceIndex
-}) {
-  const eventKeys = usageEventKeys(input.event)
-  const historyEventHash = input.historyOccurrenceIndex
-    ? takeIndexedHistoryOccurrence({
-        index: input.historyOccurrenceIndex,
-        statuslineKeys: eventKeys,
-        capturedAt: input.event.capturedAt
-      })
-    : undefined
-  if (historyEventHash) {
-    markStatuslineCoveredByHistory(input.cursor, input.event, historyEventHash)
-    return
-  }
-  const capturedAtMs = Date.parse(input.event.capturedAt)
-  const coveredKey = eventKeys.find((key) => {
-    const entry = input.cursor.files[key]
-    return entry && entry.mtimeMs === capturedAtMs && !isStatuslineAlias(entry, key)
-  })
-  if (coveredKey) {
-    const covered = input.cursor.files[coveredKey]
-    if (covered?.pendingUpload) {
-      pushCachedSnapshots(input.snapshots, covered, input.collectedAt, input.emittedKeys, coveredKey)
-    }
-    return
-  }
-  const occurrenceKey = statuslineOccurrenceKey(input.event)
-  const existing = input.cursor.files[occurrenceKey]
+  const eventKey = cliHistoryEventKey(input.event)
+  const existing = input.cursor.files[eventKey]
   if (existing) {
     if (existing.pendingUpload) {
-      pushCachedSnapshots(input.snapshots, existing, input.collectedAt, input.emittedKeys, occurrenceKey)
+      pushCachedSnapshots(input.snapshots, existing, input.collectedAt, input.emittedKeys, eventKey)
     }
     return
   }
 
-  const signature = statuslineEventKey(input.event, input.event.conversationHash)
-  const headKeys = statuslineHeadKeys(input.event)
-  if (headKeys.some((key) => input.cursor.files[key]?.sha256 === hash(signature))) return
-
   const snapshot = buildSnapshot(input)
-  input.cursor.files[occurrenceKey] = newCursorEntry({
+  input.cursor.files[eventKey] = newCursorEntry({
     snapshots: [stripCollectedAt(snapshot)],
-    marker: occurrenceKey,
-    mtimeMs: Date.parse(input.event.capturedAt),
-    pendingUpload: true
+    marker: eventKey,
+    mtimeMs: Date.parse(input.event.createdAt),
+    pendingUpload: true,
+    collectedAt: input.collectedAt
   })
-  for (const aliasKey of eventKeys) {
-    input.cursor.files[aliasKey] ??= newCursorEntry({
-      snapshots: [],
-      marker: statuslineAliasMarker(aliasKey),
-      mtimeMs: Date.parse(input.event.capturedAt),
-      pendingUpload: false
-    })
-  }
-  for (const headKey of headKeys) {
-    input.cursor.files[headKey] = newCursorEntry({
-      snapshots: [],
-      marker: signature,
-      mtimeMs: Date.parse(input.event.capturedAt),
-      pendingUpload: false
-    })
-  }
   input.snapshots.push(snapshot)
-  input.emittedKeys.add(occurrenceKey)
+  input.emittedKeys.add(eventKey)
 }
 
 export function pushCompleteCliCursorSnapshots(
@@ -169,47 +57,121 @@ export function pushCompleteCliCursorSnapshots(
   for (const entry of Object.values(cursor.files)) {
     if (!entry.pendingUpload || entry.snapshots.length === 0) continue
     for (const snapshot of entry.snapshots.filter(includeSnapshot)) {
-      dirtyGroups.add(snapshotGroupKey(snapshot))
+      dirtyGroups.add(cliHistorySnapshotGroupKey(snapshot))
     }
   }
 
   for (const snapshot of snapshots) {
-    dirtyGroups.add(snapshotGroupKey(snapshot))
+    dirtyGroups.add(cliHistorySnapshotGroupKey(snapshot))
   }
 
   for (const [eventKey, entry] of Object.entries(cursor.files)) {
     if (entry.snapshots.length === 0) continue
-    if (!entry.snapshots.some((snapshot) => dirtyGroups.has(snapshotGroupKey(snapshot)))) continue
+    if (!entry.snapshots.some((snapshot) => dirtyGroups.has(cliHistorySnapshotGroupKey(snapshot)))) continue
     pushCachedSnapshots(snapshots, entry, collectedAt, emittedKeys, eventKey, includeSnapshot)
   }
 }
 
+export function cliHistoryEventKey(event: AntigravityUsageEvent) {
+  return `${historyEventPrefix}${event.cascadeHash}\0${event.eventHash}`
+}
+
+export function cliHistorySessionKey(input: {
+  cascadeHash: string
+  usageDate: string
+  model: string
+}) {
+  return `${sessionPrefix}${input.usageDate}\0${input.model}\0${input.cascadeHash}`
+}
+
+export function cliHistorySnapshotGroupKey(snapshot: Pick<CursorSnapshot, 'source' | 'usageDate' | 'timezone' | 'model'>) {
+  return [snapshot.source, snapshot.usageDate, snapshot.timezone, snapshot.model].join('\0')
+}
+
+export function cliHistorySnapshotGroupFromEvent(event: AntigravityUsageEvent, timezone: string) {
+  return [source, formatDate(new Date(event.createdAt), timezone), timezone, event.model].join('\0')
+}
+
+export function cliHistoryAggregateKey(groupKey: string) {
+  return `${aggregatePrefix}${hash(groupKey)}`
+}
+
+export function isCliHistoryEventKey(key: string) {
+  return key.startsWith(historyEventPrefix)
+}
+
+export function isCliHistorySessionKey(key: string) {
+  return key.startsWith(sessionPrefix)
+}
+
+export function isCliHistoryAggregateKey(key: string) {
+  return key.startsWith(aggregatePrefix)
+}
+
+export function isCliHistoryStateKey(key: string) {
+  return isCliHistoryEventKey(key) || isCliHistorySessionKey(key) || isCliHistoryAggregateKey(key)
+}
+
+export function cliHistorySessionKeysForEntry(key: string, entry: CursorEntry) {
+  const cascadeHash = cliHistoryCascadeHash(key)
+  if (!cascadeHash) return []
+  return entry.snapshots.map((snapshot) => cliHistorySessionKey({
+    cascadeHash,
+    usageDate: snapshot.usageDate,
+    model: snapshot.model
+  }))
+}
+
+export function assertCliHistoryEventsCanApplyIncrementally(input: {
+  cursor: CursorState
+  events: readonly AntigravityUsageEvent[]
+  timezone: string
+}) {
+  for (const event of input.events) {
+    const eventKey = cliHistoryEventKey(event)
+    if (input.cursor.files[eventKey]) continue
+    if (!isWithinCliHistoryCompactedFrontier(input.cursor, event, input.timezone)) continue
+    throw new Error(
+      'Antigravity CLI history contains an event whose compacted session identity cannot be reconciled incrementally; rerun with --since all'
+    )
+  }
+}
+
+function isWithinCliHistoryCompactedFrontier(
+  cursor: CursorState,
+  event: AntigravityUsageEvent,
+  timezone: string
+) {
+  const compactedThroughDate = cursor.antigravityCliHistoryCompactedThroughDate
+  if (!compactedThroughDate) return false
+  return formatDate(new Date(event.createdAt), timezone) <= compactedThroughDate
+}
+
 function buildSnapshot(input: {
-  event: StatuslineEvent
+  event: AntigravityUsageEvent
+  cursor: AntigravityCliCursor
   timezone: string
   collectedAt: string
-  cursor: AntigravityCliCursor
 }) {
-  const usageDate = formatDate(new Date(input.event.capturedAt), input.timezone)
-  const sessionKeys = usageSessionKeys(input.event, usageDate)
-  const sessionKey = sessionKeys[0]
-  const existingSessionKey = sessionKeys.find((key) => input.cursor.files[key])
-  const sessionEntry = existingSessionKey ? input.cursor.files[existingSessionKey] : undefined
+  const usageDate = formatDate(new Date(input.event.createdAt), input.timezone)
+  const sessionKey = cliHistorySessionKey({
+    cascadeHash: input.event.cascadeHash,
+    usageDate,
+    model: input.event.model
+  })
+  const sessionEntry = input.cursor.files[sessionKey]
+  const capturedAtMs = Date.parse(input.event.createdAt)
   if (!sessionEntry) {
     input.cursor.files[sessionKey] = newCursorEntry({
       snapshots: [],
       marker: sessionKey,
-      mtimeMs: Date.parse(input.event.capturedAt),
-      pendingUpload: true
+      mtimeMs: capturedAtMs,
+      pendingUpload: true,
+      collectedAt: input.collectedAt
     })
-    for (const aliasKey of sessionKeys.slice(1)) {
-      input.cursor.files[aliasKey] ??= newCursorEntry({
-        snapshots: [],
-        marker: aliasKey,
-        mtimeMs: Date.parse(input.event.capturedAt),
-        pendingUpload: false
-      })
-    }
+  } else if (capturedAtMs > sessionEntry.mtimeMs) {
+    sessionEntry.mtimeMs = capturedAtMs
+    sessionEntry.updatedAt = input.collectedAt
   }
 
   return {
@@ -228,120 +190,6 @@ function buildSnapshot(input: {
   } satisfies UsageSnapshot
 }
 
-function findExistingEventKey(
-  event: StatuslineEvent,
-  eventKeys: string[],
-  cursor: AntigravityCliCursor,
-  occurrenceIndex?: CliStatuslineOccurrenceIndex
-) {
-  const primaryKey = eventKeys[0]
-  if (cursor.files[primaryKey]) return primaryKey
-  const occurrenceKey = occurrenceIndex
-    ? takeIndexedStatuslineOccurrence(event, eventKeys.slice(1), occurrenceIndex)
-    : findUnclaimedStatuslineOccurrence(event, eventKeys.slice(1), cursor)
-  if (occurrenceKey) return occurrenceKey
-  for (const key of eventKeys.slice(1)) {
-    const entry = cursor.files[key]
-    if (!entry) continue
-    if (hasStatuslineOccurrences(key, cursor, occurrenceIndex)) continue
-    if (!event.eventHash) return key
-    if (
-      (entry.snapshots.length > 0 || isStatuslineAlias(entry, key)) &&
-      !cursor.files[historyStatuslineClaimKey(key)]
-    ) return key
-  }
-  return undefined
-}
-
-function hasStatuslineOccurrences(
-  statuslineKey: string,
-  cursor: AntigravityCliCursor,
-  occurrenceIndex?: CliStatuslineOccurrenceIndex
-) {
-  if (occurrenceIndex) return hasIndexedStatuslineOccurrences(occurrenceIndex, statuslineKey)
-  const prefix = `statusline-occurrence\0${statuslineKey}\0`
-  return Object.keys(cursor.files).some((key) => key.startsWith(prefix))
-}
-
-function findUnclaimedStatuslineOccurrence(
-  event: StatuslineEvent,
-  statuslineKeys: string[],
-  cursor: AntigravityCliCursor
-) {
-  const candidates = statuslineKeys.flatMap((statuslineKey) => {
-    const prefix = `statusline-occurrence\0${statuslineKey}\0`
-    return Object.entries(cursor.files)
-      .filter(([key, entry]) => (
-        key.startsWith(prefix) &&
-        entry.snapshots.length > 0 &&
-        !cursor.files[historyStatuslineClaimKey(key)]
-      ))
-  })
-  const exact = candidates.find(([key]) => key.endsWith(`\0${event.capturedAt}`))
-  if (exact) return exact[0]
-  candidates.sort((left, right) => left[1].mtimeMs - right[1].mtimeMs || left[0].localeCompare(right[0]))
-  return candidates[0]?.[0]
-}
-
-function markHistoryEventCoveredByStatusline(input: {
-  cursor: AntigravityCliCursor
-  event: StatuslineEvent
-  primaryKey: string
-  statuslineKey: string
-}) {
-  input.cursor.files[input.primaryKey] ??= newCursorEntry({
-    snapshots: [],
-    marker: input.primaryKey,
-    mtimeMs: Date.parse(input.event.capturedAt),
-    pendingUpload: false
-  })
-  const claimKey = historyStatuslineClaimKey(input.statuslineKey)
-  input.cursor.files[claimKey] ??= newCursorEntry({
-    snapshots: [],
-    marker: claimKey,
-    mtimeMs: Date.parse(input.event.capturedAt),
-    pendingUpload: false
-  })
-}
-
-function markHistoryOccurrences(
-  cursor: AntigravityCliCursor,
-  event: StatuslineEvent,
-  statuslineKeys: string[]
-) {
-  if (!event.eventHash) return
-  for (const statuslineKey of statuslineKeys) {
-    const key = historyOccurrenceKey(statuslineKey, event.eventHash)
-    cursor.files[key] ??= newCursorEntry({
-      snapshots: [],
-      marker: key,
-      mtimeMs: Date.parse(event.capturedAt),
-      pendingUpload: false
-    })
-  }
-}
-
-function markStatuslineCoveredByHistory(
-  cursor: AntigravityCliCursor,
-  event: StatuslineEvent,
-  eventHash: string
-) {
-  const claimKey = historyOccurrenceClaimKey(eventHash)
-  cursor.files[claimKey] ??= newCursorEntry({
-    snapshots: [],
-    marker: claimKey,
-    mtimeMs: Date.parse(event.capturedAt),
-    pendingUpload: false
-  })
-  const occurrenceKey = statuslineOccurrenceKey(event)
-  cursor.files[occurrenceKey] ??= newCursorEntry({
-    snapshots: [],
-    marker: occurrenceKey,
-    mtimeMs: Date.parse(event.capturedAt),
-    pendingUpload: false
-  })
-}
-
 function pushCachedSnapshots(
   snapshots: UsageSnapshot[],
   entry: CursorEntry,
@@ -351,9 +199,7 @@ function pushCachedSnapshots(
   includeSnapshot: (snapshot: CursorSnapshot) => boolean = () => true
 ) {
   if (emittedKeys.has(eventKey)) return
-  for (const snapshot of entry.snapshots.filter(includeSnapshot)) {
-    snapshots.push({ ...snapshot, collectedAt })
-  }
+  snapshots.push(...entry.snapshots.filter(includeSnapshot).map((snapshot) => ({ ...snapshot, collectedAt })))
   emittedKeys.add(eventKey)
 }
 
@@ -362,6 +208,7 @@ function newCursorEntry(input: {
   marker: string
   mtimeMs: number
   pendingUpload: boolean
+  collectedAt: string
 }): CursorEntry {
   return {
     size: 0,
@@ -370,76 +217,18 @@ function newCursorEntry(input: {
     snapshots: input.snapshots,
     missingCost: true,
     pendingUpload: input.pendingUpload,
-    updatedAt: new Date().toISOString()
+    updatedAt: input.collectedAt
   }
 }
 
-function usageEventKeys(event: StatuslineEvent) {
-  const conversationHashes = [...new Set([event.conversationHash, ...(event.conversationHashAliases ?? [])])]
-  const models = [...new Set([event.model, ...(event.modelAliases ?? [])])]
-  const statuslineKeys = conversationHashes.flatMap((hash) => (
-    models.map((model) => statuslineEventKey(event, hash, model))
-  ))
-  if (event.eventHash) {
-    return [['history-event', event.conversationHash, event.eventHash].join('\0'), ...statuslineKeys]
-  }
-  return statuslineKeys
-}
-
-function statuslineEventKey(event: StatuslineEvent, conversationHash: string, model = event.model) {
-  return [
-    'event',
-    conversationHash,
-    model,
-    event.inputTokens,
-    event.outputTokens,
-    event.cacheCreationTokens,
-    event.cacheReadTokens
-  ].join('\0')
-}
-
-function statuslineOccurrenceKey(event: StatuslineEvent) {
-  return [
-    'statusline-occurrence',
-    statuslineEventKey(event, event.conversationHash),
-    event.captureId ?? event.capturedAt
-  ].join('\0')
-}
-
-function statuslineHeadKeys(event: StatuslineEvent) {
-  return [event.conversationHash, ...(event.conversationHashAliases ?? [])]
-    .map((conversationHash) => ['statusline-head', conversationHash].join('\0'))
-}
-
-function statuslineAliasMarker(key: string) {
-  return ['statusline-alias', key].join('\0')
-}
-
-function isStatuslineAlias(entry: CursorEntry, key: string) {
-  return entry.sha256 === hash(statuslineAliasMarker(key))
-}
-
-function usageSessionKeys(event: StatuslineEvent, usageDate: string) {
-  const primaryKey = usageSessionKey(event, usageDate, event.conversationHash)
-  const aliasKeys = (event.conversationHashAliases ?? [])
-    .filter((hash) => hash !== event.conversationHash)
-    .map((hash) => usageSessionKey(event, usageDate, hash))
-  return [primaryKey, ...aliasKeys]
-}
-
-function usageSessionKey(event: StatuslineEvent, usageDate: string, conversationHash: string) {
-  return ['session', usageDate, event.model, conversationHash].join('\0')
+function cliHistoryCascadeHash(key: string) {
+  if (!isCliHistoryEventKey(key)) return undefined
+  const [cascadeHash, eventHash] = key.slice(historyEventPrefix.length).split('\0')
+  return /^[a-f0-9]{64}$/.test(cascadeHash) && /^[a-f0-9]{64}$/.test(eventHash)
+    ? cascadeHash
+    : undefined
 }
 
 function hash(value: string) {
   return createHash('sha256').update(value).digest('hex')
-}
-
-function snapshotGroupKey(snapshot: CursorSnapshot | UsageSnapshot) {
-  return [
-    snapshot.source,
-    snapshot.usageDate,
-    snapshot.timezone,
-    snapshot.model
-  ].join('\0')
 }

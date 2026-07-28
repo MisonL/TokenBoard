@@ -6,6 +6,7 @@ import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { basename, extname, join } from 'node:path'
 import type { Readable } from 'node:stream'
+import { connect as connectTls, type TLSSocket } from 'node:tls'
 import { errorMessage } from '../error-message'
 import {
   beginAntigravityFileScan,
@@ -24,7 +25,10 @@ const apiServerUrl = 'https://generativelanguage.googleapis.com'
 const cloudCodeEndpoint = 'https://daily-cloudcode-pa.googleapis.com'
 const defaultReadyTimeoutMs = 30_000
 const requestTimeoutMs = 60_000
-const maxMetadataResponseBytes = 8 * 1024 * 1024
+// Real Antigravity metadata responses can include a large but bounded local trajectory.
+const maxMetadataResponseBytes = 32 * 1024 * 1024
+const readyProbeIntervalMs = 100
+const readyProbeTimeoutMs = 1_000
 const cascadeIdPattern = /^[0-9a-fA-F-]{8,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{12,}$/
 type LanguageServerProcess = ChildProcessByStdio<null, Readable, Readable>
 
@@ -265,41 +269,93 @@ function spawnLanguageServer(input: {
   return spawn(languageServerPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
-function waitForReady(server: LanguageServerProcess, port: number) {
-  const lines: string[] = []
-  let output = ''
+export function waitForReady(
+  server: LanguageServerProcess,
+  port: number,
+  probe: (port: number) => Promise<void> = probeLanguageServerEndpoint
+) {
   return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => rejectWithTail(`Timed out starting Antigravity language server on port ${port}`), readReadyTimeoutMs())
-    const onData = (chunk: Buffer) => {
-      const text = chunk.toString('utf8')
-      lines.push(text)
-      output += text
-      if (output.includes(`fixed port at ${port} for HTTPS`)) {
-        cleanup()
-        drainOutput(server)
-        resolve()
-      }
-    }
+    let settled = false
+    let probing = false
+    let probeTimer: ReturnType<typeof setTimeout> | undefined
+    const timer = setTimeout(() => rejectStartup(`Timed out starting Antigravity language server on port ${port}`), readReadyTimeoutMs())
     const onError = (error: Error) => {
-      cleanup()
-      reject(error)
+      finish(() => reject(error))
     }
-    const onExit = () => rejectWithTail('Antigravity language server exited before it was ready')
-    const rejectWithTail = (message: string) => {
+    const onExit = () => rejectStartup('Antigravity language server exited before it was ready')
+    const rejectStartup = (message: string) => {
+      finish(() => reject(new Error(message)))
+    }
+    const probeEndpoint = () => {
+      if (settled || probing) return
+      probing = true
+      probe(port).then(
+        () => {
+          probing = false
+          if (server.exitCode !== null || server.signalCode !== null) {
+            rejectStartup('Antigravity language server exited before it was ready')
+            return
+          }
+          finish(resolve)
+        },
+        () => {
+          probing = false
+          if (!settled) probeTimer = setTimeout(probeEndpoint, readyProbeIntervalMs)
+        }
+      )
+    }
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
       cleanup()
-      reject(new Error(`${message}: ${lines.join('').slice(-2000)}`))
+      callback()
     }
     const cleanup = () => {
       clearTimeout(timer)
-      server.stdout.off('data', onData)
-      server.stderr.off('data', onData)
+      if (probeTimer) clearTimeout(probeTimer)
       server.off('error', onError)
       server.off('exit', onExit)
+      drainOutput(server)
     }
-    server.stdout.on('data', onData)
-    server.stderr.on('data', onData)
     server.once('error', onError)
     server.once('exit', onExit)
+    drainOutput(server)
+    probeEndpoint()
+  })
+}
+
+function probeLanguageServerEndpoint(port: number) {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false
+    let socket: TLSSocket | undefined
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket?.off('secureConnect', onSecureConnect)
+      socket?.off('error', onError)
+      socket?.off('timeout', onTimeout)
+      socket?.destroy()
+      if (error) reject(error)
+      else resolve()
+    }
+    const onSecureConnect = () => finish()
+    const onError = (error: Error) => finish(error)
+    const onTimeout = () => finish(new Error('Antigravity language server readiness probe timed out'))
+    const timer = setTimeout(onTimeout, readyProbeTimeoutMs)
+    try {
+      socket = connectTls({
+        host: '127.0.0.1',
+        port,
+        rejectUnauthorized: false
+      })
+      socket.once('secureConnect', onSecureConnect)
+      socket.once('error', onError)
+      socket.once('timeout', onTimeout)
+      socket.setTimeout(readyProbeTimeoutMs)
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error('Antigravity language server readiness probe failed'))
+    }
   })
 }
 

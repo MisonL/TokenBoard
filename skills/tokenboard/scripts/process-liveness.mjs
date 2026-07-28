@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { win32 as windowsPath } from 'node:path'
 
 const tasklistTimeoutMs = 2_000
 
@@ -11,7 +12,7 @@ export function probeProcessLiveness(pid, options = {}) {
   const nodeVersion = options.nodeVersion || process.versions.node
   if (platform === 'win32' && !supportsReliableSignalZero(platform, nodeVersion)) {
     const runTasklist = options.runTasklist || spawnSync
-    return isWindowsProcessAlive(pid, runTasklist)
+    return isWindowsProcessAlive(pid, runTasklist, options.env)
   }
   const kill = options.kill || process.kill.bind(process)
   try {
@@ -36,8 +37,16 @@ export function tasklistContainsPid(output, pid) {
   })
 }
 
-function isWindowsProcessAlive(pid, runTasklist) {
-  const result = runTasklist('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+export function tasklistCommand(env = process.env) {
+  const systemRoot = typeof env.SystemRoot === 'string' ? env.SystemRoot.trim() : ''
+  const root = windowsPath.isAbsolute(systemRoot)
+    ? systemRoot
+    : 'C:\\Windows'
+  return windowsPath.join(root, 'System32', 'tasklist.exe')
+}
+
+function isWindowsProcessAlive(pid, runTasklist, env) {
+  const result = runTasklist(tasklistCommand(env), ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
     encoding: 'utf8',
     windowsHide: true,
     timeout: tasklistTimeoutMs

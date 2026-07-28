@@ -81,3 +81,51 @@ deploy helper was run again against the same private Worker and D1 database.
 - Post-deploy home page: HTTP 200 and `TokenBoard` document title.
 - Unauthenticated `/dashboard/details` and `/settings/devices`: HTTP 302 to `/auth/sign-in`.
 - Remote migration list: no migrations to apply.
+
+## Current Follow-up Runtime Evidence - 2026-07-27
+
+This section records a new private-environment runtime check for the current uncommitted
+`fix/post-merge-reliability-followups` candidate. Private account, route, database, restore-point,
+credential, device, and usage identifiers remain intentionally omitted.
+
+- Private Wrangler config validation passed.
+- The remote migration list reported no pending migrations.
+- Remote `db/verify-critical-schema.sql` and `PRAGMA foreign_key_check` both completed successfully
+  without a reported schema or foreign-key violation.
+- The private Worker has an active deployment; health and home responses succeeded, and the JS/CSS
+  resources referenced by the deployed home page responded successfully.
+- Anonymous `/api/v1/me` and `/api/v1/ingest/check` returned the expected `UNAUTHORIZED` boundary.
+  Anonymous `/dashboard/details` and `/settings/devices` redirected to sign-in.
+- A saved, inactive legacy-compatible local profile was used only through a child-process environment
+  with an isolated temporary collector state directory. A real `antigravity-cli --since all` upload
+  exited successfully; the server skipped existing idempotent snapshots and advanced both the matched
+  upload token's last-used time and device's last-synced time. The temporary state directory was
+  removed after the command. No active profile, device-link state, or local credential was changed.
+
+Authenticated dashboard/device rendering, the installation-command copy controls, and AJAX navigation
+remain pending because the browser has no authenticated session for this private site. This section
+does not claim those checks, a new deployment operation, or a current D1 Time Travel restore point
+were completed.
+
+## Current Follow-up Browser Evidence - 2026-07-28
+
+The pending browser checks above were completed against the same private deployment after the
+maintainer completed GitHub OAuth in an isolated, headed browser session. No browser state,
+account data, device identifiers, credentials, command contents, or clipboard data was exported.
+
+- The authenticated dashboard rendered with the signed-in navigation and no sign-in link.
+- `/dashboard/details` rendered without an error state or loading residue at desktop and 390 px
+  mobile widths; both checks found no horizontal overflow.
+- `/settings/devices` rendered its overview and device list at desktop and 390 px mobile widths
+  without an error state or horizontal overflow. A visible device-details action issued the
+  authenticated fragment request, received HTTP 200, and populated the modal with a close control.
+- `/settings/install` rendered six labelled copy controls while no one-time pairing prompt was
+  generated. Copying the non-secret notifier-hook command produced the expected success state and
+  accessible success toast; the clipboard was not read.
+- Anonymous home and leaderboard pages rendered at desktop and 390 px mobile widths without
+  horizontal overflow. Switching the leaderboard to monthly tokens used its fragment request and
+  updated the URL and document title without a full-page navigation fallback.
+
+The current candidate therefore has private D1/schema, anonymous boundary, authenticated page,
+client navigation, copy-control, and real collector-ingest evidence. Commit, push, and pull-request
+publication remain separate release-preparation work and are not claimed by this section.

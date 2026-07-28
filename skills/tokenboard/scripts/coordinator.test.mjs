@@ -1,367 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { releaseLock } from './coordinator-lock.mjs'
 import { coordinatedSync } from './coordinator.mjs'
 import { appendSignal } from './coordinator-signal.mjs'
-
-test('coordinator writes run logs and last success for successful sync', () => {
-  const fs = memoryRuntime()
-  let now = Date.parse('2026-05-22T10:00:00.000Z')
-  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    now: () => now,
-    process: fakeProcess(100),
-    executeSync: () => ({ ok: true })
-  })
-
-  assert.equal(result.skippedSync, false)
-  assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'success')
-  assert.equal(fs.files.get('/state/last-success.json'), '2026-05-22T10:00:00.000Z')
-})
-
-test('coordinator uses a Windows-safe run log filename', () => {
-  const fs = memoryRuntime()
-  coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
-    process: fakeProcess(115),
-    executeSync: () => ({ ok: true })
-  })
-
-  const runLogPath = [...fs.files.keys()].find((path) => path.startsWith('/state/runs/') && path.endsWith('.json'))
-  const runLogName = runLogPath?.split('/').pop() || ''
-  assert.match(runLogName, /\.json$/)
-  assert.doesNotMatch(runLogName, /[<>:"\\|?*]/)
-})
-
-test('coordinator prunes oldest run logs beyond the retention limit', () => {
-  const oldest = '/state/runs/2026-05-20T10-00-00.000Z-oldest.json'
-  const recent = '/state/runs/2026-05-21T10-00-00.000Z-recent.json'
-  const fs = memoryRuntime({
-    [oldest]: '{}',
-    [recent]: '{}'
-  })
-
-  coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    listRunLogs: fs.readdir,
-    maxRunLogs: 2,
-    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
-    process: fakeProcess(116),
-    executeSync: () => ({ ok: true })
-  })
-
-  const runLogs = [...fs.files.keys()].filter((path) => path.startsWith('/state/runs/') && path.endsWith('.json'))
-  assert.equal(runLogs.length, 2)
-  assert.equal(fs.files.has(oldest), false)
-  assert.equal(fs.files.has(recent), true)
-})
-
-test('coordinator rotates a legacy run directory before enabling bounded retention', () => {
-  const fs = memoryRuntime()
-  const renames = []
-  let legacyRunsExists = true
-
-  coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
-    process: fakeProcess(117),
-    exists: (path) => {
-      if (path === '/state/runs') return legacyRunsExists
-      if (path === '/state/runs/.bounded-v1') return false
-      return fs.exists(path)
-    },
-    rename: (source, target) => {
-      if (source === '/state/runs') {
-        renames.push({ source, target })
-        legacyRunsExists = false
-        return
-      }
-      fs.rename(source, target)
-    },
-    executeSync: () => ({ ok: true })
-  })
-
-  assert.equal(renames.length, 1)
-  assert.equal(renames[0].source, '/state/runs')
-  assert.match(renames[0].target, /^\/state\/runs\.unbounded-/)
-  assert.equal(fs.files.has('/state/runs/.bounded-v1'), true)
-})
-
-test('coordinator serializes run log directory preparation', () => {
-  const fs = memoryRuntime()
-  let checkedRunsDirectory = false
-
-  coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
-    process: fakeProcess(118),
-    exists: (path) => {
-      if (path === '/state/runs') {
-        checkedRunsDirectory = true
-        assert.equal(fs.files.has('/state/run-logs.lock'), true)
-      }
-      return fs.exists(path)
-    },
-    executeSync: () => ({ ok: true })
-  })
-
-  assert.equal(checkedRunsDirectory, true)
-  assert.equal(fs.files.has('/state/run-logs.lock'), false)
-})
-
-test('coordinator fails visibly when the run log lock times out', () => {
-  const fs = memoryRuntime({
-    '/state/run-logs.lock': JSON.stringify({ pid: 400, startedAt: '2026-05-22T10:00:00.000Z' })
-  })
-  let now = Date.parse('2026-05-22T10:01:00.000Z')
-  let syncRuns = 0
-
-  assert.throws(
-    () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
-      ...fs,
-      stateDir: '/state',
-      now: () => now,
-      sleep: (ms) => {
-        now += ms
-      },
-      lockTimeoutMs: 1,
-      process: fakeProcess(401),
-      executeSync: () => {
-        syncRuns += 1
-        return { ok: true }
-      }
-    }),
-    /run log lock timeout/
-  )
-
-  assert.equal(syncRuns, 1)
-  assert.equal(JSON.parse(fs.files.get('/state/run-logs.lock')).pid, 400)
-  assert.equal(fs.files.get('/state/last-success.json'), '2026-05-22T10:01:00.000Z')
-})
-
-test('coordinator recovers a stale run log lock before writing', () => {
-  const fs = memoryRuntime({
-    '/state/run-logs.lock': JSON.stringify({ pid: 402, startedAt: '2026-05-22T10:00:00.000Z' })
-  })
-
-  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    process: {
-      pid: 403,
-      kill: (pid) => {
-        if (pid === 402) {
-          const error = new Error('ESRCH')
-          error.code = 'ESRCH'
-          throw error
-        }
-        return true
-      }
-    },
-    executeSync: () => ({ ok: true })
-  })
-
-  assert.equal(result.error, undefined)
-  assert.equal(fs.files.has('/state/run-logs.lock'), false)
-  assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'success')
-})
-
-for (const malformedLock of ['not-json', '{}']) {
-  test(`coordinator replaces malformed run log lock ${JSON.stringify(malformedLock)}`, () => {
-    const fs = memoryRuntime({
-      '/state/run-logs.lock': malformedLock
-    })
-
-    const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-      ...fs,
-      stateDir: '/state',
-      process: fakeProcess(404),
-      executeSync: () => ({ ok: true })
-    })
-
-    assert.equal(result.error, undefined)
-    assert.equal(fs.files.has('/state/run-logs.lock'), false)
-    assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'success')
-  })
-}
-
-test('coordinator fails visibly when run log writing fails', () => {
-  const fs = memoryRuntime()
-  assert.throws(
-    () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
-      ...fs,
-      stateDir: '/state',
-      now: () => Date.parse('2026-05-22T10:00:00.000Z'),
-      process: fakeProcess(208),
-      writeFile: (path, value, options) => {
-        if (path === '/state/last-run.json') {
-          const error = new Error('log write failed')
-          error.code = 'EACCES'
-          throw error
-        }
-        fs.writeFile(path, value, options)
-      },
-      executeSync: () => ({ ok: true })
-    }),
-    /log write failed/
-  )
-  assert.equal(fs.files.has('/state/sync.lock'), false)
-  assert.equal(fs.files.has('/state/run-logs.lock'), false)
-  assert.equal(fs.files.get('/state/last-success.json'), '2026-05-22T10:00:00.000Z')
-})
-
-for (const failure of [
-  {
-    name: 'an Error',
-    value: Object.assign(new Error('checkpoint write failed'), { code: 'EACCES' }),
-    expected: /checkpoint write failed/
-  },
-  { name: 'an empty value', value: '', expected: /Unknown error/ }
-]) {
-  test(`coordinator logs and rethrows successful sync checkpoint failures from ${failure.name}`, () => {
-    const fs = memoryRuntime()
-    let runs = 0
-
-    assert.throws(
-      () => coordinatedSync({ kind: 'notify', source: 'codex' }, {
-        ...fs,
-        stateDir: '/state',
-        process: fakeProcess(210),
-        writeFile: (path, value, options) => {
-          if (path === '/state/last-success.json') throw failure.value
-          fs.writeFile(path, value, options)
-        },
-        executeSync: (trigger) => {
-          runs += 1
-          if (runs === 1) writeSignal(fs, 'claude-code')
-          return { source: trigger.source, run: runs }
-        }
-      }),
-      failure.expected
-    )
-
-    const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
-    assert.equal(lastRun.status, 'error')
-    assert.equal(lastRun.coordination.hadFollowUp, true)
-    assert.equal(lastRun.coordination.followUpCount, 1)
-    assert.deepEqual(lastRun.cycles, [
-      { source: 'codex', result: { source: 'codex', run: 1 } },
-      { source: 'claude-code', result: { source: 'claude-code', run: 2 } }
-    ])
-    assert.equal(fs.files.has('/state/sync.lock'), false)
-    assert.equal(fs.files.has('/state/run-logs.lock'), false)
-  })
-}
-
-test('coordinator preserves sync evidence when checkpoint and lock release both fail', () => {
-  const fs = memoryRuntime()
-  let runs = 0
-  let thrown
-
-  try {
-    coordinatedSync({ kind: 'notify', source: 'codex' }, {
-      ...fs,
-      stateDir: '/state',
-      process: fakeProcess(211),
-      writeFile: (path, value, options) => {
-        if (path === '/state/last-success.json') throw new Error('checkpoint write failed')
-        fs.writeFile(path, value, options)
-      },
-      unlink: (path) => {
-        if (path === '/state/sync.lock') throw new Error('sync lock release failed')
-        fs.unlink(path)
-      },
-      executeSync: (trigger) => {
-        runs += 1
-        if (runs === 1) writeSignal(fs, 'claude-code')
-        return { source: trigger.source, run: runs }
-      }
-    })
-  } catch (error) {
-    thrown = error
-  }
-
-  assert.match(thrown?.message || '', /checkpoint write failed/)
-  assert.match(thrown?.message || '', /sync lock release failed/)
-  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
-  assert.equal(lastRun.status, 'error')
-  assert.equal(lastRun.coordination.hadFollowUp, true)
-  assert.equal(lastRun.coordination.followUpCount, 1)
-  assert.deepEqual(lastRun.cycles, [
-    { source: 'codex', result: { source: 'codex', run: 1 } },
-    { source: 'claude-code', result: { source: 'claude-code', run: 2 } }
-  ])
-  assert.match(lastRun.error, /checkpoint write failed/)
-  assert.match(lastRun.error, /sync lock release failed/)
-  assert.equal(fs.files.has('/state/run-logs.lock'), false)
-})
-
-test('coordinator preserves sync evidence when lock release fails after a successful checkpoint', () => {
-  const fs = memoryRuntime()
-  let runs = 0
-
-  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    now: () => Date.parse('2026-07-16T00:00:00.000Z'),
-    process: fakeProcess(212),
-    unlink: (path) => {
-      if (path === '/state/sync.lock') throw new Error('sync lock release failed')
-      fs.unlink(path)
-    },
-    executeSync: (trigger) => {
-      runs += 1
-      if (runs === 1) writeSignal(fs, 'claude-code')
-      return { source: trigger.source, run: runs }
-    }
-  })
-
-  assert.equal(result.error, 'sync lock release failed')
-  assert.equal(result.hadFollowUp, true)
-  assert.equal(result.followUpCount, 1)
-  assert.deepEqual(result.cycles, [
-    { source: 'codex', result: { source: 'codex', run: 1 } },
-    { source: 'claude-code', result: { source: 'claude-code', run: 2 } }
-  ])
-  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
-  assert.deepEqual(lastRun.cycles, result.cycles)
-  assert.equal(lastRun.status, 'error')
-  assert.equal(fs.files.get('/state/last-success.json'), '2026-07-16T00:00:00.000Z')
-  assert.equal(fs.files.has('/state/run-logs.lock'), false)
-})
-
-for (const failure of [
-  { name: 'an empty Error message', value: new Error(''), expected: 'Error' },
-  { name: 'a whitespace Error message', value: new Error('   '), expected: 'Error' },
-  { name: 'an empty thrown string', value: '', expected: 'Unknown error' },
-  { name: 'a thrown null value', value: null, expected: 'null' },
-  { name: 'a thrown undefined value', value: undefined, expected: 'undefined' }
-]) {
-  test(`coordinator treats ${failure.name} as a failed sync`, () => {
-    const fs = memoryRuntime()
-    const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-      ...fs,
-      stateDir: '/state',
-      now: () => Date.parse('2026-05-22T10:00:00.000Z'),
-      process: fakeProcess(209),
-      executeSync: () => {
-        throw failure.value
-      }
-    })
-
-    const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
-    assert.equal(result.error, failure.expected)
-    assert.equal(lastRun.status, 'error')
-    assert.equal(lastRun.error, failure.expected)
-    assert.equal(fs.files.has('/state/last-success.json'), false)
-  })
-}
+import { fakeProcess, memoryRuntime, writeSignal } from './coordinator-test-helpers.mjs'
 
 test('coordinator fails clearly when state directory is missing', () => {
   assert.throws(
@@ -425,133 +66,6 @@ test('coordinator reads JSON encoded last success timestamp for cooldown', () =>
   assert.equal(result.cooldownRemainingMs, 240000)
 })
 
-test('coordinator stops retrying stale lock cleanup when unlink cannot remove it', () => {
-  const fs = memoryRuntime({
-    '/state/sync.lock': JSON.stringify({ pid: 200, startedAt: '2026-05-22T10:00:00.000Z' })
-  })
-  let unlinkAttempts = 0
-  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    process: {
-      pid: 201,
-      kill: (pid) => {
-        if (pid === 200) {
-          const error = new Error('ESRCH')
-          error.code = 'ESRCH'
-          throw error
-        }
-        return true
-      }
-    },
-    lockTimeoutMs: 0,
-    unlink: (path) => {
-      if (path === '/state/sync.lock') {
-        unlinkAttempts += 1
-        const error = new Error('EPERM')
-        error.code = 'EPERM'
-        throw error
-      }
-      fs.unlink(path)
-    },
-    sleep: () => {},
-    executeSync: () => {
-      throw new Error('should not run')
-    }
-  })
-
-  assert.equal(result.skippedSync, true)
-  assert.equal(result.error, 'lock timeout')
-  assert.equal(unlinkAttempts, 1)
-})
-
-test('releaseLock removes malformed lock files', () => {
-  const removed = []
-  releaseLock('/state/sync.lock', {
-    process: fakeProcess(202),
-    readFile: () => 'not-json',
-    unlink: (path) => removed.push(path)
-  })
-
-  assert.deepEqual(removed, ['/state/sync.lock'])
-})
-
-test('releaseLock does not remove locks with unreadable ownership', () => {
-  const removed = []
-  assert.throws(
-    () => releaseLock('/state/sync.lock', {
-      process: fakeProcess(205),
-      readFile: () => {
-        const error = new Error('EACCES')
-        error.code = 'EACCES'
-        throw error
-      },
-      unlink: (path) => removed.push(path)
-    }),
-    /EACCES/
-  )
-
-  assert.deepEqual(removed, [])
-})
-
-test('releaseLock ignores lock removal races while reading ownership', () => {
-  const removed = []
-  releaseLock('/state/sync.lock', {
-    process: fakeProcess(206),
-    readFile: () => {
-      const error = new Error('ENOENT')
-      error.code = 'ENOENT'
-      throw error
-    },
-    unlink: (path) => {
-      removed.push(path)
-      const error = new Error('ENOENT')
-      error.code = 'ENOENT'
-      throw error
-    }
-  })
-
-  assert.deepEqual(removed, ['/state/sync.lock'])
-})
-
-test('coordinator reacquires a stale lock even if the file is recreated during cleanup', () => {
-  const fs = memoryRuntime({
-    '/state/sync.lock': JSON.stringify({ pid: 300, startedAt: '2026-05-22T10:00:00.000Z' })
-  })
-  let recreated = false
-  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
-    ...fs,
-    stateDir: '/state',
-    process: {
-      pid: 301,
-      kill: (pid) => {
-        if (pid === 300 || pid === 302) {
-          const error = new Error('ESRCH')
-          error.code = 'ESRCH'
-          throw error
-        }
-        return true
-      }
-    },
-    unlink: (path) => {
-      if (path === '/state/sync.lock') {
-        fs.unlink(path)
-        if (!recreated) {
-          recreated = true
-          fs.writeFile('/state/sync.lock', JSON.stringify({ pid: 302, startedAt: '2026-05-22T10:00:01.000Z' }))
-        }
-        return
-      }
-      fs.unlink(path)
-    },
-    executeSync: () => ({ ok: true })
-  })
-
-  assert.equal(result.skippedSync, false)
-  assert.equal(result.error, undefined)
-  assert.equal(fs.files.get('/state/sync.lock'), undefined)
-})
-
 test('appendSignal requires mkdir when queue rename is enabled', () => {
   assert.throws(
     () => appendSignal({
@@ -563,6 +77,24 @@ test('appendSignal requires mkdir when queue rename is enabled', () => {
     }, { source: 'codex' }),
     /requires mkdir/
   )
+})
+
+test('appendSignal retains a legacy signal when the atomic queue is unavailable', () => {
+  const written = new Map()
+  appendSignal({
+    stateDir: '/state',
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(204),
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'a') {
+        written.set(path, `${written.get(path) || ''}${value}`)
+        return
+      }
+      written.set(path, String(value))
+    }
+  }, { source: 'codex' })
+
+  assert.match(written.get('/state/notify.signal'), /"source":"codex"/)
 })
 
 test('appendSignal still appends legacy signal when queued rename fails', () => {
@@ -594,6 +126,23 @@ test('appendSignal still appends legacy signal when queued rename fails', () => 
   assert.equal([...written.keys()].some((path) => path.endsWith('.tmp')), false)
 })
 
+test('appendSignal coalesces same-source queue entries without growing the legacy signal log', () => {
+  const fs = memoryRuntime()
+  const runtime = {
+    ...fs,
+    stateDir: '/state',
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(206)
+  }
+
+  appendSignal(runtime, { source: 'codex' })
+  appendSignal(runtime, { source: 'codex' })
+
+  assert.deepEqual(fs.readdir('/state/notify.signal.d'), ['codex.json'])
+  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
+  assert.equal(fs.files.has('/state/notify.signal'), false)
+})
+
 test('readSignalSources fails visibly on legacy signal read errors', () => {
   const fs = memoryRuntime()
   const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
@@ -618,6 +167,197 @@ test('readSignalSources fails visibly on legacy signal read errors', () => {
   assert.equal(fs.files.has('/state/sync.lock'), false)
 })
 
+test('coordinator retains an unreadable drained queue signal for a later retry', () => {
+  const fs = memoryRuntime({
+    '/state/notify.signal.d/codex.json.208.1.retained.drain': `${JSON.stringify({ source: 'codex' })}\n`
+  })
+  const first = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(208),
+    readFile: (path) => {
+      if (path.endsWith('.drain')) {
+        const error = new Error('EACCES')
+        error.code = 'EACCES'
+        throw error
+      }
+      return fs.readFile(path)
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(first.error, 'EACCES')
+  assert.equal(
+    [...fs.files.keys()].some((path) => path.startsWith('/state/notify.signal.d/codex.json.') && path.endsWith('.drain')),
+    true
+  )
+
+  const runs = []
+  const second = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(209),
+    executeSync: (trigger) => {
+      runs.push(trigger.source)
+      return { source: trigger.source }
+    }
+  })
+
+  assert.equal(second.error, undefined)
+  assert.deepEqual(runs, ['codex', 'claude-code'])
+  assert.equal(
+    [...fs.files.keys()].some((path) => path.startsWith('/state/notify.signal.d/codex.json.') && path.endsWith('.drain')),
+    false
+  )
+})
+
+test('coordinator retains every drained queue signal when a later read fails', () => {
+  const fs = memoryRuntime({
+    '/state/notify.signal.d/claude-code.json': `${JSON.stringify({ source: 'claude-code' })}\n`,
+    '/state/notify.signal.d/codex.json': `${JSON.stringify({ source: 'codex' })}\n`
+  })
+  const first = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(212),
+    readFile: (path) => {
+      if (path.startsWith('/state/notify.signal.d/codex.json.') && path.endsWith('.drain')) {
+        const error = new Error('EACCES')
+        error.code = 'EACCES'
+        throw error
+      }
+      return fs.readFile(path)
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(first.error, 'EACCES')
+  assert.equal(
+    [...fs.files.keys()].filter((path) => path.startsWith('/state/notify.signal.d/') && path.endsWith('.drain')).length,
+    2
+  )
+
+  const runs = []
+  const second = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(213),
+    executeSync: (trigger) => {
+      runs.push(trigger.source)
+      return { source: trigger.source }
+    }
+  })
+
+  assert.equal(second.error, undefined)
+  assert.deepEqual(runs, ['claude-code', 'codex'])
+  assert.equal(
+    [...fs.files.keys()].filter((path) => path.startsWith('/state/notify.signal.d/') && path.endsWith('.drain')).length,
+    0
+  )
+})
+
+test('coordinator requeues every drained signal when cleanup fails', () => {
+  const fs = memoryRuntime({
+    '/state/notify.signal.d/claude-code.json': `${JSON.stringify({ source: 'claude-code' })}\n`,
+    '/state/notify.signal.d/codex.json': `${JSON.stringify({ source: 'codex' })}\n`
+  })
+  let cleanupFailed = false
+  const first = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(214),
+    unlink: (path) => {
+      if (!cleanupFailed && path.endsWith('.drain')) {
+        cleanupFailed = true
+        const error = new Error('EPERM')
+        error.code = 'EPERM'
+        throw error
+      }
+      fs.unlink(path)
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(first.error, 'EPERM')
+  assert.match(fs.files.get('/state/notify.signal.d/claude-code.json'), /"source":"claude-code"/)
+  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
+
+  const runs = []
+  const second = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(215),
+    executeSync: (trigger) => {
+      runs.push(trigger.source)
+      return { source: trigger.source }
+    }
+  })
+
+  assert.equal(second.error, undefined)
+  assert.deepEqual(runs, ['claude-code', 'codex'])
+})
+
+test('coordinator retains an unreadable drained legacy signal for a later retry', () => {
+  const fs = memoryRuntime({
+    '/state/notify.signal': `${JSON.stringify({ source: 'codex' })}\n`
+  })
+  const first = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(210),
+    readFile: (path) => {
+      if (path.startsWith('/state/notify.signal.') && path.endsWith('.drain')) {
+        const error = new Error('EACCES')
+        error.code = 'EACCES'
+        throw error
+      }
+      return fs.readFile(path)
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(first.error, 'EACCES')
+  assert.equal(fs.files.has('/state/notify.signal'), false)
+  assert.equal(
+    [...fs.files.keys()].some((path) => path.startsWith('/state/notify.signal.') && path.endsWith('.drain')),
+    true
+  )
+
+  const runs = []
+  const second = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(211),
+    executeSync: (trigger) => {
+      runs.push(trigger.source)
+      return { source: trigger.source }
+    }
+  })
+
+  assert.equal(second.error, undefined)
+  assert.deepEqual(runs, ['codex', 'claude-code'])
+  assert.equal(
+    [...fs.files.keys()].some((path) => path.startsWith('/state/notify.signal.') && path.endsWith('.drain')),
+    false
+  )
+})
+
 test('coordinator consumes follow-up signal under the same lock', () => {
   const fs = memoryRuntime()
   const runs = []
@@ -625,6 +365,7 @@ test('coordinator consumes follow-up signal under the same lock', () => {
     ...fs,
     stateDir: '/state',
     cooldownMs: 0,
+    maxFollowUps: 1,
     process: fakeProcess(102),
     executeSync: (trigger) => {
       runs.push(trigger.source)
@@ -640,6 +381,39 @@ test('coordinator consumes follow-up signal under the same lock', () => {
   assert.equal(result.followUpCount, 1)
 })
 
+test('coordinator defers signals observed during a long hook run through cooldown', () => {
+  const fs = memoryRuntime()
+  const runs = []
+  const trailing = []
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 300_000,
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(113),
+    scheduleTrailing: (trigger, delayMs) => {
+      trailing.push({ trigger, delayMs })
+      return true
+    },
+    executeSync: (trigger) => {
+      runs.push(trigger.source)
+      writeSignal(fs, 'codex')
+      return { run: runs.length }
+    }
+  })
+
+  assert.deepEqual(runs, ['codex'])
+  assert.equal(result.hadFollowUp, false)
+  assert.equal(result.followUpCount, 0)
+  assert.deepEqual(result.deferredSources, ['codex'])
+  assert.equal(result.trailingScheduled, true)
+  assert.deepEqual(result.trailingSources, ['codex'])
+  assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 300_000 }])
+  assert.match(fs.files.get('/state/notify.signal'), /"source":"codex"/)
+  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
+  assert.deepEqual(lastRun.coordination.deferredSources, ['codex'])
+})
+
 test('coordinator keeps failed source signals for a later retry', () => {
   const fs = memoryRuntime()
   const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
@@ -653,7 +427,7 @@ test('coordinator keeps failed source signals for a later retry', () => {
   })
 
   assert.equal(result.error, 'sync failed')
-  assert.match(fs.files.get('/state/notify.signal'), /"source":"codex"/)
+  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
   assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'error')
   assert.equal(fs.files.has('/state/last-success.json'), false)
 })
@@ -681,7 +455,7 @@ test('coordinator keeps failed source signals when follow-up signal read fails',
   })
 
   assert.equal(result.error, 'EACCES')
-  assert.match(fs.files.get('/state/notify.signal'), /"source":"codex"/)
+  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
   assert.equal(fs.files.has('/state/last-success.json'), false)
 })
 
@@ -692,6 +466,7 @@ test('coordinator clears failed source signal after same-run follow-up succeeds'
     ...fs,
     stateDir: '/state',
     cooldownMs: 0,
+    maxFollowUps: 1,
     process: fakeProcess(108),
     executeSync: (trigger) => {
       runs.push(trigger.source)
@@ -720,6 +495,7 @@ test('coordinator does not drop signals appended while draining queued work', ()
     ...fs,
     stateDir: '/state',
     cooldownMs: 0,
+    maxFollowUps: 1,
     process: fakeProcess(105),
     rename: (source, target) => {
       fs.rename(source, target)
@@ -737,6 +513,41 @@ test('coordinator does not drop signals appended while draining queued work', ()
   assert.deepEqual(runs, ['claude-code', 'codex'])
   assert.equal(result.hadFollowUp, true)
   assert.equal(result.followUpCount, 1)
+})
+
+test('coordinator retains a same-source signal that replaces its stable queue marker during drain', () => {
+  const fs = memoryRuntime({
+    '/state/notify.signal.d/codex.json': `${JSON.stringify({ source: 'codex' })}\n`
+  })
+  const queueRuntime = {
+    ...fs,
+    stateDir: '/state',
+    now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+    process: fakeProcess(111)
+  }
+  const runs = []
+  let appendedDuringDrain = false
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...queueRuntime,
+    cooldownMs: 0,
+    maxFollowUps: 1,
+    rename: (source, target) => {
+      fs.rename(source, target)
+      if (!appendedDuringDrain && source === '/state/notify.signal.d/codex.json') {
+        appendedDuringDrain = true
+        appendSignal(queueRuntime, { source: 'codex' })
+      }
+    },
+    executeSync: (trigger) => {
+      runs.push(trigger.source)
+      return { source: trigger.source }
+    }
+  })
+
+  assert.deepEqual(runs, ['codex', 'codex'])
+  assert.equal(result.hadFollowUp, true)
+  assert.equal(result.followUpCount, 1)
+  assert.equal(fs.files.get('/state/notify.signal.d/codex.json'), undefined)
 })
 
 test('coordinator consumes queued signal files when legacy signal drain loses a raced append', () => {
@@ -829,6 +640,40 @@ test('coordinator consumes queued source signals once when it acquires a busy lo
   assert.equal(result.waitedForLock, true)
   assert.deepEqual([...runs].sort(), ['claude-code', 'codex'])
   assert.equal(fs.files.get('/state/notify.signal'), undefined)
+})
+
+test('coordinator schedules a trailing retry when a shared sync lock remains busy', () => {
+  const fs = memoryRuntime({
+    '/state/sync.lock': JSON.stringify({ pid: 200, startedAt: '2026-05-22T10:00:00.000Z' })
+  })
+  const trailing = []
+  let now = Date.parse('2026-05-22T10:00:00.000Z')
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 300_000,
+    lockTimeoutMs: 1,
+    now: () => now,
+    sleep: (milliseconds) => {
+      now += milliseconds
+    },
+    process: fakeProcess(201),
+    scheduleTrailing: (trigger, delayMs) => {
+      trailing.push({ trigger, delayMs })
+      return true
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.skippedSync, true)
+  assert.equal(result.skippedReason, 'lock-timeout')
+  assert.equal(result.error, 'lock timeout')
+  assert.equal(result.trailingScheduled, true)
+  assert.deepEqual(result.trailingSources, ['codex'])
+  assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 300_000 }])
+  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
 })
 
 test('coordinator releases waited lock when pending signal read fails', () => {
@@ -948,7 +793,7 @@ test('coordinator keeps a new cooldown trigger when other sources are already pe
   assert.equal(result.skippedReason, 'cooldown')
   assert.deepEqual(result.trailingSources, ['codex', 'claude-code'])
   assert.match(fs.files.get('/state/notify.signal'), /"source":"codex"/)
-  assert.match(fs.files.get('/state/notify.signal'), /"source":"claude-code"/)
+  assert.match(fs.files.get('/state/notify.signal.d/claude-code.json'), /"source":"claude-code"/)
   assert.deepEqual(trailing, [
     { trigger: { kind: 'notify', source: 'codex' }, delayMs: 240000 },
     { trigger: { kind: 'notify', source: 'claude-code' }, delayMs: 240000 }
@@ -1004,69 +849,9 @@ test('trailing process keeps its trigger when another source is already pending 
   assert.equal(result.skippedReason, 'cooldown')
   assert.deepEqual(result.trailingSources, ['codex', 'claude-code'])
   assert.match(fs.files.get('/state/notify.signal'), /"source":"codex"/)
-  assert.match(fs.files.get('/state/notify.signal'), /"source":"claude-code"/)
+  assert.match(fs.files.get('/state/notify.signal.d/claude-code.json'), /"source":"claude-code"/)
   assert.deepEqual(trailing, [
     { trigger: { kind: 'notify', source: 'codex' }, delayMs: 240000 },
     { trigger: { kind: 'notify', source: 'claude-code' }, delayMs: 240000 }
   ])
 })
-
-function writeSignal(fs, source) {
-  fs.writeFile('/state/notify.signal', `${JSON.stringify({ source })}\n`, { flag: 'a' })
-}
-
-function memoryRuntime(initial = {}) {
-  const files = new Map(Object.entries(initial))
-  return {
-    files,
-    mkdir: () => {},
-    exists: (path) => files.has(path),
-    readFile: (path) => {
-      if (!files.has(path)) {
-        const error = new Error(`ENOENT: ${path}`)
-        error.code = 'ENOENT'
-        throw error
-      }
-      return files.get(path)
-    },
-    writeFile: (path, value, options = {}) => {
-      if (typeof options.flag === 'string' && options.flag.includes('x') && files.has(path)) {
-        const error = new Error(`EEXIST: ${path}`)
-        error.code = 'EEXIST'
-        throw error
-      }
-      if (options.flag === 'a') {
-        files.set(path, `${files.get(path) || ''}${value}`)
-        return
-      }
-      files.set(path, String(value))
-    },
-    unlink: (path) => {
-      files.delete(path)
-    },
-    rename: (source, target) => {
-      if (!files.has(source)) {
-        const error = new Error(`ENOENT: ${source}`)
-        error.code = 'ENOENT'
-        throw error
-      }
-      files.set(target, files.get(source))
-      files.delete(source)
-    },
-    readdir: (path) => {
-      const prefix = `${path}/`
-      return [...files.keys()]
-        .filter((filePath) => filePath.startsWith(prefix))
-        .map((filePath) => filePath.slice(prefix.length))
-        .filter((name) => !name.includes('/'))
-    },
-    sleep: () => {}
-  }
-}
-
-function fakeProcess(pid) {
-  return {
-    pid,
-    kill: () => true
-  }
-}

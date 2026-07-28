@@ -66,7 +66,8 @@ async function readAntigravityGuiLocalDbUsageOrThrow(
       lastSeenRowIndexByCascadeHash,
       maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
       sinceDate: range.sinceDate,
-      timezone
+      timezone,
+      detectRowCursorReset: lastSeenRowIndexByCascadeHash.size > 0
     })
   }
   if (options.requestGeneratorMetadata) {
@@ -78,7 +79,8 @@ async function readAntigravityGuiLocalDbUsageOrThrow(
     maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
     scanState: cursor.antigravityDbFileScan,
     sinceDate: range.sinceDate,
-    timezone
+    timezone,
+    detectRowCursorReset: lastSeenRowIndexByCascadeHash.size > 0
   })
 }
 

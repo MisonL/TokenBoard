@@ -52,11 +52,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.14', 'claude', 'daily', '--json', '--breakdown']
+        args: ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.14', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.18', 'claude', 'session', '--json']
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -87,7 +87,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.14',
+          'ccusage@20.0.18',
           '--',
           'ccusage',
           'claude',
@@ -104,7 +104,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.14',
+          'ccusage@20.0.18',
           '--',
           'ccusage',
           'claude',
@@ -131,8 +131,8 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.14', 'claude', 'daily', '--json', '--breakdown', '--since', '20260501'],
-      ['ccusage@20.0.14', 'claude', 'session', '--json', '--since', '20260501']
+      ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown', '--since', '20260501'],
+      ['ccusage@20.0.18', 'claude', 'session', '--json', '--since', '20260501']
     ])
   })
 
@@ -150,9 +150,20 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.14', 'claude', 'daily', '--json', '--breakdown', '--since', '20260708'],
-      ['ccusage@20.0.14', 'claude', 'session', '--json', '--since', '20260708']
+      ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown', '--since', '20260708'],
+      ['ccusage@20.0.18', 'claude', 'session', '--json', '--since', '20260708']
     ])
+  })
+
+  test('rejects shell metacharacters in date filters before running ccusage', async () => {
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    await expect(collectClaudeCodeUsage({ since: '20260708&echo injected' })).rejects.toThrow(
+      'Invalid Claude since date'
+    )
+    vi.stubEnv('TOKENBOARD_UNTIL', '20260708&echo injected')
+    await expect(collectClaudeCodeUsage({ since: '20260708' })).rejects.toThrow(
+      'Invalid Claude until date'
+    )
   })
 
   test('allows explicit full scan without passing all to ccusage', async () => {
@@ -173,11 +184,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.14', 'claude', 'daily', '--json', '--breakdown']
+        args: ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.14', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.18', 'claude', 'session', '--json']
       }
     ])
   })

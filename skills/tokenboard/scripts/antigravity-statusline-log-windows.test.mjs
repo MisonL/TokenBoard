@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { supportsReliableSignalZero } from './antigravity-statusline-log.mjs'
-import { isProcessAlive, tasklistContainsPid } from './process-liveness.mjs'
+import { isProcessAlive, tasklistCommand, tasklistContainsPid } from './process-liveness.mjs'
 
 test('statusline lock avoids broken Windows signal-zero Node releases', () => {
   assert.equal(supportsReliableSignalZero('darwin', '22.12.0'), true)
@@ -19,6 +19,12 @@ test('parses Windows tasklist CSV without depending on localized no-match text',
   assert.equal(tasklistContainsPid('"node.exe","123","Console","1","10,000 K"\r\n', 123), true)
   assert.equal(tasklistContainsPid('INFO: No tasks are running which match the specified criteria.', 123), false)
   assert.equal(tasklistContainsPid('信息: 没有运行的任务匹配指定标准。', 123), false)
+})
+
+test('resolves tasklist to System32 instead of PATH', () => {
+  assert.equal(tasklistCommand({ SystemRoot: 'D:\\Windows' }), 'D:\\Windows\\System32\\tasklist.exe')
+  assert.equal(tasklistCommand({ SystemRoot: 'C:relative' }), 'C:\\Windows\\System32\\tasklist.exe')
+  assert.equal(tasklistCommand({}), 'C:\\Windows\\System32\\tasklist.exe')
 })
 
 test('bounds legacy Windows tasklist liveness probes', () => {
@@ -47,7 +53,7 @@ test('statusline log recovers a lock when legacy Windows reports the pid missing
     const liveness = (await readFile(livenessPath, 'utf8'))
       .replace("const platform = options.platform || process.platform", "const platform = 'win32'")
       .replace("const nodeVersion = options.nodeVersion || process.versions.node", "const nodeVersion = '22.12.0'")
-      .replace('return isWindowsProcessAlive(pid, runTasklist)', "return 'dead'")
+      .replace('return isWindowsProcessAlive(pid, runTasklist, options.env)', "return 'dead'")
     await writeFile(modulePath, source)
     await writeFile(join(root, 'process-liveness.mjs'), liveness)
 
@@ -76,7 +82,7 @@ test('statusline log keeps an expired lock when legacy Windows liveness is posit
     const liveness = (await readFile(livenessPath, 'utf8'))
       .replace("const platform = options.platform || process.platform", "const platform = 'win32'")
       .replace("const nodeVersion = options.nodeVersion || process.versions.node", "const nodeVersion = '22.12.0'")
-      .replace('return isWindowsProcessAlive(pid, runTasklist)', "return 'alive'")
+      .replace('return isWindowsProcessAlive(pid, runTasklist, options.env)', "return 'alive'")
     await writeFile(modulePath, source)
     await writeFile(join(root, 'process-liveness.mjs'), liveness)
 

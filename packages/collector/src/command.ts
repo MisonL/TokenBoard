@@ -33,11 +33,13 @@ export type CommandRunner = (command: string, args: string[], options?: CommandR
 export const runJsonCommand: CommandRunner = async (command, args, options = {}) => {
   const retries = readRetryCount(options.retries)
   const maxAttempts = retries + 1
+  const shell = commandShellOption(command)
+  assertWindowsShellSafeInvocation(command, args, shell)
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const { stdout } = await execFileAsync(command, args, {
-        shell: commandShellOption(command),
+        shell,
         maxBuffer: 128 * 1024 * 1024,
         timeout: options.timeoutMs ?? readCommandTimeoutMs(),
         env: options.env
@@ -61,6 +63,13 @@ export const runJsonCommand: CommandRunner = async (command, args, options = {})
 
 export function commandShellOption(command: string, platform = process.platform) {
   return platform === 'win32' && /\.(cmd|bat)$/i.test(command)
+}
+
+export function assertWindowsShellSafeInvocation(command: string, args: string[], shell: boolean) {
+  if (!shell) return
+  if (windowsShellMetacharacters.test(command) || args.some((arg) => windowsShellMetacharacters.test(arg))) {
+    throw new Error('Refusing to pass shell metacharacters to a Windows command shim')
+  }
 }
 
 function readCommandTimeoutMs() {
@@ -102,3 +111,5 @@ function wait(delayMs: number) {
     setTimeout(resolve, delayMs)
   })
 }
+
+const windowsShellMetacharacters = /[&|<>()^%!"\r\n]/

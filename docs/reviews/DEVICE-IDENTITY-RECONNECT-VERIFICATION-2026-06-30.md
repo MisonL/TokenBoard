@@ -9,9 +9,16 @@
 - pairing code 消费、设备或安装实例创建、upload token 创建和审计日志写入已合并为同一个 D1 batch；任一语句失败时整体回滚，不再依赖事务外的补偿恢复。
 - device revoke 与 installation revoke 已分别合并为单个 D1 batch；审计写入失败时 token、installation 和 device 更新整体回滚。
 - Antigravity CLI status line 锁增加目录 identity 校验、缺失或损坏 PID grace period、陈旧 lease 回收和旧版 Windows Node 兼容判断，避免替换锁被旧 owner 删除或 PID 复用导致永久阻塞。
-- Antigravity CLI statusline cursor 以 conversation 的连续状态段去重：周期性 A→A 重绘只计一次，状态变化后的 A→B→A 会把第二次 A 作为独立调用；该状态跨 upload ack 持久化，并保留与 SQLite history 的 alias 去重。
+- Antigravity CLI statusline 仅保留本地脱敏诊断日志和原 statusline 透传；collector 的上传计量只读取 SQLite history，不再为 statusline JSONL 持久化 cursor、upload ACK 或与 SQLite history 的去重状态。
 - 日报 `topModels` 现在携带模型自身的 source 列表；纯 Codex/Claude 模型在 mixed-source 日报中保留有效费用，只有包含 Antigravity 的模型标注费用不可用。新历史保存该字段，旧历史缺字段时保守回退到 report-wide source split。
 - 已补 SQLite 真实事务契约测试，覆盖凭据创建前进程崩溃、审计插入失败和撤销回滚；纯 Fake 测试不作为 D1 原子性通过证据。
+
+## 2026-07-20 复核补充
+
+- 新设备 pairing code 在读取后被并发消费时，D1 batch 通过有条件 `INSERT ... SELECT` 产生零行写入，service 稳定返回 `401 Invalid or expired pairing code`，不会把 `NULL user_id` constraint 映射为 HTTP 500。
+- `0028_remove_development_seed.sql` 始终移除固定开发 pairing credential，但只有未认证的默认 seed user 才会删除 profile、usage 和关联状态；带 Better Auth account 的既有用户保持完整数据。
+- `0029_drop_redundant_pairing_code_hash_index.sql` 只删除冗余 named index，`pairing_codes.code_hash` 的表级 UNIQUE constraint 仍保持 pairing code hash 唯一。
+- 上述结果来自本地 SQLite 和 route/service 回归；目标 D1 migration、认证页面和旧 client ingest 的真实环境验证仍在发布 gate 中，不能由本地测试替代。
 
 ### 复杂度豁免
 
@@ -19,7 +26,7 @@
 
 - `apps/web/app/features/device/service.ts`：设备查询、凭据轮换、撤销和 pairing 流程共享同一组事务断言与错误语义。刚完成原子性修复后立即跨文件搬运会扩大事务回归面。解除条件：按 `queries`、`credentials`、`pairing` 三个领域模块拆分，并保持 `service.ts` 兼容导出。
 - `apps/web/app/routes/settings/devices.tsx`：同一路由同时提供列表、详情 fragment 和表单响应，组件共享完整页面状态。解除条件：先稳定 details fragment 契约，再拆为 `device-list`、`device-details`、`device-actions` 三组组件。
-- `apps/web/app/features/device/repository.ts`：当前 815 行，主要由 D1 参数化 SQL statement builder 构成；拆分收益低于导入和事务顺序漂移风险。解除条件：新增 repository 职责或文件继续增长时，将 reconnect 与 new-device statements 分离。
+- `apps/web/app/features/device/repository.ts`：当前 894 行，主要由 D1 参数化 SQL statement builder 构成；拆分收益低于导入和事务顺序漂移风险。解除条件：新增 repository 职责或文件继续增长时，将 reconnect 与 new-device statements 分离。
 
 豁免不覆盖安全、事务原子性、外部输入校验、Schema 契约和测试要求。其余 300-500 行且职责内聚的文件不再仅为满足行数进行机械拆分。
 
