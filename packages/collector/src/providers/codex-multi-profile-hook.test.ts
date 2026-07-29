@@ -32,7 +32,7 @@ describe('Codex multi-profile hook collection', () => {
         }
       })
 
-      expect(homes).toHaveLength(3)
+      expect(homes).toHaveLength(2)
       expect(new Set(homes).size).toBe(1)
       expect(homes[0]).not.toContain('profile,primary')
       expect(snapshots).toEqual([expect.objectContaining({ totalTokens: 15, sessionCount: 1 })])
@@ -78,10 +78,11 @@ describe('Codex multi-profile hook collection', () => {
           sessionCount: 1
         })
       ])
-      expect(homes).toEqual([
-        `${resolve(firstHome)},${resolve(secondHome)}`,
-        `${resolve(firstHome)},${resolve(secondHome)}`
-      ])
+      expect(homes).toHaveLength(2)
+      expect(new Set(homes).size).toBe(1)
+      expect(homes[0]).not.toContain(resolve(firstHome))
+      expect(homes[0]).not.toContain(resolve(secondHome))
+      expect(homes[0].split(',')).toHaveLength(2)
     } finally {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })

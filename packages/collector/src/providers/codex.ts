@@ -212,28 +212,18 @@ async function collectCodexHookUsageAttempt(input: {
   }
 
   const rangeArgs = withTimezoneArgs(incremental.rangeArgs, timezone)
-  const requiresCommaSafeScope = codexHomes.some((home) => home.includes(','))
   const snapshots = incremental.rangeArgs.length === 0
     ? []
-    : requiresCommaSafeScope
-      ? await collectBoundedCodexUsage({
-          runner: input.runner,
-          packageRunner: input.packageRunner,
-          rangeArgs,
-          ...hookDateBounds(incremental.changedDates),
-          options: input.options,
-          collectedAt: input.collectedAt,
-          codexHomes
-        })
-      : await collectCodexCcusageRange({
-          runner: input.runner,
-          packageRunner: input.packageRunner,
-          rangeArgs,
-          options: input.options,
-          collectedAt: input.collectedAt,
-          env: { ...process.env, CODEX_HOME: codexHomes.join(',') },
-          codexHomes
-        })
+    : await collectScopedCodexUsage({
+        runner: input.runner,
+        packageRunner: input.packageRunner,
+        rangeArgs,
+        ...hookDateBounds(incremental.changedDates),
+        options: input.options,
+        collectedAt: input.collectedAt,
+        codexHomes,
+        requireScope: true
+      })
   if (incremental.rangeArgs.length > 0) {
     assertHookReconciliationSnapshots({
       sourceLabel: 'Codex',
