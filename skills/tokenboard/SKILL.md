@@ -94,6 +94,12 @@ lock while its hook child collects, so the child must not try to acquire it agai
 during a running hook are retained and handled by one cooldown-delayed trailing run rather than
 starting repeated immediate reconciliations.
 
+When a scheduled sync cannot acquire that lock within its timeout, it writes a private deferred
+retry state under the TokenBoard config directory and performs a bounded in-process retry. The retry
+attempts only lock contention, makes at most five attempts with a one-minute delay after each
+continued lock contention, skips checkout upgrade, and stops immediately on a collector error.
+`status.mjs` exposes the retry phase and attempt count without printing local paths or error details.
+
 `notify.cjs` coalesces pending work by source and starts at most one detached dispatcher while an
 existing dispatcher or cooldown trailing process is alive. The legacy signal file is used only when
 atomic queueing fails, and that failure remains visible. For verified append-only Claude Code and

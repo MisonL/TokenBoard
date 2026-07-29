@@ -62,3 +62,29 @@ test('status reports health without exposing local configuration identities or p
     assert.equal(serialized.includes(privateValue), false)
   }
 })
+
+test('status exposes scheduled retry progress without the private error detail', () => {
+  const status = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: {},
+    hooks: {},
+    deviceLink: {},
+    scheduledRetry: {
+      status: 'deferred',
+      retryAttempt: 2,
+      maxAttempts: 5,
+      updatedAt: '2026-07-29T09:00:00.000Z',
+      nextRetryAt: '2026-07-29T09:01:00.000Z',
+      error: 'Timed out waiting for TokenBoard sync lock: /home/user/.tokenboard/sync.lock'
+    }
+  })
+
+  assert.deepEqual(status.scheduledRetry, {
+    status: 'deferred',
+    retryAttempt: 2,
+    maxAttempts: 5,
+    updatedAt: '2026-07-29T09:00:00.000Z',
+    nextRetryAt: '2026-07-29T09:01:00.000Z'
+  })
+  assert.equal(JSON.stringify(status).includes('/home/user/.tokenboard'), false)
+})

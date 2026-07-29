@@ -140,6 +140,10 @@ Hooks coalesce pending work by source in `~/.tokenboard/notify.signal.d`, start 
 Scheduled, manual, preview, and hook collection share `sync.lock`; a hook child reuses the lock held
 by its coordinator. Signals received during a running collection are retained and coalesced into one
 trailing run after the 5-minute cooldown instead of immediately repeating a full reconciliation.
+If a scheduled sync reaches the lock timeout, it records a private deferred state and performs a
+bounded in-process retry: at most five attempts with a one-minute delay after each continued lock
+contention. The retry never runs checkout upgrade and stops immediately for a real collector failure.
+`status.mjs` reports the retry phase and attempt count without exposing local paths or error details.
 For verified append-only Claude Code and Codex JSONL files, hook collection reads only the appended
 suffix and reconciles only newly affected dates. A missing cursor file hash or trailing-newline
 marker, truncation, or replacement falls back to the full-file path.

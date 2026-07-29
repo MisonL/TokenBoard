@@ -16,6 +16,7 @@ import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
 import { runUpgrade } from './upgrade.mjs'
 import { errorMessage } from './error-message.mjs'
 import { acquireLock, lockHasToken, releaseLock, waitForLock } from './coordinator-lock.mjs'
+import { runScheduledRetry } from './scheduled-retry.mjs'
 
 const defaultSyncLockTimeoutMs = 60_000
 
@@ -43,16 +44,50 @@ function runCli() {
       scheduled: flags.scheduled === true
     })
 
-    return runWithSyncLock({
+    return runSyncInvocation({
       flags,
-      stateDir: configDirFromInvocation(invocation, homeDir),
-      run: () => runSync({ flags, invocation, logs })
+      invocation,
+      logs,
+      stateDir: configDirFromInvocation(invocation, homeDir)
     })
   } catch (error) {
     console.error(`TokenBoard sync failed: ${errorMessage(error)}`)
     return 1
   } finally {
     closeScheduledLogRuntime(logs)
+  }
+}
+
+export function runSyncInvocation({
+  flags = {},
+  invocation,
+  logs,
+  stateDir,
+  runWithLock = runWithSyncLock,
+  runRetry = runScheduledRetry
+}) {
+  const run = (runFlags = flags) => runWithLock({
+    flags: runFlags,
+    stateDir,
+    run: () => runSync({ flags: runFlags, invocation, logs })
+  })
+
+  try {
+    return run()
+  } catch (error) {
+    if (!shouldDeferScheduledSync(flags, error)) throw error
+    const retryFlags = { ...flags, 'skip-upgrade': true }
+    const result = runRetry({
+      stateDir,
+      source: invocation.source,
+      runAttempt: () => run(retryFlags)
+    })
+    if (result.skipped) {
+      console.error('TokenBoard scheduled sync deferred because another scheduled retry is active.')
+    } else if (result.exhausted) {
+      console.error(`TokenBoard scheduled sync retry exhausted after ${result.attempts} lock-timeout attempts.`)
+    }
+    return result.exitCode
   }
 }
 
@@ -135,6 +170,7 @@ export function buildSyncInvocation({
   return {
     command: nodePath,
     args: ['--import', 'tsx', 'src/cli.ts', mode, '--source', source],
+    source,
     cwd: join(repoDir, 'packages', 'collector'),
     repoDir,
     shell: false,
@@ -187,7 +223,7 @@ export function runWithSyncLock({
   if (!owner) {
     const wait = waitForLock(lockPath, runtime)
     if (!wait.acquired) {
-      throw new Error(`Timed out waiting for TokenBoard sync lock: ${lockPath}`)
+      throw syncLockTimeoutError(lockPath)
     }
     owner = wait.owner
   }
@@ -196,6 +232,19 @@ export function runWithSyncLock({
   } finally {
     releaseLock(lockPath, runtime, owner)
   }
+}
+
+function shouldDeferScheduledSync(flags, error) {
+  return flags.scheduled === true &&
+    flags.hook !== true &&
+    (flags.mode || 'sync') === 'sync' &&
+    error?.code === 'TOKENBOARD_SYNC_LOCK_TIMEOUT'
+}
+
+function syncLockTimeoutError(lockPath) {
+  const error = new Error(`Timed out waiting for TokenBoard sync lock: ${lockPath}`)
+  error.code = 'TOKENBOARD_SYNC_LOCK_TIMEOUT'
+  return error
 }
 
 function isCoordinatorLockHeld({ flags, env, lockPath, runtime }) {
