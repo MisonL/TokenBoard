@@ -87,6 +87,81 @@ test('does not copy the installed skill onto itself', () => {
   )
 })
 
+test('refreshes installed notifier handlers from the upgraded collector checkout', () => {
+  const calls = []
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const configDirectory = '/home/user/.tokenboard'
+
+  runUpgrade({
+    flags: {
+      'repo-ref': 'feature/reliability',
+      'skill-dir': `${collectorDir}/skills/tokenboard`
+    },
+    env: { TOKENBOARD_CONFIG_DIR: configDirectory },
+    readConfigFile: () => ({
+      collectorDir,
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'feature/reliability',
+      packageManager: 'pnpm'
+    }),
+    mergeConfigFile: () => {},
+    configDirectory,
+    exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+    spawn: (command, args, options) => {
+      calls.push({ command, args, options })
+      if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+      return { status: 0, stdout: '' }
+    },
+    log: () => {}
+  })
+
+  const refreshIndex = calls.findIndex((call) =>
+    call.command === process.execPath &&
+    call.args[0] === `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`
+  )
+  const installIndex = calls.findIndex((call) =>
+    call.command === 'corepack' && call.args[0] === 'pnpm'
+  )
+
+  assert.ok(refreshIndex > installIndex)
+  assert.deepEqual(calls[refreshIndex].args, [
+    `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`
+  ])
+  assert.equal(calls[refreshIndex].options.env.TOKENBOARD_CONFIG_DIR, configDirectory)
+})
+
+test('fails visibly when the upgraded notifier handler refresh fails', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+
+  assert.throws(
+    () => runUpgrade({
+      flags: {
+        'repo-ref': 'feature/reliability',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'feature/reliability',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args) => {
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === process.execPath && args[0].endsWith('/refresh-notify-handler.mjs')) {
+          return { status: 17 }
+        }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /TokenBoard notify handler refresh failed with exit code 17/
+  )
+})
+
 test('pins an existing collector checkout to a configured ref during upgrade', () => {
   assert.deepEqual(
     buildUpgradePlan({

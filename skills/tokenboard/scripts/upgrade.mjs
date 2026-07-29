@@ -89,6 +89,7 @@ export function runUpgrade({
   flags = {},
   env = process.env,
   platform = process.platform,
+  nodePath = process.execPath,
   spawn = spawnSync,
   exists = existsSync,
   copy = cpSync,
@@ -147,6 +148,14 @@ export function runUpgrade({
     })
   }
 
+  refreshInstalledNotifyHandler({
+    collectorDir: collector,
+    configDirectory,
+    env,
+    nodePath,
+    spawn
+  })
+
   mergeConfigFile({
     collectorDir: collector,
     repoUrl,
@@ -157,6 +166,36 @@ export function runUpgrade({
   })
   log(`TokenBoard upgraded from ${repoUrl}${repoRef ? `#${repoRef}` : ''}`)
   return { collectorDir: collector, skillDir, repoUrl, repoRef, packageManager }
+}
+
+export function refreshInstalledNotifyHandler({
+  collectorDir,
+  configDirectory,
+  env = process.env,
+  nodePath = process.execPath,
+  spawn = spawnSync
+} = {}) {
+  const scriptPath = joinForPlatform(
+    joinForPlatform(collectorDir, 'skills', 'tokenboard'),
+    'scripts',
+    'refresh-notify-handler.mjs'
+  )
+  const result = spawn(nodePath, [scriptPath], {
+    stdio: 'inherit',
+    shell: false,
+    windowsHide: true,
+    env: {
+      ...env,
+      TOKENBOARD_CONFIG_DIR: configDirectory
+    }
+  })
+  if (result.error) {
+    throw new Error(`TokenBoard notify handler refresh failed: ${errorMessage(result.error)}`)
+  }
+  if (result.status !== 0) {
+    throw new Error(`TokenBoard notify handler refresh failed with exit code ${result.status ?? 1}`)
+  }
+  return { scriptPath }
 }
 
 export function assertCleanGitWorktree({ collectorDir, spawn = spawnSync }) {

@@ -76,6 +76,39 @@ export function installHooks(options = {}) {
   return { notifyPath: paths.notifyPath, hooks: results }
 }
 
+export function refreshInstalledNotifyHandler(options = {}) {
+  const paths = options.paths || hookPaths(options)
+  const fs = options.fs || nodeFs()
+  const nodePath = options.nodePath || process.execPath
+  const platform = options.platform || process.platform
+  const status = {
+    codex: getCodexHookStatus({ paths, fs }),
+    claudeCode: getClaudeHookStatus({ paths, fs, nodePath, platform })
+  }
+
+  const unreadable = Object.entries(status)
+    .filter(([, value]) => value === 'error')
+    .map(([source]) => source)
+  if (unreadable.length > 0) {
+    throw new Error(`Unable to refresh TokenBoard notify handler while hook configuration is unreadable: ${unreadable.join(', ')}`)
+  }
+
+  const sources = []
+  if (status.codex === 'installed') sources.push(codexSource)
+  if (status.claudeCode === 'installed') sources.push(claudeSource)
+  if (sources.length === 0) {
+    return { notifyPath: paths.notifyPath, changed: false, sources }
+  }
+
+  fs.mkdir(paths.binDir, { recursive: true, mode: 0o700 })
+  fs.writeFile(paths.notifyPath, buildNotifyHandler({
+    stateDir: paths.stateDir,
+    notifyScriptPath: paths.notifyScriptPath,
+    nodePath
+  }), { mode: 0o700 })
+  return { notifyPath: paths.notifyPath, changed: true, sources }
+}
+
 export function uninstallHooks(options = {}) {
   const flags = options.flags || parseArgs(options.argv || process.argv.slice(2))
   const paths = options.paths || hookPaths(options)

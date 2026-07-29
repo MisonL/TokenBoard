@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { win32 as windowsPath } from 'node:path'
 import { runInNewContext } from 'node:vm'
-import { buildNotifyHandler, hookPaths, hookStatus, installHooks, uninstallHooks } from './hooks.mjs'
+import { buildNotifyHandler, hookPaths, hookStatus, installHooks, refreshInstalledNotifyHandler, uninstallHooks } from './hooks.mjs'
 
 test('notify handler only enqueues signal and spawns background notify script', () => {
   const source = buildNotifyHandler({
@@ -189,6 +189,38 @@ test('installs and restores Codex notify while preserving original command', () 
 
   assert.equal(removed.hooks[0].changed, true)
   assert.match(fs.files.get(paths.codexConfigPath), /notify = \["old", "--flag"\]/)
+})
+
+test('refreshes the generated handler for an already installed Codex hook', () => {
+  const paths = createPaths()
+  const codexConfig = `model = "gpt-5"\nnotify = ["/usr/bin/env", "node", "${paths.notifyPath}", "--source=codex"]\n`
+  const fs = memoryFs({
+    [paths.codexConfigPath]: codexConfig,
+    [paths.notifyPath]: 'old handler'
+  })
+
+  const refreshed = refreshInstalledNotifyHandler({ paths, fs, nodePath: '/usr/bin/node' })
+
+  assert.deepEqual(refreshed.sources, ['codex'])
+  assert.equal(refreshed.changed, true)
+  assert.equal(fs.files.get(paths.codexConfigPath), codexConfig)
+  assert.match(fs.files.get(paths.notifyPath), /TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN/)
+})
+
+test('does not create a generated handler when no notifier hook is installed', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.codexConfigPath]: 'model = "gpt-5"\n',
+    [paths.claudeSettingsPath]: JSON.stringify({ hooks: {} })
+  })
+
+  const refreshed = refreshInstalledNotifyHandler({ paths, fs, nodePath: '/usr/bin/node' })
+
+  assert.deepEqual(refreshed.sources, [])
+  assert.equal(refreshed.changed, false)
+  assert.equal(fs.files.has(paths.notifyPath), false)
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).codex, 'not-installed')
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).claudeCode, 'not-installed')
 })
 
 test('installs and restores Codex notify with an inline TOML comment', () => {
