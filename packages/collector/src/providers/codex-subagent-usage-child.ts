@@ -93,17 +93,26 @@ async function* readChildUsageEventsFromFile(
   stderr?: (line: string) => void
 ) {
   for await (const record of readJsonlRecords(filePath, stderr, codexChildSessionReadLimits)) {
-    const event = readChildUsageEvent(record, timestamp, timezone)
+    const event = readChildUsageEvent(record, timestamp, timezone, stderr)
     if (event) yield event
   }
 }
 
-function readChildUsageEvent(record: UnknownRecord, timestamp: string, timezone: string): ChildUsageEvent | null {
+function readChildUsageEvent(
+  record: UnknownRecord,
+  timestamp: string,
+  timezone: string,
+  stderr?: (line: string) => void
+): ChildUsageEvent | null {
   const recordTimestamp = readString(record, ['timestamp'])
   if (!recordTimestamp || recordTimestamp < timestamp) return null
   const cumulative = readTotalUsage(record)
   const usage = readLastUsage(record)
   if (!cumulative || !usage) return null
+  if (usage.cacheReadTokens > usage.inputTokens) {
+    stderr?.('Skipping Codex subagent usage event with cache read tokens exceeding input tokens')
+    return null
+  }
   return {
     eventKey: totalUsageKey(cumulative),
     usageDate: formatCodexUsageDate(recordTimestamp, timezone),
