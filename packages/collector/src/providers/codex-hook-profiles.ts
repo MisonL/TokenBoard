@@ -125,8 +125,18 @@ async function migrateLegacyCodexHookCursor(input: { codexHomes: string[]; state
   if (!await isRegularFile(legacyCursorPath)) return false
   return withCursorLock(legacyCursorPath, async () => {
     const legacy = await readCursor(legacyCursorPath, 'codex')
+    const persistedMatches = await matchingPersistedLegacyEntries({
+      codexHomes: input.codexHomes,
+      stateDir: input.stateDir,
+      legacy
+    })
     let changed = false
     for (const [relativePath, entry] of Object.entries(legacy.files)) {
+      if (persistedMatches.has(relativePath)) {
+        delete legacy.files[relativePath]
+        changed = true
+        continue
+      }
       const matchingHomes = await matchingCodexHomes({
         codexHomes: input.codexHomes,
         relativePath,
@@ -148,6 +158,28 @@ async function migrateLegacyCodexHookCursor(input: { codexHomes: string[]; state
     if (changed) await writeCursor(legacyCursorPath, legacy)
     return Object.values(legacy.files).some((entry) => entry.pendingUpload)
   })
+}
+
+async function matchingPersistedLegacyEntries(input: {
+  codexHomes: string[]
+  stateDir: string
+  legacy: Awaited<ReturnType<typeof readCursor>>
+}) {
+  const matches = new Set<string>()
+  for (const codexHome of input.codexHomes) {
+    const cursorPath = join(input.stateDir, codexHookProfileCursorName(codexHome))
+    if (!await isRegularFile(cursorPath)) continue
+    await withCursorLock(cursorPath, async () => {
+      const cursor = await readCursor(cursorPath, 'codex')
+      for (const [relativePath, legacyEntry] of Object.entries(input.legacy.files)) {
+        if (!isSha256(legacyEntry.sha256)) continue
+        if (cursor.files[relativePath]?.sha256 === legacyEntry.sha256) {
+          matches.add(relativePath)
+        }
+      }
+    })
+  }
+  return matches
 }
 
 async function copyLegacyCursorEntry(input: {

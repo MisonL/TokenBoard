@@ -569,6 +569,55 @@ describe('Codex multi-profile hook collection', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test('drops an identical legacy pending entry already acknowledged by a profile cursor without reading its source file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-multi-hook-'))
+    const firstHome = join(root, 'first')
+    const secondHome = join(root, 'second')
+    const stateDir = join(root, 'state')
+    const relativeSessionPath = '2026/05/22/acknowledged-missing.jsonl'
+    const legacyCursorPath = join(stateDir, 'codex-cursor.json')
+    const profileCursorPath = join(stateDir, cursorFileName('codex', resolve(secondHome)))
+    const fingerprint = {
+      size: 123,
+      mtimeMs: Date.parse('2026-05-22T01:00:00.000Z'),
+      sha256: 'a'.repeat(64)
+    }
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeLegacyPendingCursor({
+        cursorPath: legacyCursorPath,
+        relativePath: relativeSessionPath,
+        totalTokens: 15,
+        ...fingerprint
+      })
+      await writeProfileCursor({
+        cursorPath: profileCursorPath,
+        relativePath: relativeSessionPath,
+        totalTokens: 15,
+        ...fingerprint
+      })
+
+      await expect(collectCodexUsage({
+        codexHome: `${firstHome},${secondHome}`,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:01:00.000Z',
+        async runner() {
+          throw new Error('an acknowledged identical profile cursor must not reread the missing legacy source')
+        }
+      })).resolves.toEqual([])
+
+      expect(JSON.parse(await readFile(legacyCursorPath, 'utf8')).files).toEqual({})
+      expect(JSON.parse(await readFile(profileCursorPath, 'utf8')).files[relativeSessionPath].pendingUpload).toBeFalsy()
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 async function writeJsonl(file: string, rows: unknown[]) {
