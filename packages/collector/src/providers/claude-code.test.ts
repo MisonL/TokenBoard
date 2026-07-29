@@ -52,11 +52,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown']
+        args: ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.19', 'claude', 'session', '--json']
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -87,7 +87,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.18',
+          'ccusage@20.0.19',
           '--',
           'ccusage',
           'claude',
@@ -104,7 +104,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.18',
+          'ccusage@20.0.19',
           '--',
           'ccusage',
           'claude',
@@ -131,8 +131,8 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown', '--since', '20260501'],
-      ['ccusage@20.0.18', 'claude', 'session', '--json', '--since', '20260501']
+      ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260501'],
+      ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260501']
     ])
   })
 
@@ -150,8 +150,8 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown', '--since', '20260708'],
-      ['ccusage@20.0.18', 'claude', 'session', '--json', '--since', '20260708']
+      ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260708'],
+      ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260708']
     ])
   })
 
@@ -184,11 +184,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown']
+        args: ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.19', 'claude', 'session', '--json']
       }
     ])
   })

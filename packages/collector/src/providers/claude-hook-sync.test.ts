@@ -75,8 +75,8 @@ describe('Claude hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.18', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -169,8 +169,8 @@ describe('Claude hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.18', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -256,8 +256,8 @@ describe('Claude hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.18', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.18', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
+        ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({

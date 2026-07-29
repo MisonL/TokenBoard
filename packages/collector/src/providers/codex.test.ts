@@ -53,11 +53,11 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'codex', 'daily', '--json', '--offline']
+        args: ['ccusage@20.0.19', 'codex', 'daily', '--json', '--offline']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline']
+        args: ['ccusage@20.0.19', 'codex', 'session', '--json', '--offline']
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -96,15 +96,15 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260501']
+        args: ['ccusage@20.0.19', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260501']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260501']
+        args: ['ccusage@20.0.19', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260501']
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--single-thread']
+        args: ['ccusage@20.0.19', 'codex', 'session', '--json', '--offline', '--single-thread']
       }
     ])
   })
@@ -133,9 +133,9 @@ describe('collectCodexUsage', () => {
     }
 
     expect(calls).toEqual([
-      ['ccusage@20.0.18', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260708'],
-      ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260708'],
-      ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--single-thread']
+      ['ccusage@20.0.19', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260708'],
+      ['ccusage@20.0.19', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260708'],
+      ['ccusage@20.0.19', 'codex', 'session', '--json', '--offline', '--single-thread']
     ])
   })
 

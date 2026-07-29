@@ -258,15 +258,15 @@ describe('collectCodexUsage scoped since scans', () => {
     expect(calls).toEqual([
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@20.0.18', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260509']
+        args: ['ccusage@20.0.19', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260509']
       },
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260509']
+        args: ['ccusage@20.0.19', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260509']
       },
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@20.0.18', 'codex', 'session', '--json', '--offline', '--single-thread']
+        args: ['ccusage@20.0.19', 'codex', 'session', '--json', '--offline', '--single-thread']
       }
     ])
   })
@@ -440,7 +440,7 @@ function twoBatchCodexCalls() {
 function codexCall(report: 'daily' | 'session') {
   return {
     command: platformCommand('npx'),
-    args: ['ccusage@20.0.18', 'codex', report, '--json', '--offline', '--single-thread']
+    args: ['ccusage@20.0.19', 'codex', report, '--json', '--offline', '--single-thread']
   }
 }
 
