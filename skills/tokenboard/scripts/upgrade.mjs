@@ -90,6 +90,7 @@ export function runUpgrade({
   env = process.env,
   platform = process.platform,
   nodePath = process.execPath,
+  automatic = false,
   spawn = spawnSync,
   exists = existsSync,
   copy = cpSync,
@@ -112,6 +113,13 @@ export function runUpgrade({
 
   if (collectorExists && collectorIsGitRepo) {
     assertCleanGitWorktree({ collectorDir: collector, spawn })
+    if (automatic) {
+      assertAutomaticUpgradeBranch({
+        collectorDir: collector,
+        repoRef,
+        spawn
+      })
+    }
   }
 
   try {
@@ -211,6 +219,63 @@ export function assertCleanGitWorktree({ collectorDir, spawn = spawnSync }) {
   if (String(result.stdout ?? '').trim()) {
     throw new Error('Refusing to upgrade a collector checkout with uncommitted changes')
   }
+}
+
+export function assertAutomaticUpgradeBranch({ collectorDir, repoRef, spawn = spawnSync }) {
+  const currentBranch = readGitBranch({ collectorDir, spawn })
+  if (!currentBranch) {
+    throw new Error(
+      'Refusing automatic TokenBoard upgrade from a detached HEAD. ' +
+      'Run upgrade.mjs manually after switching the checkout to the intended branch.'
+    )
+  }
+
+  const targetBranch = resolveAutomaticUpgradeBranch({ collectorDir, repoRef, spawn })
+  if (!targetBranch) {
+    throw new Error(
+      `Refusing automatic TokenBoard upgrade from branch ${currentBranch}: the configured ref is not a branch. ` +
+      'Run upgrade.mjs manually after switching the checkout to the intended ref.'
+    )
+  }
+  if (currentBranch !== targetBranch) {
+    throw new Error(
+      `Refusing automatic TokenBoard upgrade from branch ${currentBranch} to ${targetBranch}. ` +
+      'Run upgrade.mjs manually after switching the checkout to the intended branch.'
+    )
+  }
+}
+
+function resolveAutomaticUpgradeBranch({ collectorDir, repoRef, spawn }) {
+  const explicitRef = trimmedString(repoRef)
+  if (explicitRef) {
+    if (explicitRef.startsWith('refs/heads/')) {
+      return explicitRef.slice('refs/heads/'.length)
+    }
+    return explicitRef.startsWith('refs/') ? '' : explicitRef
+  }
+
+  const result = spawn('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], {
+    cwd: collectorDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    shell: false
+  })
+  if (result.status !== 0) return ''
+  const remoteHead = String(result.stdout ?? '').trim()
+  return remoteHead.startsWith('origin/') ? remoteHead.slice('origin/'.length) : ''
+}
+
+function readGitBranch({ collectorDir, spawn }) {
+  const result = spawn('git', ['branch', '--show-current'], {
+    cwd: collectorDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    shell: false
+  })
+  if (result.status !== 0) {
+    throw new Error('Unable to inspect the TokenBoard collector branch before automatic upgrade')
+  }
+  return String(result.stdout ?? '').trim()
 }
 
 export function resolveArchiveUrls({ flags = {}, env = process.env, config = {}, repoUrl = defaultRepoUrl, repoRef = null } = {}) {

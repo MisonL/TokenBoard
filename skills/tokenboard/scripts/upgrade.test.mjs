@@ -162,6 +162,152 @@ test('fails visibly when the upgraded notifier handler refresh fails', () => {
   )
 })
 
+test('automatic upgrade refuses to switch a clean development branch', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      automatic: true,
+      flags: {
+        'repo-ref': 'master',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'master',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'fix/reliability\n' }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /Refusing automatic TokenBoard upgrade from branch fix\/reliability to master/
+  )
+
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), false)
+})
+
+test('automatic upgrade continues when the checked out branch matches the configured branch', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  const result = runUpgrade({
+    automatic: true,
+    flags: {
+      'repo-ref': 'master',
+      'skill-dir': `${collectorDir}/skills/tokenboard`
+    },
+    env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+    readConfigFile: () => ({
+      collectorDir,
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'master',
+      packageManager: 'pnpm'
+    }),
+    mergeConfigFile: () => {},
+    configDirectory: '/home/user/.tokenboard',
+    exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+    spawn: (command, args, options) => {
+      calls.push({ command, args, options })
+      if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+      if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'master\n' }
+      return { status: 0, stdout: '' }
+    },
+    log: () => {}
+  })
+
+  assert.equal(result.repoRef, 'master')
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), true)
+})
+
+test('automatic upgrade refuses a detached checkout before mutating it', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      automatic: true,
+      flags: {
+        'repo-ref': 'master',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'master',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: '' }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /Refusing automatic TokenBoard upgrade from a detached HEAD/
+  )
+
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), false)
+})
+
+test('automatic upgrade refuses a configured tag before mutating the checkout', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      automatic: true,
+      flags: {
+        'repo-ref': 'refs/tags/v1.2.3',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'refs/tags/v1.2.3',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'master\n' }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /configured ref is not a branch/
+  )
+
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), false)
+})
+
 test('pins an existing collector checkout to a configured ref during upgrade', () => {
   assert.deepEqual(
     buildUpgradePlan({

@@ -61,6 +61,7 @@ function runSync({ flags, invocation, logs }) {
     try {
       runUpgrade({
         flags,
+        automatic: true,
         log: (line) => {
           if (!logs) console.log(line)
         }
