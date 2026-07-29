@@ -1,3 +1,4 @@
+import { isValidTimezone } from '@tokenboard/usage-core'
 import { describe, expect, test } from 'vitest'
 import { normalizeCcusageDailyJson } from './normalize-ccusage'
 import {
@@ -9,6 +10,55 @@ import {
 const collectedAt = '2026-04-28T10:00:00.000Z'
 
 describe('normalizeCcusageDailyJson', () => {
+  test('reuses one formatter for repeated session timestamps in the same timezone', () => {
+    const timezone = 'Pacific/Chatham'
+    expect(isValidTimezone(timezone)).toBe(true)
+    const OriginalDateTimeFormat = Intl.DateTimeFormat
+    let formatterCount = 0
+    Object.defineProperty(Intl, 'DateTimeFormat', {
+      configurable: true,
+      value: function (...args: ConstructorParameters<typeof Intl.DateTimeFormat>) {
+        if ((args[1] as Intl.DateTimeFormatOptions | undefined)?.timeZone === timezone) {
+          formatterCount += 1
+        }
+        return new OriginalDateTimeFormat(...args)
+      }
+    })
+
+    try {
+      normalizeCcusageDailyJson(
+        {
+          data: [{
+            date: '2026-05-25',
+            model: 'gpt-5',
+            inputTokens: 1,
+            totalTokens: 1
+          }]
+        },
+        {
+          source: 'codex',
+          timezone,
+          collectedAt,
+          sessions: {
+            data: Array.from({ length: 3 }, () => ({
+              lastActivity: '2026-05-25T01:10:00.000Z',
+              model: 'gpt-5',
+              inputTokens: 1,
+              totalTokens: 1
+            }))
+          }
+        }
+      )
+
+      expect(formatterCount).toBe(1)
+    } finally {
+      Object.defineProperty(Intl, 'DateTimeFormat', {
+        configurable: true,
+        value: OriginalDateTimeFormat
+      })
+    }
+  })
+
   test('normalizes ccusage daily breakdown rows into per-model snapshots', () => {
     const snapshots = normalizeCcusageDailyJson(
       {
