@@ -92,9 +92,19 @@ async function* readChildUsageEventsFromFile(
   timezone: string,
   stderr?: (line: string) => void
 ) {
-  for await (const record of readJsonlRecords(filePath, stderr, codexChildSessionReadLimits)) {
-    const event = readChildUsageEvent(record, timestamp, timezone, stderr)
-    if (event) yield event
+  let missingLastUsageRecords = 0
+  try {
+    for await (const record of readJsonlRecords(filePath, stderr, codexChildSessionReadLimits)) {
+      const result = readChildUsageEvent(record, timestamp, timezone, filePath)
+      if (result.missingLastUsage) missingLastUsageRecords += 1
+      if (result.event) yield result.event
+    }
+  } finally {
+    if (missingLastUsageRecords > 0) {
+      stderr?.(
+        `Skipped ${missingLastUsageRecords} Codex child usage record${missingLastUsageRecords === 1 ? '' : 's'} with total_token_usage but missing last_token_usage`
+      )
+    }
   }
 }
 
@@ -102,21 +112,21 @@ function readChildUsageEvent(
   record: UnknownRecord,
   timestamp: string,
   timezone: string,
-  stderr?: (line: string) => void
-): ChildUsageEvent | null {
+  filePath: string
+): { event: ChildUsageEvent | null; missingLastUsage: boolean } {
   const recordTimestamp = readString(record, ['timestamp'])
-  if (!recordTimestamp || recordTimestamp < timestamp) return null
+  if (!recordTimestamp || recordTimestamp < timestamp) return { event: null, missingLastUsage: false }
   const cumulative = readTotalUsage(record)
   const usage = readLastUsage(record)
-  if (!cumulative || !usage) return null
-  if (usage.cacheReadTokens > usage.inputTokens) {
-    stderr?.('Skipping Codex subagent usage event with cache read tokens exceeding input tokens')
-    return null
-  }
+  if (!cumulative) return { event: null, missingLastUsage: false }
+  if (!usage) return { event: null, missingLastUsage: true }
   return {
-    eventKey: totalUsageKey(cumulative),
-    usageDate: formatCodexUsageDate(recordTimestamp, timezone),
-    ...usage
+    event: {
+      eventKey: childUsageEventKey(filePath, recordTimestamp, cumulative),
+      usageDate: formatCodexUsageDate(recordTimestamp, timezone),
+      ...usage
+    },
+    missingLastUsage: false
   }
 }
 
@@ -203,6 +213,17 @@ function readLastUsage(record: UnknownRecord): TotalUsage | null {
     cacheReadTokens: readCacheReadTokens(usage),
     totalTokens: readTotalTokens(usage)
   }
+}
+
+function childUsageEventKey(filePath: string, timestamp: string, usage: TotalUsage) {
+  return `${stableChildSessionIdentity(filePath)}|${timestamp}|${totalUsageKey(usage)}`
+}
+
+function stableChildSessionIdentity(filePath: string) {
+  const normalized = filePath.replaceAll('\\', '/')
+  const match = /\/(sessions|archived_sessions)\/(.+)$/.exec(normalized)
+  if (match) return `${match[1]}/${match[2]}`
+  return normalized.slice(normalized.lastIndexOf('/') + 1)
 }
 
 function totalUsageKey(usage: TotalUsage) {

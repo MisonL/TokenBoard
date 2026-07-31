@@ -286,9 +286,12 @@ describe('collectAntigravityCliUsage', () => {
 
   test('keeps DB reads bounded unless full history is explicitly requested', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-db-limit-'))
-    const maxDbFiles: Array<number | null | undefined> = []
-    const readDbUsageEvents = async (input: { maxDbFiles?: number | null }) => {
-      maxDbFiles.push(input.maxDbFiles)
+    const reads: Array<{ maxDbFiles?: number | null; requireCompleteDirectoryScan?: boolean }> = []
+    const readDbUsageEvents = async (input: {
+      maxDbFiles?: number | null
+      requireCompleteDirectoryScan?: boolean
+    }) => {
+      reads.push(input)
       return { cascadeIds: new Set<string>(), events: [] }
     }
     try {
@@ -312,7 +315,11 @@ describe('collectAntigravityCliUsage', () => {
         readDbUsageEvents
       })
 
-      expect(maxDbFiles).toEqual([undefined, null, null])
+      expect(reads).toEqual([
+        { maxDbFiles: undefined, sinceDate: '2026-06-24', timezone: 'UTC', detectRowCursorReset: false, lastSeenRowIndexByCascadeHash: new Map(), requireCompleteDirectoryScan: false },
+        { maxDbFiles: null, sinceDate: '2026-06-24', timezone: 'UTC', detectRowCursorReset: false, lastSeenRowIndexByCascadeHash: new Map(), requireCompleteDirectoryScan: true },
+        { maxDbFiles: null, sinceDate: undefined, timezone: 'UTC', detectRowCursorReset: false, lastSeenRowIndexByCascadeHash: new Map(), requireCompleteDirectoryScan: true }
+      ])
     } finally {
       await rm(root, { recursive: true, force: true })
     }

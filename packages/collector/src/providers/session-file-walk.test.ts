@@ -34,6 +34,30 @@ describe('walkJsonlFiles', () => {
     }
   })
 
+  test.skipIf(process.platform === 'win32')('preserves literal backslashes in POSIX session file names', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-walk-'))
+    try {
+      await writeFile(join(root, 'literal\\name.jsonl'), '')
+
+      await expect(collectFiles(root)).resolves.toEqual(['literal\\name.jsonl'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('orders nested and sibling JSONL paths by their complete relative paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-walk-'))
+    try {
+      await mkdir(join(root, 'a'))
+      await writeFile(join(root, 'a', 'nested.jsonl'), '')
+      await writeFile(join(root, 'a.jsonl'), '')
+
+      await expect(collectFiles(root)).resolves.toEqual(['a.jsonl', 'a/nested.jsonl'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('recurses into directories whose names end with jsonl', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-walk-'))
     try {

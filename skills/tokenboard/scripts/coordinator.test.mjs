@@ -264,7 +264,7 @@ test('coordinator retains every drained queue signal when a later read fails', (
   )
 })
 
-test('coordinator requeues every drained signal when cleanup fails', () => {
+test('coordinator retains a recovery journal when drain cleanup fails', () => {
   const fs = memoryRuntime({
     '/state/notify.signal.d/claude-code.json': `${JSON.stringify({ source: 'claude-code' })}\n`,
     '/state/notify.signal.d/codex.json': `${JSON.stringify({ source: 'codex' })}\n`
@@ -289,9 +289,11 @@ test('coordinator requeues every drained signal when cleanup fails', () => {
     }
   })
 
-  assert.equal(first.error, 'EPERM')
-  assert.match(fs.files.get('/state/notify.signal.d/claude-code.json'), /"source":"claude-code"/)
-  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
+  assert.equal(first.error, 'TokenBoard signal cleanup failed; recovery journal retained: EPERM')
+  assert.equal(
+    [...fs.files.keys()].some((path) => path.startsWith('/state/notify.signal.recovery.') && path.endsWith('.json')),
+    true
+  )
 
   const runs = []
   const second = coordinatedSync({ kind: 'notify', source: 'claude-code' }, {
@@ -307,6 +309,10 @@ test('coordinator requeues every drained signal when cleanup fails', () => {
 
   assert.equal(second.error, undefined)
   assert.deepEqual(runs, ['claude-code', 'codex'])
+  assert.equal(
+    [...fs.files.keys()].some((path) => path.startsWith('/state/notify.signal.recovery.') && path.endsWith('.json')),
+    false
+  )
 })
 
 test('coordinator retains an unreadable drained legacy signal for a later retry', () => {
@@ -388,7 +394,7 @@ test('coordinator defers signals observed during a long hook run through cooldow
   const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
     ...fs,
     stateDir: '/state',
-    cooldownMs: 300_000,
+    cooldownMs: 900_000,
     now: () => Date.parse('2026-05-22T10:00:00.000Z'),
     process: fakeProcess(113),
     scheduleTrailing: (trigger, delayMs) => {
@@ -408,7 +414,7 @@ test('coordinator defers signals observed during a long hook run through cooldow
   assert.deepEqual(result.deferredSources, ['codex'])
   assert.equal(result.trailingScheduled, true)
   assert.deepEqual(result.trailingSources, ['codex'])
-  assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 300_000 }])
+  assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 900_000 }])
   assert.match(fs.files.get('/state/notify.signal'), /"source":"codex"/)
   const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
   assert.deepEqual(lastRun.coordination.deferredSources, ['codex'])
@@ -429,6 +435,58 @@ test('coordinator keeps failed source signals for a later retry', () => {
   assert.equal(result.error, 'sync failed')
   assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
   assert.equal(JSON.parse(fs.files.get('/state/last-run.json')).status, 'error')
+  assert.equal(fs.files.has('/state/last-success.json'), false)
+})
+
+test('coordinator only acknowledges recovery journals for sources whose sync succeeded', () => {
+  const fs = memoryRuntime({
+    '/state/notify.signal.d/claude-code.json': `${JSON.stringify({ source: 'claude-code' })}\n`,
+    '/state/notify.signal.d/codex.json': `${JSON.stringify({ source: 'codex' })}\n`
+  })
+  const runs = []
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(118),
+    executeSync: (trigger) => {
+      runs.push(trigger.source)
+      if (trigger.source === 'claude-code') throw new Error('claude sync failed')
+      return { source: trigger.source }
+    }
+  })
+
+  assert.deepEqual(runs, ['claude-code', 'codex'])
+  assert.equal(result.error, 'claude sync failed')
+  assert.equal(fs.files.has('/state/notify.signal.recovery.codex.json'), false)
+  assert.equal(fs.files.has('/state/notify.signal.recovery.claude-code.json'), true)
+  assert.match(fs.files.get('/state/notify.signal.d/claude-code.json'), /"source":"claude-code"/)
+})
+
+test('coordinator retains retry evidence when recovery acknowledgement cleanup fails', () => {
+  const fs = memoryRuntime({
+    '/state/notify.signal.d/codex.json': `${JSON.stringify({ source: 'codex' })}\n`
+  })
+  const unlink = fs.unlink
+  const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
+    ...fs,
+    stateDir: '/state',
+    cooldownMs: 0,
+    process: fakeProcess(119),
+    unlink: (path) => {
+      if (path === '/state/notify.signal.recovery.codex.json') {
+        const error = new Error('EACCES')
+        error.code = 'EACCES'
+        throw error
+      }
+      return unlink(path)
+    },
+    executeSync: () => ({ ok: true })
+  })
+
+  assert.equal(result.error, 'EACCES')
+  assert.equal(fs.files.has('/state/notify.signal.recovery.codex.json'), true)
+  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
   assert.equal(fs.files.has('/state/last-success.json'), false)
 })
 
@@ -651,7 +709,7 @@ test('coordinator schedules a trailing retry when a shared sync lock remains bus
   const result = coordinatedSync({ kind: 'notify', source: 'codex' }, {
     ...fs,
     stateDir: '/state',
-    cooldownMs: 300_000,
+    cooldownMs: 900_000,
     lockTimeoutMs: 1,
     now: () => now,
     sleep: (milliseconds) => {
@@ -672,7 +730,7 @@ test('coordinator schedules a trailing retry when a shared sync lock remains bus
   assert.equal(result.error, 'lock timeout')
   assert.equal(result.trailingScheduled, true)
   assert.deepEqual(result.trailingSources, ['codex'])
-  assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 300_000 }])
+  assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 60_000 }])
   assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
 })
 

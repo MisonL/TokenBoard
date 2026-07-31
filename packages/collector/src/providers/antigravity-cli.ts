@@ -109,7 +109,13 @@ async function collectAntigravityCliUsageLocked(input: {
   const emittedKeys = new Set<string>()
   const snapshots: UsageSnapshot[] = []
   const localDbUsage = await readLocalDbUsage(options, nextCursor, range, timezone)
+  assertFullHistoryDirectoryScanComplete(range, localDbUsage)
   const historyEvents = localDbUsage.events.filter((item) => range.includesTimestamp(item.createdAt))
+  assertBoundedCliHistoryScanComplete({
+    cursor: nextCursor,
+    localDbUsage,
+    range
+  })
   if (!rebuildFullHistory) {
     assertCliHistoryEventsCanApplyIncrementally({
       cursor: nextCursor,
@@ -166,25 +172,51 @@ async function readLocalDbUsage(
     historyScope: range.historyScope
   })
   if (options.readDbUsageEvents) {
+    const maxDbFiles = resolveMaxDbFiles(options.maxDbFiles, range)
     return options.readDbUsageEvents({
       lastSeenRowIndexByCascadeHash,
-      maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
+      maxDbFiles,
       sinceDate: range.sinceDate,
       timezone,
       detectRowCursorReset: lastSeenRowIndexByCascadeHash.size > 0,
-      requireCompleteDirectoryScan: range.fullHistory
+      requireCompleteDirectoryScan: range.fullHistory || maxDbFiles === null
     })
   }
+  const maxDbFiles = resolveMaxDbFiles(options.maxDbFiles, range)
   return readAntigravityDbUsageEvents({
     conversationDir: options.conversationDir ?? defaultConversationDir(),
     lastSeenRowIndexByCascadeHash,
-    maxDbFiles: resolveMaxDbFiles(options.maxDbFiles, range),
+    maxDbFiles,
     scanState: cursor.antigravityDbFileScan,
     sinceDate: range.sinceDate,
     timezone,
     detectRowCursorReset: lastSeenRowIndexByCascadeHash.size > 0,
-    requireCompleteDirectoryScan: range.fullHistory
+    requireCompleteDirectoryScan: range.fullHistory || maxDbFiles === null
   })
+}
+
+function assertBoundedCliHistoryScanComplete(input: {
+  cursor: Awaited<ReturnType<typeof readCursor>>
+  localDbUsage: AntigravityDbUsageResult
+  range: AntigravityCollectionRange
+}) {
+  if (
+    input.range.fullHistory ||
+    input.cursor.antigravityCliHistoryComplete === true ||
+    input.localDbUsage.completeDirectoryScan !== false
+  ) {
+    return
+  }
+  throw new Error('Antigravity CLI requires --since all before a bounded scan can complete an incomplete SQLite directory scan')
+}
+
+function assertFullHistoryDirectoryScanComplete(
+  range: AntigravityCollectionRange,
+  localDbUsage: AntigravityDbUsageResult
+) {
+  if (range.fullHistory && localDbUsage.completeDirectoryScan === false) {
+    throw new Error('Antigravity CLI --since all requires a complete SQLite directory scan')
+  }
 }
 
 function resolveMaxDbFiles(value: number | null | undefined, range: AntigravityCollectionRange) {

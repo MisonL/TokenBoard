@@ -153,6 +153,31 @@ describe('Codex session cloner', () => {
     }
   })
 
+  test('fails a pending clone when the macOS helper stderr stream errors', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cloner-test-'))
+    const source = join(root, 'source.jsonl')
+    const target = join(root, 'target.jsonl')
+    const helper = createFakeMacOsHelper(async () => await new Promise<never>(() => {}))
+    const cloner = createCodexSessionCloner({
+      platform: 'darwin',
+      spawnProcess: vi.fn(() => helper.child) as unknown as typeof import('node:child_process').spawn
+    })
+    let copy: Promise<void> | undefined
+
+    try {
+      await writeFile(source, 'source\n')
+      copy = cloner.copy(source, target)
+
+      expect(() => helper.failStderr()).not.toThrow()
+      await expect(copy).rejects.toThrow('macOS clonefile helper stderr failed')
+    } finally {
+      helper.closeUnexpectedly()
+      await copy?.catch(() => undefined)
+      await cloner.close().catch(() => undefined)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('does not silently downgrade a macOS permission failure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cloner-test-'))
     const source = join(root, 'source.jsonl')
@@ -321,6 +346,7 @@ function createFakeMacOsHelper(respond: (request: CloneRequest) => Promise<Clone
       emitter.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }))
       emitter.emit('close', -2, null)
     },
+    failStderr: () => stderr.emit('error', new Error('macOS clonefile helper stderr failed')),
     closeUnexpectedly: () => emitter.emit('close', null, 'SIGTERM'),
     get closeCount() {
       return closeCount

@@ -1,12 +1,156 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { claimDispatchLock, executeTokenBoardSync, releaseDispatchLock, runNotify, runNotifyCli } from './notify.mjs'
+import {
+  claimDispatchLock,
+  defaultNotifyCooldownMs,
+  executeTokenBoardSync,
+  readNotifyCooldownMs,
+  releaseDispatchLock,
+  runNotify,
+  runNotifyCli
+} from './notify.mjs'
+
+test('notify uses a fifteen-minute cooldown by default', () => {
+  assert.equal(defaultNotifyCooldownMs, 900_000)
+  assert.equal(readNotifyCooldownMs(undefined, {}), 900_000)
+})
+
+test('notify accepts an explicit bounded cooldown configuration', () => {
+  assert.equal(readNotifyCooldownMs(undefined, { TOKENBOARD_NOTIFY_COOLDOWN_MS: '60000' }), 60_000)
+  assert.equal(readNotifyCooldownMs(undefined, { TOKENBOARD_NOTIFY_COOLDOWN_MS: '3600000' }), 3_600_000)
+})
+
+test('notify carries its cooldown configuration into a trailing process', () => {
+  const files = new Map([
+    ['/state/last-success.json', '2026-05-22T10:00:00.000Z']
+  ])
+  const spawned = []
+  const env = { TOKENBOARD_NOTIFY_COOLDOWN_MS: '60000' }
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    env,
+    stateDir: '/state',
+    ...memoryFileOps(files),
+    now: () => Date.parse('2026-05-22T10:00:30.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readdir: () => [],
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'wx' && files.has(path)) {
+        const error = new Error(`EEXIST: ${path}`)
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(path, String(value))
+    },
+    spawnDetached: (command, args, options) => {
+      spawned.push({ command, args, options })
+      return { pid: 704, unref: () => {} }
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.cooldownRemainingMs, 30_000)
+  assert.equal(result.trailingScheduled, true)
+  assert.equal(spawned.length, 1)
+  assert.equal(spawned[0].options.env.TOKENBOARD_NOTIFY_COOLDOWN_MS, '60000')
+})
+
+test('notify rejects invalid cooldown configuration', () => {
+  for (const value of ['0', '59999', '3600001', '15m', '900000.5']) {
+    assert.throws(
+      () => readNotifyCooldownMs(undefined, { TOKENBOARD_NOTIFY_COOLDOWN_MS: value }),
+      /TOKENBOARD_NOTIFY_COOLDOWN_MS/
+    )
+  }
+})
+
+test('notify leaves queued work intact when cooldown configuration is invalid', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-invalid-cooldown-'))
+  const signalPath = join(root, 'notify.signal.d', 'codex.json')
+  const errors = []
+
+  try {
+    await mkdir(join(root, 'notify.signal.d'), { recursive: true })
+    await writeFile(signalPath, `${JSON.stringify({ source: 'codex' })}\n`)
+    const exitCode = await runNotifyCli({
+      env: {
+        TOKENBOARD_CONFIG_DIR: root,
+        TOKENBOARD_STATE_DIR: root,
+        TOKENBOARD_NOTIFY_COOLDOWN_MS: 'invalid'
+      },
+      readConfig: () => ({ updatedAt: 'test-version' }),
+      configDir: () => root,
+      error: (message) => errors.push(message),
+      runNotify: (options) => runNotify({ ...options, argv: ['--source', 'codex'] })
+    })
+
+    assert.equal(exitCode, 1)
+    assert.deepEqual(errors, ['TOKENBOARD_NOTIFY_COOLDOWN_MS must be an integer number of milliseconds'])
+    assert.match(await readFile(signalPath, 'utf8'), /"source":"codex"/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('notify CLI reports an unrecovered coordinator error', async () => {
+  const errors = []
+  const exitCode = await runNotifyCli({
+    env: { TOKENBOARD_CONFIG_DIR: '/state', TOKENBOARD_STATE_DIR: '/state' },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => '/state',
+    error: (message) => errors.push(message),
+    runNotify: () => ({ error: 'Invalid TokenBoard signal recovery journal', trailingScheduled: false })
+  })
+
+  assert.equal(exitCode, 1)
+  assert.deepEqual(errors, ['Invalid TokenBoard signal recovery journal'])
+})
+
+test('notify CLI preserves and reports a malformed recovery journal', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-recovery-journal-'))
+  const journalPath = join(root, 'notify.signal.recovery.900.1.deadbeef.json')
+  const errors = []
+
+  try {
+    await writeFile(journalPath, '{not-json}\n')
+    const exitCode = await runNotifyCli({
+      env: { TOKENBOARD_CONFIG_DIR: root, TOKENBOARD_STATE_DIR: root },
+      readConfig: () => ({ updatedAt: 'test-version' }),
+      configDir: () => root,
+      error: (message) => errors.push(message),
+      runNotify: (options) => runNotify({ ...options, argv: ['--source', 'codex'] })
+    })
+
+    assert.equal(exitCode, 1)
+    assert.match(errors[0], /Invalid TokenBoard signal recovery journal/)
+    assert.equal(await readFile(journalPath, 'utf8'), '{not-json}\n')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('notify CLI keeps a scheduled retry for a coordinator error', async () => {
+  const errors = []
+  const exitCode = await runNotifyCli({
+    env: { TOKENBOARD_CONFIG_DIR: '/state', TOKENBOARD_STATE_DIR: '/state' },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => '/state',
+    error: (message) => errors.push(message),
+    runNotify: () => ({ error: 'lock timeout', trailingScheduled: true })
+  })
+
+  assert.equal(exitCode, 0)
+  assert.deepEqual(errors, ['TokenBoard hook sync retry scheduled after error: lock timeout'])
+})
 
 test('notify passes the coordinator lock token to its child sync', () => {
   let invocation
@@ -65,6 +209,42 @@ test('notify runs source-specific sync through coordinator', () => {
   assert.equal(result.skippedSync, false)
   assert.deepEqual(calls.map(({ trigger }) => trigger), [{ kind: 'notify', source: 'codex' }])
   assert.match(calls[0].lockToken, /^[a-f0-9]{32}$/)
+})
+
+test('notify coalesces a pending signal through the fifteen-minute default cooldown', () => {
+  const files = new Map([
+    ['/state/last-success.json', '2026-05-22T10:00:00.000Z']
+  ])
+  const trailing = []
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    stateDir: '/state',
+    ...memoryFileOps(files),
+    now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readdir: () => [],
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'wx' && files.has(path)) {
+        const error = new Error(`EEXIST: ${path}`)
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(path, String(value))
+    },
+    scheduleTrailing: (trigger, delayMs) => {
+      trailing.push({ trigger, delayMs })
+      return true
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.skippedReason, 'cooldown')
+  assert.equal(result.cooldownRemainingMs, 840_000)
+  assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 840_000 }])
+  assert.match(files.get('/state/notify.signal.d/codex.json'), /"source":"codex"/)
 })
 
 test('releaseDispatchLock only removes the matching dispatcher owner', () => {
@@ -477,6 +657,43 @@ test('trailing CLI waits under its existing lock and completes pending work with
   assert.deepEqual(waits, [0, 5_000])
   assert.deepEqual(synced, ['codex'])
   assert.deepEqual(spawned, [])
+  assert.equal(files.has(trailingLockPath), false)
+})
+
+test('trailing CLI does not spin when a continuation reports zero delay', async () => {
+  const stateDir = '/state'
+  const trailingLockPath = join(stateDir, 'trailing.lock')
+  const files = new Map([
+    [trailingLockPath, JSON.stringify({ pid: 800 })]
+  ])
+  const waits = []
+  const runtime = {
+    stateDir,
+    configDir: stateDir,
+    process: { pid: 800, kill: () => true },
+    readFile: memoryFileOps(files).readFile,
+    writeFile: (path, value) => files.set(path, String(value)),
+    unlink: (path) => files.delete(path),
+    rename: memoryFileOps(files).rename,
+    link: memoryFileOps(files).link
+  }
+
+  const exitCode = await runNotifyCli({
+    env: {
+      TOKENBOARD_CONFIG_DIR: stateDir,
+      TOKENBOARD_STATE_DIR: stateDir,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: trailingLockPath,
+      TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: '0'
+    },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => stateDir,
+    trailingRuntime: runtime,
+    waitTrailingDelay: async (delayMs) => waits.push(delayMs),
+    runNotify: () => ({ trailingScheduled: true, trailingDelayMs: 0 })
+  })
+
+  assert.equal(exitCode, 0)
+  assert.deepEqual(waits, [0])
   assert.equal(files.has(trailingLockPath), false)
 })
 

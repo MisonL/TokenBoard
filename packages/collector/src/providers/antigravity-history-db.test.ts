@@ -52,6 +52,7 @@ describe('readAntigravityDbUsageEvents', () => {
 
       expect(result.events).toHaveLength(0)
       expect(result.cascadeIds).toHaveLength(0)
+      expect(result.completeDirectoryScan).toBe(true)
       expect(result.knownCascadeIds).toEqual(new Set([cascadeId]))
       expect(result.lastReadRowIndexByCascade?.get(cascadeId)).toBe(7)
     } finally {
@@ -141,6 +142,7 @@ describe('readAntigravityDbUsageEvents', () => {
       })
 
       expect(result.knownCascadeIds).toEqual(new Set(cascadeIds))
+      expect(result.completeDirectoryScan).toBe(false)
       expect(result.lastReadRowIndexByCascade?.size).toBe(1)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -461,7 +463,7 @@ describe('readAntigravityDbUsageEvents', () => {
       await mkdir(dir, { recursive: true })
       await writeFile(skippedDb, '')
       await writeFile(keptDb, '')
-      await readAntigravityDbUsageEvents({
+      const result = await readAntigravityDbUsageEvents({
         conversationDir: dir,
         readSqlite: recordSqliteCalls(calls),
         statFile: async (filePath) => {
@@ -473,6 +475,7 @@ describe('readAntigravityDbUsageEvents', () => {
       })
 
       expect(calls).toEqual([keptDb])
+      expect(result.completeDirectoryScan).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

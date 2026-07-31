@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -588,13 +588,83 @@ describe('Codex JSONL reader', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  test('reports child records missing per-request usage without treating them as zero usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-child-missing-last-'))
+    const filePath = join(root, 'child.jsonl')
+    const warnings: string[] = []
+
+    try {
+      await writeFile(filePath, `${JSON.stringify({
+        type: 'event_msg',
+        timestamp: '2026-05-25T01:10:00.000Z',
+        payload: {
+          info: {
+            total_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+          }
+        }
+      })}\n`)
+
+      await expect(readChildLastUsageEvents(
+        filePath,
+        '2026-05-25T01:00:00.000Z',
+        'UTC',
+        (line) => warnings.push(line)
+      )).resolves.toEqual([])
+      expect(warnings).toEqual([
+        'Skipped 1 Codex child usage record with total_token_usage but missing last_token_usage'
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps same-value events distinct while deduplicating the same child across profiles', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-child-event-identity-'))
+    const firstPath = join(root, 'profile-a', 'sessions', '2026', '05', '25', 'child-a.jsonl')
+    const copiedPath = join(root, 'profile-b', 'sessions', '2026', '05', '25', 'child-a.jsonl')
+    const otherPath = join(root, 'profile-c', 'sessions', '2026', '05', '25', 'child-b.jsonl')
+
+    try {
+      await Promise.all([
+        mkdir(join(root, 'profile-a', 'sessions', '2026', '05', '25'), { recursive: true }),
+        mkdir(join(root, 'profile-b', 'sessions', '2026', '05', '25'), { recursive: true }),
+        mkdir(join(root, 'profile-c', 'sessions', '2026', '05', '25'), { recursive: true })
+      ])
+      await Promise.all([
+        writeFile(firstPath, `${JSON.stringify(childUsageEventAt(1, '2026-05-25T01:10:00.000Z'))}\n${JSON.stringify(childUsageEventAt(1, '2026-05-25T01:20:00.000Z'))}\n`),
+        writeFile(copiedPath, `${JSON.stringify(childUsageEventAt(1, '2026-05-25T01:10:00.000Z'))}\n`),
+        writeFile(otherPath, `${JSON.stringify(childUsageEventAt(1, '2026-05-25T01:10:00.000Z'))}\n`)
+      ])
+
+      const [firstEvents, copiedEvents, otherEvents] = await Promise.all([
+        readChildLastUsageEvents(firstPath, '2026-05-25T01:00:00.000Z', 'UTC'),
+        readChildLastUsageEvents(copiedPath, '2026-05-25T01:00:00.000Z', 'UTC'),
+        readChildLastUsageEvents(otherPath, '2026-05-25T01:00:00.000Z', 'UTC')
+      ])
+
+      expect(firstEvents).toHaveLength(2)
+      expect(firstEvents[0].eventKey).toBe(copiedEvents[0].eventKey)
+      expect(firstEvents[0].eventKey).not.toBe(otherEvents[0].eventKey)
+      expect(mergeChildUsageEventsByDate([firstEvents, copiedEvents, otherEvents])).toEqual([expect.objectContaining({
+        usageDate: '2026-05-25',
+        totalTokens: 3
+      })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
 
 function childUsageEvent(index: number) {
+  return childUsageEventAt(index, '2026-05-25T01:10:00.000Z')
+}
+
+function childUsageEventAt(index: number, timestamp: string) {
   const usage = { input_tokens: index, total_tokens: index }
   return {
     type: 'event_msg',
-    timestamp: '2026-05-25T01:10:00.000Z',
+    timestamp,
     payload: { info: { total_token_usage: usage, last_token_usage: usage } }
   }
 }

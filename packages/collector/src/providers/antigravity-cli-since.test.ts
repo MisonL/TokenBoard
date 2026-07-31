@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
@@ -22,6 +22,129 @@ describe('collectAntigravityCliUsage since ranges', () => {
       })
 
       expect(snapshots).toEqual([expect.objectContaining({ model: 'gemini-new', inputTokens: 40 })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects an incomplete first bounded scan without persisting partial usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-incomplete-'))
+    try {
+      await expect(collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        since: '20260630',
+        readDbUsageEvents: async () => ({
+          ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini', 10)], 1),
+          completeDirectoryScan: false
+        })
+      })).rejects.toThrow('requires --since all before a bounded scan can complete an incomplete SQLite directory scan')
+
+      expect(await readdir(root)).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects an incomplete full-history scan without marking its cursor complete', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-incomplete-full-'))
+    try {
+      await expect(collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        since: 'all',
+        readDbUsageEvents: async () => ({
+          ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini', 10)], 1),
+          completeDirectoryScan: false
+        })
+      })).rejects.toThrow('requires a complete SQLite directory scan')
+
+      expect(await readdir(root)).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects an empty incomplete first bounded scan without persisting scan state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-empty-incomplete-'))
+    try {
+      await expect(collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        since: '20260630',
+        readDbUsageEvents: async () => ({
+          ...dbUsage([], 0),
+          completeDirectoryScan: false
+        })
+      })).rejects.toThrow('requires --since all before a bounded scan can complete an incomplete SQLite directory scan')
+
+      expect(await readdir(root)).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects in-range pending snapshot retries from an incomplete bounded scan', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-pending-incomplete-'))
+    try {
+      await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        since: '20260630',
+        maxDbFiles: null,
+        readDbUsageEvents: async () => ({
+          ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini', 10)], 1),
+          completeDirectoryScan: true
+        })
+      })
+      const cursorPath = join(root, 'antigravity-cli-cursor.json')
+      const before = await readFile(cursorPath, 'utf8')
+
+      await expect(collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        since: '20260630',
+        readDbUsageEvents: async () => ({
+          ...dbUsage([], 1),
+          completeDirectoryScan: false
+        })
+      })).rejects.toThrow('requires --since all before a bounded scan can complete an incomplete SQLite directory scan')
+
+      expect(await readFile(cursorPath, 'utf8')).toBe(before)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('allows bounded increments after a completed full-history baseline', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-baseline-'))
+    try {
+      await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        since: 'all',
+        readDbUsageEvents: async () => ({
+          ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini-old', 10)], 1),
+          completeDirectoryScan: true
+        })
+      })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli', timezone: 'UTC' })
+
+      const snapshots = await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'UTC',
+        since: '20260630',
+        readDbUsageEvents: async () => ({
+          ...dbUsage([historyEvent('c', '2026-07-01T12:00:00.000Z', 'gemini-new', 20)], 1),
+          completeDirectoryScan: false
+        })
+      })
+
+      expect(snapshots).toEqual([expect.objectContaining({
+        usageDate: '2026-07-01',
+        model: 'gemini-new',
+        inputTokens: 20
+      })])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -118,6 +241,7 @@ function dbUsage(events: ReturnType<typeof historyEvent>[], rowIndex: number) {
   return {
     cascadeIds: new Set(events.length > 0 ? ['cascade-a'] : []),
     events,
+    completeDirectoryScan: true,
     lastReadRowIndexByCascade: new Map([['cascade-a', rowIndex]])
   }
 }

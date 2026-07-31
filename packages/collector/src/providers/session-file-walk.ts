@@ -1,5 +1,5 @@
 import { lstat, readdir, realpath } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 
 export type SessionJsonlFiles = {
   rootDir: string
@@ -32,7 +32,7 @@ async function* walkDirectory(rootDir: string, currentDir: string): AsyncGenerat
   if (!await assertSessionDirectory(currentDir)) return
   const entries = await readDirectoryEntries(currentDir)
   if (!entries) return
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+  for (const entry of entries.sort((left, right) => compareDirectoryEntries(rootDir, currentDir, left, right))) {
     const entryPath = join(currentDir, entry.name)
     if (entry.isSymbolicLink()) {
       throw new Error(`Unable to read session entry ${entryPath}: symbolic links are not supported`)
@@ -42,7 +42,7 @@ async function* walkDirectory(rootDir: string, currentDir: string): AsyncGenerat
       continue
     }
     if (entry.name.endsWith('.jsonl')) {
-      yield normalizeRelativePath(relative(rootDir, entryPath))
+      yield normalizeSessionRelativePath(relative(rootDir, entryPath))
     }
   }
 }
@@ -72,6 +72,34 @@ async function readDirectoryEntries(currentDir: string) {
   }
 }
 
-function normalizeRelativePath(value: string) {
-  return value.split('\\').join('/')
+export function normalizeSessionRelativePath(value: string) {
+  return sep === '\\' ? value.split(sep).join('/') : value
+}
+
+export function compareSessionRelativePaths(left: string, right: string) {
+  const normalizedLeft = normalizeSessionRelativePath(left)
+  const normalizedRight = normalizeSessionRelativePath(right)
+  if (normalizedLeft === normalizedRight) return 0
+  return normalizedLeft < normalizedRight ? -1 : 1
+}
+
+function compareDirectoryEntries(
+  rootDir: string,
+  currentDir: string,
+  left: { name: string; isDirectory: () => boolean },
+  right: { name: string; isDirectory: () => boolean }
+) {
+  return compareSessionRelativePaths(
+    entrySortPath(rootDir, currentDir, left),
+    entrySortPath(rootDir, currentDir, right)
+  )
+}
+
+function entrySortPath(
+  rootDir: string,
+  currentDir: string,
+  entry: { name: string; isDirectory: () => boolean }
+) {
+  const path = normalizeSessionRelativePath(relative(rootDir, join(currentDir, entry.name)))
+  return entry.isDirectory() ? `${path}/` : path
 }

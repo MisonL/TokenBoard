@@ -44,6 +44,9 @@ const nodeListFiles: ListFiles = async function * (directoryPath) {
 export type AntigravityDbUsageResult = {
   cascadeIds: Set<string>
   events: AntigravityUsageEvent[]
+  // Built-in SQLite reads always declare whether every eligible database was read.
+  // Optional only to preserve compatibility with injected test readers.
+  completeDirectoryScan?: boolean
   knownCascadeIds?: Set<string>
   lastReadRowIndexByCascade?: Map<string, number>
 }
@@ -91,6 +94,7 @@ export async function readAntigravityDbUsageEvents(input: {
   const result: AntigravityDbUsageResult = {
     cascadeIds: new Set(),
     events: [],
+    completeDirectoryScan: dbListing.completeDirectoryScan,
     knownCascadeIds: dbListing.knownCascadeIds,
     lastReadRowIndexByCascade: new Map()
   }
@@ -161,7 +165,8 @@ async function listDbFiles(input: {
   if (input.maxDbFiles === null) {
     const candidates = await Promise.all(names
       .map((name) => readDbFileCandidate(join(input.conversationDir, name), input.statFile)))
-    if (input.requireCompleteDirectoryScan && candidates.some((candidate) => candidate === null)) {
+    const completeDirectoryScan = candidates.every((candidate) => candidate !== null)
+    if (input.requireCompleteDirectoryScan && !completeDirectoryScan) {
       throw new Error('Antigravity CLI full history scan could not read every enumerated SQLite database; retry after the conversations directory is stable')
     }
     const includedCandidates = candidates
@@ -174,6 +179,7 @@ async function listDbFiles(input: {
       ))
     return {
       dbFiles: sortDbCandidates(includedCandidates),
+      completeDirectoryScan,
       knownCascadeIds: new Set(names.map((name) => basename(name, '.db')))
     }
   }
@@ -183,10 +189,12 @@ async function listDbFiles(input: {
   const ids = names.map((name) => basename(name, '.db'))
   pruneAntigravityFileScanState(scanState, ids)
   const scanIds = selectAntigravityFileScanIds(ids, scanState, scanLimit)
+  let allScannedDbFilesReadable = true
   for (const id of scanIds) {
     const filePath = join(input.conversationDir, `${id}.db`)
     const candidate = await readDbFileCandidate(filePath, input.statFile)
     if (!candidate) {
+      allScannedDbFilesReadable = false
       removeAntigravityFileScanEntry(scanState, id)
       continue
     }
@@ -211,8 +219,11 @@ async function listDbFiles(input: {
   const sorted = sortDbCandidates(candidates)
   const unread = sorted.filter((candidate) => !hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
   const processed = sorted.filter((candidate) => hasDbRowCursor(candidate.filePath, input.lastSeenRowIndexByCascadeHash))
+  const dbFiles = selectDbReadCandidates(unread, processed, input.maxDbFiles, checkedSequence)
   return {
-    dbFiles: selectDbReadCandidates(unread, processed, input.maxDbFiles, checkedSequence),
+    dbFiles,
+    completeDirectoryScan: allScannedDbFilesReadable &&
+      scanIds.length === ids.length && dbFiles.length === candidates.length,
     knownCascadeIds: new Set(ids)
   }
 }

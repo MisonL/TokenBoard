@@ -145,6 +145,20 @@ describe('uploadSnapshots resilience', () => {
     }
   }, 500)
 
+  test('uses the default deadline when the configured timeout is not a complete positive integer', async () => {
+    vi.stubEnv('TOKENBOARD_FETCH_TIMEOUT_MS', '30s')
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+
+    try {
+      await uploadSnapshots(config, [], async (url: string) => successResponse(url))
+
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 30_000)
+    } finally {
+      timeoutSpy.mockRestore()
+      vi.unstubAllEnvs()
+    }
+  })
+
   test('does not retry non-retryable upload responses', async () => {
     const requests: string[] = []
     const fetcher = async (url: string) => {

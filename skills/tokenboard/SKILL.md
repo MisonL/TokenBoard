@@ -81,6 +81,11 @@ Daily and manual sync default to a 7-day lookback window. `--since` accepts `YYY
 `YYYY-MM-DD` for every source. Use `--since all` only when the user explicitly asks for a
 full-history backfill.
 
+After upgrading a collector with a large Antigravity CLI SQLite history but no completed full-history
+baseline, a bounded Antigravity CLI scan fails explicitly rather than report a partial or incomplete result.
+Run one `node scripts/sync.mjs --mode sync --source antigravity-cli --since all` after confirmation;
+do not delete the existing cursor or configuration to bypass that check.
+
 Sync runs a lightweight upgrade first by default. It updates the local collector checkout and this installed skill from the configured TokenBoard repo, then continues with collection. Hook syncs do not run this upgrade path; they only enqueue and reconcile usage. If Git upgrade fails, the script falls back to the GitHub ZIP archive path. If upgrade still fails, treat it as a warning unless sync itself fails. For troubleshooting only, skip the upgrade with `--skip-upgrade`, `TOKENBOARD_SKIP_UPGRADE=1`, or `TOKENBOARD_AUTO_UPGRADE=0`.
 
 An existing Git collector checkout with tracked or untracked changes, or one whose status cannot be read, stops the upgrade before any fetch or checkout. This deliberate stop does not try the ZIP archive fallback; resolve or preserve the local worktree first.
@@ -93,6 +98,12 @@ Scheduled, manual, preview, and hook collection share one local sync lock. The c
 lock while its hook child collects, so the child must not try to acquire it again. Signals that arrive
 during a running hook are retained and handled by one cooldown-delayed trailing run rather than
 starting repeated immediate reconciliations.
+
+The hook-only cooldown defaults to 15 minutes to avoid repeatedly reconciling a large active Codex
+history. Set `TOKENBOARD_NOTIFY_COOLDOWN_MS` to an integer number of milliseconds from `60000`
+through `3600000` to tune the maximum delay after the most recent successful TokenBoard reconciliation when
+no shared sync lock is contended. The hook handler persists its signal before the background notifier
+validates this setting; shared lock timeouts still schedule a one-minute retry.
 
 When a scheduled sync cannot acquire that lock within its timeout, it writes a private deferred
 retry state under the TokenBoard config directory and performs a bounded in-process retry. The retry

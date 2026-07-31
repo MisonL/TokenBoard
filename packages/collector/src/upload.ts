@@ -18,6 +18,7 @@ const defaultRequestTimeoutMs = 30_000
 const maxRequestTimeoutMs = 120_000
 const usageDatePattern = /^\d{4}-\d{2}-\d{2}$/
 const snapshotHashPattern = /^[a-f0-9]{64}$/
+const positiveIntegerPattern = /^[1-9]\d*$/
 
 export type ExistingSnapshotHash = UsageSnapshotKey & {
   snapshotHash: string
@@ -363,8 +364,10 @@ function readDefaultRetryDelayMs(attempt: number) {
 }
 
 function readRequestTimeoutMs() {
-  const configured = Number.parseInt(process.env.TOKENBOARD_FETCH_TIMEOUT_MS || '', 10)
-  if (!Number.isFinite(configured) || configured <= 0) return defaultRequestTimeoutMs
+  const value = process.env.TOKENBOARD_FETCH_TIMEOUT_MS || ''
+  if (!positiveIntegerPattern.test(value)) return defaultRequestTimeoutMs
+  const configured = Number(value)
+  if (!Number.isSafeInteger(configured)) return defaultRequestTimeoutMs
   return Math.min(maxRequestTimeoutMs, configured)
 }
 

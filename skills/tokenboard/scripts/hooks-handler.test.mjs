@@ -81,7 +81,13 @@ test('notify handler recovers a malformed dispatch lock before starting a worker
     }))
 
     assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex']).status, 0)
-    await waitFor(() => existsSync(countPath), () => readDispatchDiagnostic(root))
+    await waitFor(async () => {
+      try {
+        return (await readFile(countPath, 'utf8')).trim() === 'started'
+      } catch {
+        return false
+      }
+    }, () => readDispatchDiagnostic(root))
     assert.equal(await readTextFile(countPath), 'started')
   } finally {
     await rm(root, { recursive: true, force: true })

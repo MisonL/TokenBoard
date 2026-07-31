@@ -25,17 +25,42 @@ export function truncateSignal(runtime) {
   runtime.writeFile(signalPath(runtime), '')
 }
 
-export function drainSignalSources(runtime) {
-  const queuedSources = drainQueuedSignalSources(runtime)
-  const legacySources = drainLegacySignalSources(runtime)
-  return mergeSources(queuedSources, legacySources)
+export function acknowledgeSignalSource(runtime, source) {
+  const sourceName = signalSourceName(source)
+  const recovered = normalizeSignalRecoveryEntries(readSignalRecoveryEntries(runtime), runtime)
+  const unexpected = recovered.find(({ sources }) => sources.includes(sourceName) && sources.length !== 1)
+  if (unexpected) {
+    throw new Error('TokenBoard signal recovery journal must be normalized before acknowledgement')
+  }
+  for (const { path, sources } of recovered) {
+    if (sources.length !== 1 || sources[0] !== sourceName) continue
+    try {
+      removeDrainedSignal(path, runtime)
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
 }
 
-function drainLegacySignalSources(runtime) {
+export function drainSignalSources(runtime) {
+  // Validate retained recovery state before rotating new signals into uniquely
+  // named drain files. A malformed journal must fail closed without creating
+  // an unbounded set of files on every retry.
+  const recovered = normalizeSignalRecoveryEntries(readSignalRecoveryEntries(runtime), runtime)
+  const queuedDrainPaths = drainQueuedSignalPaths(runtime)
+  const legacyDrainPaths = drainLegacySignalPaths(runtime)
+  return consumeDrainedSignalSources([
+    ...queuedDrainPaths,
+    ...legacyDrainPaths
+  ], recovered, runtime)
+}
+
+function drainLegacySignalPaths(runtime) {
   if (typeof runtime.rename !== 'function') {
-    const sources = readLegacySignalSources(runtime)
-    truncateSignal(runtime)
-    return sources
+    return [
+      ...retainedLegacyDrainPaths(runtime),
+      ...drainLegacySignalWithoutRename(runtime)
+    ]
   }
 
   const drainPaths = retainedLegacyDrainPaths(runtime)
@@ -48,11 +73,14 @@ function drainLegacySignalSources(runtime) {
     if (error.code !== 'ENOENT') throw error
   }
 
-  return consumeDrainedSignalSources(drainPaths, runtime)
+  return drainPaths
 }
 
 export function readSignalSources(runtime) {
-  return mergeSources(readQueuedSignalSources(runtime), readLegacySignalSources(runtime))
+  return mergeSources(
+    readSignalRecoveryEntries(runtime).flatMap(({ sources }) => sources),
+    mergeSources(readQueuedSignalSources(runtime), readLegacySignalSources(runtime))
+  )
 }
 
 function readLegacySignalSources(runtime) {
@@ -96,7 +124,7 @@ function signalSourceName(source) {
   throw new Error('Unsupported TokenBoard signal source')
 }
 
-function drainQueuedSignalSources(runtime) {
+function drainQueuedSignalPaths(runtime) {
   if (typeof runtime.readdir !== 'function' || typeof runtime.rename !== 'function') return []
   const drainPaths = []
   for (const name of readQueueEntries(runtime)) {
@@ -114,7 +142,7 @@ function drainQueuedSignalSources(runtime) {
     }
     drainPaths.push(drainPath)
   }
-  return consumeDrainedSignalSources(drainPaths, runtime)
+  return drainPaths
 }
 
 function readQueuedSignalSources(runtime) {
@@ -142,11 +170,19 @@ function readQueueEntries(runtime) {
 }
 
 function isQueuedSignalEntry(name) {
-  return name === 'codex.json' || name === 'claude-code.json' || isDrainedSignalEntry(name)
+  return isActiveQueuedSignalEntry(name) || isDrainedSignalEntry(name)
+}
+
+function isActiveQueuedSignalEntry(name) {
+  return name === 'codex.json' || name === 'claude-code.json' || isLegacyQueuedSignalEntry(name)
+}
+
+function isLegacyQueuedSignalEntry(name) {
+  return /^\d+-\d+-[a-z0-9]+\.json$/.test(name)
 }
 
 function isDrainedSignalEntry(name) {
-  return /^(codex|claude-code)\.json\.[^.]+\.[^.]+(?:\.[^.]+)?\.drain$/.test(name)
+  return /^(?:codex|claude-code|\d+-\d+-[a-z0-9]+)\.json\.[^.]+\.[^.]+(?:\.[^.]+)?\.drain$/.test(name)
 }
 
 function retainedLegacyDrainPaths(runtime) {
@@ -162,6 +198,34 @@ function retainedLegacyDrainPaths(runtime) {
   }
 }
 
+function retainedSignalRecoveryPaths(runtime) {
+  if (typeof runtime.readdir !== 'function') return []
+  try {
+    return runtime.readdir(runtime.stateDir)
+      .filter(isSignalRecoveryEntry)
+      .sort()
+      .map((name) => join(runtime.stateDir, name))
+  } catch (error) {
+    if (error.code === 'ENOENT') return []
+    throw error
+  }
+}
+
+function readSignalRecoveryEntries(runtime) {
+  const entries = []
+  for (const path of retainedSignalRecoveryPaths(runtime)) {
+    try {
+      entries.push({
+        path,
+        sources: readSignalRecoverySourcesFromText(runtime.readFile(path))
+      })
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
+  return entries
+}
+
 function readRetainedLegacySignalSources(runtime) {
   return retainedLegacyDrainPaths(runtime)
     .flatMap((path) => readSourcesFromText(runtime.readFile(path)))
@@ -171,38 +235,112 @@ function isLegacyDrainedSignalEntry(name) {
   return /^notify\.signal\.[^.]+\.[^.]+(?:\.[^.]+)?\.drain$/.test(name)
 }
 
+function isSignalRecoveryEntry(name) {
+  return name === 'notify.signal.recovery.codex.json' ||
+    name === 'notify.signal.recovery.claude-code.json' ||
+    /^notify\.signal\.recovery\.[^.]+\.[^.]+\.[a-f0-9]+\.json$/.test(name)
+}
+
 function signalDrainPath(path, runtime) {
   return `${path}.${runtime.process.pid}.${runtime.now()}.${randomBytes(8).toString('hex')}.drain`
 }
 
-function consumeDrainedSignalSources(paths, runtime) {
-  const drained = paths.map((path) => ({
-    path,
-    sources: readSourcesFromText(runtime.readFile(path))
-  }))
-  const sources = mergeSources(drained.flatMap(({ sources }) => sources), [])
+function drainLegacySignalWithoutRename(runtime) {
+  const path = signalPath(runtime)
   try {
-    for (const { path } of drained) removeDrainedSignal(path, runtime)
+    const sources = readSourcesFromText(runtime.readFile(path))
+    return [{ path, sources, remove: () => truncateSignal(runtime) }]
   } catch (error) {
-    restoreDrainedSignalSources(sources, runtime, error)
+    if (error.code === 'ENOENT') return []
+    throw error
+  }
+}
+
+function consumeDrainedSignalSources(entries, recovered, runtime) {
+  const drained = entries.map((entry) => typeof entry === 'string'
+    ? { path: entry, sources: readSourcesFromText(runtime.readFile(entry)), remove: () => removeDrainedSignal(entry, runtime) }
+    : entry
+  )
+  if (drained.length === 0 && recovered.length === 0) return []
+  const sources = mergeSources(
+    recovered.flatMap(({ sources }) => sources),
+    drained.flatMap(({ sources }) => sources)
+  )
+  try {
+    ensureSignalRecoveryJournals(recovered, sources, runtime)
+    for (const { remove } of drained) remove()
+  } catch (error) {
+    throw new Error(`TokenBoard signal cleanup failed; recovery journal retained: ${errorMessage(error)}`, { cause: error })
   }
   return sources
+}
+
+function normalizeSignalRecoveryEntries(entries, runtime) {
+  const multiSourceEntries = entries.filter(({ sources }) => sources.length > 1)
+  if (multiSourceEntries.length === 0) return entries
+  const individualEntries = entries.filter(({ sources }) => sources.length === 1)
+  const sources = mergeSources(multiSourceEntries.flatMap(({ sources }) => sources), [])
+  try {
+    ensureSignalRecoveryJournals(individualEntries, sources, runtime)
+    for (const { path } of multiSourceEntries) removeDrainedSignal(path, runtime)
+  } catch (error) {
+    throw new Error(`TokenBoard signal recovery journal migration failed: ${errorMessage(error)}`, { cause: error })
+  }
+  return [
+    ...individualEntries,
+    ...sources
+      .filter((source) => !individualEntries.some(({ sources }) => sources[0] === source))
+      .map((source) => ({ path: signalRecoveryPath(source, runtime), sources: [source] }))
+  ]
+}
+
+function ensureSignalRecoveryJournals(recovered, sources, runtime) {
+  for (const source of sources) {
+    if (recovered.some(({ sources: recoveredSources }) => {
+      return recoveredSources.length === 1 && recoveredSources[0] === source
+    })) continue
+    writeSignalRecoveryJournal(source, runtime)
+  }
 }
 
 function removeDrainedSignal(path, runtime) {
   runtime.unlink(path)
 }
 
-function restoreDrainedSignalSources(sources, runtime, removalError) {
+function writeSignalRecoveryJournal(source, runtime) {
+  const path = signalRecoveryPath(source, runtime)
   try {
-    for (const source of sources) appendSignal(runtime, { source })
-  } catch (restoreError) {
-    throw new AggregateError(
-      [removalError, restoreError],
-      `TokenBoard signal cleanup and recovery failed: ${errorMessage(removalError)}; ${errorMessage(restoreError)}`
-    )
+    runtime.writeFile(path, `${JSON.stringify({ version: 2, source })}\n`, { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    const sources = readSignalRecoverySourcesFromText(runtime.readFile(path))
+    if (sources.length === 1 && sources[0] === source) return
+    throw new Error('Unexpected TokenBoard signal recovery journal already exists', { cause: error })
   }
-  throw removalError
+}
+
+function signalRecoveryPath(source, runtime) {
+  return join(runtime.stateDir, `notify.signal.recovery.${signalSourceName(source)}.json`)
+}
+
+function readSignalRecoverySourcesFromText(text) {
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    throw new Error(`Invalid TokenBoard signal recovery journal: ${errorMessage(error)}`, { cause: error })
+  }
+  if (parsed?.version === 2 && (parsed.source === 'codex' || parsed.source === 'claude-code')) {
+    return [parsed.source]
+  }
+  if (parsed?.version !== 1 || !Array.isArray(parsed.sources)) {
+    throw new Error('Invalid TokenBoard signal recovery journal')
+  }
+  const sources = parsed.sources.filter((source) => source === 'codex' || source === 'claude-code')
+  if (sources.length !== parsed.sources.length || sources.length === 0) {
+    throw new Error('Invalid TokenBoard signal recovery journal')
+  }
+  return mergeSources(sources, [])
 }
 
 function readSourcesFromText(text) {

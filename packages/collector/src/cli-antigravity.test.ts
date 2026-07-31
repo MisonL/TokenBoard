@@ -711,6 +711,21 @@ describe('runCollectorCli Antigravity source', () => {
       label: 'metadata HTTP errors',
       message: 'Antigravity metadata request failed for antigravity: HTTP 500',
       category: 'language-server-unavailable'
+    },
+    {
+      label: 'bounded SQLite scans that require a full baseline',
+      message: 'Antigravity CLI requires --since all before a bounded scan can complete an incomplete SQLite directory scan',
+      category: 'sqlite-full-baseline-required'
+    },
+    {
+      label: 'incomplete explicit full-history SQLite scans',
+      message: 'Antigravity CLI --since all requires a complete SQLite directory scan',
+      category: 'sqlite-directory-incomplete'
+    },
+    {
+      label: 'unstable SQLite directories during full-history reads',
+      message: 'Antigravity CLI full history scan could not read every enumerated SQLite database; retry after the conversations directory is stable',
+      category: 'sqlite-directory-incomplete'
     }
   ])('classifies $label as $category', async ({ message, category }) => {
     const stderr: string[] = []

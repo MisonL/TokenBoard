@@ -12,7 +12,11 @@ import {
   type CodexSessionCloner
 } from './codex-session-cloner'
 import { resolveCodexHomes as resolveConfiguredCodexHomes } from './codex-homes'
-import { resolveSessionJsonlFiles } from './session-file-walk'
+import {
+  compareSessionRelativePaths,
+  normalizeSessionRelativePath,
+  resolveSessionJsonlFiles
+} from './session-file-walk'
 
 const codexSessionRoots = ['sessions', 'archived_sessions'] as const
 const DEFAULT_CODEX_SESSION_FILE_BYTES = 4 * 1024 * 1024 * 1024
@@ -583,7 +587,7 @@ async function* matchingSessionCandidates(scan: CodexSessionScan): AsyncGenerato
       .map((result, index) => result.done ? null : { candidate: result.value, index })
       .filter((value): value is { candidate: CodexSessionCandidate; index: number } => value !== null)
     const relativePath = active.reduce((smallest, value) =>
-      value.candidate.relativePath.localeCompare(smallest) < 0 ? value.candidate.relativePath : smallest
+      compareSessionRelativePaths(value.candidate.relativePath, smallest) < 0 ? value.candidate.relativePath : smallest
     , active[0].candidate.relativePath)
     const matching = active.filter((value) => value.candidate.relativePath === relativePath)
     const candidate = matching
@@ -608,7 +612,7 @@ async function* matchingSessionCandidateGroups(
       .map((result, index) => result.done ? null : { candidate: result.value, index })
       .filter((value): value is { candidate: CodexSessionCandidate; index: number } => value !== null)
     const relativePath = active.reduce((smallest, value) =>
-      value.candidate.relativePath.localeCompare(smallest) < 0 ? value.candidate.relativePath : smallest
+      compareSessionRelativePaths(value.candidate.relativePath, smallest) < 0 ? value.candidate.relativePath : smallest
     , active[0].candidate.relativePath)
     const matching = active.filter((value) => value.candidate.relativePath === relativePath)
     for (const { index } of matching) {
@@ -700,7 +704,7 @@ function candidateForFile(
 ): CodexSessionCandidate | null {
   const absoluteFile = resolve(root.path, file)
   if (!isPathInside(root.path, absoluteFile)) return null
-  const relativePath = relative(root.path, absoluteFile)
+  const relativePath = normalizeSessionRelativePath(relative(root.path, absoluteFile))
   if (!relativePath || isAbsolute(relativePath)) return null
   return {
     root,
@@ -713,7 +717,7 @@ function candidateForFile(
 
 function compareCandidates(left: CodexSessionCandidate, right: CodexSessionCandidate) {
   return rootPriority(left.root) - rootPriority(right.root) ||
-    left.relativePath.localeCompare(right.relativePath)
+    compareSessionRelativePaths(left.relativePath, right.relativePath)
 }
 
 function rootPriority(root: CodexSessionRoot) {
@@ -726,6 +730,10 @@ async function createEmptyScope(homeCount: number): Promise<CodexSessionScope> {
     await Promise.all(codexSessionRoots.map((name) => mkdir(join(codexHome, name), { recursive: true })))
     return codexHome
   }))
+  if (codexHomes.some((codexHome) => codexHome.includes(','))) {
+    await Promise.all(codexHomes.map((codexHome) => rm(codexHome, { recursive: true, force: true })))
+    throw new Error('Temporary Codex session scope path contains a comma and cannot be serialized as CODEX_HOME')
+  }
   const sourceFiles = new Map<string, string>()
   const sourceFileFingerprints = new Map<string, CodexSessionFileFingerprint>()
   return {

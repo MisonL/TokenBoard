@@ -288,6 +288,10 @@ export function waitForReady(
     }
     const probeEndpoint = () => {
       if (settled || probing) return
+      if (server.exitCode !== null || server.signalCode !== null) {
+        rejectStartup('Antigravity language server exited before it was ready')
+        return
+      }
       probing = true
       probe(port).then(
         () => {

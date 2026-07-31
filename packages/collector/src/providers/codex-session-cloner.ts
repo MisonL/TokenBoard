@@ -162,6 +162,7 @@ class MacOsCloneClient {
     child.stdout.on('data', (chunk: Buffer) => this.readResponseChunk(chunk))
     child.stdout.once('error', (error) => this.fail(error))
     child.stdin.once('error', (error) => this.fail(error))
+    child.stderr.once('error', (error) => this.fail(error))
     child.stderr.resume()
     child.once('error', (error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') {

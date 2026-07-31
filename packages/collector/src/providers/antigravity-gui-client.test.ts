@@ -37,16 +37,33 @@ describe('createAntigravityLanguageServerClient', () => {
     expect(probe).toHaveBeenCalledWith(43123)
   })
 
-  test('does not accept a TLS endpoint after the language server has already exited', async () => {
+  test('rejects without waiting for a hanging readiness probe after the language server has already exited', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS', '1')
     const server = Object.assign(new EventEmitter(), {
       stdout: new PassThrough(),
       stderr: new PassThrough(),
       exitCode: 1,
       signalCode: null
     }) as unknown as Parameters<typeof waitForReady>[0]
+    const probe = vi.fn(() => new Promise<void>(() => {}))
+    const readiness = waitForReady(server, 43123, probe)
+    const completion = readiness.then(
+      () => ({ error: null }),
+      (error) => ({ error })
+    )
 
-    await expect(waitForReady(server, 43123, vi.fn().mockResolvedValue(undefined)))
-      .rejects.toThrow('Antigravity language server exited before it was ready')
+    try {
+      expect(probe).not.toHaveBeenCalled()
+      await expect(completion).resolves.toMatchObject({
+        error: expect.objectContaining({ message: 'Antigravity language server exited before it was ready' })
+      })
+    } finally {
+      await vi.advanceTimersByTimeAsync(1)
+      await completion
+      vi.unstubAllEnvs()
+      vi.useRealTimers()
+    }
   })
 
   test('does not include raw response bodies in metadata HTTP errors', () => {

@@ -1,7 +1,7 @@
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
-import { appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
+import { acknowledgeSignalSource, appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
 import { errorMessage } from './error-message.mjs'
 
 const defaultLockTimeoutMs = 60_000
@@ -220,9 +220,11 @@ function runLockedCycles(trigger, runtime, initialSources, lockToken) {
     for (const source of sources) {
       const sourceTrigger = { ...trigger, source }
       try {
+        const syncResult = runtime.executeSync(sourceTrigger, lockToken)
+        acknowledgeSignalSource(runtime, source)
         cycles.push({
           source,
-          result: runtime.executeSync(sourceTrigger, lockToken)
+          result: syncResult
         })
         failedSources.delete(source)
       } catch (cause) {
@@ -357,7 +359,7 @@ function scheduleTrailingSources(trigger, sources, runtime, remainingMs) {
 }
 
 function lockTimeoutRetryDelayMs(runtime) {
-  return Math.max(defaultLockTimeoutRetryDelayMs, runtime.cooldownMs)
+  return defaultLockTimeoutRetryDelayMs
 }
 
 function scheduleDeferredFollowUps(trigger, runtime, result) {

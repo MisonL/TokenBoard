@@ -48,6 +48,13 @@ type SubagentMeta = {
   startedAt: string
 }
 
+type OversizedIrrelevantChildRowSummary = {
+  rows: number
+  largestBytes: number
+}
+
+const oversizedIrrelevantChildRowPattern = /^Skipped ([1-9][0-9]*) oversized Codex child session JSONL rows? without usage or subagent metadata \(largest ([1-9][0-9]*) bytes\)$/
+
 export async function applyCodexSubagentUsageCorrections(input: {
   snapshots: UsageSnapshot[]
   sessions: unknown
@@ -64,6 +71,7 @@ export async function applyCodexSubagentUsageCorrections(input: {
 
   const timezone = input.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
   const readerRuntime = createChildReaderRuntime(input)
+  const diagnostics = createCodexSubagentDiagnostics(input.stderr)
   const earliestSnapshotDate = input.snapshots.reduce((earliest, snapshot) =>
     snapshot.usageDate < earliest ? snapshot.usageDate : earliest
   , input.snapshots[0].usageDate)
@@ -79,7 +87,7 @@ export async function applyCodexSubagentUsageCorrections(input: {
         codexHomes: input.codexHomes,
         timezone,
         earliestSnapshotDate,
-        stderr: input.stderr,
+        stderr: diagnostics.report,
         readChildUsageByDate: reader.read,
         readChildUsageEvents: reader.readEvents,
         maxConcurrentChildReads: readerRuntime.concurrency
@@ -87,11 +95,51 @@ export async function applyCodexSubagentUsageCorrections(input: {
     })
     if (adjustments.size === 0) return input.snapshots
     return input.snapshots.map((snapshot) =>
-      subtractAdjustment(snapshot, adjustments.get(snapshotKey(snapshot)), input.stderr)
+      subtractAdjustment(snapshot, adjustments.get(snapshotKey(snapshot)), diagnostics.report)
     )
   } finally {
-    await readerRuntime.close()
+    try {
+      await readerRuntime.close()
+    } finally {
+      diagnostics.flush()
+    }
   }
+}
+
+function createCodexSubagentDiagnostics(stderr?: (line: string) => void) {
+  let skippedRows = 0
+  let largestSkippedRowBytes = 0
+  let skippedRowScans = 0
+
+  return {
+    report(line: string) {
+      const summary = parseOversizedIrrelevantChildRowSummary(line)
+      if (!summary) {
+        stderr?.(line)
+        return
+      }
+      skippedRows += summary.rows
+      largestSkippedRowBytes = Math.max(largestSkippedRowBytes, summary.largestBytes)
+      skippedRowScans += 1
+    },
+    flush() {
+      if (skippedRows === 0) return
+      const rowLabel = skippedRows === 1 ? 'row' : 'rows'
+      const scanLabel = skippedRowScans === 1 ? 'scan' : 'scans'
+      stderr?.(
+        `Skipped ${skippedRows} oversized Codex child session JSONL ${rowLabel} without usage or subagent metadata across ${skippedRowScans} ${scanLabel} (largest ${largestSkippedRowBytes} bytes)`
+      )
+    }
+  }
+}
+
+function parseOversizedIrrelevantChildRowSummary(line: string): OversizedIrrelevantChildRowSummary | null {
+  const match = oversizedIrrelevantChildRowPattern.exec(line)
+  if (!match) return null
+  const rows = Number(match[1])
+  const largestBytes = Number(match[2])
+  if (!Number.isSafeInteger(rows) || !Number.isSafeInteger(largestBytes)) return null
+  return { rows, largestBytes }
 }
 
 async function collectSubagentAdjustments(input: {
@@ -264,13 +312,30 @@ async function readCorrectedSubagentMetrics(
   return usageByDate.map((usage) => ({
     usageDate: usage.usageDate,
     model: original.model,
-    inputTokens: subtractNonNegative(usage.inputTokens, usage.cacheReadTokens, 'subagent input'),
+    inputTokens: correctedChildInputTokens(usage),
     outputTokens: usage.outputTokens,
     cacheCreationTokens: usage.cacheCreationTokens,
     cacheReadTokens: usage.cacheReadTokens,
     totalTokens: usage.totalTokens,
     costUsd: prorateCost(original.costUsd, usage.totalTokens, original.totalTokens)
   }))
+}
+
+function correctedChildInputTokens(usage: {
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  totalTokens: number
+}) {
+  // Legacy Codex records report cached input inside input_tokens, while newer
+  // records can report it as a separate additive field. The total proves which
+  // representation produced this event; without that proof preserve input.
+  const cacheReadIsIncludedInInput = usage.cacheReadTokens <= usage.inputTokens &&
+    usage.totalTokens === usage.inputTokens + usage.cacheCreationTokens + usage.outputTokens
+  return cacheReadIsIncludedInInput
+    ? subtractNonNegative(usage.inputTokens, usage.cacheReadTokens, 'subagent input')
+    : usage.inputTokens
 }
 
 async function readCrossProfileChildUsageByDate(

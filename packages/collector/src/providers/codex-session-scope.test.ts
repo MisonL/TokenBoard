@@ -90,6 +90,30 @@ describe('createCodexSessionScope', () => {
     }
   })
 
+  test('rejects and cleans up a temporary scope when TMPDIR contains a comma', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    const tempRoot = await mkdtemp(join(tmpdir(), 'tokenboard-scope-comma-root-'))
+    const commaTmpdir = join(tempRoot, 'temporary,scope')
+    const previousTmpdir = process.env.TMPDIR
+
+    try {
+      await mkdir(commaTmpdir)
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', '09', 'session.jsonl'), [
+        tokenCountEvent('2026-05-09T04:24:07.234Z')
+      ])
+      process.env.TMPDIR = commaTmpdir
+
+      await expect(createCodexSessionScope({ codexHome, since: 'all' })).rejects.toThrow(
+        'Temporary Codex session scope path contains a comma'
+      )
+      await expect(listScopeTempDirs(commaTmpdir)).resolves.toEqual([])
+    } finally {
+      restoreTmpdir(previousTmpdir)
+      await rm(codexHome, { recursive: true, force: true })
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
   test('reads comma-containing Codex homes from an unambiguous JSON environment value', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-scope-json-homes-'))
     const codexHome = join(root, 'profile,primary')
@@ -277,6 +301,43 @@ describe('createCodexSessionScope', () => {
       expect(batches.every((batch) => Object.values(batch).filter(Boolean).length <= 2)).toBe(true)
     } finally {
       await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('groups complete relative paths across profiles when a nested directory sorts beside a sibling file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-scope-order-'))
+    const firstHome = join(root, 'first')
+    const secondHome = join(root, 'second')
+    const firstSibling = join(firstHome, 'sessions', 'a.jsonl')
+    const secondSibling = join(secondHome, 'sessions', 'a.jsonl')
+    const firstNested = join(firstHome, 'sessions', 'a', 'nested.jsonl')
+
+    try {
+      await Promise.all([
+        writeJsonl(firstSibling, [tokenCountEvent('2026-05-09T04:24:07.234Z')]),
+        writeJsonl(secondSibling, [tokenCountEvent('2026-05-09T04:24:07.234Z')]),
+        writeJsonl(firstNested, [tokenCountEvent('2026-05-09T04:24:07.234Z')])
+      ])
+
+      const batches: string[][] = []
+      for await (const scope of createCodexSessionScopeBatches({
+        codexHomes: [firstHome, secondHome],
+        since: 'all',
+        batchSize: 1
+      })) {
+        try {
+          batches.push([...scope.sourceFiles.values()].sort())
+        } finally {
+          await scope.cleanup()
+        }
+      }
+
+      expect(batches).toEqual([
+        [firstSibling, secondSibling].sort(),
+        [firstNested]
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
     }
   })
 

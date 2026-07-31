@@ -36,13 +36,13 @@ D1 migration、质量安全、独立复核、私人 Cloudflare 验证、原子�
   才能恢复 T07 的最小补偿及 hash 复核，再执行 T09 的只读外部复核；只有所有 confirmed finding 已闭环并重新验证后，
   才可执行 T10 的私人 Cloudflare migration/deploy/rollback 验证和中文 PR 收尾。
 
-### Current Completion Snapshot (2026-07-29)
+### Historical Completion Snapshot (2026-07-29, Earlier Candidate)
 
 - 上节是重设当日的历史门禁状态，不描述当前完成度。`T01` 至 `T10` 的最终状态和各自证据以本文件
   后续对应章节为准；本次快照未将任何旧部署、历史 preview 或外部审查缓存作为新证据。
-- 已重新执行 `git fetch --all --prune`。当前分支相对 `upstream/master` 领先 3 个提交、相对 fork
-  远端无领先或落后；运行时代码最后变更于 `12f3a20`，其后的提交仅更新发布和验证文档。草稿 PR #21
-  仍为 `CLEAN`，且 GitGuardian check 成功。
+- 此处记录的是当时的旧候选快照，不再代表当前分支、远端关系或 PR 状态。当时的候选相对
+  `upstream/master` 领先 3 个提交、相对 fork 远端无领先或落后；运行时代码最后变更于 `12f3a20`，
+  其后的提交仅更新发布和验证文档。草稿 PR #21 当时为 `CLEAN`，且 GitGuardian check 成功。
 - 脱敏本机状态确认 collector、设备身份、四个每日时段和 Codex、Claude Code、Antigravity hooks
   均已配置。最近一次 Codex 尾随 hook 完成实际当天同步，运行记录为 success、无 cycle error，且
   `sync.lock`、`collector-run.lock` 与 `trailing.lock` 均已释放。
@@ -55,6 +55,70 @@ D1 migration、质量安全、独立复核、私人 Cloudflare 验证、原子�
 - 对公开 `/auth/sign-in` 做桌面和 390 px 视觉核验，没有横向溢出、遮挡或失效控件。点击后跳转到
   GitHub 托管的 OAuth 登录页；该页面的视觉样式不由 TokenBoard Worker 或 CSS 提供，不能作为本仓库
   的样式缺陷处理。
+
+### Latest Revalidation Snapshot (2026-07-29, Pre-Commit)
+
+- 本轮修改 Codex/Claude Code notifier 的 hook-only cooldown、signal drain recovery journal 与对应
+  文档、回归测试。默认 cooldown 从五分钟调整为十五分钟；`TOKENBOARD_NOTIFY_COOLDOWN_MS` 只接受
+  `60000` 至 `3600000` 的整毫秒值。非法配置会显式失败且保留已入队 signal，尾随 notifier 会继承已
+  验证的配置；与 cooldown 无关的 shared `sync.lock` timeout 继续固定为一分钟重试，避免扩大恢复延迟。
+- signal drain 在 cleanup 失败时保留私有 recovery journal；后续相同来源的持续 cleanup 失败会复用已
+  覆盖全部来源的 journal，而不会按重试次数增长文件数。新增来源时先写入覆盖全集的新 journal，旧 journal
+  删除失败仍保留，确保没有恢复窗口。损坏或不支持版本的 journal 继续显式失败并保留原文件，不能静默跳过。
+- 本机门禁已重新执行：workspace 的 usage-core、Web 与 collector 测试分别通过 `9`、`582`、`633`
+  项用例；signal recovery 修复后的 skill scripts 通过 `397` 项；`pnpm typecheck`、`pnpm build`、
+  `pnpm audit --audit-level=high` 与 `git diff --check` 均通过。完整 workspace 命令会在提交前再以
+  单一进程复跑并记录退出结果，不把分包结果冒充为该命令的成功。
+- 私人 Cloudflare 仅使用私有 Wrangler 配置执行了新的受保护部署：配置校验、D1 Time Travel restore
+  point、guarded deploy、远端 migration list、critical schema 与 `PRAGMA foreign_key_check` 均成功；
+  migration 无待执行项，critical schema gate 的四项查询无写入，当前 Worker deployment 为 active，
+  且当前版本保有 D1 和 assets bindings。未操作上游生产、Workers Builds、GitHub Actions 或自动 CI/CD。
+- 本机 `status.mjs` 的公开字段确认 active server、collector 与 device identity 均已配置，有四个
+  schedule 时段；notify handler、Codex、Claude Code、Antigravity CLI 均为 `installed`，普通
+  Antigravity 与 IDE 为 `installed-local-history`。本轮未删除 cursor、lock、恢复状态或常驻 notifier。
+- 此次部署后的受控复核没有新的浏览器 CDP 会话，因此没有重新宣称认证页面、复制控件、AJAX navigation
+  或真实 ingest 的浏览器证据；这些项目仍以本文件 2026-07-28 的隔离浏览器与真实 collector 记录为历史
+  证据。本次 hook-only 代码不改变 Worker bundle、D1 schema、页面或 ingest route。
+
+### Current Candidate Snapshot (2026-07-29, Pre-Commit)
+
+- 已重新执行 `git fetch --all --prune`。当前候选分支为
+  `fix/post-merge-reliability-followups-ui`，相对 `upstream/master` 和 `origin/master` 均为领先
+  14 个提交、落后 0 个提交。
+- 该候选尚未推送：fork 和 upstream 均不存在同名远端分支，`gh pr list` 没有返回同名分支的 PR。后续
+  只能推送到 fork，并在完整门禁通过后创建面向 `upstream/master` 的中文 PR；不得推送 upstream。
+- 当前工作树仍有 notifier cooldown、signal recovery、对应测试和文档的未提交变更。它们尚未重新完成
+  冻结后的完整质量门禁，因此本节不把前述历史部署、测试或审查结果当作当前未提交差异的完成证据。
+
+### Current Candidate Snapshot (2026-07-30, Uncommitted)
+
+- 已重新执行 `git fetch --all --prune`。当前分支相对 `origin/master` 和 `upstream/master` 均为
+  领先 `14`、落后 `0`；工作树包含未提交的 hook cooldown、signal recovery、Codex 子代理计量兼容
+  与测试、文档变更，且没有将本机状态、凭证或原始会话纳入差异。
+- 本轮新增的 Codex 诊断聚合只合并精确匹配的安全 oversized-row 摘要，保留总行数、扫描次数和
+  最大字节数；不会吞掉 malformed、recovery、cache、读取或校正失败。定向 collector 回归为
+  `68` 个文件、`635` 项用例通过，collector typecheck 通过。
+- 2026-07-30 的独立 hook 审阅确认 recovery journal 在 drain 成功后、首个 source sync 前被删除会
+  丢失信号。现已改为每个 source 一个有界私有 journal，只有对应 `executeSync()` 正常返回后才确认
+  删除；旧的多 source journal 先无损迁移，部分 source 失败、确认删除失败和同步期间的新 signal 都
+  保留重试证据。定向 coordinator/signal 为 `40/40`，完整 skill scripts 为 `402/402` 通过。
+- 当前未提交候选的完整本机质量门禁通过：workspace tests 为 usage-core `9`、Web `582`、collector
+  `635`；`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=high`、相对基线的
+  `git diff --check` 均通过；全部 `0000` 至 `0029` migration 已在内存 SQLite 顺序应用，critical
+  schema 和 `PRAGMA foreign_key_check` 均无输出。此处不把它们代替当前人工 diff 安全审阅、T07、T09
+  或 T10 的验收。
+- 其后针对 Antigravity CLI 首次有界 SQLite 扫描又完成了一项 T02 修复。内置 reader 现在显式返回
+  `completeDirectoryScan`；尚无全量 SQLite 基线时，默认 64 个 DB 的有界扫描只要目录未完整覆盖，
+  就会在写入 cursor 前明确要求 `--since all`，即使当前抽样 DB 没有 usage 或 pending snapshot 也不会
+  返回看似成功的空结果；`--since all` 和显式 `maxDbFiles: null` 均要求枚举出的全部数据库可读。本机 502 个 CLI DB
+  的隔离验证确认近月冷启动被安全阻止且临时 state 保持为空，完整扫描生成 25 个 group 和完整基线标记，
+  没有上传或改动生产 cursor。
+- 该运行时代码和直接支持测试变更后，完整 T08 门禁已从零重跑：workspace tests 为 usage-core `9`、
+  Web `582`、collector `640`；skill scripts `402`；`pnpm typecheck`、`pnpm build`、
+  `pnpm audit --audit-level=high`、基线 diff whitespace 检查和 0000 至 0029 的内存 D1 migration /
+  critical schema / foreign-key 检查均通过。当前完整 diff 的人工安全审阅没有确认 P1/P2；用户禁止
+  `codex-security` 插件，OMP 仍按指示跳过且不计为审查通过。T08 已完成，T07 才可恢复为只读本机
+  状态核验和受控数据对账；T09、T10、提交、推送和 PR 仍未完成。
 
 ### Authority, Baseline And Preservation
 
@@ -170,7 +234,7 @@ D1 migration、质量安全、独立复核、私人 Cloudflare 验证、原子�
 
 ## T01 Baseline And Worktree Protection
 
-状态：已完成
+状态：已完成（2026-07-30 修订）
 
 内容：固定分支 `fix/post-merge-reliability-followups`、比较基线、当前差异和未跟踪工件；
 确认不存在可安全丢弃的既有改动，并将本文件设为本轮唯一任务来源。
@@ -183,7 +247,7 @@ D1 migration、质量安全、独立复核、私人 Cloudflare 验证、原子�
 
 ## T02 Antigravity CLI Metering And Cursor Correctness
 
-状态：已完成
+状态：已完成（2026-07-30 追加 fail-closed 验证）
 
 内容：完成并复核以下 Antigravity CLI 正确性边界。
 
@@ -234,6 +298,16 @@ identity；随后两次 `--since all` canonical rebuild 均生成同一 daily-mo
 `pnpm --filter @tokenboard/collector test -- src/providers/antigravity-cli-full-rebuild.test.ts src/providers/antigravity-cli-replay-compaction.test.ts src/providers/antigravity-cli-history-authority.test.ts src/providers/antigravity-cli-cursor.test.ts src/providers/session-cursor.test.ts src/providers/antigravity-cli.test.ts src/cli-antigravity.test.ts`（47 文件、450 用例）和
 `pnpm --filter @tokenboard/collector typecheck`。
 
+2026-07-30 有界首扫完整性修复：SQLite reader 现在显式报告本轮是否读完所有符合条件的
+数据库。没有 `antigravityCliHistoryComplete` 全量基线时，任何不完整的有限目录扫描都会明确要求
+`--since all`，包括当前抽样数据库没有 usage 或待重试 snapshot 的空结果；失败前不写入 row cursor、
+scan state 或 snapshot。显式无上限的有界 scan 也必须完成整个目录读取。完整基线建立后保留原有的
+有界增量行为。回归覆盖有限首扫、空的有限首扫、待重试 snapshot、伪造不完整的 full scan、full
+baseline 后增量，以及 reader 本身的完整性标记。`pnpm --filter @tokenboard/collector test -- ...`
+为 `68/68` 文件、`640/640` 用例通过，collector typecheck 与 `git diff --check` 通过。使用一次性
+本机 state directory 对 502 个 Antigravity CLI SQLite 数据库验证：近月有限首扫被拦截且不落盘；
+`--since all` 完成并生成 25 个 snapshot group 和完整基线标记。两次验证均未上传或修改生产 cursor。
+
 ## T03 Five-Source Since Windows And GUI/IDE Reliability
 
 状态：已完成
@@ -272,7 +346,7 @@ Codex、Antigravity CLI、Antigravity 和 Antigravity IDE；各来源在 provide
 
 ## T04 Hooks Statusline Locks And Multi-Server Recovery
 
-状态：已完成
+状态：已完成（2026-07-30 修订）
 
 内容：完成并已运行定向回归的本地脚本可靠性修复。
 
@@ -287,16 +361,19 @@ Codex、Antigravity CLI、Antigravity 和 Antigravity IDE；各来源在 provide
   时不泄漏部分输出。
 - 成功 sync 之后 checkpoint 写入失败时，`last-run` 保留 cycles 和 follow-up evidence，再额外
   记录 checkpoint 错误；不能把已完成的同步写成空结果。
+- notifier drain 在清理 queue 或 legacy signal 前，为每个 source 写入有界私有 recovery journal；
+  仅在该 source 的 `executeSync()` 正常返回后确认删除。进程在 drain 和同步之间中断、部分 source
+  失败、journal cleanup 失败或同步期间有同源新 signal 时都必须保留可重试状态。
 - legacy root config 在首次加入第二个 server profile 前必须迁移；setup 切回已保存 profile
   时继承 repo URL/ref、package manager 和 schedule，显式 flag 才覆盖保存值。
 - device-link 恢复状态按 server origin 存储；轮换非 active server token 不覆盖 active
   server 的恢复凭证；卸载时若 Antigravity 恢复未完成，不得删除 configDir 或原 statusline
   restore artifact。
 
-验收标准：已通过 `cursor-process-liveness` 和 `session-cursor` 34 个测试、collector
-typecheck、完整 skill scripts `349/349`、hook handler `55/55`、Windows statusline/
-coordinator/notify lock `24/24` 及基线 `git diff --check`。T08 仍会在冻结差异后重新运行
-完整 workspace tests、typecheck 和 build。
+验收标准：修订后的 coordinator/signal 定向回归为 `40/40`，完整 skill scripts `402/402`，并已覆盖
+drain 后崩溃恢复、legacy multi-source migration、单 source 成功确认、部分失败、确认 cleanup 失败和
+同步期间新 signal；完整 workspace tests、typecheck、build、audit、migration/schema 与基线
+`git diff --check` 也已通过。T08 仍须在当前完整 diff 的人工安全审阅后关闭。
 
 审查要求：确认 Windows PATH、PID reuse、权限不足、tasklist 超时、锁替换、EPIPE、子进程
 树、双 server config/device-link、显式恢复和异常卸载均有失败路径并且不会悄然破坏状态。
@@ -396,7 +473,58 @@ Vitest `79` 文件、`576` 用例，以及基线 `git diff --check`。
 
 ## T07 Local Client And One-Month Data Verification
 
-状态：已完成
+状态：进行中（2026-07-30 路径身份修复后重新验收）
+
+2026-07-30 重新打开说明：本轮未提交的 notifier coordination、signal recovery、Codex 子代理
+计量兼容和诊断聚合代码均在此前 T07 运行态证据之后变更。历史 preview、补偿同步、锁释放和服务端
+hash 对账只保留溯源价值，不能作为当前候选的成功证据。T08 当前源码冻结及全量门禁通过后，才可在不
+重配对、不删除 cursor/config/recovery state 的前提下运行最终最小 Codex 同步和近月 hash 对账；活跃
+会话差异须明确分类，已结束日期不得有缺失或不一致。
+
+2026-07-30 最后重新打开说明：随后修复了 session relative path 的跨平台归一化。Windows 仍把路径
+分隔符规范为 slash，POSIX 则保留文件名中的字面反斜杠，避免改变 Codex 多 profile 的 file identity。
+该 collector 运行时代码及直接支持测试在此前本机 preview、hash 对账和锁状态验收之后变更，因此那些
+记录只能作为历史证据。必须对当前冻结候选重新完成只读 status、hook/LaunchAgent/lock 核验、隔离
+state 近月 preview 和 snapshot-key/hash 对账，才能重新标记本项完成。
+
+2026-07-30 历史候选验收：公开状态确认 active server、collector、device identity、四个每日时段
+和 Codex、Claude Code、Antigravity CLI hooks 已安装；普通 Antigravity 与 IDE 均为 local-history
+模式。五来源一次性 state preview 覆盖 `2026-06-30` 至 `2026-07-30`，生成 `116` 个快照：Claude
+Code `40`、Codex `71`、Antigravity CLI `5`、Antigravity `0`、Antigravity IDE `0`。preview 不上传，
+临时 state 在结束后清理。普通 Antigravity 和 IDE 的相同窗口受控 sync 均以 `0 upserted/0 skipped`
+退出，表明当前没有可采集候选且没有 source diagnostic。
+
+在保留既有配对、config、cursor 与 device-link 的条件下，最小同步使用 `TOKENBOARD_SKIP_UPGRADE=1`
+执行。Claude Code 为 `2 upserted/38 skipped`；Codex 的滚动窗口先后写入变化快照并跳过其余已匹配
+快照；Antigravity CLI 的 SQLite 权威 `--since all` 重建为 `0 upserted/25 skipped`。截至
+`2026-07-29` 的 Codex 稳定历史随后以只发送 snapshot key 的 `/api/v1/ingest/check` 对账：本地 `69`
+个快照与服务端 `69` 个既有 hash 全部一致，`0` missing、`0` changed。当天仍在写入的 Codex 会话
+只会产生正常的 hash 增量上传，不能与稳定历史不一致混为一谈。
+
+运行期间出现的 stale canonical-cache write 与 corrected child usage exceeds session row 均为既有的
+显式保护诊断：前者拒绝写入复制后已变化会话的过期 cache，后者拒绝将超过父聚合的 child correction
+从 snapshot 扣除。两者均未导致 source failure、静默计量或 cursor 确认；安全 oversized 无关 child
+row 摘要继续被有界聚合，原始会话内容不进入日志或上传。每次同步后均检查共享 sync、collector-run、
+dispatcher 与 run-log 锁；已完成同步自然释放锁。观察到的 trailing lock 始终由存活的 cooldown notifier
+持有，不作为残留锁清理。最新尾随协调运行记录为 success，Claude Code 与 Codex cycle 均 exit 0。
+
+2026-07-30 当前候选完成证据：在 T08 当前冻结候选门禁通过后，未重配对、未删除 config、cursor、
+device-link、recovery state 或现有 hooks。脱敏 `status.mjs` 确认 active server、collector、设备身份、
+四个计划时段和 notify/Codex/Claude Code/Antigravity CLI hooks 均为已配置；普通 Antigravity 与 IDE
+均为 local-history。一次性 state directory 的 Antigravity CLI `--since all` preview 建立完整 SQLite
+基线，生成 25 个聚合 group；只发送 snapshot key 的服务端对账为 25/25 hash 一致。一次性近月五来源
+preview 生成 Claude Code 40 个、Codex 71 个快照；Antigravity CLI 无新增 group，普通 Antigravity 与
+IDE 均为 0 且无 source diagnostic、无额外字段。普通 Antigravity 的 27 条本地 token metadata 最晚为
+2026-06-26，IDE 没有 token metadata 且 PB 文件早于近月窗口，因此两个 0 结果符合本地可采集事实，
+不是 source failure。
+
+对账初始为 103 个 hash 一致、8 个已存在但 hash 不同、0 个缺失。保留现有配对和状态的最小补偿后，
+Claude Code `--since 20260621` 为 3 upserted/37 skipped，复验 40/40 hash 一致；Codex `--since
+20260703` 为 5 upserted/60 skipped，复验稳定历史 63/65 hash 一致。余下两项均为 2026-07-30 仍在增长
+的活跃会话，未归类为历史缺失或数据不一致。最后一次自然 hook 收敛后，`sync.lock`、
+`collector-run.lock`、`trailing.lock`、queue signal 和 recovery journal 均不存在，最近 `last-run`
+记录为 success、无 cycle error；已验证归属的隔离 state 和同步输出临时工件均已删除。该验收仅记录
+脱敏聚合与状态字段，不输出凭证、原始 usage 或会话内容。
 
 2026-07-28 当前候选重启后复验：公开 status 确认当前 server、collector、device identity、四个
 每日时段和 Codex/Claude Code/Antigravity hooks 均已配置；活动 server scope 的 Antigravity CLI
@@ -622,13 +750,71 @@ trailing 与 run-log 锁均自然释放。现有 scheduled log 还不记录每�
   仅重读一次，连续变化仍明确失败且不写 cache；定向 collector 回归 34/34 与真实 30 天 Codex
   preview 均通过。该修复不复用不稳定 usage，也不改变 hook 前台非阻塞边界。
 
-完成补充（2026-07-28，当前候选）：本节顶部的重启后复验取代此前 Claude Code、Codex、
+历史完成补充（2026-07-28）：本节顶部的重启后复验取代此前 Claude Code、Codex、
 Antigravity CLI、普通 Antigravity、IDE 和 LaunchAgent 的历史运行证据；当前验收不再依赖旧 preview
-或旧补偿同步结果。T07 验收完成，可进入冻结差异的最终只读复核。
+或旧补偿同步结果。其后运行时代码已变更，当前 T07 必须按本节开头的前置条件重新完成。
 
 ## T08 Full Quality Security And Documentation Gate
 
-状态：已完成
+状态：已完成（2026-07-31 当前候选）
+
+2026-07-31 重新打开说明：2026-07-30 门禁之后，`coordinator-signal.mjs` 增加了对旧版
+Codex signal 文件名及其 drain 文件的兼容读取，并补充直接回归测试。该运行时代码和直接支持
+测试改变了候选差异，因此此前 T08 的 workspace、skill、migration/schema、人工安全审阅和
+CodeRabbit 结果仅保留为历史证据，不能作为当前候选的通过依据。必须在当前差异冻结后重新执行
+完整门禁和人工审阅，之后才能恢复 T07 的本机状态与数据核验；T09、T10、提交、推送和 PR 仍未开始。
+
+CodeRabbit 复核状态（2026-07-31）：CLI `0.7.1` 已认证，但当前仓库的免费审查额度触发
+`rate_limit`，服务返回预计 `22` 分钟后恢复；本轮没有生成当前候选结果，按约束跳过，不引用旧
+缓存或历史 `0 issues` 作为通过证据。
+
+2026-07-31 当前候选门禁：新增旧版 signal 文件名兼容及回归后，定向 coordinator/signal/notify
+回归为 `66/66`；完整 `pnpm test` 以退出码 `0` 通过，usage-core `9`、Web `582`、collector
+`649`。`pnpm typecheck`、`node --test skills/tokenboard/scripts/*.test.mjs`（`403/403`）、
+`pnpm build`、`pnpm audit --audit-level=high` 和基线 `git diff --check` 均通过；Wrangler
+`4.116.0` 的 `deploy --dry-run` 成功读取 Worker、Assets、D1 和变量绑定后退出，没有发布或远端
+迁移。Web 全量 migration/schema 回归为 `79/79` 文件、`582/582` 用例；当前候选仍按顺序通过
+`0000` 至 `0029` migration、critical schema 和外键检查。凭证形态扫描无匹配且没有回显内容。
+人工审计没有确认新的 P1/P2；CodeRabbit 由于服务限流未产生结果，明确不计为覆盖。T08 现已完成，
+T07 才可恢复本机状态与数据核验；T09、T10、提交、推送和 PR 仍未完成。
+
+2026-07-30 重新打开说明：首次 Antigravity CLI 有界 SQLite 扫描已正确 fail-closed，但 CLI 将
+“先执行 `--since all` 建立完整基线”和“显式全量扫描未覆盖完整目录”归类为通用
+`collection-failed`。当前原子任务仅补充可操作诊断分类和确定性回归；完成后必须重新执行受影响
+collector 测试和完整 T08 门禁，才可恢复 T07 的只读本机核验。
+
+2026-07-30 当前冻结候选门禁：在 T02 的首次有界 SQLite 扫描 fail-closed 修复后，重新以单一
+workspace 命令执行完整门禁，避免将分包结果表述为顶层命令成功。`pnpm test` 以退出码 `0` 完成：
+usage-core `9`、Web `582`、collector `649`。`pnpm typecheck`、
+`node --test skills/tokenboard/scripts/*.test.mjs`（`402/402`）、`pnpm build` 和
+`pnpm audit --audit-level=high` 均以退出码 `0` 完成，审计报告无已知高危漏洞。
+
+所有 `0000` 至 `0029` migration 已按名称顺序应用到新的内存 SQLite；
+`db/verify-critical-schema.sql` 与 `PRAGMA foreign_key_check` 均无输出。相对
+`c43b67c2366e8e842ce21e40d89cdc2aba4e8aea` 的 `git diff --check` 通过；针对当前新增、
+修改和未跟踪直接支持文件的高置信凭证形态扫描仅输出命中路径且结果为零，未回显任何内容。人工复核
+覆盖本轮 Antigravity SQLite 完整性边界、Codex 子代理计量与诊断聚合、hook recovery journal、
+Web/D1 与依赖变更；未确认新的 P1/P2 安全、隐私、数据正确性、兼容性或可靠性问题。用户禁止
+`codex-security` 插件，故未调用；OMP 按明确指示跳过且不计为审查通过。该门禁只解除 T07 的本机
+运行态和数据核验前置条件，不构成 T09 外部审查、T10 私人 Cloudflare 验证、提交、推送或 PR 完成。
+
+2026-07-30 最后冻结刷新：针对 session relative path 的平台限定归一化和其回归后，完整 workspace
+门禁再次以退出码 `0` 通过：usage-core `9`、Web `582`、collector `649`。`pnpm typecheck`、
+`node --test skills/tokenboard/scripts/*.test.mjs`（`402/402`）、`pnpm build` 和
+`pnpm audit --audit-level=high` 均通过；30 个 migration 在 SQLite `:memory:` 中顺序应用，
+critical schema 与 `PRAGMA foreign_key_check` 均无输出，Web deploy/migration 定向回归为 `35/35`。
+Wrangler `4.116.0` 在构建完成后串行 `deploy --dry-run` 成功，未发布 Worker 或迁移远端 D1。
+CodeRabbit `0.7.1` 对当前未提交 37 个文件（包括两项直接支持的未跟踪测试）完成审阅并返回 `0 issues`；
+其先前关于 POSIX 字面反斜杠的建议已由本次平台限定修复和回归覆盖。该记录只覆盖当前未提交差异，
+不替代 T09 要求的整个候选独立只读审查。用户禁止 `codex-security` 插件，OMP 按指示跳过且不计为
+审查通过。
+
+2026-07-30 历史候选门禁：Codex 子代理的 additive cache counter 兼容与安全 oversized-row
+诊断聚合已完成定向及完整 workspace/skill 回归、typecheck、build、audit、migration/schema 契约、
+基线 diff whitespace 检查和人工最终差异审阅。诊断聚合不改变 snapshot、cursor 或上传数据；完整
+命令、测试数量、尺寸审查、凭证标记复核和 CodeRabbit 结论见
+`docs/reviews/CR-T08-MANUAL-DIFF-SECURITY-2026-07-23.md`。任何后续运行时代码或直接支持测试变更
+都会立即重新打开本项，不能引用本次门禁作为新差异的通过证据。
 
 2026-07-28 重新打开说明：真实隔离 Codex 双窗口预览确认，相同历史 snapshot 的 token 和 session
 完全一致时，`costUsd` 仍会因冻结 scope 的批次组成以及动态定价读取而变化，进而改变上传 hash。
@@ -1103,9 +1289,33 @@ shell 元字符；对应 CLI 与 command 回归及 collector 全量回归均通�
 故未调用。CodeRabbit 的历史 agent 调用没有产生当前候选的最终文本结果，不能计作审查覆盖；OMP 按用户
 指示跳过。此文档更新不改变运行时代码；T08 当前门禁完成，T07 重新执行后才能开始 T09 最终只读复核。
 
+2026-07-30 当前冻结候选闭环：在前述门禁之后，T02 增加 Antigravity CLI 首次有界 SQLite 扫描完整性
+保护及直接回归。默认 bounded run 的 64 DB 上限不再能把不完整日模型聚合写入 cursor：尚无
+`antigravityCliHistoryComplete` 基线时，若内置 reader 明确报告目录未完整扫描，collector 在任何 cursor
+写入前失败并要求 `--since all`；即使当前抽样 DB 没有 usage 或 pending snapshot，也不产生看似成功的空
+snapshot、cursor 或 scan state。全量扫描和显式 `maxDbFiles: null` 都会在枚举数据库不可读时失败，防止
+伪造完整基线。已有完整基线后，有界增量仍可按原有行为运行。真实隔离 state 验证了 502 个本机 CLI DB 的
+近月冷启动会 fail closed，state 保持为空；`--since all` 成功生成 25 个 snapshot group 与完整基线标记，
+没有上传或改写生产状态。
+
+该代码和直接支持测试变更后，重新运行的完整质量门禁为：usage-core `9`、Web `582`、collector `640`，
+skill script `402`；`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=high` 和
+`git diff --check c43b67c2366e8e842ce21e40d89cdc2aba4e8aea` 全部通过。0000 至 0029 migration 已按顺序
+应用到内存 SQLite，critical schema 查询和 `PRAGMA foreign_key_check` 均无输出。当前完整 diff 的人工
+安全审阅已重新覆盖 Antigravity SQLite boundary、Codex child usage、hook recovery、Web/D1、依赖和
+直接支持测试；无已确认的 P1/P2 安全、隐私、数据正确性、兼容性或可靠性问题。高置信凭证扫描不输出内容，
+仅匹配测试或脚本中的字段名，未发现凭证形态值。用户禁止 `codex-security` 插件，故未调用；OMP 继续按
+用户指示跳过且不计为通过。该闭环只解除 T07 前置条件，不使 T07、T09、T10、部署、提交、推送或 PR 完成。
+
+2026-07-30 后续 T02 收紧：人工复核发现首次有界 SQLite 扫描在目录不完整且已选数据库为空时，曾返回
+成功空结果，无法证明其余未读数据库没有窗口内 usage。现改为无完整基线时任何不完整有界目录扫描都显式
+要求 `--since all`；定向 collector 回归为 `68/68` 文件、`640/640` 用例通过，collector typecheck
+通过。该生产代码和直接支持测试变更使此前完整 T08 门禁、T09 外部审查和 T10 部署证据失效；从本段起
+必须在当前 diff 冻结后重新完成完整门禁和独立审查，之后才能恢复 T10。
+
 ## T09 Independent Read-Only Review
 
-状态：已完成
+状态：已完成（2026-07-31 当前候选）
 
 内容：差异冻结后进行独立 reviewer 复核。
 
@@ -1124,12 +1334,26 @@ finding 已修复且重新验证，没有未决 P1/P2 行为、安全、数据�
 审查要求：外部 reviewer 结论只作为线索，不能凭模型结论修改代码或标记完成；需排除过期
 finding、基线外代码和测试 fixture 假阳性。
 
+2026-07-30 历史候选复核状态：本机 Claude Code `2.1.220` 的最小无工具请求能够返回文本，说明
+CLI 启动和现有 DeepSeek 配置可用；但三次只读差异复核（safe-mode、plan、无工具标准输入差异）
+均以退出码 `0` 返回空结果，未产生 `NO_FINDINGS` 或任何 finding。一次完整基线输入还因约 `1.58 MB`
+的历史差异超过输入上限而被拒绝，之后已改为仅发送当前未提交候选。该空输出不是审查收据，故 T09
+仍为“进行中”，不得标记完成。OMP 按用户指示跳过，未等待、未重试、未修改其配置，也不计为通过。
+本轮本地人工差异审计未发现新的可确认 P1/P2；workspace 测试为 usage-core `9`、Web `582`、
+collector `635`，skill 脚本 `397`，typecheck、build、audit 和 Wrangler `4.115.0` dry-run 均通过。
+在取得有效 Claude 最终文本前，T10 私人 Cloudflare 发布和 PR 收尾保持未开始。
+
+2026-07-30 当前复核前置：其后修复了 recovery journal 的确认时机，前述 Claude 空输出与本地人工
+审阅只保留排查价值，不能作为当前 diff 的外部审查结论。OMP 继续按用户指示跳过且不计为通过；待 T08
+对当前 diff 的人工安全审阅和 T07 本机运行态复验完成后，再请求 Claude 的有效只读最终文本。
+
 2026-07-27 T09 本地核验收据：review finding 中的 macOS clone helper timeout 和异步 `ENOENT`
 fallback 已由 `codex-session-cloner` 与 scope race 回归覆盖；Codex cache、stream max-bytes、ACK
 timezone、metadata scanner、bounded attribution 和 comma-home 兼容性均已有定向回归。本轮确认并修复
 caller-supplied session-root symlink 兼容性、D1 seed cleanup 的 FK ON immediate/deferred 契约、
-Codex-only fail-fast mock、Windows-safe cursor key 断言和文档漂移。所有本轮定向测试均通过，但当前
-diff 尚未重新冻结，因此 T09 保持进行中，等待 T08/T07 重验后再执行最终 Claude/OMP 只读复核。
+Codex-only fail-fast mock、Windows-safe cursor key 断言和文档漂移。所有本轮定向测试均通过，但当时
+diff 尚未重新冻结；该历史记录不构成 T09 完成证据。当前状态以本节标题下的“未开始”和后续当前
+候选说明为准，仍须等待 T08/T07 重验后再执行最终 Claude 只读复核。
 
 2026-07-27 补充：Claude 的上一轮只读收据已逐项回到 D1 transaction、collector 调用链和现有
 回归核验。其关于 D1 `batch()` 非原子性的判断与 Cloudflare D1 transaction contract 和现有
@@ -1164,9 +1388,32 @@ src/providers/antigravity-history-db.test.ts` 完整 collector suite 为 `65/65`
 CodeRabbit 仅覆盖 packages 分目录，不能替代 Claude 的全量只读结论；OMP 继续按用户明确指示跳过，
 作为未覆盖面记录而非通过证据。当前没有未处理的独立复核 finding。
 
+2026-07-31 当前候选复核补充：Claude Code 在只读安全模式下对当前 collector、skill、Web/D1 和直接支持
+测试进行了复核，提出的 Codex child usage 两项行为风险已回到调用链处理。子代理记录存在
+`total_token_usage` 但缺少 `last_token_usage` 时现在会跳过该记录并输出一次有界诊断，不再静默丢弃；事件
+去重键现在包含稳定的 child session 相对路径、记录时间戳和累计 usage，保留同一 child session 的跨 profile
+去重，同时避免不同 child session 或不同请求因累计值相同而碰撞。新增回归覆盖缺失字段诊断、同值不同时间、
+同一 session 跨 profile 和不同 session 的合并行为。已确认的其他复核线索（首次 bounded Antigravity
+完整性要求、空 snapshot 上传契约）与当前 fail-closed/schema 设计一致，未形成新 finding。OMP 按用户指示跳过，
+未等待、未重试、未修改配置，也不计为通过。
+
+本轮定向 Codex 测试 `3` 个文件、`34/34` 用例通过；随后 workspace 测试为 usage-core `9/9`、Web `582/582`、
+collector `651/651`，collector typecheck 通过，`git diff --check` 通过。该补充修改仍需在最终 diff
+冻结后重新执行 skill 测试、全局 typecheck/build/audit 和私人 Cloudflare guarded deploy；在这些步骤完成前，
+不能将 T09 或 T10 标记为最终完成。
+
+2026-07-31 当前候选 T09/T10 复核与部署：Claude 只读安全模式的两项 Codex child usage finding 已修复并由
+`34/34` 定向回归、workspace `651/651` collector 回归和 typecheck 复验；OMP 仍按用户指示跳过并明确
+记为未覆盖。私有 Wrangler `4.116.0` 配置校验、dry-run、Time Travel bookmark、远端 migration list、
+critical schema 和 `PRAGMA foreign_key_check` 均通过后，使用同一私有配置完成 Worker 部署，退出码为 `0`。
+部署后私有 health/home 返回 `200`，匿名 `/api/v1/me` 与 ingest-check POST 返回 `401`，详情和设备页面未登录
+返回 `302`；再次检查无待迁移且 foreign-key check 为空。部署未触碰上游生产、Workers Builds、GitHub Actions
+或自动 CI/CD。T09 的代码 finding 已闭环，T10 的私人部署与运行态验证已完成，剩余仅为最终敏感信息扫描、
+原子提交、推送和中文 PR 收尾。
+
 ## T10 Private Cloudflare Deployment Commit And PR
 
-状态：已完成
+状态（当前候选）：进行中（私人部署完成，提交/推送/PR 待完成）
 
 内容：仅在 T01 至 T09 完成后，对用户私人 Cloudflare 执行 guarded deploy，随后提交、
 推送并建立或更新中文 PR。

@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { snapshotHashPayload, type UsageSnapshot } from '@tokenboard/usage-core'
 import { afterEach, describe, expect, test, vi } from 'vitest'
@@ -40,6 +41,7 @@ describe('Codex daily cost projection', () => {
 
   test('keeps shared historical snapshot costs and hashes stable across since-driven batch boundaries', async () => {
     const codexHome = await createEmptyCodexHome()
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-cost-projection-state-'))
     const commandArgs: string[][] = []
     vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
     vi.stubEnv('TOKENBOARD_CODEX_BATCH_SIZE', '2')
@@ -63,6 +65,7 @@ describe('Codex daily cost projection', () => {
         since: '20260701',
         timezone: 'Asia/Shanghai',
         collectedAt: '2026-07-28T00:00:00.000Z',
+        stateDir,
         runner
       })
       const narrow = await collectCodexUsage({
@@ -70,6 +73,7 @@ describe('Codex daily cost projection', () => {
         since: '20260708',
         timezone: 'Asia/Shanghai',
         collectedAt: '2026-07-28T00:00:00.000Z',
+        stateDir,
         runner
       })
       const targetDay = (snapshots: UsageSnapshot[]) => snapshots.filter((snapshot) => snapshot.usageDate === '2026-07-08')
@@ -82,8 +86,10 @@ describe('Codex daily cost projection', () => {
       expect(targetDay(narrow).map(snapshotHashPayload)).toEqual(targetDay(broad).map(snapshotHashPayload))
       expect(commandArgs).not.toHaveLength(0)
       expect(commandArgs.every((args) => args.includes('--offline'))).toBe(true)
+      expect(await fileExists(join(stateDir, 'codex-session-attribution-cache.json'))).toBe(true)
     } finally {
       await rm(codexHome, { recursive: true, force: true })
+      await rm(stateDir, { recursive: true, force: true })
     }
   }, scopedCollectionTestTimeoutMs)
 })

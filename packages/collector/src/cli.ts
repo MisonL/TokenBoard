@@ -449,6 +449,13 @@ function safeSourceError(source: ConcreteCliSource, error: unknown, message: str
 function antigravityErrorCategory(message: string) {
   if (message.toLowerCase().includes('cursor')) return 'cursor-state-failed'
   if (message.includes('Antigravity SQLite reader unavailable')) return 'sqlite-reader-unavailable'
+  if (message.includes('Antigravity CLI requires --since all before a bounded scan can complete an incomplete SQLite directory scan')) {
+    return 'sqlite-full-baseline-required'
+  }
+  if (message.includes('Antigravity CLI --since all requires a complete SQLite directory scan') ||
+      message.includes('Antigravity CLI full history scan could not read every enumerated SQLite database')) {
+    return 'sqlite-directory-incomplete'
+  }
   if (message.includes('Antigravity conversations directory not found') ||
       message.includes('No Antigravity conversations found')) return 'history-unavailable'
   if (isAntigravityMetadataLimitError(message)) return 'metadata-limit-exceeded'

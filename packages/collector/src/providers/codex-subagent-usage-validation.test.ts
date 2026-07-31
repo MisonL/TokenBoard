@@ -12,7 +12,7 @@ afterEach(() => {
 })
 
 describe('Codex subagent usage validation', () => {
-  test('skips an invalid child event while retaining later valid usage', async () => {
+  test('retains a high-cache child event with additive counters', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-subagent-validation-'))
     const filePath = join(root, 'child.jsonl')
     const diagnostics: string[] = []
@@ -20,14 +20,10 @@ describe('Codex subagent usage validation', () => {
     try {
       await writeJsonl(filePath, [
         totalUsageEvent('2026-05-25T01:10:00.000Z', {
-          inputTokens: 10,
-          cacheReadTokens: 11,
-          outputTokens: 1
-        }),
-        totalUsageEvent('2026-05-25T01:20:00.000Z', {
-          inputTokens: 20,
-          cacheReadTokens: 10,
-          outputTokens: 2
+          inputTokens: 50,
+          cacheReadTokens: 150,
+          outputTokens: 20,
+          totalTokens: 220
         })
       ])
 
@@ -39,21 +35,19 @@ describe('Codex subagent usage validation', () => {
       )).resolves.toEqual([
         expect.objectContaining({
           usageDate: '2026-05-25',
-          inputTokens: 20,
-          cacheReadTokens: 10,
-          outputTokens: 2,
-          totalTokens: 22
+          inputTokens: 50,
+          cacheReadTokens: 150,
+          outputTokens: 20,
+          totalTokens: 220
         })
       ])
-      expect(diagnostics).toEqual([
-        'Skipping Codex subagent usage event with cache read tokens exceeding input tokens'
-      ])
+      expect(diagnostics).toEqual([])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  test('keeps the raw Codex aggregate when an invalid child event cannot be corrected', async () => {
+  test('applies a high-cache child correction instead of retaining the inflated aggregate', async () => {
     const codexHome = await createEmptyCodexHome()
     const childFile = join(codexHome, 'sessions', '2026', '05', '25', 'rollout-child.jsonl')
     const diagnostics: string[] = []
@@ -63,9 +57,10 @@ describe('Codex subagent usage validation', () => {
       await writeJsonl(childFile, [
         subagentSessionMeta('child', 'parent', '2026-05-25T01:00:00.000Z'),
         totalUsageEvent('2026-05-25T01:10:00.000Z', {
-          inputTokens: 10,
-          cacheReadTokens: 11,
-          outputTokens: 1
+          inputTokens: 50,
+          cacheReadTokens: 150,
+          outputTokens: 20,
+          totalTokens: 220
         })
       ])
 
@@ -83,15 +78,56 @@ describe('Codex subagent usage validation', () => {
           usageDate: '2026-05-25',
           model: 'gpt-5',
           inputTokens: 50,
-          outputTokens: 10,
-          cacheReadTokens: 50,
-          totalTokens: 110,
+          outputTokens: 20,
+          cacheReadTokens: 150,
+          totalTokens: 220,
           sessionCount: 1
         })
       ])
-      expect(diagnostics).toContain(
-        'Skipping Codex subagent usage event with cache read tokens exceeding input tokens'
-      )
+      expect(diagnostics).toEqual([])
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('preserves additive input when cache read is smaller than input', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const childFile = join(codexHome, 'sessions', '2026', '05', '25', 'rollout-child.jsonl')
+    const diagnostics: string[] = []
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(childFile, [
+        subagentSessionMeta('child', 'parent', '2026-05-25T01:00:00.000Z'),
+        totalUsageEvent('2026-05-25T01:10:00.000Z', {
+          inputTokens: 200,
+          cacheReadTokens: 150,
+          outputTokens: 20,
+          totalTokens: 370
+        })
+      ])
+
+      await expect(collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-25T01:20:00.000Z',
+        stderr: (line) => diagnostics.push(line),
+        async runner(_command, args) {
+          return args.includes('session') ? childSessionResult() : childDailyResult()
+        }
+      })).resolves.toEqual([
+        expect.objectContaining({
+          source: 'codex',
+          usageDate: '2026-05-25',
+          model: 'gpt-5',
+          inputTokens: 200,
+          outputTokens: 20,
+          cacheReadTokens: 150,
+          totalTokens: 370,
+          sessionCount: 1
+        })
+      ])
+      expect(diagnostics).toEqual([])
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
@@ -104,14 +140,14 @@ function childDailyResult() {
       date: '2026-05-25',
       models: {
         'gpt-5': {
-          inputTokens: 50,
-          cachedInputTokens: 50,
-          outputTokens: 10,
-          totalTokens: 110
+          inputTokens: 1100,
+          cachedInputTokens: 1950,
+          outputTokens: 120,
+          totalTokens: 3170
         }
       },
-      totalTokens: 110,
-      costUSD: 0.11
+      totalTokens: 3170,
+      costUSD: 3.17
     }]
   }
 }
@@ -121,15 +157,15 @@ function childSessionResult() {
     sessions: [{
       sessionId: '2026/05/25/rollout-child',
       lastActivity: '2026-05-25T01:10:00.000Z',
-      totalTokens: 110,
-      costUSD: 0.11,
+      totalTokens: 3170,
+      costUSD: 3.17,
       models: {
         'gpt-5': {
-          inputTokens: 50,
-          cachedInputTokens: 50,
-          outputTokens: 10,
-          totalTokens: 110,
-          costUSD: 0.11
+          inputTokens: 1100,
+          cachedInputTokens: 1950,
+          outputTokens: 120,
+          totalTokens: 3170,
+          costUSD: 3.17
         }
       }
     }]

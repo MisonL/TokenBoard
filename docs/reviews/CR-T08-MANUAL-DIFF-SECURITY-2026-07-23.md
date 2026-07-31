@@ -694,3 +694,182 @@ from this manual review. CodeRabbit has no final current-candidate result and is
 review coverage; prior agent output was incomplete. OMP remains explicitly skipped at the user's
 direction. This documentation-only update does not make T07 local-client reconciliation, T09
 independent review, or T10 private Cloudflare validation complete.
+
+## 2026-07-30 Current Candidate Gate
+
+The current uncommitted candidate adds notifier cooldown and signal-drain recovery handling plus
+Codex child-session cache-counter compatibility and bounded diagnostic aggregation. The review
+re-read the coordinator signal lifecycle, notifier cooldown validation, generated handler boundary,
+child JSONL reader, correction arithmetic, and their direct regressions. The diagnostics wrapper
+only coalesces the exact safe oversized-row summary emitted by the reader; malformed records,
+filesystem failures, cache failures, and correction failures still report immediately.
+
+The 558-line `codex-subagent-usage.ts` production file was added to the current size-review
+inventory. It remains below the mandatory split threshold and keeps one correction boundary:
+child-event identity, cross-profile aggregation, snapshot adjustment, and diagnostic forwarding.
+The inventory records a concrete extraction condition before any further responsibility is added.
+
+Current verification for this frozen runtime and direct-test candidate:
+
+- `pnpm test`: passed, usage-core `9`, Web `582`, and collector `635` tests.
+- `pnpm typecheck`: passed.
+- `node --test skills/tokenboard/scripts/*.test.mjs`: `397` tests passed.
+- `pnpm build`: passed.
+- `pnpm audit --audit-level=high`: no known vulnerabilities.
+- `git diff --check c43b67c2366e8e842ce21e40d89cdc2aba4e8aea`: passed.
+- Every migration from `0000` through `0029` applied in order to an in-memory SQLite database;
+  the critical-schema queries and `PRAGMA foreign_key_check` produced no output.
+
+A no-content credential-marker scan over the current branch diff and supporting untracked files
+found only synthetic `tb_*` markers in three Web test files. The matched paths are test-only, the
+values are fixtures for pairing and device flows, and no production source, configuration, review,
+or untracked file matched. No candidate secret value was printed during the scan.
+
+CodeRabbit reviewed the same uncommitted candidate. Its current-state wording observation for T09
+and T10 is addressed by the task ledger: both are explicitly incomplete rather than inherited from
+historic evidence. Its fixture suggestion is not a behavior finding: the new regression must create
+byte-size-dependent oversized JSONL records and already uses the repository's JSONL test helper,
+so replacing that generated input with a static fixture would not improve the covered boundary.
+
+No confirmed security, privacy, data-correctness, compatibility, or reliability finding was
+identified in this manual review. The user prohibited the `codex-security` plugin, and OMP remains
+explicitly skipped rather than counted as review coverage. This local T08 evidence does not make
+T07 local reconciliation, T09 independent review, or T10 private Cloudflare validation complete.
+
+## 2026-07-30 Recovery Journal Follow-up
+
+The previous current-candidate gate became stale when the hook audit identified a recovery-window
+defect in the notifier signal lifecycle. `drainSignalSources()` created and then removed a recovery
+journal before `executeSync()` began. A process termination in that interval could permanently lose
+the queued source.
+
+The follow-up review covers the current uncommitted delta on top of the previous gate:
+
+- `coordinator-signal.mjs` now writes bounded, source-specific version-2 recovery journals before
+  removing a queue or legacy drain entry. A legacy version-1 multi-source journal is migrated by
+  first creating every source journal and only then removing the old record. A migration or cleanup
+  error is explicit and leaves recoverable state on disk.
+- `coordinator.mjs` acknowledges a source journal only after that source's `executeSync()` returns
+  normally. A failed sync or acknowledgement cleanup preserves its journal and causes retry state
+  to remain visible. A same-source signal arriving during execution remains in the separate queue
+  and cannot be deleted by acknowledgement.
+- Recovery journal data contains only a fixed source enum and schema version. It does not introduce
+  credentials, paths, payload contents, session identifiers, subprocesses, network access, or an
+  unbounded current-format file-growth path; there is at most one version-2 journal for each
+  supported source, while a failed legacy cleanup remains visible for a later retry.
+- The notifier cooldown configuration remains bounded to `60000` through `3600000` milliseconds
+  when read from the environment. Invalid configuration reports an error after the hook signal has
+  already been persisted, so it cannot discard work silently.
+- The Codex child correction review rechecked the additive-cache discriminator, per-field
+  nonnegative subtraction, bounded worker reads, and diagnostic aggregation. The aggregate matches
+  only the reader's safe oversized irrelevant-row summary; all malformed, I/O, cache, and correction
+  errors remain individually observable.
+
+Deterministic regressions cover the drain-to-execution crash window, legacy multi-source migration,
+per-source success acknowledgement, partial source failure, acknowledgement cleanup failure, and a
+new same-source signal during execution. The current verification run passed `pnpm test` with 9
+usage-core, 582 Web, and 635 collector tests; `node --test skills/tokenboard/scripts/*.test.mjs`
+with 402 tests; `pnpm typecheck`; `pnpm build`; and `pnpm audit --audit-level=high`. Every migration
+from `0000` through `0029` applied in order to an in-memory SQLite database, with no output from the
+critical-schema query or `PRAGMA foreign_key_check`. The final diff whitespace check and a
+high-confidence credential-marker scan reported no issues or matches.
+
+No additional confirmed P1/P2 security, privacy, data-correctness, compatibility, or reliability
+finding was identified. This is still a manual local review: Claude's prior empty output is not an
+external-review receipt, OMP remains explicitly skipped, and current T07, T09, and T10 remain
+incomplete.
+
+## 2026-07-30 Antigravity CLI First-Bounded-Scan Closure
+
+The prior gate became stale when the T02 range audit showed that a first bounded Antigravity CLI
+scan could read the default 64 SQLite databases, emit a partial daily-model aggregate, and persist
+that partial result before the remaining databases were examined. This was reproducible on the
+local machine, which has 502 Antigravity CLI conversation databases. It is a data-correctness
+boundary, not a hash instability or a statusline behavior.
+
+The final current candidate makes the SQLite reader report `completeDirectoryScan`. A full-history
+run and an explicitly unbounded `maxDbFiles: null` run require every enumerated database to be
+read. Before a full-history baseline exists, any bounded scan with an incomplete directory fails
+before any cursor write and requires `--since all`, including when the selected databases happen to
+contain no window usage or pending snapshots. Once a complete baseline exists, bounded incremental
+scanning retains its normal behavior. The statusline remains local-only diagnostics and is not an
+upload-metering fallback.
+
+The deterministic coverage verifies incomplete bounded usage rejection, incomplete full-history
+rejection, incomplete empty-scan rejection without persistence, pending-snapshot rejection, and bounded increments after a
+complete baseline. The real isolated-state validation confirmed that a recent-month cold start was
+blocked with an empty temporary state directory, while `--since all` created 25 snapshot groups and
+a complete baseline without uploading or modifying the production cursor.
+
+For this final runtime and direct-test candidate, the complete gate passed again: `pnpm test` with
+usage-core `9`, Web `582`, and collector `640`; `node --test
+skills/tokenboard/scripts/*.test.mjs` with `402`; `pnpm typecheck`; `pnpm build`; `pnpm audit
+--audit-level=high`; and `git diff --check c43b67c2366e8e842ce21e40d89cdc2aba4e8aea`. Every D1
+migration from `0000` through `0029` applied in order to an in-memory SQLite database, and both the
+critical-schema query and `PRAGMA foreign_key_check` produced no output. A no-content credential
+marker scan over candidate content found no credential-shaped values; expected field-name matches
+were limited to tests and scripts.
+
+The final manual review re-read the affected Antigravity SQLite boundary plus the existing Codex,
+hook recovery, Web/D1, dependency, and direct-test boundaries. No confirmed P1/P2 security,
+privacy, data-correctness, compatibility, or reliability finding remains. The user prohibited the
+`codex-security` plugin. OMP remains explicitly skipped and is not counted as review coverage. This
+closes T08 only; T07 local reconciliation, T09 independent review, and T10 private Cloudflare
+validation remain incomplete.
+
+## 2026-07-30 Final Frozen-Candidate Refresh
+
+The candidate changed after the prior closure to preserve literal backslashes in POSIX Codex session
+file names while retaining slash normalization on Windows. This is a file-identity correctness fix,
+so every runtime and direct-test gate was rerun before treating the candidate as frozen.
+
+- `pnpm test`: passed with 9 usage-core, 582 Web, and 649 collector tests.
+- `pnpm typecheck`, `node --test skills/tokenboard/scripts/*.test.mjs` (402 tests), `pnpm build`,
+  and `pnpm audit --audit-level=high`: passed.
+- All 30 migrations (`0000` through `0029`) applied in order to SQLite `:memory:`; the critical
+  schema query and `PRAGMA foreign_key_check` both produced no output. The focused Web deployment
+  and migration suite passed 35 tests.
+- `git diff --check c43b67c2366e8e842ce21e40d89cdc2aba4e8aea` passed. Wrangler `4.116.0`
+  completed `deploy --dry-run` after the production build, without publishing a Worker or applying
+  a remote migration.
+- CodeRabbit `0.7.1` reviewed the current uncommitted 37-file scope, including both direct
+  untracked tests, and returned 0 issues. Its earlier POSIX path-normalization suggestion is now
+  covered by the platform-specific implementation and regression.
+
+The manual review rechecked the changed path normalization and its Codex multi-profile call sites,
+alongside the Antigravity, hook recovery, Web/D1, dependency, and direct-test boundaries covered
+by this candidate. No confirmed security, privacy, data-correctness, compatibility, or reliability
+finding remains in the local frozen gate. The user prohibited the `codex-security` plugin; OMP is
+explicitly skipped and is not counted as review coverage. T07 must still be rerun for this
+file-identity change, and T09/T10 remain incomplete.
+
+## 2026-07-31 Candidate Reopened
+
+After the preceding gate, `coordinator-signal.mjs` changed to recognize legacy Codex signal filenames
+and their retained drain files, with direct regression coverage in
+`coordinator-signal.test.mjs`. This runtime and direct-test change invalidates the preceding full gate,
+manual review, and CodeRabbit result for the current candidate. The 2026-07-30 evidence remains a
+historical record only; a fresh complete gate and manual review are required before T07 can resume.
+T09 and T10 remain incomplete, and OMP remains explicitly skipped at the user's direction.
+
+CodeRabbit `0.7.1` was authenticated on 2026-07-31, but the current uncommitted review returned a
+service `rate_limit` with an estimated 22-minute reset. No current-candidate CodeRabbit result was
+produced; the prior cached or historical result is not counted as review coverage.
+
+## 2026-07-31 Current Gate Closure
+
+The legacy signal filename compatibility change was revalidated with a focused `66/66` coordinator,
+signal, and notifier regression. The complete gate then passed with `pnpm test` covering 9 usage-core,
+582 Web, and 649 collector tests; `pnpm typecheck`; `node --test skills/tokenboard/scripts/*.test.mjs`
+with `403/403`; `pnpm build`; `pnpm audit --audit-level=high`; and the baseline `git diff --check`.
+The Web migration/schema suite remained `79/79`, and Wrangler `4.116.0` `deploy --dry-run` resolved
+the Worker, Assets, D1, and variable bindings before exiting without publishing or applying a remote
+migration. Migrations `0000` through `0029`, the critical schema query, and the foreign-key check
+remained clean. The high-confidence credential-shape scan returned zero matches without printing
+content.
+
+The manual review found no confirmed P1/P2 behavior, data-correctness, privacy, security, or
+compatibility issue in the current diff. CodeRabbit was unavailable due to the documented service
+rate limit and is explicitly not counted as review coverage; the user also prohibited the
+`codex-security` plugin and OMP remains skipped. T08 is complete for this candidate. T07 local
+reconciliation, T09 independent review, and T10 private Cloudflare validation remain outstanding.

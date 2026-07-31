@@ -8,18 +8,21 @@ import { coordinatedSync } from './coordinator.mjs'
 import { errorMessage } from './error-message.mjs'
 import { probeProcessLiveness } from './process-liveness.mjs'
 
-const cooldownMs = 300_000
+export const defaultNotifyCooldownMs = 15 * 60_000
+const minNotifyCooldownMs = 60_000
+const maxNotifyCooldownMs = 60 * 60_000
 const maxTrailingLockAcquireAttempts = 3
 
 export function runNotify(options = {}) {
   const flags = options.flags || parseArgs(options.argv || process.argv.slice(2))
   const source = readSource(flags.source)
+  const env = options.env || process.env
   const stateDir = options.stateDir
   const configDirectory = options.configDir || stateDir
   const trigger = { kind: 'notify', source }
   return coordinatedSync(trigger, {
     stateDir,
-    cooldownMs: options.cooldownMs ?? cooldownMs,
+    cooldownMs: readNotifyCooldownMs(options.cooldownMs, env),
     version: options.version || 'unknown',
     now: options.now,
     mkdir: options.mkdir,
@@ -32,11 +35,11 @@ export function runNotify(options = {}) {
     unlink: options.unlink,
     sleep: options.sleep,
     process: options.process,
-    trailingProcess: options.trailingProcess ?? hasTrailingDelay(),
+    trailingProcess: options.trailingProcess ?? hasTrailingDelay(env),
     scheduleTrailing: options.scheduleTrailing || ((trigger, delayMs) =>
-      scheduleTrailingNotify(trigger, delayMs, { ...options, configDir: configDirectory })
+      scheduleTrailingNotify(trigger, delayMs, { ...options, env, configDir: configDirectory })
     ),
-    executeSync: options.executeSync || ((trigger, lockToken) => executeTokenBoardSync(trigger.source, { ...options, lockToken }))
+    executeSync: options.executeSync || ((trigger, lockToken) => executeTokenBoardSync(trigger.source, { ...options, env, lockToken }))
   })
 }
 
@@ -88,7 +91,7 @@ function scheduleTrailingNotify(trigger, delayMs, options = {}) {
         stdio: 'ignore',
         windowsHide: true,
         env: {
-          ...process.env,
+          ...runtime.env,
           TOKENBOARD_CONFIG_DIR: runtime.configDir,
           TOKENBOARD_STATE_DIR: runtime.stateDir,
           TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: String(delayMs),
@@ -135,6 +138,7 @@ export async function runNotifyCli(options = {}) {
   const readConfigDirectory = options.configDir || configDir
   const notify = options.runNotify || runNotify
   const wait = options.waitTrailingDelay || waitTrailingDelay
+  const reportError = options.error || console.error
   const runtime = options.trailingRuntime || trailingRuntime({ env })
   let dispatchClaimed = false
   try {
@@ -148,15 +152,20 @@ export async function runNotifyCli(options = {}) {
       const result = notify({
         configDir: configuredDir,
         stateDir: env.TOKENBOARD_STATE_DIR || configuredDir,
+        env,
         trailingProcess: Boolean(trailingLockPath) || delayMs > 0,
         version: config.updatedAt || config.createdAt || 'unknown'
       })
+      if (result.error) {
+        if (!result.trailingScheduled) throw new Error(result.error)
+        reportError(`TokenBoard hook sync retry scheduled after error: ${result.error}`)
+      }
       const nextDelayMs = trailingContinuationDelay(result, trailingLockPath, runtime)
       if (nextDelayMs === null) return 0
       delayMs = nextDelayMs
     }
   } catch (error) {
-    console.error(errorMessage(error))
+    reportError(errorMessage(error))
     return 1
   } finally {
     releaseTrailingLock(trailingLockPath, runtime)
@@ -164,13 +173,34 @@ export async function runNotifyCli(options = {}) {
   }
 }
 
+export function readNotifyCooldownMs(explicitValue, env = process.env) {
+  if (explicitValue !== undefined) {
+    if (!Number.isSafeInteger(explicitValue) || explicitValue < 0) {
+      throw new Error('TokenBoard notify cooldown must be a nonnegative integer')
+    }
+    return explicitValue
+  }
+
+  const configuredValue = env.TOKENBOARD_NOTIFY_COOLDOWN_MS
+  if (configuredValue === undefined || configuredValue === '') return defaultNotifyCooldownMs
+  if (!/^[1-9][0-9]*$/.test(configuredValue)) {
+    throw new Error('TOKENBOARD_NOTIFY_COOLDOWN_MS must be an integer number of milliseconds')
+  }
+
+  const cooldownMs = Number(configuredValue)
+  if (!Number.isSafeInteger(cooldownMs) || cooldownMs < minNotifyCooldownMs || cooldownMs > maxNotifyCooldownMs) {
+    throw new Error(`TOKENBOARD_NOTIFY_COOLDOWN_MS must be between ${minNotifyCooldownMs} and ${maxNotifyCooldownMs} milliseconds`)
+  }
+  return cooldownMs
+}
+
 async function waitTrailingDelay(delayMs = trailingDelayMsFromEnvironment()) {
   if (!Number.isFinite(delayMs) || delayMs <= 0) return
   await new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
-function hasTrailingDelay() {
-  const delayMs = trailingDelayMsFromEnvironment()
+function hasTrailingDelay(env = process.env) {
+  const delayMs = trailingDelayMsFromEnvironment(env)
   return Number.isFinite(delayMs) && delayMs > 0
 }
 
@@ -183,7 +213,7 @@ function trailingContinuationDelay(result, lockPath, runtime = trailingRuntime({
     return null
   }
   const delayMs = Number(result.trailingDelayMs)
-  return Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : null
+  return Number.isFinite(delayMs) && delayMs > 0 ? delayMs : null
 }
 
 function formatSyncFailure(result) {
@@ -205,6 +235,7 @@ function trailingRuntime(options = {}) {
   const stateDir = options.stateDir || env.TOKENBOARD_STATE_DIR || configDir()
   const hasCustomFileOps = Boolean(options.readFile || options.writeFile || options.unlink || options.rename || options.link)
   return {
+    env,
     configDir: options.configDir || env.TOKENBOARD_CONFIG_DIR || stateDir,
     stateDir,
     now: options.now || Date.now,
