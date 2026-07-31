@@ -1413,7 +1413,7 @@ critical schema 和 `PRAGMA foreign_key_check` 均通过后，使用同一私有
 
 ## T10 Private Cloudflare Deployment Commit And PR
 
-状态（当前候选）：进行中（私人部署完成，提交/推送/PR 待完成）
+状态（当前候选）：已完成（2026-07-31）
 
 内容：仅在 T01 至 T09 完成后，对用户私人 Cloudflare 执行 guarded deploy，随后提交、
 推送并建立或更新中文 PR。
@@ -1472,11 +1472,18 @@ profile 对应 upload token 的最近使用时间和设备最近同步时间均�
 `pnpm audit --audit-level=high` 和当前差异格式检查均通过。GitHub 上的 GitGuardian Security Checks
 已成功；PR 保持草稿，尚未声称已获上游审阅或合并。
 
+2026-07-31 当前候选提交与 PR 收尾：在私人 Cloudflare 部署后，提交 `1189687` 已推送到 fork 的
+`fix/post-merge-reliability-followups-ui` 分支，工作树与远端一致，分支相对 `upstream/master` 领先
+`15` 个提交且无落后。已创建面向上游 `master` 的中文 PR #22；描述包含私有 D1 migration/schema 前置、
+部署顺序、健康和鉴权验证、回滚方式、旧 client 兼容性以及敏感信息边界。PR 不包含私有 Wrangler 配置、
+device-link、upload token、bookmark 或临时工件；未向上游仓库、Workers Builds 或 GitHub Actions 写入。
+
 ## Final Acceptance
 
-- `T01` 至 `T10` 的状态全部为“已完成”，且每项验收结果来自当前 worktree 与当前环境。
+- `T01` 至 `T10` 的状态全部为“已完成”，且每项验收结果来自当前 worktree、当前私人 Cloudflare 环境和
+  已推送的 PR #22。
 - 不存在已确认但未修复的行为、安全、迁移、兼容性、性能或数据正确性问题。
 - 当前分支通过全量质量门禁、安全扫描和两套独立复核；不可用的外部审查明确标为未覆盖。
 - 私人 Cloudflare 的真实部署、D1 migration 和现有 collector 数据上传已验证；失败时有已验证
   的 restore point/Worker version 回滚路径。
-- 最终差异边界干净，原子提交已推送，中文 PR 具备完整执行与回滚说明且不含秘密。
+- 最终差异边界干净，提交 `1189687` 已推送，中文 PR #22 具备完整执行与回滚说明且不含秘密。
