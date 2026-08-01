@@ -63,7 +63,7 @@ describe('Antigravity CLI history compaction', () => {
     }
   })
 
-  test('uses a UTC-safe frontier when a deleted event belongs to the next local calendar day', async () => {
+  test('uses the configured timezone for the compaction frontier', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-20T20:00:00.000Z'))
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-timezone-frontier-'))
@@ -82,7 +82,7 @@ describe('Antigravity CLI history compaction', () => {
       })
 
       const cursor = await readCursor(root)
-      expect(cursor.antigravityCliHistoryCompactedThroughDate).toBe('2026-04-22')
+      expect(cursor.antigravityCliHistoryCompactedThroughDate).toBe('2026-04-23')
 
       await expect(collectAntigravityCliUsage({
         stateDir: root,
@@ -90,6 +90,38 @@ describe('Antigravity CLI history compaction', () => {
         since: '20260422',
         readDbUsageEvents: async () => dbUsage([event], 2)
       })).rejects.toThrow('rerun with --since all')
+    } finally {
+      vi.useRealTimers()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('retains the local cutoff date for negative-offset timezones', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-20T00:30:00.000Z'))
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-negative-timezone-'))
+    const event = historyEvent(oldEventHash, '2026-04-20T23:00:00.000Z')
+    try {
+      await collectAntigravityCliUsage({
+        stateDir: root,
+        timezone: 'America/Los_Angeles',
+        since: 'all',
+        readDbUsageEvents: async () => dbUsage([event], 1)
+      })
+      await clearPendingUploadCursors({
+        stateDir: root,
+        source: 'antigravity-cli',
+        timezone: 'America/Los_Angeles'
+      })
+
+      const cursor = await readCursor(root)
+      const group = cliHistorySnapshotGroupFromEvent(event, 'America/Los_Angeles')
+      const aggregate = cursor.files[cliHistoryAggregateKey(group)]
+
+      expect(aggregate?.snapshots).toEqual([
+        expect.objectContaining({ usageDate: '2026-04-20', inputTokens: 10 })
+      ])
+      expect(cursor.antigravityCliHistoryCompactedThroughDate).toBe('2026-04-21')
     } finally {
       vi.useRealTimers()
       await rm(root, { recursive: true, force: true })

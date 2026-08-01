@@ -67,7 +67,7 @@ export function commandShellOption(command: string, platform = process.platform)
 
 export function assertWindowsShellSafeInvocation(command: string, args: string[], shell: boolean) {
   if (!shell) return
-  if (windowsShellMetacharacters.test(command) || args.some((arg) => windowsShellMetacharacters.test(arg))) {
+  if (args.some((arg) => windowsShellMetacharacters.test(arg))) {
     throw new Error('Refusing to pass shell metacharacters to a Windows command shim')
   }
 }

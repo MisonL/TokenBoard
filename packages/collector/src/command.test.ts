@@ -90,4 +90,12 @@ describe('runJsonCommand', () => {
     expect(() => assertWindowsShellSafeInvocation('npm.cmd', ['exec', 'ccusage', '--timezone', 'Asia/Shanghai'], true))
       .not.toThrow()
   })
+
+  test('allows legal parentheses in a Windows command shim path', () => {
+    expect(() => assertWindowsShellSafeInvocation(
+      'C:/Program Files (x86)/nodejs/npm.cmd',
+      ['exec', 'ccusage', '--timezone', 'Asia/Shanghai'],
+      true
+    )).not.toThrow()
+  })
 })

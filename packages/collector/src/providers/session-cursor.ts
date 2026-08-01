@@ -27,6 +27,7 @@ import {
   type SessionJsonlFileFingerprint,
   type SessionJsonlLine
 } from './session-jsonl-line-reader'
+import { formatDate } from './session-jsonl-parser-utils'
 
 export type ChangedSessionFile = {
   absolutePath: string
@@ -408,7 +409,7 @@ export async function clearPendingUploadCursors(input: {
       changed = true
     }
     if (isAntigravity) {
-      changed = compactAcknowledgedAntigravityUsage(cursor) || changed
+      changed = compactAcknowledgedAntigravityUsage(cursor, timezone) || changed
     }
     if (changed) await writeCursor(cursorPath, cursor)
   })
@@ -465,8 +466,11 @@ function cursorEntryIsInRange(
   return includesTimestamp(new Date(entry.mtimeMs).toISOString())
 }
 
-function compactAcknowledgedAntigravityUsage(cursor: CursorState) {
-  if (cursor.source === 'antigravity-cli') return compactAcknowledgedCliHistory(cursor)
+function compactAcknowledgedAntigravityUsage(cursor: CursorState, timezone?: string) {
+  if (cursor.source === 'antigravity-cli') {
+    if (!timezone) throw new Error('Antigravity CLI cursor compaction requires an explicit timezone')
+    return compactAcknowledgedCliHistory(cursor, timezone)
+  }
   const cutoffMs = Date.now() - antigravityUsageCursorRetentionMs
   const aggregateInputs = new Map<string, {
     mtimeMs: number
@@ -573,11 +577,11 @@ function antigravityAggregateCursorKey(groupKey: string, origin: CursorEntry['an
     : `aggregate\0${hashValue(groupKey)}`
 }
 
-function compactAcknowledgedCliHistory(cursor: CursorState) {
+function compactAcknowledgedCliHistory(cursor: CursorState, timezone: string) {
   if (cursor.antigravityCliMeteringVersion !== 3) return false
   const cutoffMs = Date.now() - antigravityUsageCursorRetentionMs
-  const cutoffDate = new Date(cutoffMs).toISOString().slice(0, 10)
-  const compactedThroughDate = new Date(cutoffMs + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const cutoffDate = formatDate(new Date(cutoffMs), timezone)
+  const compactedThroughDate = nextCalendarDate(cutoffDate)
   const compactedAt = new Date().toISOString()
   const aggregateInputs = new Map<string, { mtimeMs: number; snapshots: CursorSnapshot[] }>()
   let changed = false
@@ -671,6 +675,11 @@ function compactAcknowledgedCliHistory(cursor: CursorState) {
 
 function maxUsageDate(previous: string | undefined, next: string) {
   return previous && previous > next ? previous : next
+}
+
+function nextCalendarDate(value: string) {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10)
 }
 
 function isAntigravityCliHistoryCorrectionKey(key: string) {
