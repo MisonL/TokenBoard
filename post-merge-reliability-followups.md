@@ -1478,6 +1478,15 @@ profile 对应 upload token 的最近使用时间和设备最近同步时间均�
 部署顺序、健康和鉴权验证、回滚方式、旧 client 兼容性以及敏感信息边界。PR 不包含私有 Wrangler 配置、
 device-link、upload token、bookmark 或临时工件；未向上游仓库、Workers Builds 或 GitHub Actions 写入。
 
+2026-08-01 最新候选补充：修复 Windows 合法 `.cmd/.bat` 可执行路径含括号时的误判，仅继续拒绝参数
+中的 shell 元字符；Antigravity CLI 游标压缩改为使用用户配置时区和纯日历日期递增，避免负偏移时区及
+DST 边界提前删除历史。新增回归后，当前 `pnpm test` 通过 usage-core `9`、Web `582`、collector
+`653` 项，skill 脚本测试通过 `403` 项；`pnpm typecheck`、`pnpm build`、`git diff --check` 均通过。
+提交 `103dec9` 已推送到 fork 的 `fix/post-merge-reliability-followups-ui`，相对 `upstream/master`
+领先 `17` 个提交且无落后，工作树干净。该提交只改本地 collector，不改变 Worker bundle、D1 schema 或
+迁移，因此 2026-07-31 已验证的私人 Cloudflare 部署和 D1 证据仍适用于当前候选；未向 upstream、Workers
+Builds 或 GitHub Actions 部署。
+
 ## Final Acceptance
 
 - `T01` 至 `T10` 的状态全部为“已完成”，且每项验收结果来自当前 worktree、当前私人 Cloudflare 环境和
@@ -1486,4 +1495,4 @@ device-link、upload token、bookmark 或临时工件；未向上游仓库、Wor
 - 当前分支通过全量质量门禁、安全扫描和两套独立复核；不可用的外部审查明确标为未覆盖。
 - 私人 Cloudflare 的真实部署、D1 migration 和现有 collector 数据上传已验证；失败时有已验证
   的 restore point/Worker version 回滚路径。
-- 最终差异边界干净，提交 `1189687` 已推送，中文 PR #22 具备完整执行与回滚说明且不含秘密。
+- 最终差异边界干净，最新提交 `103dec9` 已推送，中文 PR #22 具备完整执行与回滚说明且不含秘密。
