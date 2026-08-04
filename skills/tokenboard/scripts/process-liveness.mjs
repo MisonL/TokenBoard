@@ -119,6 +119,8 @@ function readPsProcessStartIdentity(pid, options) {
   const result = (options.runProcessIdentity || spawnSync)('ps', ['-p', String(pid), '-o', 'lstart='], {
     encoding: 'utf8',
     timeout: processIdentityTimeoutMs,
+    // SIGKILL cannot be ignored, so spawnSync returns at the timeout boundary.
+    killSignal: 'SIGKILL',
     env: { ...process.env, LC_ALL: 'C' }
   })
   if (result.error) return { status: 'unknown' }
@@ -140,6 +142,8 @@ function readWindowsProcessStartIdentity(pid, options) {
   ], {
     encoding: 'utf8',
     timeout: processIdentityTimeoutMs,
+    // PowerShell can ignore the default SIGTERM; force a bounded probe.
+    killSignal: 'SIGKILL',
     windowsHide: true
   })
   if (result.error) return { status: 'unknown' }

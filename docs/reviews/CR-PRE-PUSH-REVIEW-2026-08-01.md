@@ -1,6 +1,6 @@
 # TokenBoard 发布前复核记录
 
-日期：2026-08-02（复核更新）
+日期：2026-08-04（复核更新）
 
 ## 范围
 
@@ -153,7 +153,8 @@
 - Web manifest 将 Hono 的最低允许版本固定为 `^4.13.0`，与锁文件中的已验证版本一致，避免非冻结安装再次接受已修复前的版本范围。
 - 本轮验证：冻结锁安装通过；定向 process-liveness、scheduled-retry、status 测试 `42/42` 通过；skill 脚本全量测试 `448/448` 通过；workspace usage-core `9`、Web `582`、collector `654` 全部通过；`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=moderate` 和 `git diff --check` 均通过。
 - CodeRabbit CLI `0.7.1` 已认证，发起 `coderabbit review --uncommitted --include-untracked --agent` 后在多个轮询周期内没有产生输出、findings 或完成状态，已主动停止；此次外部复核未完成，不计为通过证据。
-- 当前候选仍未提交、未推送、未部署。
+- 当前 checkout 的 `git status --short --branch` 为干净工作树；相对 fork 基线的 `git diff --stat` 仅包含本记录所述 3 个提交，`git diff --check` 通过。
+- 当前候选未部署；生产 Cloudflare、D1、OAuth 和真实多用户链路仍不在本地审查覆盖范围内。
 
 ### 复杂度审查豁免
 
