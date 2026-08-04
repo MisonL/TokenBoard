@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
@@ -73,6 +73,67 @@ describe('Codex bounded canonical attribution batches', () => {
         totalTokens: 20,
         sessionCount: 2
       }))
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  test('narrows canonical attribution to cache-miss files within a shared bounded scope', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-canonical-cache-miss-'))
+    const first = join(codexHome, 'sessions', '2026', '05', '20', 'first.jsonl')
+    const second = join(codexHome, 'sessions', '2026', '05', '20', 'second.jsonl')
+    const canonicalScopes: Array<{ first: boolean; second: boolean }> = []
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_CODEX_BATCH_SIZE', '200')
+
+    try {
+      await Promise.all([
+        writeJsonl(first, [tokenCountEvent('2026-05-20T04:24:07.234Z', 10)]),
+        writeJsonl(second, [tokenCountEvent('2026-05-20T04:25:07.234Z', 10)])
+      ])
+
+      const runner = async (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+        const scopedHome = String(options?.env?.CODEX_HOME)
+        const selected = {
+          first: await exists(join(scopedHome, 'sessions', '2026', '05', '20', 'first.jsonl')),
+          second: await exists(join(scopedHome, 'sessions', '2026', '05', '20', 'second.jsonl'))
+        }
+        if (args.includes('session') && !args.includes('--since')) canonicalScopes.push(selected)
+        if (args.includes('session')) {
+          return {
+            sessions: [
+              ...(selected.first ? [sessionRow('first', '2026-05-20T04:24:07.234Z', 'gpt-5.6')] : []),
+              ...(selected.second ? [sessionRow('second', '2026-05-20T04:25:07.234Z', 'gpt-5.6')] : [])
+            ]
+          }
+        }
+        return dailyResult(20)
+      }
+
+      await collectCodexUsage({
+        codexHome,
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        since: '20260515',
+        runner
+      })
+
+      await writeFile(second, `${JSON.stringify(tokenCountEvent('2026-05-20T04:26:07.234Z', 20))}\n`, { flag: 'a' })
+
+      await collectCodexUsage({
+        codexHome,
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        since: '20260515',
+        runner
+      })
+
+      expect(canonicalScopes).toEqual([
+        { first: true, second: true },
+        { first: false, second: true }
+      ])
     } finally {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })

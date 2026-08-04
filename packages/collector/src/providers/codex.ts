@@ -11,8 +11,10 @@ import {
   readSessionTimeoutMs
 } from './codex-command-options'
 import {
+  createCodexSessionScopeBatchesForFiles,
   createCodexSessionScopeBatches,
-  type CodexSessionScope
+  type CodexSessionScope,
+  type CodexSessionScopeFileGroup
 } from './codex-session-scope'
 import {
   fingerprintCodexSessionFile,
@@ -341,6 +343,10 @@ async function collectBoundedCodexUsageAttempt(input: {
         timezone,
         scope
       })
+      reportCodexDiagnostics(
+        input.options.stderr,
+        `Codex canonical attribution cache: hits=${cachedAttributions.attributions.size} misses=${cachedAttributions.missingSourceFiles.length}`
+      )
       const batch = await collectFrozenBoundedCodexBatch({
         ...input,
         scope,
@@ -352,7 +358,7 @@ async function collectBoundedCodexUsageAttempt(input: {
         stateDir: input.options.stateDir,
         timezone,
         scope,
-        sessions: batch.canonicalSessions,
+        attributions: batch.canonicalAttributions,
         stderr: input.options.stderr
       })
     } finally {
@@ -374,8 +380,12 @@ async function collectFrozenBoundedCodexBatch(input: {
   options: CollectCodexUsageOptions
   collectedAt: string
   scope: CodexSessionScope
+  codexHomes: string[]
   timezone: string
-  cachedAttributions: ReadonlyMap<string, CodexSessionAttribution> | null
+  cachedAttributions: {
+    attributions: ReadonlyMap<string, CodexSessionAttribution>
+    missingSourceFiles: string[]
+  }
 }) {
   const env = { ...process.env, CODEX_HOME: input.scope.codexHome }
   const daily = await input.runner(
@@ -407,44 +417,35 @@ async function collectFrozenBoundedCodexBatch(input: {
     stderr: input.options.stderr,
     required: true
   })
-  const canonicalSessions = input.cachedAttributions
-    ? null
-    : await collectSessionCounts({
-        runner: input.runner,
-        command: input.packageRunner.command,
-        args: input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', codexCommandArgs({
-          report: 'session',
-          singleThread: true
-        })),
-        options: packageCommandOptions({
-          env,
-          timeoutMs: readSessionTimeoutMs(),
-          stderr: input.options.stderr
-        }),
-        stderr: input.options.stderr,
-        required: true
-      })
+  const canonicalAttributions = await collectCanonicalAttributionsForMissingFiles({
+    runner: input.runner,
+    packageRunner: input.packageRunner,
+    options: input.options,
+    codexHomes: input.codexHomes,
+    scope: input.scope,
+    sourceFiles: input.cachedAttributions.missingSourceFiles
+  })
   const sessions = replaceScopedSessionAttributions({
     boundedSessions,
-    canonicalSessions,
-    cachedAttributions: input.cachedAttributions,
+    canonicalAttributions,
+    cachedAttributions: input.cachedAttributions.attributions,
     scope: input.scope,
     timezone: input.timezone,
     since: input.since,
     until: input.until
   })
   return {
-      snapshots: await normalizeAndCorrectCodexSnapshots({
-        daily,
-        sessions,
-        correctionSessions: boundedSessions,
-        codexHomes: input.scope.codexHomes,
-        options: input.options,
-        collectedAt: input.collectedAt,
-        includeSessionOnlySnapshots: true,
-        subagentCacheFiles: cacheFilesForScope(input.scope)
+    snapshots: await normalizeAndCorrectCodexSnapshots({
+      daily,
+      sessions,
+      correctionSessions: boundedSessions,
+      codexHomes: input.scope.codexHomes,
+      options: input.options,
+      collectedAt: input.collectedAt,
+      includeSessionOnlySnapshots: true,
+      subagentCacheFiles: cacheFilesForScope(input.scope)
     }),
-    canonicalSessions
+    canonicalAttributions
   }
 }
 
@@ -453,20 +454,122 @@ async function readCachedCanonicalAttributions(input: {
   timezone: string
   scope: CodexSessionScope
 }) {
-  if (!input.stateDir || input.scope.sourceFileFingerprints.size === 0) return null
-  return withCodexSessionAttributionCache({
+  const sourceFiles = [...input.scope.sourceFileFingerprints.keys()]
+  if (!input.stateDir || sourceFiles.length === 0) {
+    return {
+      attributions: new Map<string, CodexSessionAttribution>(),
+      missingSourceFiles: sourceFiles
+    }
+  }
+  const attributions = await withCodexSessionAttributionCache({
     stateDir: input.stateDir,
     timezone: input.timezone,
     callback: async (cache) => {
       const attributions = new Map<string, CodexSessionAttribution>()
       for (const [sourceFile, fingerprint] of input.scope.sourceFileFingerprints) {
         const attribution = cache.lookupByFingerprint({ filePath: sourceFile, fingerprint })
-        if (!attribution) return null
-        attributions.set(sourceFile, attribution)
+        if (attribution) attributions.set(sourceFile, attribution)
       }
       return attributions
     }
   })
+  return {
+    attributions,
+    missingSourceFiles: sourceFiles.filter((sourceFile) => !attributions.has(sourceFile))
+  }
+}
+
+async function collectCanonicalAttributionsForMissingFiles(input: {
+  runner: CommandRunner
+  packageRunner: PackageRunner
+  options: CollectCodexUsageOptions
+  codexHomes: string[]
+  scope: CodexSessionScope
+  sourceFiles: string[]
+}) {
+  const attributions = new Map<string, CodexSessionAttribution>()
+  if (input.sourceFiles.length === 0) return attributions
+
+  const groups: CodexSessionScopeFileGroup[] = input.sourceFiles.map((sourceFile) => {
+    const homeIndex = input.scope.sourceFileHomeIndexes.get(sourceFile)
+    const codexHome = homeIndex === undefined ? undefined : input.codexHomes[homeIndex]
+    if (!codexHome) {
+      throw new Error('Codex canonical attribution lost its source profile mapping')
+    }
+    return { files: [{ codexHome, filePath: sourceFile }] }
+  })
+
+  reportCodexDiagnostics(
+    input.options.stderr,
+    `Codex canonical attribution scan: files=${input.sourceFiles.length}`
+  )
+  if (input.sourceFiles.length === input.scope.sourceFileFingerprints.size) {
+    return collectCanonicalAttributionsFromScope({
+      runner: input.runner,
+      packageRunner: input.packageRunner,
+      options: input.options,
+      scope: input.scope
+    })
+  }
+
+  for await (const scope of createCodexSessionScopeBatchesForFiles({
+    codexHomes: input.codexHomes,
+    groups,
+    batchSize: readBatchSize(),
+    onMissingSessionFile: (sessionPath) =>
+      input.options.stderr?.(`Skipping Codex session file that disappeared before canonical attribution: ${sessionPath}`),
+    onCopyFallback: input.options.stderr
+  })) {
+    try {
+      const scopedAttributions = await collectCanonicalAttributionsFromScope({
+        runner: input.runner,
+        packageRunner: input.packageRunner,
+        options: input.options,
+        scope
+      })
+      for (const [sourceFile, attribution] of scopedAttributions) attributions.set(sourceFile, attribution)
+    } finally {
+      await scope.cleanup()
+    }
+  }
+  return attributions
+}
+
+async function collectCanonicalAttributionsFromScope(input: {
+  runner: CommandRunner
+  packageRunner: PackageRunner
+  options: CollectCodexUsageOptions
+  scope: CodexSessionScope
+}) {
+  const sessions = await collectSessionCounts({
+    runner: input.runner,
+    command: input.packageRunner.command,
+    args: input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', codexCommandArgs({
+      report: 'session',
+      singleThread: true
+    })),
+    options: packageCommandOptions({
+      env: { ...process.env, CODEX_HOME: input.scope.codexHome },
+      timeoutMs: readSessionTimeoutMs(),
+      stderr: input.options.stderr
+    }),
+    stderr: input.options.stderr,
+    required: true
+  })
+  const attributions = new Map<string, CodexSessionAttribution>()
+  for (const row of readSessionRows(sessions)) {
+    const sourceFile = resolveScopedSessionSourceFile(row, input.scope)
+    const attribution = readCcusageSessionAttribution(
+      row,
+      input.options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    )
+    if (sourceFile && attribution) attributions.set(sourceFile, attribution)
+  }
+  return attributions
+}
+
+function reportCodexDiagnostics(stderr: ((line: string) => void) | undefined, line: string) {
+  if (process.env.TOKENBOARD_COLLECTOR_DIAGNOSTICS === '1') stderr?.(line)
 }
 
 function isCanonicalAttributionChange(error: unknown) {
@@ -549,22 +652,16 @@ function isPathInside(parent: string, child: string) {
 
 function replaceScopedSessionAttributions(input: {
   boundedSessions: unknown
-  canonicalSessions: unknown | null
-  cachedAttributions: ReadonlyMap<string, CodexSessionAttribution> | null
+  canonicalAttributions: ReadonlyMap<string, CodexSessionAttribution>
+  cachedAttributions: ReadonlyMap<string, CodexSessionAttribution>
   scope: CodexSessionScope
   timezone: string
   since?: string
   until?: string
 }) {
-  const canonicalBySourceFile = input.cachedAttributions
-    ? new Map(input.cachedAttributions)
-    : new Map<string, CodexSessionAttribution>()
-  if (!input.cachedAttributions) {
-    for (const row of readSessionRows(input.canonicalSessions)) {
-      const sourceFile = resolveScopedSessionSourceFile(row, input.scope)
-      const attribution = readCcusageSessionAttribution(row, input.timezone)
-      if (sourceFile && attribution) canonicalBySourceFile.set(sourceFile, attribution)
-    }
+  const canonicalBySourceFile = new Map(input.cachedAttributions)
+  for (const [sourceFile, attribution] of input.canonicalAttributions) {
+    canonicalBySourceFile.set(sourceFile, attribution)
   }
   const canonicalDateRange = {
     since: dateFilterToIso(input.since, true),
@@ -668,15 +765,18 @@ async function warmCanonicalAttributionsFromScope(input: {
   stateDir?: string
   timezone: string
   scope: CodexSessionScope
-  sessions: unknown
+  sessions?: unknown
+  attributions?: ReadonlyMap<string, CodexSessionAttribution>
   stderr?: (line: string) => void
 }) {
   if (!input.stateDir) return
-  const attributions = new Map<string, CodexSessionAttribution>()
-  for (const row of readSessionRows(input.sessions)) {
-    const sourceFile = resolveScopedSessionSourceFile(row, input.scope)
-    const attribution = readCcusageSessionAttribution(row, input.timezone)
-    if (sourceFile && attribution) attributions.set(sourceFile, attribution)
+  const attributions = new Map(input.attributions)
+  if (!input.attributions) {
+    for (const row of readSessionRows(input.sessions)) {
+      const sourceFile = resolveScopedSessionSourceFile(row, input.scope)
+      const attribution = readCcusageSessionAttribution(row, input.timezone)
+      if (sourceFile && attribution) attributions.set(sourceFile, attribution)
+    }
   }
   if (attributions.size === 0) return
   await withCodexSessionAttributionCache({

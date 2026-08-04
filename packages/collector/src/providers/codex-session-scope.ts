@@ -84,6 +84,7 @@ export type CodexSessionScope = {
   codexHomes: string[]
   cleanup: () => Promise<void>
   sourceFiles: Map<string, string>
+  sourceFileHomeIndexes: Map<string, number>
   sourceFileFingerprints: Map<string, CodexSessionFileFingerprint>
 }
 
@@ -435,6 +436,7 @@ async function copySessionCandidate(
       throw new Error(`Codex session changed during scoped collection; retry the sync`)
     }
     scope.sourceFiles.set(target, candidate.sourceFile)
+    scope.sourceFileHomeIndexes.set(candidate.sourceFile, candidate.homeIndex)
     scope.sourceFileFingerprints.set(candidate.sourceFile, sourceFingerprint)
     return source.size
   } catch (error) {
@@ -735,6 +737,7 @@ async function createEmptyScope(homeCount: number): Promise<CodexSessionScope> {
     throw new Error('Temporary Codex session scope path contains a comma and cannot be serialized as CODEX_HOME')
   }
   const sourceFiles = new Map<string, string>()
+  const sourceFileHomeIndexes = new Map<string, number>()
   const sourceFileFingerprints = new Map<string, CodexSessionFileFingerprint>()
   return {
     codexHome: codexHomes.join(','),
@@ -743,6 +746,7 @@ async function createEmptyScope(homeCount: number): Promise<CodexSessionScope> {
       await Promise.all(codexHomes.map((codexHome) => rm(codexHome, { recursive: true, force: true })))
     },
     sourceFiles,
+    sourceFileHomeIndexes,
     sourceFileFingerprints
   }
 }
