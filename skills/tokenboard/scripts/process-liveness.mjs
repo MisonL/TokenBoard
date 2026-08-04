@@ -133,7 +133,7 @@ function readPsProcessStartIdentity(pid, options) {
 }
 
 function readWindowsProcessStartIdentity(pid, options) {
-  const command = `$process = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -eq $process) { exit 3 }; [Console]::Out.Write($process.StartTime.ToUniversalTime().Ticks)`
+  const command = `try { $process = Get-Process -Id ${pid} -ErrorAction Stop; [Console]::Out.Write($process.StartTime.ToUniversalTime().Ticks) } catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound' -or $_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*') { exit 3 }; exit 4 }`
   const result = (options.runProcessIdentity || spawnSync)('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',

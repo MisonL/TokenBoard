@@ -69,6 +69,31 @@ test('external process identity probes use a non-catchable timeout signal', () =
   }
 })
 
+test('Windows process identity distinguishes a missing pid from lookup failure', () => {
+  const calls = []
+  const runProcessIdentity = (command, args, options) => {
+    calls.push({ command, args, options })
+    return { status: calls.length === 1 ? 3 : 4, stdout: '', stderr: '' }
+  }
+
+  assert.deepEqual(
+    probeProcessStartIdentity(123, { platform: 'win32', runProcessIdentity }),
+    { status: 'dead' }
+  )
+  assert.deepEqual(
+    probeProcessStartIdentity(456, { platform: 'win32', runProcessIdentity }),
+    { status: 'unknown' }
+  )
+  assert.equal(calls.length, 2)
+  for (const call of calls) {
+    assert.equal(call.command, 'powershell.exe')
+    assert.match(call.args[3], /Get-Process -Id \d+ -ErrorAction Stop/)
+    assert.match(call.args[3], /try \{/)
+    assert.match(call.args[3], /catch \{/)
+    assert.equal(call.options.killSignal, 'SIGKILL')
+  }
+})
+
 test('process identity probe returns when the helper ignores termination', { skip: process.platform === 'win32' }, () => {
   const startedAt = Date.now()
   const result = probeProcessStartIdentity(123, {

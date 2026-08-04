@@ -156,6 +156,14 @@
 - 当前 checkout 的 `git status --short --branch` 为干净工作树；相对 fork 基线的 `git diff --stat` 仅包含本记录所述 4 个提交，`git diff --check` 通过。
 - 当前候选未部署；生产 Cloudflare、D1、OAuth 和真实多用户链路仍不在本地审查覆盖范围内。
 
+## 2026-08-04 当前会话全面复核
+
+- CodeRabbit CLI `0.7.1` 首轮相对基线 `c160d455a12f7c49fed1ba2ddd84dfa103d6018b` 发现 1 个 Windows 进程身份探测问题：PowerShell 的 `Get-Process -ErrorAction SilentlyContinue` 会把权限或查询错误误判为 PID 不存在。
+- 已修复 `process-liveness.mjs`：使用 `-ErrorAction Stop`，仅将明确的 `ObjectNotFound` 或 `NoProcessFoundForGivenId` 映射为 dead，其它异常保持 unknown；新增缺失 PID 与查询失败两条回归断言。
+- 修复后 CodeRabbit 同一基线复核完成，返回 `findings: 0`，覆盖当前变更范围（含本轮修复）。
+- 本轮验证：workspace 测试 usage-core `9`、Web `582`、collector `655`，共 `1246/1246`；skill 脚本测试 `452/452`；`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=moderate`、`pnpm install --frozen-lockfile --offline`、脚本语法检查和 `git diff --check` 均通过。
+- 本轮未推送、未更新 PR、未部署；修复和本记录已作为本地独立提交保存。Windows 实机、Cloudflare/D1、OAuth 和真实多用户链路仍未在本地验证范围内。
+
 ### 复杂度审查豁免
 
 - `hooks.mjs` 为 782 行，其中 `notifyHandlerHelpers` 是生成单个自包含 CJS hook 的声明式模板。生成结果内已按 dispatch、liveness、错误处理和 signal 写入函数分区；将模板再拆为多个生成器不会减少生成程序复杂度，反而会增加跨模板拼接和作用域一致性风险，因此保留该内聚实现。
