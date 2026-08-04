@@ -214,6 +214,129 @@ test('direct sync releases its coordinator lock when collection fails', () => {
   assert.equal(fs.files.has('/state/sync.lock'), false)
 })
 
+test('direct sync preserves the primary error while reporting a lock release failure', () => {
+  const fs = memoryLockRuntime()
+  const lockPath = '/state/sync.lock'
+  const originalRename = fs.runtime.rename
+  fs.runtime.rename = (from, to) => {
+    if (from === lockPath) {
+      const error = new Error('permission denied')
+      error.code = 'EACCES'
+      throw error
+    }
+    return originalRename(from, to)
+  }
+
+  assert.throws(
+    () => runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        throw new Error('collector failed')
+      }
+    }),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true)
+      assert.deepEqual(error.errors.map((entry) => entry.message), [
+        'collector failed',
+        'TokenBoard sync lock release failed: permission denied'
+      ])
+      return true
+    }
+  )
+  assert.equal(fs.files.has(lockPath), true)
+})
+
+test('direct sync fails visibly when its lock cannot be released after a successful collection', () => {
+  const fs = memoryLockRuntime()
+  const lockPath = '/state/sync.lock'
+  const originalRename = fs.runtime.rename
+  fs.runtime.rename = (from, to) => {
+    if (from === lockPath) {
+      const error = new Error('permission denied')
+      error.code = 'EACCES'
+      throw error
+    }
+    return originalRename(from, to)
+  }
+
+  assert.throws(
+    () => runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => 'complete'
+    }),
+    /TokenBoard sync lock release failed: permission denied/
+  )
+  assert.equal(fs.files.has(lockPath), true)
+})
+
+test('direct sync does not swallow falsy collection errors', () => {
+  for (const thrown of ['', null, undefined]) {
+    const fs = memoryLockRuntime()
+    let didThrow = false
+    let caught
+
+    try {
+      runWithSyncLock({
+        flags: { mode: 'sync' },
+        stateDir: '/state',
+        runtime: fs.runtime,
+        run: () => {
+          throw thrown
+        }
+      })
+    } catch (error) {
+      didThrow = true
+      caught = error
+    }
+
+    assert.equal(didThrow, true)
+    assert.equal(caught, thrown)
+    assert.equal(fs.files.has('/state/sync.lock'), false)
+  }
+})
+
+test('direct sync preserves falsy collection errors when lock release also fails', () => {
+  for (const thrown of ['', null, undefined]) {
+    const fs = memoryLockRuntime()
+    const lockPath = '/state/sync.lock'
+    const originalRename = fs.runtime.rename
+    fs.runtime.rename = (from, to) => {
+      if (from === lockPath) {
+        const error = new Error('permission denied')
+        error.code = 'EACCES'
+        throw error
+      }
+      return originalRename(from, to)
+    }
+
+    assert.throws(
+      () => runWithSyncLock({
+        flags: { mode: 'sync' },
+        stateDir: '/state',
+        runtime: fs.runtime,
+        run: () => {
+          throw thrown
+        }
+      }),
+      (error) => {
+        assert.equal(error instanceof AggregateError, true)
+        assert.equal(error.errors[0], thrown, `primary error mismatch for ${String(thrown)}`)
+        assert.match(
+          error.errors[1].message,
+          /sync lock release failed: permission denied/,
+          `release error mismatch for ${String(thrown)}`
+        )
+        return true
+      }
+    )
+    assert.equal(fs.files.has(lockPath), true)
+  }
+})
+
 function memoryLockRuntime(initial = {}, options = {}) {
   const files = new Map(Object.entries(initial))
   let now = Date.parse('2026-07-17T01:00:00.000Z')

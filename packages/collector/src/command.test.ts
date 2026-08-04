@@ -86,9 +86,14 @@ describe('runJsonCommand', () => {
 
   test('rejects shell metacharacters before invoking a Windows command shim', () => {
     expect(() => assertWindowsShellSafeInvocation('npm.cmd', ['exec', 'ccusage', '--timezone', 'UTC&whoami'], true))
-      .toThrow('Refusing to pass shell metacharacters')
+      .toThrow('Windows command argument 3')
     expect(() => assertWindowsShellSafeInvocation('npm.cmd', ['exec', 'ccusage', '--timezone', 'Asia/Shanghai'], true))
       .not.toThrow()
+  })
+
+  test('rejects shell metacharacters in a Windows command shim path', () => {
+    expect(() => assertWindowsShellSafeInvocation('C:/tools/npm.cmd&whoami', [], true))
+      .toThrow('Windows command shim path')
   })
 
   test('allows legal parentheses in a Windows command shim path', () => {

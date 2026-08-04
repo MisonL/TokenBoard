@@ -232,9 +232,13 @@ export function assertAutomaticUpgradeBranch({ collectorDir, repoRef, spawn = sp
 
   const targetBranch = resolveAutomaticUpgradeBranch({ collectorDir, repoRef, spawn })
   if (!targetBranch) {
+    const explicitRef = trimmedString(repoRef)
     throw new Error(
-      `Refusing automatic TokenBoard upgrade from branch ${currentBranch}: the configured ref is not a branch. ` +
-      'Run upgrade.mjs manually after switching the checkout to the intended ref.'
+      explicitRef
+        ? `Refusing automatic TokenBoard upgrade from branch ${currentBranch}: the configured ref is not a branch. ` +
+          'Run upgrade.mjs manually after switching the checkout to the intended ref.'
+        : `Refusing automatic TokenBoard upgrade from branch ${currentBranch}: unable to resolve the remote default branch. ` +
+          'Run upgrade.mjs manually after verifying the origin remote and its default branch.'
     )
   }
   if (currentBranch !== targetBranch) {

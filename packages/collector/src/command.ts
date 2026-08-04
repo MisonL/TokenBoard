@@ -67,8 +67,12 @@ export function commandShellOption(command: string, platform = process.platform)
 
 export function assertWindowsShellSafeInvocation(command: string, args: string[], shell: boolean) {
   if (!shell) return
-  if (args.some((arg) => windowsShellMetacharacters.test(arg))) {
-    throw new Error('Refusing to pass shell metacharacters to a Windows command shim')
+  if (windowsShellCommandMetacharacters.test(command)) {
+    throw new Error('Refusing to pass shell metacharacters in a Windows command shim path')
+  }
+  const unsafeIndex = args.findIndex((arg) => windowsShellMetacharacters.test(arg))
+  if (unsafeIndex >= 0) {
+    throw new Error(`Refusing to pass shell metacharacters in Windows command argument ${unsafeIndex}`)
   }
 }
 
@@ -113,3 +117,4 @@ function wait(delayMs: number) {
 }
 
 const windowsShellMetacharacters = /[&|<>()^%!"\r\n]/
+const windowsShellCommandMetacharacters = /[&|<>^%!"\r\n]/

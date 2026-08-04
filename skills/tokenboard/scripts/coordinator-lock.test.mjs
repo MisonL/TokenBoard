@@ -52,6 +52,63 @@ test('acquireLock creates a private tokenized lock record', () => {
   assert.equal(lockHasToken('/state/sync.lock', owner.token, runtime), true)
 })
 
+test('acquireLock treats an active directory fence as occupied', () => {
+  const runtime = {
+    process: fakeProcess(201),
+    readFile: (path) => {
+      if (path.endsWith('.cleanup')) {
+        const error = new Error('ENOENT')
+        error.code = 'ENOENT'
+        throw error
+      }
+      const error = new Error('EISDIR')
+      error.code = 'EISDIR'
+      throw error
+    },
+    writeFile: () => {
+      const error = new Error('EEXIST')
+      error.code = 'EEXIST'
+      throw error
+    }
+  }
+
+  assert.equal(acquireLock('/state/scheduled-sync-retry.lock', runtime), false)
+})
+
+test('releaseLock leaves an active directory fence untouched', () => {
+  const runtime = {
+    process: fakeProcess(201),
+    readFile: () => {
+      const error = new Error('EISDIR')
+      error.code = 'EISDIR'
+      throw error
+    },
+    unlink: () => {
+      throw new Error('directory fence must not be removed')
+    }
+  }
+
+  assert.equal(releaseLock('/state/scheduled-sync-retry.lock', runtime, { token: 'owner' }), false)
+})
+
+test('acquireLock treats a direct directory write error as occupied', () => {
+  const runtime = {
+    process: fakeProcess(201),
+    readFile: () => {
+      const error = new Error('ENOENT')
+      error.code = 'ENOENT'
+      throw error
+    },
+    writeFile: () => {
+      const error = new Error('EISDIR')
+      error.code = 'EISDIR'
+      throw error
+    }
+  }
+
+  assert.equal(acquireLock('/state/scheduled-sync-retry.lock', runtime), false)
+})
+
 test('releaseLock preserves a same-process lock with a different token', () => {
   const lockPath = '/state/sync.lock'
   const original = JSON.stringify({ pid: 201, token: 'new-owner' })

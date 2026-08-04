@@ -28,6 +28,7 @@ test('notify handler does not forward payload args to the TokenBoard background 
   assert.match(source, /TOKENBOARD_NOTIFY_DISPATCH_WORKER_PATH/)
   assert.match(source, /const TASKLIST_TIMEOUT_MS = 2000;/)
   assert.match(source, /timeout: TASKLIST_TIMEOUT_MS/)
+  assert.match(source, /recordHandlerError\(\s*"process-liveness"/)
   assert.doesNotMatch(source, /updateDispatchLockPid/)
 })
 
@@ -89,6 +90,36 @@ test('notify handler recovers a malformed dispatch lock before starting a worker
       }
     }, () => readDispatchDiagnostic(root))
     assert.equal(await readTextFile(countPath), 'started')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('notify handler records a background spawn error and releases its dispatch lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-handler-spawn-error-'))
+  const handlerPath = join(root, 'notify.cjs')
+
+  try {
+    await writeFile(handlerPath, buildNotifyHandler({
+      stateDir: root,
+      notifyScriptPath: '\u0000',
+      nodePath: process.execPath
+    }))
+
+    assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex'], {
+      timeout: backgroundResultTimeoutMs
+    }).status, 0)
+    await waitFor(async () => {
+      try {
+        return (await readFile(join(root, 'notify-handler-errors.log'), 'utf8')).includes('"stage":"background"')
+      } catch {
+        return false
+      }
+    })
+    const log = await readFile(join(root, 'notify-handler-errors.log'), 'utf8')
+    assert.equal(log.includes(root), false)
+    assert.equal(log.includes('\\u0000'), false)
+    assert.equal(existsSync(join(root, 'notify.dispatch.lock')), false)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -209,6 +240,37 @@ test('notify handler preserves payload source args for the original Codex notify
   }
 })
 
+test('notify handler records an original notify spawn error without blocking the hook', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-handler-original-error-'))
+  const handlerPath = join(root, 'notify.cjs')
+
+  try {
+    await writeFile(join(root, 'codex_notify_original.json'), JSON.stringify({
+      notify: [join(root, 'missing-original-command')]
+    }))
+    await writeFile(handlerPath, buildNotifyHandler({
+      stateDir: root,
+      notifyScriptPath: join(root, 'missing-background.mjs'),
+      nodePath: process.execPath
+    }))
+
+    assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex'], {
+      timeout: backgroundResultTimeoutMs
+    }).status, 0)
+    await waitFor(async () => {
+      try {
+        return (await readFile(join(root, 'notify-handler-errors.log'), 'utf8')).includes('"stage":"original"')
+      } catch {
+        return false
+      }
+    })
+    const log = await readFile(join(root, 'notify-handler-errors.log'), 'utf8')
+    assert.equal(log.includes(root), false)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('notify handler records foreground failures for local diagnosis', () => {
   const source = buildNotifyHandler({
     stateDir: '/home/user/.tokenboard',
@@ -218,7 +280,7 @@ test('notify handler records foreground failures for local diagnosis', () => {
 
   assert.match(source, /notify-handler-errors\.log/)
   assert.match(source, /recordHandlerError\("enqueue", error\)/)
-  assert.match(source, /recordHandlerError\("background", error\)/)
+  assert.match(source, /recordHandlerError\("background", error, \[NODE_PATH, NOTIFY_SCRIPT\]\)/)
   assert.match(source, /function errorMessage\(error\)/)
   assert.match(source, /function safeErrorString\(value\)/)
   assert.doesNotMatch(source, /: String\(error\)/)

@@ -416,6 +416,31 @@ test('releaseDispatchLock preserves a replacement created after it quarantines i
   assert.equal(JSON.parse(files.get(workerPath)).token, 'owner-b')
 })
 
+test('releaseDispatchLock cleans the worker marker when foreground lock cleanup fails', () => {
+  const lockPath = '/state/notify.dispatch.lock'
+  const workerPath = `${lockPath}.worker`
+  const files = new Map([
+    [lockPath, JSON.stringify({ pid: 10, token: 'owner-a' })],
+    [workerPath, JSON.stringify({ pid: 11, token: 'owner-a' })]
+  ])
+  const fileOps = memoryFileOps(files)
+  const rename = (from, to) => {
+    if (from === lockPath) {
+      const error = new Error('dispatch lock cleanup failed')
+      error.code = 'EACCES'
+      throw error
+    }
+    return fileOps.rename(from, to)
+  }
+
+  assert.throws(
+    () => releaseDispatchLock(lockPath, 'owner-a', { ...fileOps, workerPath, rename }),
+    /dispatch lock cleanup failed/
+  )
+  assert.equal(files.has(lockPath), true)
+  assert.equal(files.has(workerPath), false)
+})
+
 test('trailing notifier preserves a replacement lock during cleanup', async () => {
   const stateDir = '/state'
   const lockPath = join(stateDir, 'trailing.lock')
@@ -461,6 +486,65 @@ test('trailing notifier preserves a replacement lock during cleanup', async () =
 
   assert.equal(exitCode, 0)
   assert.equal(files.get(lockPath), replacement)
+})
+
+test('notify CLI fails when trailing lock cleanup fails', async () => {
+  const stateDir = '/state/notify-trailing-cleanup'
+  const errors = []
+  const exitCode = await runNotifyCli({
+    env: { TOKENBOARD_CONFIG_DIR: stateDir, TOKENBOARD_STATE_DIR: stateDir },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => stateDir,
+    error: (message) => errors.push(message),
+    runNotify: () => ({ trailingScheduled: false }),
+    trailingRuntime: {
+      process: { pid: 101 },
+      readFile: () => JSON.stringify({ pid: 101 })
+    },
+    releaseDispatchLock: () => true
+  })
+
+  assert.equal(exitCode, 0)
+  assert.deepEqual(errors, [])
+
+  const cleanupErrors = []
+  const failedExitCode = await runNotifyCli({
+    env: {
+      TOKENBOARD_CONFIG_DIR: stateDir,
+      TOKENBOARD_STATE_DIR: stateDir,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: `${stateDir}/trailing.lock`
+    },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => stateDir,
+    error: (message) => cleanupErrors.push(message),
+    runNotify: () => ({ trailingScheduled: false }),
+    trailingRuntime: {
+      process: { pid: 101 },
+      readFile: () => JSON.stringify({ pid: 101 })
+    },
+    releaseDispatchLock: () => true
+  })
+
+  assert.equal(failedExitCode, 1)
+  assert.deepEqual(cleanupErrors, ['TokenBoard trailing lock cleanup failed: TokenBoard trailing lock cleanup requires atomic rename and link operations'])
+})
+
+test('notify CLI fails when dispatch lock cleanup fails', async () => {
+  const errors = []
+  const exitCode = await runNotifyCli({
+    env: { TOKENBOARD_CONFIG_DIR: '/state', TOKENBOARD_STATE_DIR: '/state' },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => '/state',
+    error: (message) => errors.push(message),
+    runNotify: () => ({ trailingScheduled: false }),
+    claimDispatchLock: () => true,
+    releaseDispatchLock: () => {
+      throw new Error('dispatch cleanup failed')
+    }
+  })
+
+  assert.equal(exitCode, 1)
+  assert.deepEqual(errors, ['TokenBoard dispatch lock cleanup failed: dispatch cleanup failed'])
 })
 
 test('notify hides the sync child process on Windows', () => {
@@ -529,6 +613,49 @@ test('notify replaces malformed trailing lock during cooldown', () => {
   assert.equal(spawned.length, 1)
   assert.equal(spawned[0].options.windowsHide, true)
   assert.equal(JSON.parse(files.get('/state/trailing.lock')).pid, 704)
+})
+
+test('notify replaces a trailing lock with an invalid numeric pid during cooldown', () => {
+  const stateDir = '/state/notify-invalid-pid'
+  const trailingLockPath = `${stateDir}/trailing.lock`
+  const files = new Map([
+    [`${stateDir}/last-success.json`, '2026-05-22T10:00:00.000Z'],
+    [trailingLockPath, JSON.stringify({ pid: -1 })]
+  ])
+  const spawned = []
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    stateDir,
+    ...memoryFileOps(files),
+    now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readFile: (path) => files.get(path) || '',
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'wx' && files.has(path)) {
+        const error = new Error('EEXIST')
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(path, String(value))
+    },
+    unlink: (path) => files.delete(path),
+    process: {
+      pid: 503,
+      kill: () => true
+    },
+    spawnDetached: (command, args, options) => {
+      spawned.push({ command, args, options })
+      return { pid: 704, unref: () => {} }
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.trailingScheduled, true)
+  assert.equal(spawned.length, 1)
+  assert.equal(JSON.parse(files.get(trailingLockPath)).pid, 704)
 })
 
 test('trailing process retains its lock when pending signals remain in cooldown', () => {

@@ -227,11 +227,42 @@ export function runWithSyncLock({
     }
     owner = wait.owner
   }
+  let result
+  let primaryError
+  let primaryFailed = false
   try {
-    return run()
-  } finally {
-    releaseLock(lockPath, runtime, owner)
+    result = run()
+  } catch (error) {
+    primaryFailed = true
+    primaryError = error
   }
+
+  let releaseError
+  try {
+    const released = releaseLock(lockPath, runtime, owner)
+    if (!released && lockHasToken(lockPath, owner.token, runtime)) {
+      releaseError = new Error(`TokenBoard sync lock release was not confirmed: ${lockPath}`)
+    }
+  } catch (error) {
+    releaseError = new Error(
+      `TokenBoard sync lock release failed: ${errorMessage(error)}`,
+      { cause: error }
+    )
+  }
+
+  if (primaryFailed && releaseError) {
+    const combined = new AggregateError(
+      [primaryError, releaseError],
+      `${errorMessage(primaryError)}; ${errorMessage(releaseError)}`
+    )
+    if (primaryError && typeof primaryError === 'object' && 'code' in primaryError) {
+      combined.code = primaryError.code
+    }
+    throw combined
+  }
+  if (primaryFailed) throw primaryError
+  if (releaseError) throw releaseError
+  return result
 }
 
 function shouldDeferScheduledSync(flags, error) {

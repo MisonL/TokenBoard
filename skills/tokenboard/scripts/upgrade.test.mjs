@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildUpgradePlan, resolveArchiveUrl, resolveArchiveUrls, resolveRepoUrl, runUpgrade } from './upgrade.mjs'
+import { assertAutomaticUpgradeBranch, buildUpgradePlan, resolveArchiveUrl, resolveArchiveUrls, resolveRepoUrl, runUpgrade } from './upgrade.mjs'
 import { errorMessage, runStep } from './upgrade-utils.mjs'
 
 test('normalizes empty error diagnostics', () => {
@@ -306,6 +306,28 @@ test('automatic upgrade refuses a configured tag before mutating the checkout', 
   assert.equal(calls.some((call) =>
     call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
   ), false)
+})
+
+test('automatic upgrade refuses to guess when the remote default branch cannot be resolved', () => {
+  const collectorDir = process.cwd()
+
+  assert.throws(
+    () => assertAutomaticUpgradeBranch({
+      collectorDir,
+      repoRef: null,
+      spawn: (command, args) => {
+        if (command !== 'git') throw new Error(`unexpected command: ${command}`)
+        if (args.join('\u0000') === ['branch', '--show-current'].join('\u0000')) {
+          return { status: 0, stdout: 'master\n' }
+        }
+        if (args.join('\u0000') === ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'].join('\u0000')) {
+          return { status: 1, stdout: '' }
+        }
+        throw new Error(`unexpected git arguments: ${args.join(' ')}`)
+      }
+    }),
+    /unable to resolve the remote default branch/
+  )
 })
 
 test('pins an existing collector checkout to a configured ref during upgrade', () => {

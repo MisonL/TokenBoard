@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configPath, readConfig } from './config.mjs'
 import { deviceLinkStatus } from './device-link.mjs'
 import { hookStatus } from './hooks.mjs'
+import { scheduledRetryLegacyStatePath, scheduledRetryStatePath } from './scheduled-retry.mjs'
 
 export function buildStatus({ configPath, config, hooks = hookStatus(), deviceLink = deviceLinkStatus(), scheduledRetry }) {
   return {
@@ -65,21 +66,53 @@ function runCli() {
   }
 
   const config = readConfig()
+  const source = typeof config.source === 'string' && config.source.trim() ? config.source : 'all'
   console.log(JSON.stringify(buildStatus({
     configPath: file,
     config,
-    scheduledRetry: readScheduledRetry(file)
+    scheduledRetry: readScheduledRetry(file, source)
   }), null, 2))
 }
 
-function readScheduledRetry(configFile) {
+function readScheduledRetry(configFile, source = 'all') {
   const stateDir = process.env.TOKENBOARD_STATE_DIR || dirname(configFile)
-  const statePath = join(stateDir, 'scheduled-sync-retry.json')
-  if (!existsSync(statePath)) return null
+  const statePath = scheduledRetryStatePath(stateDir, source)
+  const state = readRetryState(statePath)
+  if (source === 'all') return state
+  const sourceState = isRetryStateForSource(state, source) ? state : null
+  const legacyStatePath = scheduledRetryLegacyStatePath(stateDir)
+  const legacy = readRetryState(legacyStatePath)
+  const legacyState = isRetryStateForSource(legacy, source) ? legacy : null
+  return preferRetryState(sourceState, legacyState)
+}
+
+function isRetryStateForSource(state, source) {
+  return state && (state.status === 'invalid' || state.source === source || state.source === 'all')
+}
+
+function preferRetryState(primary, fallback) {
+  if (!primary) return fallback
+  if (primary.status === 'invalid') return primary
+  if (!fallback) return primary
+  const primaryUpdatedAt = retryStateUpdatedAt(primary)
+  const fallbackUpdatedAt = retryStateUpdatedAt(fallback)
+  if (primaryUpdatedAt === null) return fallbackUpdatedAt === null ? primary : fallback
+  if (fallbackUpdatedAt === null) return primary
+  return fallbackUpdatedAt > primaryUpdatedAt ? fallback : primary
+}
+
+function retryStateUpdatedAt(state) {
+  if (state.status === 'invalid') return null
+  const value = Date.parse(state.updatedAt)
+  return Number.isFinite(value) ? value : null
+}
+
+function readRetryState(statePath) {
   try {
     const value = JSON.parse(readFileSync(statePath, 'utf8'))
     return isScheduledRetryState(value) ? value : { status: 'invalid' }
-  } catch {
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
     return { status: 'invalid' }
   }
 }
@@ -101,7 +134,9 @@ function isScheduledRetryState(value) {
 const scheduledRetryStatuses = new Set(['deferred', 'retrying', 'completed', 'failed', 'exhausted'])
 
 function isIsoTimestamp(value) {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value))
+  if (typeof value !== 'string') return false
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

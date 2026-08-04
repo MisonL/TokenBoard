@@ -14,6 +14,7 @@ export function acquireLock(lockPath, runtime) {
       rememberLockOwner(lockPath, owner)
       return owner
     } catch (error) {
+      if (error.code === 'EISDIR') return false
       if (error.code !== 'EEXIST') throw error
       if (!removeStaleLock(lockPath, runtime)) return false
     }
@@ -36,6 +37,10 @@ export function waitForLock(lockPath, runtime) {
 export function releaseLock(lockPath, runtime, owner = null) {
   const record = readLockRecord(lockPath, runtime)
   if (!record) {
+    forgetLockOwner(lockPath, owner)
+    return false
+  }
+  if (record.directory) {
     forgetLockOwner(lockPath, owner)
     return false
   }
@@ -91,6 +96,7 @@ function lockPayload(owner) {
 function removeStaleLock(lockPath, runtime) {
   const record = readLockRecord(lockPath, runtime)
   if (!record) return true
+  if (record.directory) return false
   if (!isLockRecordStale(lockPath, record, runtime)) return false
   const removed = removeLockRecord(lockPath, record.raw, runtime)
   if (removed) forgetLockOwner(lockPath, record)
@@ -264,6 +270,7 @@ function readLockRecord(lockPath, runtime) {
     raw = runtime.readFile(lockPath)
   } catch (error) {
     if (error.code === 'ENOENT') return null
+    if (error.code === 'EISDIR') return { directory: true, pid: null, token: null, raw: null }
     throw error
   }
   return { raw, ...parseLockRecord(raw) }

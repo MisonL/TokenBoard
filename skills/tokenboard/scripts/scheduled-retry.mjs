@@ -1,13 +1,17 @@
 import { randomBytes } from 'node:crypto'
-import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { acquireLock, lockHasToken, releaseLock } from './coordinator-lock.mjs'
 import { errorMessage } from './error-message.mjs'
+import { currentProcessStartIdentity } from './process-liveness.mjs'
+import { acquireLegacyRetryFence, prepareLegacyRetryFenceForAll, releaseLegacyRetryFence } from './scheduled-retry-legacy-fence.mjs'
 
 export const scheduledRetryStateFileName = 'scheduled-sync-retry.json'
 export const scheduledRetryLockFileName = 'scheduled-sync-retry.lock'
 export const defaultScheduledRetryMaxAttempts = 5
 export const defaultScheduledRetryDelayMs = 60_000
+const scheduledRetryGuardSources = ['antigravity', 'antigravity-cli', 'antigravity-ide', 'claude-code', 'codex']
+const scheduledRetryTransitionLockFileName = 'scheduled-sync-retry.transition.lock'
 
 export function runScheduledRetry(options = {}) {
   if (typeof options.runAttempt !== 'function') {
@@ -18,12 +22,13 @@ export function runScheduledRetry(options = {}) {
   const source = readRequiredString(options.source, 'TokenBoard scheduled retry source is required')
   const maxAttempts = readMaxAttempts(options.maxAttempts)
   const delayMs = readDelayMs(options.delayMs)
-  const lockPath = join(runtime.stateDir, scheduledRetryLockFileName)
+  const lockPath = scheduledRetryLockPath(runtime.stateDir, source)
   runtime.mkdir(runtime.stateDir, { recursive: true })
-  const owner = acquireLock(lockPath, runtime)
-  if (!owner) {
-    return { exitCode: 0, skipped: true, skippedReason: 'active-retry', attempts: 0 }
+  const prepared = prepareRetryLocks({ source, runtime, lockPath })
+  if (prepared.skipped) {
+    return { exitCode: 0, skipped: true, skippedReason: prepared.skippedReason, attempts: 0 }
   }
+  const { owner, legacyOwner, guardOwners } = prepared
 
   const progress = { retryAttempt: 0 }
   let result
@@ -52,6 +57,39 @@ export function runScheduledRetry(options = {}) {
       runtime,
       error
     })
+  }
+  try {
+    releaseLegacyRetryFence({
+      runtime,
+      lockPath: scheduledRetryLegacyLockPath(runtime.stateDir),
+      transitionPath: scheduledRetryTransitionLockPath(runtime.stateDir),
+      owner: legacyOwner
+    })
+  } catch (error) {
+    const legacyCleanupError = recordRetryLockReleaseFailure({
+      source,
+      maxAttempts,
+      retryAttempt: progress.retryAttempt,
+      runtime,
+      error
+    })
+    cleanupError = cleanupError
+      ? new AggregateError([cleanupError, legacyCleanupError], `${errorMessage(cleanupError)}; ${errorMessage(legacyCleanupError)}`)
+      : legacyCleanupError
+  }
+  try {
+    releaseRetryGuardLocks({ runtime, guardOwners, primaryPath: lockPath })
+  } catch (error) {
+    const guardCleanupError = recordRetryLockReleaseFailure({
+      source,
+      maxAttempts,
+      retryAttempt: progress.retryAttempt,
+      runtime,
+      error
+    })
+    cleanupError = cleanupError
+      ? new AggregateError([cleanupError, guardCleanupError], `${errorMessage(cleanupError)}; ${errorMessage(guardCleanupError)}`)
+      : guardCleanupError
   }
 
   if (primaryError && cleanupError) {
@@ -179,8 +217,132 @@ function recordRetryLockReleaseFailure({ source, maxAttempts, retryAttempt, runt
   }
 }
 
-export function scheduledRetryStatePath(stateDir) {
+export function scheduledRetryStatePath(stateDir, source = 'all') {
+  return join(stateDir, scheduledRetryFileName(scheduledRetryStateFileName, source))
+}
+
+export function scheduledRetryLockPath(stateDir, source = 'all') {
+  return join(stateDir, scheduledRetryFileName(scheduledRetryLockFileName, source))
+}
+
+export function scheduledRetryLegacyStatePath(stateDir) {
   return join(stateDir, scheduledRetryStateFileName)
+}
+
+export function scheduledRetryLegacyLockPath(stateDir) {
+  return join(stateDir, scheduledRetryLockFileName)
+}
+
+export function scheduledRetryTransitionLockPath(stateDir) {
+  return join(stateDir, scheduledRetryTransitionLockFileName)
+}
+
+function scheduledRetryFileName(fileName, source = 'all') {
+  const sourceValue = readRequiredString(source, 'TokenBoard scheduled retry source is required')
+  if (sourceValue === 'all') return fileName
+  const extensionIndex = fileName.lastIndexOf('.')
+  const stem = fileName.slice(0, extensionIndex)
+  const extension = fileName.slice(extensionIndex)
+  const sourceKey = Buffer.from(sourceValue, 'utf8').toString('hex')
+  return `${stem}.${sourceKey}${extension}`
+}
+
+function prepareRetryLocks({ source, runtime, lockPath }) {
+  const guardSources = source === 'all' ? scheduledRetryGuardSources : [source]
+  const guardOwners = []
+  let legacyOwner = null
+  const transitionPath = scheduledRetryTransitionLockPath(runtime.stateDir)
+  const transitionOwner = acquireLock(transitionPath, runtime)
+  if (!transitionOwner) return { skipped: true, skippedReason: 'active-retry' }
+  try {
+    for (const guardSource of guardSources) {
+      const guardPath = scheduledRetryLockPath(runtime.stateDir, guardSource)
+      const guardOwner = acquireLock(guardPath, runtime)
+      if (!guardOwner) {
+        releasePreparedRetryLocks({ runtime, guardOwners, legacyOwner, transitionPath, transitionOwner })
+        return { skipped: true, skippedReason: 'active-retry' }
+      }
+      guardOwners.push({ path: guardPath, owner: guardOwner })
+    }
+
+    if (source === 'all') {
+      if (prepareLegacyRetryFenceForAll({
+        runtime,
+        lockPath: scheduledRetryLegacyLockPath(runtime.stateDir)
+      })) {
+        releasePreparedRetryLocks({ runtime, guardOwners, legacyOwner, transitionPath, transitionOwner })
+        return { skipped: true, skippedReason: 'active-legacy-retry' }
+      }
+      const owner = acquireLock(lockPath, runtime)
+      if (!owner) {
+        releasePreparedRetryLocks({ runtime, guardOwners, legacyOwner, transitionPath, transitionOwner })
+        return { skipped: true, skippedReason: 'active-retry' }
+      }
+      guardOwners.push({ path: lockPath, owner })
+      releaseRetryLock(transitionPath, runtime, transitionOwner)
+      return { owner, legacyOwner, guardOwners }
+    }
+
+    legacyOwner = acquireLegacyRetryFence({
+      runtime,
+      lockPath: scheduledRetryLegacyLockPath(runtime.stateDir)
+    })
+    if (legacyOwner === false) {
+      releasePreparedRetryLocks({ runtime, guardOwners, legacyOwner, transitionPath, transitionOwner })
+      return { skipped: true, skippedReason: 'active-legacy-retry' }
+    }
+    releaseRetryLock(transitionPath, runtime, transitionOwner)
+    return { owner: guardOwners[0].owner, legacyOwner, guardOwners }
+  } catch (error) {
+    try {
+      releasePreparedRetryLocks({ runtime, guardOwners, legacyOwner, transitionPath, transitionOwner })
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `${errorMessage(error)}; retry lock cleanup failed: ${errorMessage(cleanupError)}`
+      )
+    }
+    throw error
+  }
+}
+
+function releasePreparedRetryLocks({ runtime, guardOwners, legacyOwner, transitionPath, transitionOwner }) {
+  const errors = []
+  if (legacyOwner && legacyOwner !== false) {
+    try {
+      releaseLegacyRetryFence({
+        runtime,
+        lockPath: scheduledRetryLegacyLockPath(runtime.stateDir),
+        transitionPath,
+        owner: legacyOwner,
+        transitionOwner
+      })
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+  for (const { path, owner } of [...guardOwners].reverse()) {
+    try {
+      releaseRetryLock(path, runtime, owner)
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+  if (transitionOwner) {
+    try {
+      releaseRetryLock(transitionPath, runtime, transitionOwner)
+    } catch (error) {
+      errors.push(error)
+    }
+  }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1) throw new AggregateError(errors, errors.map(errorMessage).join('; '))
+}
+
+function releaseRetryGuardLocks({ runtime, guardOwners, primaryPath }) {
+  const ownedGuards = guardOwners.filter(({ path }) => path !== primaryPath)
+  if (ownedGuards.length === 0) return
+  releasePreparedRetryLocks({ runtime, guardOwners: ownedGuards, legacyOwner: null })
 }
 
 function retryState({ source, status, retryAttempt, maxAttempts, now, nextRetryAt, error }) {
@@ -198,7 +360,7 @@ function retryState({ source, status, retryAttempt, maxAttempts, now, nextRetryA
 
 function writeRetryState(state, runtime) {
   runtime.mkdir(runtime.stateDir, { recursive: true })
-  const statePath = scheduledRetryStatePath(runtime.stateDir)
+  const statePath = scheduledRetryStatePath(runtime.stateDir, state.source)
   const tempPath = `${statePath}.tmp-${runtime.process.pid}-${runtime.now()}-${randomBytes(8).toString('hex')}`
   try {
     runtime.writeFile(tempPath, `${JSON.stringify(state)}\n`, { flag: 'wx', mode: 0o600 })
@@ -255,18 +417,34 @@ function readRequiredString(value, message) {
 function retryRuntime(options) {
   const provided = options.runtime || {}
   const stateDir = readRequiredString(options.stateDir || provided.stateDir, 'TokenBoard scheduled retry stateDir is required')
+  const processValue = options.process || provided.process || process
+  const platform = options.platform || provided.platform || process.platform
+  const nodeVersion = options.nodeVersion || provided.nodeVersion || process.versions.node
+  const readProcessStartIdentity = options.readProcessStartIdentity || provided.readProcessStartIdentity
+  const runProcessIdentity = options.runProcessIdentity || provided.runProcessIdentity
   return {
     stateDir,
     now: options.now || provided.now || Date.now,
-    process: options.process || provided.process || process,
-    platform: options.platform || provided.platform || process.platform,
-    nodeVersion: options.nodeVersion || provided.nodeVersion || process.versions.node,
+    process: processValue,
+    platform,
+    nodeVersion,
+    processStartIdentity: options.processStartIdentity || provided.processStartIdentity || currentProcessStartIdentity({
+      pid: processValue.pid,
+      platform,
+      nodeVersion,
+      readProcessStartIdentity,
+      runProcessIdentity
+    }),
+    readProcessStartIdentity,
+    runProcessIdentity,
     runTasklist: options.runTasklist || provided.runTasklist,
     mkdir: options.mkdir || provided.mkdir || mkdirSync,
     readFile: options.readFile || provided.readFile || ((path) => readFileSync(path, 'utf8')),
+    readdir: options.readdir || provided.readdir || readdirSync,
     writeFile: options.writeFile || provided.writeFile || writeFileSync,
     rename: options.rename || provided.rename || renameSync,
     link: options.link || provided.link || linkSync,
+    rmdir: options.rmdir || provided.rmdir || rmdirSync,
     unlink: options.unlink || provided.unlink || unlinkSync,
     sleep: options.sleep || provided.sleep || sleepSync
   }

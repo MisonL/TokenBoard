@@ -42,15 +42,27 @@ test('notify handler passes its configured state directory to the background not
   assert.match(source, /TOKENBOARD_STATE_DIR: STATE_DIR/)
 })
 
-test('notify handler uses the runtime node executable for the background process', () => {
+test('notify handler uses the current Unix runtime and the configured Windows runtime', () => {
   const source = buildNotifyHandler({
     stateDir: '/home/user/.tokenboard',
     notifyScriptPath: '/repo/scripts/notify.mjs',
     nodePath: '/old/node'
   })
 
-  assert.match(source, /const NODE_PATH = process\.execPath;/)
-  assert.doesNotMatch(source, /const NODE_PATH = "\/old\/node"/)
+  const declaration = source.match(/const NODE_PATH = [\s\S]*?;\n/)?.[0]
+  assert.ok(declaration)
+  const evaluate = (platform) => {
+    const context = {
+      process: { platform, execPath: '/current/node' },
+      result: undefined
+    }
+    runInNewContext(`${declaration}\nresult = NODE_PATH;`, context)
+    return context.result
+  }
+
+  assert.equal(evaluate('darwin'), '/current/node')
+  assert.equal(evaluate('linux'), '/current/node')
+  assert.equal(evaluate('win32'), '/old/node')
 })
 
 test('notify handler resolves Windows tasklist from an absolute System32 path instead of PATH', () => {

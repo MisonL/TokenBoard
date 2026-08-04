@@ -140,37 +140,54 @@ export async function runNotifyCli(options = {}) {
   const wait = options.waitTrailingDelay || waitTrailingDelay
   const reportError = options.error || console.error
   const runtime = options.trailingRuntime || trailingRuntime({ env })
+  const claimDispatch = options.claimDispatchLock || claimDispatchLock
+  const releaseDispatch = options.releaseDispatchLock || releaseDispatchLock
   let dispatchClaimed = false
+  let exitCode = 0
   try {
-    dispatchClaimed = claimDispatchLock(dispatchLockPath, dispatchLockToken, { workerPath: dispatchWorkerPath })
-    if (!dispatchClaimed) return 0
-    const config = readCurrentConfig()
-    const configuredDir = readConfigDirectory()
-    let delayMs = trailingDelayMsFromEnvironment(env)
-    while (true) {
-      await wait(delayMs)
-      const result = notify({
-        configDir: configuredDir,
-        stateDir: env.TOKENBOARD_STATE_DIR || configuredDir,
-        env,
-        trailingProcess: Boolean(trailingLockPath) || delayMs > 0,
-        version: config.updatedAt || config.createdAt || 'unknown'
-      })
-      if (result.error) {
-        if (!result.trailingScheduled) throw new Error(result.error)
-        reportError(`TokenBoard hook sync retry scheduled after error: ${result.error}`)
+    dispatchClaimed = claimDispatch(dispatchLockPath, dispatchLockToken, { workerPath: dispatchWorkerPath })
+    if (dispatchClaimed) {
+      const config = readCurrentConfig()
+      const configuredDir = readConfigDirectory()
+      let delayMs = trailingDelayMsFromEnvironment(env)
+      while (true) {
+        await wait(delayMs)
+        const result = notify({
+          configDir: configuredDir,
+          stateDir: env.TOKENBOARD_STATE_DIR || configuredDir,
+          env,
+          trailingProcess: Boolean(trailingLockPath) || delayMs > 0,
+          version: config.updatedAt || config.createdAt || 'unknown'
+        })
+        if (result.error) {
+          if (!result.trailingScheduled) throw new Error(result.error)
+          reportError(`TokenBoard hook sync retry scheduled after error: ${result.error}`)
+        }
+        const nextDelayMs = trailingContinuationDelay(result, trailingLockPath, runtime)
+        if (nextDelayMs === null) break
+        delayMs = nextDelayMs
       }
-      const nextDelayMs = trailingContinuationDelay(result, trailingLockPath, runtime)
-      if (nextDelayMs === null) return 0
-      delayMs = nextDelayMs
     }
   } catch (error) {
     reportError(errorMessage(error))
-    return 1
+    exitCode = 1
   } finally {
-    releaseTrailingLock(trailingLockPath, runtime)
-    if (dispatchClaimed) releaseDispatchLock(dispatchLockPath, dispatchLockToken, { workerPath: dispatchWorkerPath })
+    try {
+      releaseTrailingLock(trailingLockPath, runtime)
+    } catch (cleanupError) {
+      reportError(`TokenBoard trailing lock cleanup failed: ${errorMessage(cleanupError)}`)
+      exitCode = 1
+    }
+    if (dispatchClaimed) {
+      try {
+        releaseDispatch(dispatchLockPath, dispatchLockToken, { workerPath: dispatchWorkerPath })
+      } catch (cleanupError) {
+        reportError(`TokenBoard dispatch lock cleanup failed: ${errorMessage(cleanupError)}`)
+        exitCode = 1
+      }
+    }
   }
+  return exitCode
 }
 
 export function readNotifyCooldownMs(explicitValue, env = process.env) {
@@ -382,7 +399,8 @@ function readTrailingLockRecord(lockPath, runtime) {
 function readTrailingLockPid(raw) {
   try {
     const parsed = JSON.parse(raw)
-    return typeof parsed.pid === 'number' ? parsed.pid : null
+    if (!parsed || typeof parsed !== 'object') return null
+    return Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : null
   } catch (error) {
     if (error instanceof SyntaxError) return null
     throw error
@@ -426,17 +444,29 @@ export function claimDispatchLock(lockPath, token, options = {}) {
 export function releaseDispatchLock(lockPath, token, options = {}) {
   if (!lockPath || !token) return false
   const workerPath = dispatchWorkerPath(lockPath, options.workerPath)
+  let released = false
+  let lockError
   try {
-    const released = releaseOwnedDispatchFile(lockPath, token, options)
-    removeDispatchWorker(workerPath, token, options)
-    return released
+    released = releaseOwnedDispatchFile(lockPath, token, options)
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      removeDispatchWorker(workerPath, token, options)
-      return false
-    }
-    throw error
+    if (error.code !== 'ENOENT') lockError = error
   }
+
+  let workerError
+  try {
+    removeDispatchWorker(workerPath, token, options)
+  } catch (error) {
+    if (error.code !== 'ENOENT') workerError = error
+  }
+  if (lockError && workerError) {
+    throw new AggregateError(
+      [lockError, workerError],
+      `${errorMessage(lockError)}; dispatch worker cleanup failed: ${errorMessage(workerError)}`
+    )
+  }
+  if (lockError) throw lockError
+  if (workerError) throw workerError
+  return released
 }
 
 function dispatchWorkerPath(lockPath, workerPath) {
