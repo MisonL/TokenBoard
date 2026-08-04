@@ -5,7 +5,8 @@ const maxAcquireAttempts = 5
 const activeLockOwners = new Set()
 const activeCleanupOwners = new Set()
 
-export function acquireLock(lockPath, runtime) {
+export function acquireLock(lockPath, runtime, options = {}) {
+  const allowDirectoryFence = options.allowDirectoryFence === true
   for (let attempt = 0; attempt < maxAcquireAttempts; attempt += 1) {
     if (isLockCleanupInProgress(lockPath, runtime)) return false
     const owner = createLockOwner(runtime)
@@ -14,19 +15,22 @@ export function acquireLock(lockPath, runtime) {
       rememberLockOwner(lockPath, owner)
       return owner
     } catch (error) {
-      if (error.code === 'EISDIR') return false
+      if (error.code === 'EISDIR') {
+        if (allowDirectoryFence) return false
+        throw error
+      }
       if (error.code !== 'EEXIST') throw error
-      if (!removeStaleLock(lockPath, runtime)) return false
+      if (!removeStaleLock(lockPath, runtime, { allowDirectoryFence })) return false
     }
   }
   return null
 }
 
-export function waitForLock(lockPath, runtime) {
+export function waitForLock(lockPath, runtime, options = {}) {
   const started = runtime.now()
   let backoff = 100
   while (runtime.now() - started < runtime.lockTimeoutMs) {
-    const owner = acquireLock(lockPath, runtime)
+    const owner = acquireLock(lockPath, runtime, options)
     if (owner) return { acquired: true, owner }
     runtime.sleep(backoff)
     backoff = Math.min(backoff * 2, 2000)
@@ -34,8 +38,8 @@ export function waitForLock(lockPath, runtime) {
   return { acquired: false, error: 'lock timeout' }
 }
 
-export function releaseLock(lockPath, runtime, owner = null) {
-  const record = readLockRecord(lockPath, runtime)
+export function releaseLock(lockPath, runtime, owner = null, options = {}) {
+  const record = readLockRecord(lockPath, runtime, options)
   if (!record) {
     forgetLockOwner(lockPath, owner)
     return false
@@ -52,15 +56,15 @@ export function releaseLock(lockPath, runtime, owner = null) {
     forgetLockOwner(lockPath, owner)
     return false
   }
-  const released = removeLockRecord(lockPath, record.raw, runtime)
+  const released = removeLockRecord(lockPath, record.raw, runtime, options)
   if (released) forgetLockOwner(lockPath, record)
   else forgetLockOwner(lockPath, owner)
   return released
 }
 
-export function lockHasToken(lockPath, token, runtime) {
+export function lockHasToken(lockPath, token, runtime, options = {}) {
   if (typeof token !== 'string' || !token) return false
-  const record = readLockRecord(lockPath, runtime)
+  const record = readLockRecord(lockPath, runtime, options)
   return record?.token === token
 }
 
@@ -93,17 +97,17 @@ function lockPayload(owner) {
   })
 }
 
-function removeStaleLock(lockPath, runtime) {
-  const record = readLockRecord(lockPath, runtime)
+function removeStaleLock(lockPath, runtime, options = {}) {
+  const record = readLockRecord(lockPath, runtime, options)
   if (!record) return true
   if (record.directory) return false
   if (!isLockRecordStale(lockPath, record, runtime)) return false
-  const removed = removeLockRecord(lockPath, record.raw, runtime)
+  const removed = removeLockRecord(lockPath, record.raw, runtime, options)
   if (removed) forgetLockOwner(lockPath, record)
   return removed
 }
 
-function removeLockRecord(lockPath, expectedRaw, runtime) {
+function removeLockRecord(lockPath, expectedRaw, runtime, options = {}) {
   if (typeof runtime.rename !== 'function' || typeof runtime.link !== 'function' || typeof runtime.writeFile !== 'function') {
     throw new Error('TokenBoard lock cleanup requires atomic rename and link operations')
   }
@@ -112,15 +116,15 @@ function removeLockRecord(lockPath, expectedRaw, runtime) {
   if (!cleanupOwner) return false
 
   try {
-    const current = readLockRecord(lockPath, runtime)
+    const current = readLockRecord(lockPath, runtime, options)
     if (!current || current.raw !== expectedRaw) return false
-    return removeVerifiedLockRecord(lockPath, expectedRaw, runtime)
+    return removeVerifiedLockRecord(lockPath, expectedRaw, runtime, options)
   } finally {
     releaseLockCleanup(lockPath, cleanupOwner, runtime)
   }
 }
 
-function removeVerifiedLockRecord(lockPath, expectedRaw, runtime) {
+function removeVerifiedLockRecord(lockPath, expectedRaw, runtime, options = {}) {
 
   const quarantinePath = lockQuarantinePath(lockPath, runtime)
   try {
@@ -132,7 +136,7 @@ function removeVerifiedLockRecord(lockPath, expectedRaw, runtime) {
 
   let quarantined
   try {
-    quarantined = readLockRecord(quarantinePath, runtime)
+    quarantined = readLockRecord(quarantinePath, runtime, options)
   } catch (error) {
     restoreLockRecord(lockPath, quarantinePath, runtime)
     throw error
@@ -264,13 +268,18 @@ function isLockRecordStale(lockPath, record, runtime) {
   }) === 'dead'
 }
 
-function readLockRecord(lockPath, runtime) {
+function readLockRecord(lockPath, runtime, options = {}) {
   let raw
   try {
     raw = runtime.readFile(lockPath)
   } catch (error) {
     if (error.code === 'ENOENT') return null
-    if (error.code === 'EISDIR') return { directory: true, pid: null, token: null, raw: null }
+    if (error.code === 'EISDIR') {
+      if (options.allowDirectoryFence === true) {
+        return { directory: true, pid: null, token: null, raw: null }
+      }
+      throw error
+    }
     throw error
   }
   return { raw, ...parseLockRecord(raw) }

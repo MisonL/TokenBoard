@@ -115,9 +115,9 @@ function ensureLegacyRetryFence({ runtime, lockPath }) {
       continue
     }
 
-    const legacyOwner = acquireLock(lockPath, runtime)
+    const legacyOwner = acquireLock(lockPath, runtime, { allowDirectoryFence: true })
     if (!legacyOwner) return false
-    releaseOwnedLock(lockPath, runtime, legacyOwner)
+    releaseOwnedLock(lockPath, runtime, legacyOwner, { allowDirectoryFence: true })
   }
   return false
 }
@@ -285,8 +285,8 @@ function isDirectoryPath(path, runtime) {
   }
 }
 
-function releaseOwnedLock(lockPath, runtime, owner) {
-  const released = releaseLock(lockPath, runtime, owner)
-  if (released || !lockHasToken(lockPath, owner.token, runtime)) return
+function releaseOwnedLock(lockPath, runtime, owner, options = {}) {
+  const released = releaseLock(lockPath, runtime, owner, options)
+  if (released || !lockHasToken(lockPath, owner.token, runtime, options)) return
   throw new Error('TokenBoard scheduled retry lock release was not confirmed')
 }

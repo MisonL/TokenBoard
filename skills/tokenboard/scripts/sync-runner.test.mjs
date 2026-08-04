@@ -196,6 +196,34 @@ test('direct sync fails before collection when the coordinator lock stays busy',
   assert.equal(JSON.parse(fs.files.get('/state/sync.lock')).pid, 200)
 })
 
+test('direct sync exposes a structurally damaged directory lock', () => {
+  const fs = memoryLockRuntime()
+  const writeFile = fs.runtime.writeFile
+  fs.runtime.writeFile = (path, value, options) => {
+    if (path === '/state/sync.lock') {
+      const error = new Error(`EISDIR: ${path}`)
+      error.code = 'EISDIR'
+      throw error
+    }
+    return writeFile(path, value, options)
+  }
+  let ran = false
+
+  assert.throws(
+    () => runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        ran = true
+      }
+    }),
+    (error) => error.code === 'EISDIR'
+  )
+
+  assert.equal(ran, false)
+})
+
 test('direct sync releases its coordinator lock when collection fails', () => {
   const fs = memoryLockRuntime()
 

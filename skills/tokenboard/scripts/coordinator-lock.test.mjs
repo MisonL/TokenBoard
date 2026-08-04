@@ -52,7 +52,7 @@ test('acquireLock creates a private tokenized lock record', () => {
   assert.equal(lockHasToken('/state/sync.lock', owner.token, runtime), true)
 })
 
-test('acquireLock treats an active directory fence as occupied', () => {
+test('acquireLock rejects a directory in an ordinary lock path', () => {
   const runtime = {
     process: fakeProcess(201),
     readFile: (path) => {
@@ -72,10 +72,13 @@ test('acquireLock treats an active directory fence as occupied', () => {
     }
   }
 
-  assert.equal(acquireLock('/state/scheduled-sync-retry.lock', runtime), false)
+  assert.throws(
+    () => acquireLock('/state/sync.lock', runtime),
+    (error) => error.code === 'EISDIR'
+  )
 })
 
-test('releaseLock leaves an active directory fence untouched', () => {
+test('releaseLock rejects a directory in an ordinary lock path', () => {
   const runtime = {
     process: fakeProcess(201),
     readFile: () => {
@@ -88,10 +91,13 @@ test('releaseLock leaves an active directory fence untouched', () => {
     }
   }
 
-  assert.equal(releaseLock('/state/scheduled-sync-retry.lock', runtime, { token: 'owner' }), false)
+  assert.throws(
+    () => releaseLock('/state/sync.lock', runtime, { token: 'owner' }),
+    (error) => error.code === 'EISDIR'
+  )
 })
 
-test('acquireLock treats a direct directory write error as occupied', () => {
+test('legacy retry callers can explicitly treat a directory fence as occupied', () => {
   const runtime = {
     process: fakeProcess(201),
     readFile: () => {
@@ -106,7 +112,7 @@ test('acquireLock treats a direct directory write error as occupied', () => {
     }
   }
 
-  assert.equal(acquireLock('/state/scheduled-sync-retry.lock', runtime), false)
+  assert.equal(acquireLock('/state/scheduled-sync-retry.lock', runtime, { allowDirectoryFence: true }), false)
 })
 
 test('releaseLock preserves a same-process lock with a different token', () => {
