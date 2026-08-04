@@ -380,7 +380,6 @@ async function collectFrozenBoundedCodexBatch(input: {
   options: CollectCodexUsageOptions
   collectedAt: string
   scope: CodexSessionScope
-  codexHomes: string[]
   timezone: string
   cachedAttributions: {
     attributions: ReadonlyMap<string, CodexSessionAttribution>
@@ -421,7 +420,6 @@ async function collectFrozenBoundedCodexBatch(input: {
     runner: input.runner,
     packageRunner: input.packageRunner,
     options: input.options,
-    codexHomes: input.codexHomes,
     scope: input.scope,
     sourceFiles: input.cachedAttributions.missingSourceFiles
   })
@@ -483,20 +481,22 @@ async function collectCanonicalAttributionsForMissingFiles(input: {
   runner: CommandRunner
   packageRunner: PackageRunner
   options: CollectCodexUsageOptions
-  codexHomes: string[]
   scope: CodexSessionScope
   sourceFiles: string[]
 }) {
   const attributions = new Map<string, CodexSessionAttribution>()
   if (input.sourceFiles.length === 0) return attributions
 
+  const frozenFileToSourceFile = new Map<string, string>()
   const groups: CodexSessionScopeFileGroup[] = input.sourceFiles.map((sourceFile) => {
     const homeIndex = input.scope.sourceFileHomeIndexes.get(sourceFile)
-    const codexHome = homeIndex === undefined ? undefined : input.codexHomes[homeIndex]
-    if (!codexHome) {
+    const codexHome = homeIndex === undefined ? undefined : input.scope.codexHomes[homeIndex]
+    const frozenFile = scopedFileForSourceFile(sourceFile, input.scope.sourceFiles)
+    if (!codexHome || !frozenFile) {
       throw new Error('Codex canonical attribution lost its source profile mapping')
     }
-    return { files: [{ codexHome, filePath: sourceFile }] }
+    frozenFileToSourceFile.set(frozenFile, sourceFile)
+    return { files: [{ codexHome, filePath: frozenFile }] }
   })
 
   reportCodexDiagnostics(
@@ -513,7 +513,7 @@ async function collectCanonicalAttributionsForMissingFiles(input: {
   }
 
   for await (const scope of createCodexSessionScopeBatchesForFiles({
-    codexHomes: input.codexHomes,
+    codexHomes: input.scope.codexHomes,
     groups,
     batchSize: readBatchSize(),
     onMissingSessionFile: (sessionPath) =>
@@ -527,7 +527,13 @@ async function collectCanonicalAttributionsForMissingFiles(input: {
         options: input.options,
         scope
       })
-      for (const [sourceFile, attribution] of scopedAttributions) attributions.set(sourceFile, attribution)
+      for (const [frozenFile, attribution] of scopedAttributions) {
+        const sourceFile = frozenFileToSourceFile.get(frozenFile)
+        if (!sourceFile) {
+          throw new Error('Codex canonical attribution lost its frozen source-file mapping')
+        }
+        attributions.set(sourceFile, attribution)
+      }
     } finally {
       await scope.cleanup()
     }

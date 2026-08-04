@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
@@ -85,6 +85,8 @@ describe('Codex bounded canonical attribution batches', () => {
     const first = join(codexHome, 'sessions', '2026', '05', '20', 'first.jsonl')
     const second = join(codexHome, 'sessions', '2026', '05', '20', 'second.jsonl')
     const canonicalScopes: Array<{ first: boolean; second: boolean }> = []
+    const canonicalTokens: Array<{ first: number | null; second: number | null }> = []
+    let dailyCalls = 0
     vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
     vi.stubEnv('TOKENBOARD_CODEX_BATCH_SIZE', '200')
 
@@ -102,12 +104,22 @@ describe('Codex bounded canonical attribution batches', () => {
         }
         if (args.includes('session') && !args.includes('--since')) canonicalScopes.push(selected)
         if (args.includes('session')) {
+          if (!args.includes('--since')) {
+            canonicalTokens.push({
+              first: selected.first ? await readScopedToken(scopedHome, 'first') : null,
+              second: selected.second ? await readScopedToken(scopedHome, 'second') : null
+            })
+          }
           return {
             sessions: [
               ...(selected.first ? [sessionRow('first', '2026-05-20T04:24:07.234Z', 'gpt-5.6')] : []),
               ...(selected.second ? [sessionRow('second', '2026-05-20T04:25:07.234Z', 'gpt-5.6')] : [])
             ]
           }
+        }
+        dailyCalls += 1
+        if (dailyCalls === 2) {
+          await writeFile(second, `${JSON.stringify(tokenCountEvent('2026-05-20T04:26:07.234Z', 20))}\n`, { flag: 'a' })
         }
         return dailyResult(20)
       }
@@ -120,7 +132,7 @@ describe('Codex bounded canonical attribution batches', () => {
         runner
       })
 
-      await writeFile(second, `${JSON.stringify(tokenCountEvent('2026-05-20T04:26:07.234Z', 20))}\n`, { flag: 'a' })
+      await writeFile(second, `${JSON.stringify(tokenCountEvent('2026-05-20T04:25:30.234Z', 15))}\n`, { flag: 'a' })
 
       await collectCodexUsage({
         codexHome,
@@ -133,6 +145,10 @@ describe('Codex bounded canonical attribution batches', () => {
       expect(canonicalScopes).toEqual([
         { first: true, second: true },
         { first: false, second: true }
+      ])
+      expect(canonicalTokens).toEqual([
+        { first: 10, second: 10 },
+        { first: null, second: 15 }
       ])
     } finally {
       await rm(codexHome, { recursive: true, force: true })
@@ -173,4 +189,10 @@ function sessionRow(sessionFile: string, lastActivity: string, model = 'gpt-5.4'
 
 async function exists(filePath: string) {
   return access(filePath).then(() => true).catch(() => false)
+}
+
+async function readScopedToken(scopedHome: string, sessionFile: string) {
+  const content = await readFile(join(scopedHome, 'sessions', '2026', '05', '20', `${sessionFile}.jsonl`), 'utf8')
+  const event = JSON.parse(content.trim().split('\n').at(-1) ?? '{}')
+  return event.payload?.info?.last_token_usage?.total_tokens ?? null
 }

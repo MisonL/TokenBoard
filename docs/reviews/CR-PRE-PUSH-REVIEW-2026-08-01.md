@@ -4,11 +4,13 @@
 
 ## 范围
 
+以下范围和本地验证表格是 2026-08-01 的首次复核快照，后续章节记录更新后的事实。
+
 - 分支：`fix/post-merge-reliability-followups-ui`
 - 基线：`upstream/master`
 - 分支关系：领先 18 个提交，落后 0 个提交
-- 本轮未提交修改：15 个跟踪代码/测试文件，以及 1 个未跟踪审查记录文件
-- 本轮未执行提交、推送、PR 更新或部署
+- 首次快照（2026-08-01）：未提交修改包含 15 个跟踪代码/测试文件，以及 1 个未跟踪审查记录文件
+- 首次快照（2026-08-01）：未执行提交、推送、PR 更新或部署
 
 ## 本地验证
 
@@ -146,7 +148,7 @@
 - 新增未知身份 marker 落盘、活动未知身份 marker 阻塞 all-source retry、all/source 两条路径损坏 marker 保留回归测试。
 - 最终验证：skill 脚本 `447/447`，workspace usage-core `9`、Web `582`、collector `654`，`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=moderate`（无已知漏洞）和 `git diff --check` 全部通过；仍未提交、未推送、未部署。
 
-## 2026-08-04 最终收口复核
+## 2026-08-04 最终收口复核（历史快照）
 
 - 同 PID 的无身份 marker 不再仅因当前进程内没有 token 记录而被判为陈旧；该场景回退到保守的 PID liveness 判定，避免 PID 复用或身份探测不可用时误删栅栏。
 - scheduled retry 的内存文件系统目录枚举改用宿主路径分隔符，Windows 断言不再因为固定 `/` 分隔符而遗漏嵌套 marker。
@@ -162,6 +164,8 @@
 - 已修复 `process-liveness.mjs`：使用 `-ErrorAction Stop`，仅将明确的 `ObjectNotFound` 或 `NoProcessFoundForGivenId` 映射为 dead，其它异常保持 unknown；新增缺失 PID 与查询失败两条回归断言。
 - 修复后 CodeRabbit 同一基线复核完成，返回 `findings: 0`，覆盖当前变更范围（含本轮修复）。
 - 本轮验证：workspace 测试 usage-core `9`、Web `582`、collector `655`，共 `1246/1246`；skill 脚本测试 `452/452`；`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=moderate`、`pnpm install --frozen-lockfile --offline`、脚本语法检查和 `git diff --check` 均通过。
+- 基线与范围命令：执行 `git log --oneline c160d455a12f7c49fed1ba2ddd84dfa103d6018b..HEAD`、`git diff --stat c160d455a12f7c49fed1ba2ddd84dfa103d6018b...HEAD`、`git status --short --branch` 和 `git diff --check`。
+- 脚本语法命令：执行 `node --check skills/tokenboard/scripts/scheduled-retry.mjs`、`node --check skills/tokenboard/scripts/scheduled-retry-legacy-fence.mjs`、`node --check skills/tokenboard/scripts/process-liveness.mjs`、`node --check skills/tokenboard/scripts/coordinator-lock.mjs`、`node --check skills/tokenboard/scripts/notify.mjs`、`node --check skills/tokenboard/scripts/hooks.mjs`、`node --check skills/tokenboard/scripts/sync.mjs` 和 `node --check skills/tokenboard/scripts/upgrade.mjs`。
 - 本轮未推送、未更新 PR、未部署；修复和本记录已作为本地独立提交保存。Windows 实机、Cloudflare/D1、OAuth 和真实多用户链路仍未在本地验证范围内。
 
 ### 复杂度审查豁免
@@ -172,3 +176,13 @@
 - `upgrade.mjs` 的 `runUpgrade` 覆盖 checkout、依赖、skill 刷新和配置合并的单一升级事务；拆分会增加部分升级后配置未写入的风险，故保留。
 - `hooks.test.mjs`（957 行）、`notify.test.mjs`（894 行）和 `scheduled-retry.test.mjs`（853 行）均为一个模块的跨平台状态机契约测试，依赖共享 private fake 和生命周期断言，审查后不拆分。
 - `upgrade.test.mjs` 为 1353 行，超过 1000 行强制治理阈值。本次仅增加默认分支诊断回归；该文件覆盖完整升级事务及 archive fallback，拆分会重复大量同步 fake 与调用序列断言。明确豁免本次重构，后续若扩展 upgrade 行为，应将 archive fallback 场景迁至独立测试文件。
+
+## 2026-08-04 Codex 冻结范围最终复核
+
+- 修复 bounded Codex canonical attribution 的 live/frozen 文件竞态：缓存未命中的 canonical 子批次现在从同一批已冻结的临时 `CODEX_HOME` 派生，并通过显式映射回原始 source file；不再在 canonical 扫描阶段重新读取 live 文件。移除已不再使用的 `codexHomes` 参数，避免误导调用方。
+- 新增回归覆盖：第二次有界采集期间 live 文件继续增长时，canonical 子批次仍读取冻结内容，并校验各批次实际 token 尾值；未发现跨 profile 映射丢失或重复归因路径。
+- 本轮本地验证：`pnpm test` 的 usage-core `9`、Web `582`、collector `655` 共 `1246/1246` 通过；skill 脚本 `452/452` 通过；`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=high`（无已知漏洞）、`pnpm install --frozen-lockfile --offline`、`git diff --check` 均通过。
+- CodeRabbit CLI `0.7.1` 执行 `coderabbit review --agent --base-commit c160d455a12f7c49fed1ba2ddd84dfa103d6018b -c AGENTS.md` 完成，返回 `review_completed`、`findings: 0`，覆盖当前基线差异及未提交修改涉及的文件。
+- OMP `17.1.8` 使用指定的 `grok-4.5` 模型完成只读复核，结论为未发现可操作缺陷；Claude Code `2.1.220` 的标准与 `--bare` 只读调用均在超过 10 分钟内无输出，已停止且不计为通过证据。
+- 追加上述外部复核记录后再次执行同一 CodeRabbit 命令时返回 `rate_limit`，没有产生新的 `review_completed` 或 `findings: 0`；该限流结果不作为通过证据。此前成功复核覆盖的业务/测试差异未被修改，本节新增内容仅为审查记录。
+- 当前工作树仅有本节对应的审查记录、Codex 实现和 Codex 回归测试 3 个未提交修改；本轮未推送、未更新 PR、未部署。Windows 实机、Cloudflare/D1、OAuth 和真实多用户链路仍未在本地验证范围内。
