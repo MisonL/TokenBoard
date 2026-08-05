@@ -52,6 +52,106 @@ test('acquireLock creates a private tokenized lock record', () => {
   assert.equal(lockHasToken('/state/sync.lock', owner.token, runtime), true)
 })
 
+test('acquireLock binds new lock records to the process start identity when available', () => {
+  const files = new Map()
+  const runtime = {
+    process: fakeProcess(201),
+    processStartIdentity: 'linux:boot-a:123',
+    writeFile: (path, value) => files.set(path, String(value)),
+    readFile: (path) => readMemoryFile(files, path)
+  }
+
+  const owner = acquireLock('/state/sync.lock', runtime)
+
+  assert.equal(JSON.parse(files.get('/state/sync.lock')).processStartIdentity, 'linux:boot-a:123')
+  assert.equal(owner.processStartIdentity, 'linux:boot-a:123')
+})
+
+test('acquireLock reclaims an identity-bound lock after pid reuse', () => {
+  const lockPath = '/state/sync.lock'
+  const fs = memoryRuntime({
+    [lockPath]: JSON.stringify({
+      pid: 301,
+      token: 'old-owner',
+      processStartIdentity: 'linux:boot-a:100'
+    })
+  })
+  const runtime = {
+    ...fs,
+    process: fakeProcess(302),
+    processStartIdentity: 'linux:boot-a:200',
+    platform: 'linux',
+    readProcessStartIdentity: (pid) => pid === 301 ? 'linux:boot-a:999' : 'linux:boot-a:200'
+  }
+
+  const owner = acquireLock(lockPath, runtime)
+
+  assert.equal(owner.processStartIdentity, 'linux:boot-a:200')
+  assert.equal(JSON.parse(fs.files.get(lockPath)).token, owner.token)
+})
+
+test('acquireLock keeps an identity-bound lock when the pid and start identity still match', () => {
+  const lockPath = '/state/sync.lock'
+  const fs = memoryRuntime({
+    [lockPath]: JSON.stringify({
+      pid: 301,
+      token: 'active-owner',
+      processStartIdentity: 'linux:boot-a:100'
+    })
+  })
+  const runtime = {
+    ...fs,
+    process: fakeProcess(302),
+    processStartIdentity: 'linux:boot-a:200',
+    platform: 'linux',
+    readProcessStartIdentity: () => 'linux:boot-a:100'
+  }
+
+  assert.equal(acquireLock(lockPath, runtime), false)
+  assert.equal(JSON.parse(fs.files.get(lockPath)).token, 'active-owner')
+})
+
+test('acquireLock keeps an identity-bound lock when the process identity is unavailable', () => {
+  const lockPath = '/state/sync.lock'
+  const fs = memoryRuntime({
+    [lockPath]: JSON.stringify({
+      pid: 301,
+      token: 'unknown-owner',
+      processStartIdentity: 'linux:boot-a:100'
+    })
+  })
+  const runtime = {
+    ...fs,
+    process: fakeProcess(302),
+    processStartIdentity: 'linux:boot-a:200',
+    platform: 'linux',
+    readProcessStartIdentity: () => ({ status: 'unknown' })
+  }
+
+  assert.equal(acquireLock(lockPath, runtime), false)
+  assert.equal(JSON.parse(fs.files.get(lockPath)).token, 'unknown-owner')
+})
+
+test('releaseLock does not remove an identity-bound lock after pid reuse', () => {
+  const lockPath = '/state/sync.lock'
+  const original = JSON.stringify({
+    pid: 301,
+    token: 'old-owner',
+    processStartIdentity: 'linux:boot-a:100'
+  })
+  const fs = memoryRuntime({ [lockPath]: original })
+  const runtime = {
+    ...fs,
+    process: fakeProcess(301),
+    processStartIdentity: 'linux:boot-a:200',
+    platform: 'linux',
+    readProcessStartIdentity: () => 'linux:boot-a:200'
+  }
+
+  assert.equal(releaseLock(lockPath, runtime), false)
+  assert.equal(fs.files.get(lockPath), original)
+})
+
 test('acquireLock rejects a directory in an ordinary lock path', () => {
   const runtime = {
     process: fakeProcess(201),

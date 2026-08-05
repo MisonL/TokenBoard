@@ -433,7 +433,8 @@ function retryRuntime(options) {
       platform,
       nodeVersion,
       readProcessStartIdentity,
-      runProcessIdentity
+      runProcessIdentity,
+      kill: processValue.kill?.bind(processValue)
     }),
     readProcessStartIdentity,
     runProcessIdentity,

@@ -421,19 +421,33 @@ test('source retry holds a legacy compatibility lock for its whole lifecycle', (
   const fs = memoryRuntime()
   const stateDir = '/state/scheduled-retry-legacy-lifecycle'
   let lockObservedDuringAttempt = false
+  let transitionLock
+  let sourceLock
+  const writeFile = fs.runtime.writeFile
 
   const result = runScheduledRetry({
     stateDir,
     source: 'codex',
-    runtime: fs.runtime,
+    runtime: {
+      ...fs.runtime,
+      writeFile: (path, value, options) => {
+        writeFile(path, value, options)
+        if (path === scheduledRetryTransitionLockPath(stateDir)) {
+          transitionLock = JSON.parse(String(value))
+        }
+      }
+    },
     runAttempt: () => {
       lockObservedDuringAttempt = fs.directories.has(scheduledRetryLegacyLockPath(stateDir))
+      sourceLock = JSON.parse(fs.files.get(scheduledRetryLockPath(stateDir, 'codex')))
       return 0
     }
   })
 
   assert.deepEqual(result, { exitCode: 0, skipped: false, attempts: 1 })
   assert.equal(lockObservedDuringAttempt, true)
+  assert.equal(transitionLock.processStartIdentity, fs.runtime.processStartIdentity)
+  assert.equal(sourceLock.processStartIdentity, fs.runtime.processStartIdentity)
   assert.equal(fs.directories.has(scheduledRetryLegacyLockPath(stateDir)), false)
 })
 

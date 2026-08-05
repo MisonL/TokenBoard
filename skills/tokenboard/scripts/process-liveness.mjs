@@ -4,6 +4,9 @@ import { win32 as windowsPath } from 'node:path'
 
 const tasklistTimeoutMs = 2_000
 const processIdentityTimeoutMs = 2_000
+const darwinProcessInfoSize = 136
+const darwinStartSecondsOffset = 120
+const darwinStartMicrosecondsOffset = 128
 
 export function isProcessAlive(pid, options = {}) {
   return probeProcessLiveness(pid, options) !== 'dead'
@@ -51,6 +54,7 @@ export function probeProcessStartIdentity(pid, options = {}) {
   const platform = options.platform || process.platform
   if (platform === 'linux') return readLinuxProcessStartIdentity(pid, options)
   if (platform === 'win32') return readWindowsProcessStartIdentity(pid, options)
+  if (platform === 'darwin') return readDarwinProcessStartIdentity(pid, options)
   return readPsProcessStartIdentity(pid, options)
 }
 
@@ -115,6 +119,52 @@ function readLinuxProcessStartIdentity(pid, options = {}) {
   return { status: 'known', value: `linux:${bootId}:${startTicks}` }
 }
 
+function readDarwinProcessStartIdentity(pid, options = {}) {
+  const runProcessIdentity = options.runProcessIdentity || spawnSync
+  const result = runProcessIdentity('/usr/bin/osascript', [
+    '-l',
+    'JavaScript',
+    '-e',
+    darwinProcessIdentityScript(pid)
+  ], {
+    encoding: 'utf8',
+    timeout: processIdentityTimeoutMs,
+    // osascript can outlive a terminated Node caller; force a bounded probe.
+    killSignal: 'SIGKILL'
+  })
+  if (result.error || result.status == null) return { status: 'unknown' }
+  if (result.status !== 0) return processIdentityFailureStatus(pid, options)
+
+  const encoded = String(result.stdout || '').trim()
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
+    return { status: 'unknown' }
+  }
+  try {
+    const bytes = Buffer.from(encoded, 'base64')
+    if (bytes.length !== darwinProcessInfoSize) return { status: 'unknown' }
+    const seconds = bytes.readBigUInt64LE(darwinStartSecondsOffset)
+    const microseconds = bytes.readBigUInt64LE(darwinStartMicrosecondsOffset)
+    if (seconds <= 0n || microseconds >= 1_000_000n) return { status: 'unknown' }
+    return { status: 'known', value: `darwin:${seconds}:${microseconds}` }
+  } catch {
+    return { status: 'unknown' }
+  }
+}
+
+function darwinProcessIdentityScript(pid) {
+  return `ObjC.import("Foundation"); ObjC.bindFunction("proc_pidinfo", ["int", ["int", "int", "uint64_t", "void*", "int"]], "/usr/lib/libproc.dylib"); const data = $.NSMutableData.dataWithLength(${darwinProcessInfoSize}); const size = $.proc_pidinfo(${pid}, 3, 0, data.mutableBytes, ${darwinProcessInfoSize}); if (size !== ${darwinProcessInfoSize}) { throw new Error("proc_pidinfo unavailable") }; ObjC.unwrap(data.base64EncodedStringWithOptions(0));`
+}
+
+function processIdentityFailureStatus(pid, options) {
+  const kill = options.kill || process.kill.bind(process)
+  try {
+    kill(pid, 0)
+    return { status: 'unknown' }
+  } catch (error) {
+    return error?.code === 'ESRCH' ? { status: 'dead' } : { status: 'unknown' }
+  }
+}
+
 function readPsProcessStartIdentity(pid, options) {
   const result = (options.runProcessIdentity || spawnSync)('ps', ['-p', String(pid), '-o', 'lstart='], {
     encoding: 'utf8',
@@ -126,10 +176,9 @@ function readPsProcessStartIdentity(pid, options) {
   if (result.error) return { status: 'unknown' }
   const output = String(result.stdout || '').trim()
   if (!output) return result.status === 1 ? { status: 'dead' } : { status: 'unknown' }
-  const startedAt = Date.parse(output)
-  return Number.isFinite(startedAt)
-    ? { status: 'known', value: `ps:${startedAt}` }
-    : { status: 'unknown' }
+  // POSIX ps lstart is only second-precision. It is useful for diagnostics,
+  // but not strong enough to distinguish same-second PID reuse.
+  return { status: 'unknown' }
 }
 
 function readWindowsProcessStartIdentity(pid, options) {

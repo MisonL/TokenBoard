@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { probeProcessLiveness } from './process-liveness.mjs'
+import { probeProcessLiveness, probeProcessStartIdentity } from './process-liveness.mjs'
 
 const maxAcquireAttempts = 5
 const activeLockOwners = new Set()
@@ -56,6 +56,10 @@ export function releaseLock(lockPath, runtime, owner = null, options = {}) {
     forgetLockOwner(lockPath, owner)
     return false
   }
+  if (!lockRecordMatchesRuntime(record, runtime)) {
+    forgetLockOwner(lockPath, owner)
+    return false
+  }
   const released = removeLockRecord(lockPath, record.raw, runtime, options)
   if (released) forgetLockOwner(lockPath, record)
   else forgetLockOwner(lockPath, owner)
@@ -73,7 +77,10 @@ function createLockOwner(runtime) {
   return {
     pid: runtime.process.pid,
     startedAt: new Date(now).toISOString(),
-    token: randomBytes(16).toString('hex')
+    token: randomBytes(16).toString('hex'),
+    ...(typeof runtime.processStartIdentity === 'string' && runtime.processStartIdentity
+      ? { processStartIdentity: runtime.processStartIdentity }
+      : {})
   }
 }
 
@@ -93,7 +100,8 @@ function lockPayload(owner) {
   return JSON.stringify({
     pid: owner.pid,
     startedAt: owner.startedAt,
-    token: owner.token
+    token: owner.token,
+    ...(owner.processStartIdentity ? { processStartIdentity: owner.processStartIdentity } : {})
   })
 }
 
@@ -186,6 +194,7 @@ function releaseLockCleanup(lockPath, owner, runtime) {
   try {
     const current = readLockCleanup(guardPath, runtime)
     if (!current || current.token !== owner.token || current.pid !== runtime.process.pid) return false
+    if (!lockRecordMatchesRuntime(current, runtime)) return false
     runtime.unlink(guardPath)
     return true
   } catch (error) {
@@ -221,16 +230,7 @@ function readLockCleanup(guardPath, runtime) {
 }
 
 function isLockCleanupOwnerActive(guardPath, record, runtime) {
-  if (record.pid === null) return false
-  if (record.pid === runtime.process.pid) {
-    return Boolean(record.token && activeCleanupOwners.has(lockOwnerKey(guardPath, record.token)))
-  }
-  return probeProcessLiveness(record.pid, {
-    platform: runtime.platform,
-    nodeVersion: runtime.nodeVersion,
-    kill: runtime.process.kill?.bind(runtime.process),
-    runTasklist: runtime.runTasklist
-  }) !== 'dead'
+  return isLockOwnerActive(guardPath, record, runtime, activeCleanupOwners)
 }
 
 function rememberCleanupOwner(guardPath, owner) {
@@ -255,17 +255,47 @@ function restoreLockRecord(lockPath, quarantinePath, runtime) {
 }
 
 function isLockRecordStale(lockPath, record, runtime) {
+  return !isLockOwnerActive(lockPath, record, runtime, activeLockOwners)
+}
+
+function isLockOwnerActive(lockPath, record, runtime, activeOwners) {
   const pid = record?.pid ?? null
-  if (pid === null) return true
-  if (pid === runtime.process.pid) {
-    return !record.token || !activeLockOwners.has(lockOwnerKey(lockPath, record.token))
+  if (pid === null) return false
+  if (pid === runtime.process.pid && record.token && activeOwners.has(lockOwnerKey(lockPath, record.token))) {
+    return true
   }
+  if (record.processStartIdentity) {
+    const identity = processStartIdentityForPid(pid, runtime)
+    if (identity.status === 'dead') return false
+    if (identity.status === 'known') return identity.value === record.processStartIdentity
+    return true
+  }
+  if (pid === runtime.process.pid) return false
   return probeProcessLiveness(pid, {
     platform: runtime.platform,
     nodeVersion: runtime.nodeVersion,
     kill: runtime.process.kill?.bind(runtime.process),
     runTasklist: runtime.runTasklist
-  }) === 'dead'
+  }) !== 'dead'
+}
+
+function processStartIdentityForPid(pid, runtime) {
+  if (pid === runtime.process.pid && typeof runtime.processStartIdentity === 'string' && runtime.processStartIdentity) {
+    return { status: 'known', value: runtime.processStartIdentity }
+  }
+  return probeProcessStartIdentity(pid, {
+    platform: runtime.platform,
+    nodeVersion: runtime.nodeVersion,
+    readProcessStartIdentity: runtime.readProcessStartIdentity,
+    runProcessIdentity: runtime.runProcessIdentity,
+    kill: runtime.process.kill?.bind(runtime.process)
+  })
+}
+
+function lockRecordMatchesRuntime(record, runtime) {
+  if (!record.processStartIdentity) return true
+  const identity = processStartIdentityForPid(record.pid, runtime)
+  return identity.status === 'known' && identity.value === record.processStartIdentity
 }
 
 function readLockRecord(lockPath, runtime, options = {}) {
@@ -291,7 +321,10 @@ function parseLockRecord(raw) {
     if (!parsed || typeof parsed !== 'object') return { pid: null, token: null }
     return {
       pid: typeof parsed.pid === 'number' ? parsed.pid : null,
-      token: typeof parsed.token === 'string' ? parsed.token : null
+      token: typeof parsed.token === 'string' ? parsed.token : null,
+      processStartIdentity: typeof parsed.processStartIdentity === 'string' && parsed.processStartIdentity
+        ? parsed.processStartIdentity
+        : null
     }
   } catch (error) {
     if (error instanceof SyntaxError) return { pid: null, token: null }

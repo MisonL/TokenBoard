@@ -186,3 +186,11 @@
 - OMP `17.1.8` 使用指定的 `grok-4.5` 模型完成只读复核，结论为未发现可操作缺陷；Claude Code `2.1.220` 的标准与 `--bare` 只读调用均在超过 10 分钟内无输出，已停止且不计为通过证据。
 - 追加上述外部复核记录后再次执行同一 CodeRabbit 命令时返回 `rate_limit`，没有产生新的 `review_completed` 或 `findings: 0`；该限流结果不作为通过证据。此前成功复核覆盖的业务/测试差异未被修改，本节新增内容仅为审查记录。
 - 当前工作树仅有本节对应的审查记录、Codex 实现和 Codex 回归测试 3 个未提交修改；本轮未推送、未更新 PR、未部署。Windows 实机、Cloudflare/D1、OAuth 和真实多用户链路仍未在本地验证范围内。
+
+## 2026-08-05 retry 锁进程身份与 macOS 精度修复
+
+- `coordinator-lock` 的新锁记录现在在 runtime 提供启动身份时写入 `processStartIdentity`；transition lock、来源 guard 和 cleanup guard 会在身份可验证时同时校验 PID 与启动身份，旧版无该字段的锁继续走 PID liveness 兼容路径，身份探测失败保持占用而不静默回收。
+- macOS 不再使用秒级 `ps lstart` 作为可比较身份，改用系统 `libproc` 的 `proc_pidinfo` 读取 `pbi_start_tvsec` 和 `pbi_start_tvusec`；原生探测失败返回 `unknown`，通用 POSIX `ps` 输出也不再被当作唯一启动身份。
+- 新增 coordinator 锁身份写入、PID 复用、身份未知保守互斥，以及 Darwin 微秒级解析和损坏数据回归；来源 retry 回归确认 transition/source 锁均携带启动身份。
+- 本轮验证：workspace 测试 usage-core `9`、Web `582`、collector `655`，共 `1246/1246`；skill 脚本测试 `460/460`；`pnpm typecheck`、`pnpm build`、`pnpm audit --audit-level=moderate`、关键脚本 `node --check` 和 `git diff --check` 均通过。另以本机当前 Node PID 实测 Darwin 原生身份格式为 `darwin:<seconds>:<microseconds>`。
+- 本轮未推送、未部署、未执行外部审查；Windows 实机、Cloudflare/D1、OAuth 和真实多用户链路仍不在本地验证范围内。
