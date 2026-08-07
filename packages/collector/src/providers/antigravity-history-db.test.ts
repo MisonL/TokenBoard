@@ -397,6 +397,11 @@ describe('readAntigravityDbUsageEvents', () => {
         conversationDir: dir,
         readSqlite: recordSqliteCalls(calls),
         maxDbFiles: 2,
+        listFiles: async function * () {
+          for (let index = 0; index < 200; index += 1) {
+            yield { name: `${cascadeId(index)}.db`, isFile: () => true }
+          }
+        },
         statFile: async (filePath) => {
           statCount += 1
           return { mtimeMs: Number(basename(filePath, '.db').slice(-12)) }

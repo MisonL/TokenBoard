@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assertAutomaticUpgradeBranch, buildUpgradePlan, resolveArchiveUrl, resolveArchiveUrls, resolveRepoUrl, runUpgrade } from './upgrade.mjs'
-import { errorMessage, runStep } from './upgrade-utils.mjs'
+import { errorMessage, runStep, samePath } from './upgrade-utils.mjs'
 
 test('normalizes empty error diagnostics', () => {
   assert.equal(errorMessage(new Error('')), 'Error')
   assert.equal(errorMessage(new Error('   ')), 'Error')
   assert.equal(errorMessage(''), 'Unknown error')
+})
+
+test('treats Windows paths that differ only by case as the same filesystem path', () => {
+  assert.equal(
+    samePath('C:\\Users\\QDM\\.tokenboard', 'c:\\users\\qdm\\.TOKENBOARD', 'win32'),
+    true
+  )
 })
 
 test('updates collector and installed skill from the collector checkout', () => {
@@ -506,6 +513,7 @@ test('does not archive-replace an existing git checkout after git upgrade fails'
   assert.throws(
     () => runUpgrade({
       flags: {},
+      platform: 'linux',
       env: {
         TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard',
         TOKENBOARD_COLLECTOR_DIR: '/home/user/.tokenboard/TokenBoard'
@@ -945,6 +953,23 @@ test('refuses to replace the config directory as a non-git collector during upgr
   )
 })
 
+test('refuses a case-variant Windows config directory as a non-git collector', () => {
+  assert.throws(
+    () => buildUpgradePlan({
+      collectorDir: 'C:\\Users\\QDM\\.tokenboard',
+      skillDir: 'C:\\Users\\QDM\\.codex\\skills\\tokenboard',
+      configDir: 'c:\\users\\qdm\\.TOKENBOARD',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      packageManager: 'pnpm',
+      collectorExists: true,
+      collectorIsGitRepo: false,
+      workDir: 'C:\\Users\\QDM\\.tokenboard\\upgrade-work',
+      platform: 'win32'
+    }),
+    /Refusing to replace TokenBoard config directory as collector checkout/
+  )
+})
+
 test('archive fallback also refuses to install the skill into the config directory', () => {
   const calls = []
   assert.throws(
@@ -1227,6 +1252,7 @@ test('archive fallback retries a short tag ref after branch archive download fai
   const calls = []
   runUpgrade({
     flags: { 'repo-ref': 'v1.2.3' },
+    platform: 'linux',
     env: {
       TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard',
       TOKENBOARD_COLLECTOR_DIR: '/home/user/.tokenboard/TokenBoard'

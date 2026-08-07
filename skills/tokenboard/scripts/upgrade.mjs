@@ -36,10 +36,10 @@ export function buildUpgradePlan({
   workDir,
   platform = process.platform
 }) {
-  if (configDir && samePath(skillDir, configDir)) {
+  if (configDir && samePath(skillDir, configDir, platform)) {
     throw new Error(`Refusing to replace TokenBoard config directory as skill install: ${skillDir}`)
   }
-  if (collectorExists && !collectorIsGitRepo && configDir && samePath(collectorDir, configDir)) {
+  if (collectorExists && !collectorIsGitRepo && configDir && samePath(collectorDir, configDir, platform)) {
     throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${collectorDir}`)
   }
 
@@ -68,7 +68,7 @@ export function buildUpgradePlan({
         ]
 
   const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
-  if (!samePath(collectorSkillDir, skillDir)) {
+  if (!samePath(collectorSkillDir, skillDir, platform)) {
     steps.push({
       command: 'copy',
       args: [collectorSkillDir, skillDir],

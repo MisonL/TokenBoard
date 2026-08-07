@@ -226,7 +226,7 @@ describe('runCollectorCli', () => {
       )
 
       expect(result).toBe(0)
-      expect(warmed).toEqual([`/state:codex:${join('/codex-home', 'sessions')}:1234`])
+      expect(warmed).toEqual([`/state:codex:${join(resolve('/codex-home'), 'sessions')}:1234`])
     } finally {
       now.mockRestore()
     }
@@ -262,7 +262,7 @@ describe('runCollectorCli', () => {
       )
 
       expect(result).toBe(0)
-      expect(warmed).toEqual([`/custom-tokenboard:codex:${join('/codex-home', 'sessions')}:1234`])
+      expect(warmed).toEqual([`/custom-tokenboard:codex:${join(resolve('/codex-home'), 'sessions')}:1234`])
     } finally {
       now.mockRestore()
     }
@@ -360,7 +360,7 @@ describe('runCollectorCli', () => {
       expect(result).toBe(0)
       expect(warmed).toEqual([
         `/state:claude-code:${join('/claude', 'projects')}:1234`,
-        `/state:codex:${join('/codex', 'sessions')}:1234`
+        `/state:codex:${join(resolve('/codex'), 'sessions')}:1234`
       ])
     } finally {
       now.mockRestore()
@@ -490,8 +490,8 @@ describe('runCollectorCli', () => {
     expect(result).toBe(0)
     expect(acks).toEqual([
       '/state:codex:legacy',
-      '/state:codex:/profiles/first',
-      '/state:codex:/profiles/second'
+      `/state:codex:${resolve('/profiles/first')}`,
+      `/state:codex:${resolve('/profiles/second')}`
     ])
   })
 

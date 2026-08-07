@@ -94,21 +94,22 @@ describe('createCodexSessionScope', () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
     const tempRoot = await mkdtemp(join(tmpdir(), 'tokenboard-scope-comma-root-'))
     const commaTmpdir = join(tempRoot, 'temporary,scope')
-    const previousTmpdir = process.env.TMPDIR
+    const temporaryDirectoryVariables = process.platform === 'win32' ? ['TEMP', 'TMP'] : ['TMPDIR']
+    const previousTemporaryDirectoryValues = temporaryDirectoryVariables.map((name) => process.env[name])
 
     try {
       await mkdir(commaTmpdir)
       await writeJsonl(join(codexHome, 'sessions', '2026', '05', '09', 'session.jsonl'), [
         tokenCountEvent('2026-05-09T04:24:07.234Z')
       ])
-      process.env.TMPDIR = commaTmpdir
+      for (const name of temporaryDirectoryVariables) process.env[name] = commaTmpdir
 
       await expect(createCodexSessionScope({ codexHome, since: 'all' })).rejects.toThrow(
         'Temporary Codex session scope path contains a comma'
       )
       await expect(listScopeTempDirs(commaTmpdir)).resolves.toEqual([])
     } finally {
-      restoreTmpdir(previousTmpdir)
+      temporaryDirectoryVariables.forEach((name, index) => restoreEnv(name, previousTemporaryDirectoryValues[index]))
       await rm(codexHome, { recursive: true, force: true })
       await rm(tempRoot, { recursive: true, force: true })
     }

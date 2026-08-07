@@ -446,7 +446,7 @@ test('trailing notifier preserves a replacement lock during cleanup', async () =
   const lockPath = join(stateDir, 'trailing.lock')
   const replacement = JSON.stringify({ pid: 902, token: 'replacement' })
   const files = new Map([
-    [lockPath, JSON.stringify({ pid: 901, token: 'original' })]
+    [lockPath, JSON.stringify({ pid: 901, token: 'owner-a' })]
   ])
   let replaced = false
   const replaceOwner = () => {
@@ -459,6 +459,7 @@ test('trailing notifier preserves a replacement lock during cleanup', async () =
     configDir: stateDir,
     now: () => Date.parse('2026-07-18T10:00:00.000Z'),
     process: { pid: 901, kill: () => true },
+    ownerToken: 'owner-a',
     readFile: (path) => readMemoryFile(files, path),
     rename: (from, to) => {
       replaceOwner()
@@ -499,7 +500,8 @@ test('notify CLI fails when trailing lock cleanup fails', async () => {
     runNotify: () => ({ trailingScheduled: false }),
     trailingRuntime: {
       process: { pid: 101 },
-      readFile: () => JSON.stringify({ pid: 101 })
+      ownerToken: 'owner-a',
+      readFile: () => JSON.stringify({ pid: 101, token: 'owner-a' })
     },
     releaseDispatchLock: () => true
   })
@@ -520,7 +522,8 @@ test('notify CLI fails when trailing lock cleanup fails', async () => {
     runNotify: () => ({ trailingScheduled: false }),
     trailingRuntime: {
       process: { pid: 101 },
-      readFile: () => JSON.stringify({ pid: 101 })
+      ownerToken: 'owner-a',
+      readFile: () => JSON.stringify({ pid: 101, token: 'owner-a' })
     },
     releaseDispatchLock: () => true
   })
@@ -662,7 +665,7 @@ test('trailing process retains its lock when pending signals remain in cooldown'
   const files = new Map([
     ['/state/last-success.json', '2026-05-22T10:02:00.000Z'],
     ['/state/notify.signal', `${JSON.stringify({ source: 'codex' })}\n`],
-    ['/state/trailing.lock', JSON.stringify({ pid: 800 })]
+    ['/state/trailing.lock', JSON.stringify({ pid: 800, token: 'owner-a' })]
   ])
   const spawned = []
   const result = runNotify({
@@ -686,6 +689,7 @@ test('trailing process retains its lock when pending signals remain in cooldown'
       pid: 800,
       kill: () => true
     },
+    ownerToken: 'owner-a',
     trailingProcess: true,
     spawnDetached: () => {
       spawned.push('spawned')
@@ -709,7 +713,7 @@ test('trailing CLI waits under its existing lock and completes pending work with
   const files = new Map([
     [join(stateDir, 'last-success.json'), '2026-05-22T10:00:00.000Z'],
     [join(stateDir, 'notify.signal'), `${JSON.stringify({ source: 'codex' })}\n`],
-    [trailingLockPath, JSON.stringify({ pid: 800 })]
+    [trailingLockPath, JSON.stringify({ pid: 800, token: 'owner-a' })]
   ])
   const waits = []
   const spawned = []
@@ -735,6 +739,7 @@ test('trailing CLI waits under its existing lock and completes pending work with
     configDir: stateDir,
     now: () => nowMs,
     process: { pid: 800, kill: () => true },
+    ownerToken: 'owner-a',
     readFile,
     writeFile,
     unlink: (path) => files.delete(path),
@@ -747,6 +752,7 @@ test('trailing CLI waits under its existing lock and completes pending work with
       TOKENBOARD_CONFIG_DIR: stateDir,
       TOKENBOARD_STATE_DIR: stateDir,
       TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: trailingLockPath,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_TOKEN: 'owner-a',
       TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: '0'
     },
     readConfig: () => ({ updatedAt: 'test-version' }),
@@ -791,13 +797,14 @@ test('trailing CLI does not spin when a continuation reports zero delay', async 
   const stateDir = '/state'
   const trailingLockPath = join(stateDir, 'trailing.lock')
   const files = new Map([
-    [trailingLockPath, JSON.stringify({ pid: 800 })]
+    [trailingLockPath, JSON.stringify({ pid: 800, token: 'owner-a' })]
   ])
   const waits = []
   const runtime = {
     stateDir,
     configDir: stateDir,
     process: { pid: 800, kill: () => true },
+    ownerToken: 'owner-a',
     readFile: memoryFileOps(files).readFile,
     writeFile: (path, value) => files.set(path, String(value)),
     unlink: (path) => files.delete(path),
@@ -810,6 +817,7 @@ test('trailing CLI does not spin when a continuation reports zero delay', async 
       TOKENBOARD_CONFIG_DIR: stateDir,
       TOKENBOARD_STATE_DIR: stateDir,
       TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: trailingLockPath,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_TOKEN: 'owner-a',
       TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: '0'
     },
     readConfig: () => ({ updatedAt: 'test-version' }),

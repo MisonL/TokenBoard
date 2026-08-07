@@ -56,13 +56,18 @@ test('unknown process identity is not converted into a comparable fallback marke
 
 test('external process identity probes use a non-catchable timeout signal', () => {
   const calls = []
+  const deadKill = () => {
+    const error = new Error('process is not running')
+    error.code = 'ESRCH'
+    throw error
+  }
   const runProcessIdentity = (command, args, options) => {
     calls.push({ command, args, options })
     return { status: 1, stdout: '', stderr: '' }
   }
 
   assert.deepEqual(
-    probeProcessStartIdentity(123, { platform: 'darwin', runProcessIdentity }),
+    probeProcessStartIdentity(123, { platform: 'darwin', runProcessIdentity, kill: deadKill }),
     { status: 'dead' }
   )
   assert.deepEqual(

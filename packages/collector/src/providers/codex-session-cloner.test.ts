@@ -195,7 +195,10 @@ describe('Codex session cloner', () => {
         onFallback: fallback
       })
 
-      await expect(cloner.copy(source, target)).rejects.toMatchObject({ code: 'EPERM' })
+      await expect(cloner.copy(source, target)).rejects.toMatchObject({
+        message: expect.stringContaining('macOS clonefile failed'),
+        code: 'EPERM'
+      })
       await cloner.close()
 
       expect(fallback).not.toHaveBeenCalled()

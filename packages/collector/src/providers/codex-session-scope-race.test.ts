@@ -115,7 +115,7 @@ describe('createCodexSessionScope copy races', () => {
       })
 
       expect(scope).not.toBeNull()
-      expect(skippedFiles).toEqual([join('2026', '05', 'disappearing.jsonl')])
+      expect(skippedFiles).toEqual(['2026/05/disappearing.jsonl'])
       await expect(readFile(join(scope!.codexHome, 'sessions', '2026', '05', 'active.jsonl'), 'utf8'))
         .resolves.toContain('token_count')
       await scope?.cleanup()

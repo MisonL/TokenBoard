@@ -14,6 +14,7 @@ vi.mock('./codex-subagent-usage', async (importOriginal) => {
 })
 
 import { collectCodexUsage } from './codex'
+import { CODEX_SESSION_COPY_FALLBACK_MESSAGE } from './codex-session-cloner'
 
 describe('Codex hook child-session race recovery', () => {
   afterEach(() => {
@@ -45,7 +46,7 @@ describe('Codex hook child-session race recovery', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         collectedAt: '2026-05-22T10:00:00.000Z',
-        stderr: (line) => diagnostics.push(line),
+        stderr: reportDiagnostic(diagnostics),
         runner
       })).resolves.toEqual([
         expect.objectContaining({
@@ -137,6 +138,12 @@ async function writeJsonl(file: string, rows: unknown[]) {
     encoding: 'utf8',
     flag: 'w'
   })
+}
+
+function reportDiagnostic(diagnostics: string[]) {
+  return (line: string) => {
+    if (line !== CODEX_SESSION_COPY_FALLBACK_MESSAGE) diagnostics.push(line)
+  }
 }
 
 async function readPendingUpload(stateDir: string) {

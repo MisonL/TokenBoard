@@ -1,4 +1,4 @@
-import { appendFile, mkdir, mkdtemp, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises'
+import { appendFile, lstat, mkdir, mkdtemp, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -79,7 +79,6 @@ describe('Codex JSONL reader', () => {
   test('rejects an early child-session reader exit after a same-size source replacement', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-child-early-replace-'))
     const filePath = join(root, 'child.jsonl')
-    const replacementPath = join(root, 'replacement.jsonl')
     const original = '{"type":"session_meta","id":"a"}\n{"type":"event_msg"}\n'
     const replacement = '{"type":"session_meta","id":"b"}\n{"type":"event_msg"}\n'
 
@@ -96,8 +95,40 @@ describe('Codex JSONL reader', () => {
         done: false,
         value: { type: 'session_meta', id: 'a' }
       })
+      await writeFile(filePath, replacement)
+
+      const stop = iterator.return
+      if (!stop) throw new Error('Codex JSONL iterator does not support early return')
+      await expect(stop.call(iterator)).rejects.toThrow('Codex child session changed while reading; retry the sync')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.skipIf(process.platform === 'win32')('rejects an early child-session reader exit after an atomic replacement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-child-atomic-replace-'))
+    const filePath = join(root, 'child.jsonl')
+    const replacementPath = join(root, 'replacement.jsonl')
+    const original = '{"type":"session_meta","id":"a"}\n{"type":"event_msg"}\n'
+    const replacement = '{"type":"session_meta","id":"b"}\n{"type":"event_msg"}\n'
+
+    try {
+      await writeFile(filePath, original)
+      const originalStat = await lstat(filePath)
+      const iterator = readJsonlRecords(filePath, undefined, {
+        maxBytes: 1024,
+        maxLineBytes: 128,
+        label: 'Codex child session'
+      })[Symbol.asyncIterator]()
+
+      await expect(iterator.next()).resolves.toMatchObject({
+        done: false,
+        value: { type: 'session_meta', id: 'a' }
+      })
       await writeFile(replacementPath, replacement)
       await rename(replacementPath, filePath)
+      const replacementStat = await lstat(filePath)
+      expect(replacementStat.ino).not.toBe(originalStat.ino)
 
       const stop = iterator.return
       if (!stop) throw new Error('Codex JSONL iterator does not support early return')

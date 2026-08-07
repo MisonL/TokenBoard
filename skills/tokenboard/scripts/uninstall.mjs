@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolve, relative } from 'node:path'
+import { relative, resolve, win32 as windowsPath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectorDir, configDir, configPath, parseArgs } from './config.mjs'
 import { deviceLinkPath } from './device-link.mjs'
@@ -32,7 +32,7 @@ export function uninstallClient(options = {}) {
   }
 
   if (plan.removeCollector && runtime.exists(runtime.collectorDir)) {
-    if (!samePath(runtime.collectorDir, runtime.configDir)) {
+    if (!samePath(runtime.collectorDir, runtime.configDir, runtime.platform)) {
       removePath(runtime, runtime.collectorDir)
       removed.collector = true
     }
@@ -87,6 +87,7 @@ function createUninstallRuntime(options) {
     cwd: options.cwd || process.cwd,
     chdir: options.chdir || process.chdir,
     fallbackCwd: options.fallbackCwd || homedir(),
+    platform: options.platform || process.platform,
     log: options.log || console.log,
     uninstallHooks: options.uninstallHooks || uninstallHooks,
     uninstallSchedule: options.uninstallSchedule || uninstallSchedule
@@ -99,18 +100,37 @@ function removePath(runtime, targetPath, options = { recursive: true, force: tru
 }
 
 function leaveDirectoryBeforeRemove(runtime, targetPath) {
-  if (isInsidePath(runtime.cwd(), targetPath)) {
+  if (isInsidePath(runtime.cwd(), targetPath, runtime.platform)) {
     runtime.chdir(runtime.fallbackCwd)
   }
 }
 
-function isInsidePath(candidatePath, targetPath) {
-  const relativePath = relative(resolve(targetPath), resolve(candidatePath))
-  return relativePath === '' || (!relativePath.startsWith('..') && !relativePath.startsWith('/') && relativePath !== '..')
+function isInsidePath(candidatePath, targetPath, platform = process.platform) {
+  const pathApi = platform === 'win32' ? windowsPath : { relative, resolve, sep: '/' }
+  const resolvedTarget = pathApi.resolve(targetPath)
+  const resolvedCandidate = pathApi.resolve(candidatePath)
+  if (platform === 'win32' && !sameWindowsRoot(resolvedTarget, resolvedCandidate)) {
+    return false
+  }
+  const relativePath = pathApi.relative(resolvedTarget, resolvedCandidate)
+  return relativePath === '' || (
+    !relativePath.startsWith('..') &&
+    !relativePath.startsWith(pathApi.sep) &&
+    relativePath !== '..'
+  )
 }
 
-function samePath(leftPath, rightPath) {
-  return resolve(leftPath) === resolve(rightPath)
+function sameWindowsRoot(leftPath, rightPath) {
+  return windowsPath.parse(leftPath).root.toLowerCase() === windowsPath.parse(rightPath).root.toLowerCase()
+}
+
+function samePath(leftPath, rightPath, platform = process.platform) {
+  const pathApi = platform === 'win32' ? windowsPath : { resolve }
+  const normalize = (value) => {
+    const resolved = pathApi.resolve(String(value))
+    return platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+  return normalize(leftPath) === normalize(rightPath)
 }
 
 function runCli() {

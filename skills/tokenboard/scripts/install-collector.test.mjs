@@ -247,3 +247,18 @@ test('refuses to replace the config directory as a non-git collector', () => {
     /Refusing to replace TokenBoard config directory/
   )
 })
+
+test('refuses a case-variant Windows config directory as a non-git collector', () => {
+  assert.throws(
+    () => buildInstallCollectorPlan({
+      dir: 'C:\\Users\\QDM\\.tokenboard',
+      configDir: 'c:\\users\\qdm\\.TOKENBOARD',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      packageManager: 'pnpm',
+      exists: true,
+      isGitRepo: false,
+      platform: 'win32'
+    }),
+    /Refusing to replace TokenBoard config directory/
+  )
+})

@@ -5,7 +5,7 @@ import { runNotify } from './notify.mjs'
 test('notify retains its own trailing lock without recursive scheduling', () => {
   const files = new Map([
     ['/state/last-success.json', '2026-05-22T10:00:00.000Z'],
-    ['/state/trailing.lock', JSON.stringify({ pid: 900 })]
+    ['/state/trailing.lock', JSON.stringify({ pid: 900, token: 'owner-a' })]
   ])
 
   const result = runNotify({
@@ -29,6 +29,7 @@ test('notify retains its own trailing lock without recursive scheduling', () => 
       pid: 900,
       kill: () => true
     },
+    ownerToken: 'owner-a',
     executeSync: () => {
       throw new Error('should not run')
     }
@@ -213,6 +214,178 @@ test('notify recovers a stale trailing lock through tasklist on legacy Windows N
   assert.equal(JSON.parse(files.get('/state/trailing.lock')).pid, 902)
 })
 
+test('notify replaces a trailing lock when the owner pid is reused', () => {
+  const lockPath = '/state/trailing.lock'
+  const files = new Map([
+    ['/state/last-success.json', '2026-05-22T10:00:00.000Z'],
+    [lockPath, JSON.stringify({
+      pid: 901,
+      token: 'old-owner',
+      processStartIdentity: 'linux:boot-a:100'
+    })]
+  ])
+  const spawned = []
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    stateDir: '/state',
+    ...atomicMemoryFileOps(files),
+    now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readFile: (path) => files.get(path) || '',
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'wx' && files.has(path)) {
+        const error = new Error('EEXIST')
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(path, String(value))
+    },
+    unlink: (path) => files.delete(path),
+    process: { pid: 901, kill: () => true },
+    processStartIdentity: 'linux:boot-b:200',
+    platform: 'linux',
+    spawnDetached: (_command, _args, options) => {
+      spawned.push(options)
+      return { pid: 902, unref: () => {} }
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.error, undefined)
+  assert.equal(result.trailingScheduled, true)
+  assert.equal(spawned.length, 1)
+  assert.equal(JSON.parse(files.get(lockPath)).pid, 902)
+  assert.notEqual(JSON.parse(files.get(lockPath)).token, 'old-owner')
+})
+
+test('notify reclaims an identity-unknown same-pid trailing lock with a different token', () => {
+  const lockPath = '/state/trailing.lock'
+  const files = new Map([
+    ['/state/last-success.json', '2026-05-22T10:00:00.000Z'],
+    [lockPath, JSON.stringify({ pid: 901, token: 'old-owner' })]
+  ])
+  const spawned = []
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    stateDir: '/state',
+    ...atomicMemoryFileOps(files),
+    now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readFile: (path) => files.get(path) || '',
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'wx' && files.has(path)) {
+        const error = new Error('EEXIST')
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(path, String(value))
+    },
+    unlink: (path) => files.delete(path),
+    process: { pid: 901, kill: () => true },
+    ownerToken: 'new-owner',
+    spawnDetached: () => {
+      spawned.push('spawned')
+      return { pid: 902, unref: () => {} }
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.error, undefined)
+  assert.equal(result.trailingScheduled, true)
+  assert.deepEqual(spawned, ['spawned'])
+  assert.notEqual(JSON.parse(files.get(lockPath)).token, 'old-owner')
+})
+
+test('notify reclaims a legacy pid-only lock when a normal hook reuses its pid', () => {
+  const lockPath = '/state/trailing.lock'
+  const files = new Map([
+    ['/state/last-success.json', '2026-05-22T10:00:00.000Z'],
+    ['/state/notify.signal', `${JSON.stringify({ source: 'codex' })}\n`],
+    [lockPath, JSON.stringify({ pid: 901 })]
+  ])
+  const spawned = []
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    stateDir: '/state',
+    ...atomicMemoryFileOps(files),
+    now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readFile: (path) => files.get(path) || '',
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'wx' && files.has(path)) {
+        const error = new Error('EEXIST')
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(path, String(value))
+    },
+    unlink: (path) => files.delete(path),
+    process: { pid: 901, kill: () => true },
+    spawnDetached: () => {
+      spawned.push('spawned')
+      return { pid: 902, unref: () => {} }
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.error, undefined)
+  assert.equal(result.trailingScheduled, true)
+  assert.deepEqual(spawned, ['spawned'])
+  assert.equal(JSON.parse(files.get(lockPath)).pid, 902)
+})
+
+test('legacy trailing continuation may retain a pid-only lock', () => {
+  const lockPath = '/state/trailing.lock'
+  const files = new Map([
+    ['/state/last-success.json', '2026-05-22T10:00:00.000Z'],
+    ['/state/notify.signal', `${JSON.stringify({ source: 'codex' })}\n`],
+    [lockPath, JSON.stringify({ pid: 901 })]
+  ])
+  const spawned = []
+  const result = runNotify({
+    argv: ['--source', 'codex'],
+    env: { TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: lockPath },
+    stateDir: '/state',
+    ...atomicMemoryFileOps(files),
+    now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+    mkdir: () => {},
+    exists: (path) => files.has(path),
+    readFile: (path) => files.get(path) || '',
+    writeFile: (path, value, options = {}) => {
+      if (options.flag === 'wx' && files.has(path)) {
+        const error = new Error('EEXIST')
+        error.code = 'EEXIST'
+        throw error
+      }
+      files.set(path, String(value))
+    },
+    unlink: (path) => files.delete(path),
+    process: { pid: 901, kill: () => true },
+    trailingProcess: true,
+    spawnDetached: () => {
+      spawned.push('spawned')
+      return { pid: 902, unref: () => {} }
+    },
+    executeSync: () => {
+      throw new Error('should not run')
+    }
+  })
+
+  assert.equal(result.error, undefined)
+  assert.equal(result.trailingScheduled, true)
+  assert.deepEqual(spawned, [])
+  assert.equal(JSON.parse(files.get(lockPath)).pid, 901)
+})
+
 test('notify retries trailing lock acquisition when its owner releases the lock after EEXIST', () => {
   const files = new Map([
     ['/state/last-success.json', '2026-05-22T10:00:00.000Z']
@@ -275,6 +448,7 @@ test('notify atomically publishes the trailing child process id without exposing
     ['/state/last-success.json', '2026-05-22T10:00:00.000Z']
   ])
   const writes = []
+  let childOptions
   const result = runNotify({
     argv: ['--source', 'codex'],
     stateDir: '/state',
@@ -311,7 +485,13 @@ test('notify atomically publishes the trailing child process id without exposing
     },
     unlink: (path) => files.delete(path),
     process: { pid: 903, kill: () => true },
-    spawnDetached: () => ({ pid: 904, unref: () => {} }),
+    processStartIdentity: 'linux:boot-a:100',
+    platform: 'linux',
+    readProcessStartIdentity: (pid) => ({ status: 'known', value: `linux:boot-a:${pid}` }),
+    spawnDetached: (_command, _args, options) => {
+      childOptions = options
+      return { pid: 904, unref: () => {} }
+    },
     executeSync: () => {
       throw new Error('should not run')
     }
@@ -321,10 +501,12 @@ test('notify atomically publishes the trailing child process id without exposing
   assert.equal(result.trailingScheduled, true)
   assert.equal(writes.filter(({ path }) => path === lockPath).every(({ options }) => options.flag === 'wx'), true)
   assert.equal(writes.some(({ path }) => path.startsWith(`${lockPath}.publish-`)), true)
-  assert.deepEqual(JSON.parse(files.get(lockPath)), {
-    pid: 904,
-    startedAt: '2026-05-22T10:01:00.000Z'
-  })
+  const published = JSON.parse(files.get(lockPath))
+  assert.equal(published.pid, 904)
+  assert.equal(published.startedAt, '2026-05-22T10:01:00.000Z')
+  assert.match(published.token, /^[a-f0-9]{32}$/)
+  assert.equal(published.processStartIdentity, 'linux:boot-a:904')
+  assert.equal(childOptions.env.TOKENBOARD_NOTIFY_TRAILING_LOCK_TOKEN, published.token)
 })
 
 function atomicMemoryFileOps(files) {

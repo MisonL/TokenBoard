@@ -318,11 +318,22 @@ function readErrorCode(error: unknown) {
 }
 
 function systemErrorName(errno: number) {
+  const darwinName = DARWIN_ERRNO_NAMES[errno]
+  if (darwinName) return darwinName
   try {
     return getSystemErrorName(-errno)
   } catch (_) {
     return 'ERR_MACOS_CLONE_FAILED'
   }
+}
+
+// The helper reports Darwin errno values even when tests or diagnostics run
+// under a non-Darwin Node runtime, whose native errno table differs.
+const DARWIN_ERRNO_NAMES: Record<number, string> = {
+  1: 'EPERM',
+  18: 'EXDEV',
+  45: 'ENOTSUP',
+  78: 'ENOSYS'
 }
 
 function withErrorCode(message: string, code: string) {

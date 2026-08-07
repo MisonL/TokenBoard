@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
+import { CODEX_SESSION_COPY_FALLBACK_MESSAGE } from './codex-session-cloner'
 import { createEmptyCodexHome, tokenCountEvent, writeJsonl } from './codex-test-helpers'
 
 describe('Codex bounded canonical attribution retry', () => {
@@ -26,7 +27,7 @@ describe('Codex bounded canonical attribution retry', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         since: '20260515',
-        stderr: (line) => diagnostics.push(line),
+        stderr: reportDiagnostic(diagnostics),
         async runner(_command, args, options) {
           if (args.includes('--since') && args.includes('session')) return boundedSessionResult()
           if (args.includes('daily')) return dailyResult()
@@ -70,7 +71,7 @@ describe('Codex bounded canonical attribution retry', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         since: 'all',
-        stderr: (line) => diagnostics.push(line),
+        stderr: reportDiagnostic(diagnostics),
         async runner(_command, args) {
           if (args.includes('daily')) return dailyResult()
           await writeFile(
@@ -107,7 +108,7 @@ describe('Codex bounded canonical attribution retry', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         since: '20260515',
-        stderr: (line) => diagnostics.push(line),
+        stderr: reportDiagnostic(diagnostics),
         async runner(_command, args) {
           if (args.includes('--since') && args.includes('session')) return scopeRaceBoundedSessionResult()
           if (args.includes('daily')) return dailyResult()
@@ -150,7 +151,7 @@ describe('Codex bounded canonical attribution retry', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         since: '20260515',
-        stderr: (line) => diagnostics.push(line),
+        stderr: reportDiagnostic(diagnostics),
         async runner(_command, args) {
           if (args.includes('--since') && args.includes('session')) return scopeRaceBoundedSessionResult()
           if (args.includes('daily')) return dailyResult()
@@ -190,7 +191,7 @@ describe('Codex bounded canonical attribution retry', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         since: '20260515',
-        stderr: (line) => diagnostics.push(line),
+        stderr: reportDiagnostic(diagnostics),
         async runner(_command, args) {
           if (args.includes('--since') && args.includes('session')) {
             return unstableBoundedSessionResult()
@@ -212,6 +213,12 @@ describe('Codex bounded canonical attribution retry', () => {
     }
   })
 })
+
+function reportDiagnostic(diagnostics: string[]) {
+  return (line: string) => {
+    if (line !== CODEX_SESSION_COPY_FALLBACK_MESSAGE) diagnostics.push(line)
+  }
+}
 
 function dailyResult() {
   return {

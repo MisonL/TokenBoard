@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { resolve, win32 as windowsPath } from 'node:path'
 export { errorMessage } from './error-message.mjs'
 
 export function runStep(step, runtime) {
@@ -36,8 +36,13 @@ export function escapePowerShellSingleQuoted(value) {
   return String(value).replaceAll("'", "''")
 }
 
-export function samePath(leftPath, rightPath) {
-  return resolve(leftPath) === resolve(rightPath)
+export function samePath(leftPath, rightPath, platform = process.platform) {
+  const pathApi = platform === 'win32' ? windowsPath : { resolve }
+  const normalize = (value) => {
+    const resolved = pathApi.resolve(String(value))
+    return platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+  return normalize(leftPath) === normalize(rightPath)
 }
 
 export function corepackCommand(platform) {
