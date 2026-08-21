@@ -165,6 +165,7 @@ OpenCode / Pi / Grok Build / DeepSeek Harness 约束：
 - 费用不可用来源统一由 `usage-core` 的 `costUnavailableSources` 声明，Web、SVG、日报、排行榜必须由该常量派生，禁止再硬编码来源列表。
 - Grok Build 的 `turn_completed` 是逐轮独立总量而非累计快照，必须按面值入账；禁止对相邻事件做差分。其 `inputTokens` 含 `cachedReadTokens`，必须减出 fresh input；`reasoningTokens` 已包含在 `outputTokens` 内，不得重复累加。
 - Pi 的 session 文件是 `id`/`parentId` 树，fork 会复制共享历史，必须按 entry id 去重；usage 载体包含 assistant message、toolResult、compaction、branch_summary 四类。
+- Pi 的 cache write 按 TTL 分两档：`cacheWrite` 与 `cacheWrite1h`，两者都属 cache creation，必须同时累加，漏掉后者会少记用量。订阅额度模型的 `cost` 各项为真实的 0。
 - DSH 日志默认 zstd 且为拼接帧，Node 的 `zstdDecompress` 只解第一帧，必须自行按帧头定界后逐帧解压；尾帧被写入截断属正常情况，不得视为错误。
 - 扫描用户主目录下的 session 必须 bounded：限制递归深度、不跟随 symlink、跳过超限文件、逐行流式读取。
 - 这四类来源不安装 hook，不得进入 hook mode 采集，也不得参与 hook cursor warm。
