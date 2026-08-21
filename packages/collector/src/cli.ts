@@ -12,6 +12,7 @@ import {
 import { isUnavailableLanguageServerError } from './providers/antigravity-gui-environment'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
+import { collectDeepSeekHarnessUsage } from './providers/deepseek-harness'
 import { collectGrokBuildUsage } from './providers/grok-build'
 import { collectOpenCodeUsage } from './providers/opencode'
 import { collectPiUsage } from './providers/pi'
@@ -29,6 +30,7 @@ type CliSource =
   | 'opencode'
   | 'pi'
   | 'grok-build'
+  | 'deepseek-harness'
   | 'all'
 type ConcreteCliSource = Exclude<CliSource, 'all'>
 
@@ -65,6 +67,7 @@ type CliDeps = {
   collectOpenCodeUsage?: typeof collectOpenCodeUsage
   collectPiUsage?: typeof collectPiUsage
   collectGrokBuildUsage?: typeof collectGrokBuildUsage
+  collectDeepSeekHarnessUsage?: typeof collectDeepSeekHarnessUsage
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
@@ -82,6 +85,7 @@ const defaultDeps: CliDeps = {
   collectOpenCodeUsage,
   collectPiUsage,
   collectGrokBuildUsage,
+  collectDeepSeekHarnessUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
   warmHookCursorHighWater,
@@ -257,6 +261,7 @@ async function collectAllSnapshots(context: CollectionContext) {
   await collectOptionalSource('opencode', () => readOpenCodeCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
   await collectOptionalSource('pi', () => readPiCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
   await collectOptionalSource('grok-build', () => readGrokBuildCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
+  await collectOptionalSource('deepseek-harness', () => readDeepSeekHarnessCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
   return { snapshots, collectedSources, sourceFailures }
 }
 
@@ -270,6 +275,10 @@ function readPiCollector(deps: CliDeps) {
 
 function readGrokBuildCollector(deps: CliDeps) {
   return deps.collectGrokBuildUsage ?? noopCollector
+}
+
+function readDeepSeekHarnessCollector(deps: CliDeps) {
+  return deps.collectDeepSeekHarnessUsage ?? noopCollector
 }
 
 async function noopCollector(): Promise<UsageSnapshot[]> {
@@ -303,6 +312,7 @@ function collectSingleSource(
   if (source === 'opencode') return readOpenCodeCollector(deps)(standardContext)
   if (source === 'pi') return readPiCollector(deps)(standardContext)
   if (source === 'grok-build') return readGrokBuildCollector(deps)(standardContext)
+  if (source === 'deepseek-harness') return readDeepSeekHarnessCollector(deps)(standardContext)
   const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)
@@ -442,6 +452,7 @@ function isOptionalSourceUnavailable(source: ConcreteCliSource, message: string)
   }
   if (source === 'pi') return message.includes('No Pi sessions found')
   if (source === 'grok-build') return message.includes('No Grok Build sessions found')
+  if (source === 'deepseek-harness') return message.includes('No DeepSeek Harness sessions found')
   if (!source.startsWith('antigravity')) return false
   return message.includes('statusline log not found') ||
     message.includes('Antigravity SQLite reader unavailable') ||
@@ -457,7 +468,7 @@ function readCommand(value: string | undefined): CliCommand {
     return value
   }
 
-  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|opencode|pi|grok-build|all]')
+  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|opencode|pi|grok-build|deepseek-harness|all]')
 }
 
 function readSource(value: string): CliSource {
@@ -470,6 +481,7 @@ function readSource(value: string): CliSource {
     value === 'opencode' ||
     value === 'pi' ||
     value === 'grok-build' ||
+    value === 'deepseek-harness' ||
     value === 'all'
   ) {
     return value

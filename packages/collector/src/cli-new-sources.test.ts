@@ -198,6 +198,62 @@ describe('runCollectorCli OpenCode, Pi and Grok Build sources', () => {
 
     expect(called).toEqual([])
   })
+
+  test('previews the selected DeepSeek Harness source', async () => {
+    const dshSnapshot: UsageSnapshot = {
+      ...openCodeSnapshot, source: 'deepseek-harness', model: 'deepseek-v4-pro', costUsd: 0
+    }
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'deepseek-harness'],
+      env,
+      deps({ stdout: (line) => stdout.push(line), collectDeepSeekHarnessUsage: async () => [dshSnapshot] })
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([dshSnapshot])
+  })
+
+  test('skips DeepSeek Harness when it has no sessions', async () => {
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      env,
+      deps({
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectDeepSeekHarnessUsage: async () => {
+          throw new Error('No DeepSeek Harness sessions found: /home/user/.dsh/sessions')
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+  })
+
+  test('collects every new source in one all-source run', async () => {
+    const stdout: string[] = []
+    const make = (source: UsageSnapshot['source']): UsageSnapshot => ({
+      ...openCodeSnapshot, source, costUsd: 0
+    })
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      env,
+      deps({
+        stdout: (line) => stdout.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectOpenCodeUsage: async () => [make('opencode')],
+        collectPiUsage: async () => [make('pi')],
+        collectGrokBuildUsage: async () => [make('grok-build')],
+        collectDeepSeekHarnessUsage: async () => [make('deepseek-harness')]
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0]).map((item: UsageSnapshot) => item.source).sort()).toEqual([
+      'claude-code', 'deepseek-harness', 'grok-build', 'opencode', 'pi'
+    ])
+  })
 })
 
 function deps(overrides: Partial<Parameters<typeof runCollectorCli>[2]> = {}) {
