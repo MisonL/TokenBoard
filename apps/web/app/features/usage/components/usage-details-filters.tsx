@@ -1,7 +1,9 @@
+import { usageSources } from '@tokenboard/usage-core'
 import { Button, LinkButton } from '../../../components/ui/button'
 import { CustomSelect } from '../../../components/ui/custom-select'
 import type { UserDevice } from '../../device/service'
 import type { UsageDetailsFilters } from '../service'
+import { formatSource } from '../source-format'
 import { csvHref } from './usage-details-format'
 
 export function UsageDetailsFiltersForm(props: {
@@ -74,11 +76,9 @@ function filterControlClass(extra = '') {
   ].filter(Boolean).join(' ')
 }
 
+// Derived from the source enum so a new source cannot be filterable in the
+// query layer but missing from this control.
 const sourceOptions = [
-  { value: 'all', label: '全部' },
-  { value: 'claude-code', label: 'Claude Code' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'antigravity-cli', label: 'Antigravity CLI (agy)' },
-  { value: 'antigravity', label: 'Antigravity' },
-  { value: 'antigravity-ide', label: 'Antigravity IDE' }
+  { value: 'all', label: formatSource('all') },
+  ...usageSources.map((source) => ({ value: source, label: formatSource(source) }))
 ]
