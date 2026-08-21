@@ -49,6 +49,7 @@ export type CollectOpenCodeUsageOptions = {
   dbPath?: string
   sqliteBin?: string
   runQuery?: RunSqliteQuery
+  forceExternalSqlite?: boolean
   statFile?: (path: string) => Promise<{ mtimeMs: number }>
   stderr?: (line: string) => void
 }
@@ -94,6 +95,7 @@ export async function collectOpenCodeUsage(
   const rows = await querySqliteJsonRows(dbPath, usageRowsSql, {
     sqliteBin: options.sqliteBin,
     runQuery: options.runQuery,
+    forceExternalSqlite: options.forceExternalSqlite ?? process.env.TOKENBOARD_SQLITE_BIN !== undefined,
     label
   })
 

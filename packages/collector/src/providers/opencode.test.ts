@@ -179,4 +179,52 @@ describe('collectOpenCodeUsage', () => {
     expect(statted).toContain(dbPath)
     expect(statted).toContain(`${dbPath}-wal`)
   })
+  test('reads through node:sqlite and the executable identically', async () => {
+    // Both readers must agree, so the fallback cannot drift from the default.
+    const { mkdtemp, writeFile } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join: joinPath } = await import('node:path')
+    let sqlite: typeof import('node:sqlite')
+    try {
+      sqlite = await import('node:sqlite')
+    } catch {
+      return // Runtime without node:sqlite; the executable path is covered elsewhere.
+    }
+
+    const root = await mkdtemp(joinPath(tmpdir(), 'tokenboard-opencode-db-'))
+    const realDb = joinPath(root, 'opencode.db')
+    const seed = new sqlite.DatabaseSync(realDb)
+    seed.exec(`
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+      INSERT INTO message VALUES ('m1', 'ses_a', 1, json('${JSON.stringify({
+        role: 'assistant',
+        cost: 0.0023113,
+        tokens: { input: 3272, output: 383, reasoning: 419, cache: { read: 52_480, write: 0 } },
+        modelID: 'deepseek-v4-pro',
+        path: '/home/user/secret/project',
+        time: { created: 1_779_755_333_700, completed: 1_779_755_350_639 }
+      }).replace(/'/g, "''")}'));
+    `)
+    seed.close()
+    await writeFile(joinPath(root, 'unused'), '')
+
+    const base = { dbPath: realDb, timezone: 'Asia/Shanghai', collectedAt: '2026-05-09T10:00:00.000Z', since: 'all' }
+    const builtin = await collectOpenCodeUsage(base)
+    const external = await collectOpenCodeUsage({ ...base, forceExternalSqlite: true })
+
+    expect(builtin).toEqual(external)
+    expect(builtin[0].inputTokens).toBe(3272)
+    expect(builtin[0].outputTokens).toBe(802)
+    expect(builtin[0].costUsd).toBeCloseTo(0.0023113, 10)
+  })
+
+  test('reports the executable as unavailable when it is missing', async () => {
+    await expect(collectOpenCodeUsage({
+      dbPath,
+      statFile,
+      since: 'all',
+      forceExternalSqlite: true,
+      sqliteBin: 'tokenboard-sqlite3-does-not-exist'
+    })).rejects.toThrow('OpenCode SQLite reader unavailable')
+  })
 })

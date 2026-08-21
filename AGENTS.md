@@ -159,7 +159,8 @@ OpenCode / Pi / Grok Build / DeepSeek Harness 约束：
 - `source` 固定使用 `opencode`、`pi`、`grok-build`、`deepseek-harness`。
 - 本地读取位置：OpenCode 读 `~/.local/share/opencode/opencode.db`；Pi 读 `~/.pi/agent/sessions`；Grok Build 读 `~/.grok/{sessions,archived_sessions}`；DSH 读 `~/.dsh/sessions`。各自支持官方环境变量覆盖。
 - 只投影 token、model、timestamp 和会话标识；禁止读取或保存 prompt、completion、回复正文、`replayState`、本地路径。
-- OpenCode 的 `message.data` 同时含 prompt、回复和本地 `path`，必须在 SQL 内用 `json_extract` 投影 token 字段，禁止把整个 blob 读进 collector；查询必须 `-readonly`。
+- OpenCode 的 `message.data` 同时含 prompt、回复和本地 `path`，必须在 SQL 内用 `json_extract` 投影 token 字段，禁止把整个 blob 读进 collector；查询必须以只读方式打开。
+- SQLite 读取优先使用 Node 内置 `node:sqlite`（无需额外安装），运行时缺失时回退外部 `sqlite3`；显式设置 `TOKENBOARD_SQLITE_BIN` 表示强制走外部二进制。两条路径必须产出一致结果并有测试覆盖。
 - 费用可用性：OpenCode 和 Pi 自报费用，可以直接使用；Grok Build 和 DSH 不提供费用，`costUsd` 只能置 `0`，禁止用定价表推算。
 - 费用不可用来源统一由 `usage-core` 的 `costUnavailableSources` 声明，Web、SVG、日报、排行榜必须由该常量派生，禁止再硬编码来源列表。
 - Grok Build 的 `turn_completed` 是逐轮独立总量而非累计快照，必须按面值入账；禁止对相邻事件做差分。其 `inputTokens` 含 `cachedReadTokens`，必须减出 fresh input；`reasoningTokens` 已包含在 `outputTokens` 内，不得重复累加。

@@ -138,8 +138,11 @@ Local usage sources:
 
 Only token counts, model ids and timestamps are read from these stores. For OpenCode the token fields
 are projected inside SQLite so the message blob, which also holds prompts and a local path, never
-enters the collector. Scanning is bounded: depth-capped, symlinked directories are not followed, and
-oversized files are skipped.
+enters the collector. SQLite is read through Node's built-in `node:sqlite`, so nothing has to be
+installed; runtimes without it fall back to a `sqlite3` executable, and setting
+`TOKENBOARD_SQLITE_BIN` selects that executable explicitly. Both open the database read-only.
+Scanning is bounded: depth-capped, symlinked directories are not followed, and oversized files are
+skipped.
 
 Notifier hooks:
 
