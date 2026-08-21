@@ -250,4 +250,111 @@ describe('collectDeepSeekHarnessUsage', () => {
 
     expect(await collect(home)).toHaveLength(1)
   })
+  test('matches the shape a real DSH session writes', async () => {
+    // Taken from a real ~/.dsh/sessions/**/session.jsonl.zstd: one turn wrote
+    // 51 frames, of which only two lines are assistant/message with usage. The
+    // log carries no cost field of any kind, and cacheWriteTokens is absent
+    // rather than zero when nothing was written to cache.
+    const home = await dshHome({
+      'proj/session-real/session.jsonl.zstd': {
+        compress: true,
+        lines: [
+          JSON.stringify({ type: 'turn/start', seq: 1, time: eventMs, data: { turn: 1 } }),
+          JSON.stringify({ type: 'user/message', seq: 2, time: eventMs, data: { content: [{ type: 'text', text: 'a real prompt' }] } }),
+          // Packed chunk rows hold the model's raw output and must be ignored.
+          JSON.stringify({ type: 'reasoning-chunks', seq: 3, time: eventMs, data: { turn: 1, step: 0, texts: ['private reasoning'] } }),
+          JSON.stringify({ type: 'text-chunks', seq: 4, time: eventMs, data: { turn: 1, step: 0, texts: ['streamed reply'] } }),
+          JSON.stringify({ type: 'assistant/chunk', seq: 5, time: eventMs, data: { turn: 1, step: 0, chunk: { text: 'delta' } } }),
+          JSON.stringify({
+            type: 'assistant/message',
+            seq: 6,
+            time: eventMs,
+            data: {
+              turn: 1,
+              step: 0,
+              message: {
+                id: 'msg-1',
+                role: 'assistant',
+                content: [{ type: 'text', text: 'assembled reply' }],
+                source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' }
+              },
+              usage: { inputTokens: 4557, outputTokens: 434, cacheReadTokens: 4224, reasoningTokens: 220 }
+            }
+          }),
+          JSON.stringify({
+            type: 'assistant/message',
+            seq: 7,
+            time: eventMs + 5000,
+            data: {
+              turn: 2,
+              step: 0,
+              message: {
+                id: 'msg-2',
+                role: 'assistant',
+                content: [{ type: 'text', text: 'second reply' }],
+                source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' }
+              },
+              usage: { inputTokens: 4638, outputTokens: 476, cacheReadTokens: 5632, reasoningTokens: 256 }
+            }
+          }),
+          JSON.stringify({ type: 'session/title', seq: 8, time: eventMs, data: { title: 'a session title' } }),
+          JSON.stringify({ type: 'turn/end', seq: 9, time: eventMs, data: { turn: 1, reason: 'completed' } })
+        ]
+      }
+    })
+
+    const snapshots = await collect(home)
+
+    expect(snapshots).toEqual([{
+      source: 'deepseek-harness',
+      usageDate: '2026-08-14',
+      timezone: 'Asia/Shanghai',
+      model: 'deepseek-v4-flash-vision-exp',
+      inputTokens: 9195,
+      outputTokens: 910,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 9856,
+      totalTokens: 19_961,
+      costUsd: 0,
+      sessionCount: 1,
+      collectedAt: '2026-08-14T12:00:00.000Z'
+    }])
+  })
+
+  test('keeps session content out of the snapshot', async () => {
+    const secrets = ['a real prompt', 'private reasoning', 'streamed reply', 'assembled reply']
+    const home = await dshHome({
+      'proj/session-a/session.jsonl.zstd': {
+        compress: true,
+        lines: [
+          JSON.stringify({ type: 'user/message', seq: 1, time: eventMs, data: { content: [{ type: 'text', text: secrets[0] }] } }),
+          JSON.stringify({ type: 'reasoning-chunks', seq: 2, time: eventMs, data: { texts: [secrets[1]] } }),
+          JSON.stringify({ type: 'text-chunks', seq: 3, time: eventMs, data: { texts: [secrets[2]] } }),
+          JSON.stringify({
+            type: 'assistant/message',
+            seq: 4,
+            time: eventMs,
+            data: {
+              turn: 1,
+              step: 0,
+              message: {
+                id: 'm',
+                role: 'assistant',
+                content: [{ type: 'text', text: secrets[3] }],
+                source: { kind: 'model', provider: 'p', model: 'm', replayState: { opaque: 'provider state' } }
+              },
+              usage: { inputTokens: 10, outputTokens: 2 }
+            }
+          })
+        ]
+      }
+    })
+
+    const emitted = JSON.stringify(await collect(home))
+
+    for (const secret of secrets) {
+      expect(emitted).not.toContain(secret)
+    }
+    expect(emitted).not.toContain('provider state')
+  })
 })

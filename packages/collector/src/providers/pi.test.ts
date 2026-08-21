@@ -234,4 +234,118 @@ describe('collectPiUsage', () => {
 
     expect(await collect(agentDir)).toHaveLength(1)
   })
+  test('matches the shape a real Pi session writes', async () => {
+    // Taken from real ~/.pi/agent/sessions files: `usage` carries `totalTokens`
+    // and a per-bucket `cost` alongside the counts, assistant and toolResult
+    // entries both carry usage, and `responseModel` names the model that served
+    // the call.
+    const home = await piAgentDir({
+      '--C--Users-lenovo--/session-real.jsonl': [
+        JSON.stringify({ type: 'session', id: 's', timestamp, cwd: 'C:/Users/lenovo' }),
+        JSON.stringify({ type: 'model_change', id: 'mc', timestamp, provider: 'xai', modelId: 'grok-4.5' }),
+        JSON.stringify({
+          type: 'message',
+          id: 'a1',
+          timestamp,
+          message: {
+            role: 'assistant',
+            provider: 'xai',
+            model: 'grok-4.5',
+            responseModel: 'grok-4.5',
+            usage: {
+              input: 23_785,
+              output: 15_670,
+              cacheRead: 559_488,
+              cacheWrite: 0,
+              cacheWrite1h: 0,
+              totalTokens: 598_943,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+            }
+          }
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 't1',
+          timestamp,
+          message: {
+            role: 'toolResult',
+            responseModel: 'grok-4.5',
+            usage: {
+              input: 23_785,
+              output: 15_671,
+              cacheRead: 559_488,
+              cacheWrite: 0,
+              cacheWrite1h: 0,
+              totalTokens: 598_944,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+            }
+          }
+        })
+      ]
+    })
+
+    const snapshots = await collect(home)
+
+    expect(snapshots).toEqual([{
+      source: 'pi',
+      usageDate: '2026-06-15',
+      timezone: 'Asia/Shanghai',
+      model: 'grok-4.5',
+      inputTokens: 47_570,
+      outputTokens: 31_341,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 1_118_976,
+      totalTokens: 1_197_887,
+      // Subscription-tier models report a zero cost breakdown, which is a real
+      // zero rather than an absent figure.
+      costUsd: 0,
+      sessionCount: 1,
+      collectedAt: '2026-06-15T12:00:00.000Z'
+    }])
+  })
+
+  test('counts both cache-write tiers as cache creation', async () => {
+    // Pi splits cache writes by TTL; ignoring the 1h tier would under-report.
+    const home = await piAgentDir({
+      'project/session-a.jsonl': [
+        assistantEntry({
+          messageOverrides: {
+            usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 200, cacheWrite1h: 300, cost: { total: 0 } }
+          }
+        })
+      ]
+    })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.cacheCreationTokens).toBe(500)
+    expect(snapshot.totalTokens).toBe(610)
+  })
+
+  test('keeps session content out of the snapshot', async () => {
+    const secrets = ['a real user prompt', 'the assistant reply', 'C:/Users/lenovo/secret']
+    const home = await piAgentDir({
+      'project/session-a.jsonl': [
+        JSON.stringify({ type: 'session', id: 's', timestamp, cwd: secrets[2] }),
+        JSON.stringify({ type: 'message', id: 'u', timestamp, message: { role: 'user', content: [{ type: 'text', text: secrets[0] }] } }),
+        JSON.stringify({
+          type: 'message',
+          id: 'a',
+          timestamp,
+          message: {
+            role: 'assistant',
+            model: 'm',
+            content: [{ type: 'text', text: secrets[1] }],
+            usage: { input: 10, output: 2, cost: { total: 0 } }
+          }
+        })
+      ]
+    })
+
+    const emitted = JSON.stringify(await collect(home))
+
+    for (const secret of secrets) {
+      expect(emitted).not.toContain(secret)
+    }
+  })
 })

@@ -109,7 +109,11 @@ async function* readUsageEvents(filePath: string): AsyncGenerator<UsageEvent> {
     const inputTokens = readTokenCount(usage.input)
     const outputTokens = readTokenCount(usage.output)
     const cacheReadTokens = readTokenCount(usage.cacheRead)
-    const cacheCreationTokens = readTokenCount(usage.cacheWrite)
+    // Pi splits cache writes by TTL: `cacheWrite` is the default tier and
+    // `cacheWrite1h` the extended one. Both are cache creation, so dropping the
+    // second would silently under-report usage on providers that offer it.
+    const cacheCreationTokens = readTokenCount(usage.cacheWrite) +
+      readTokenCount(usage.cacheWrite1h)
 
     yield {
       occurredAt,
