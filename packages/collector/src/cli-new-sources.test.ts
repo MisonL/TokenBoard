@@ -26,7 +26,7 @@ const claudeSnapshot: UsageSnapshot = {
 
 const env = { TOKENBOARD_TIMEZONE: 'Asia/Shanghai', TOKENBOARD_STATE_DIR: '/state' }
 
-describe('runCollectorCli OpenCode source', () => {
+describe('runCollectorCli OpenCode, Pi and Grok Build sources', () => {
   test('previews the selected OpenCode source', async () => {
     const stdout: string[] = []
 
@@ -147,6 +147,56 @@ describe('runCollectorCli OpenCode source', () => {
     const result = await runCollectorCli(['preview', '--source', 'open-code'], env, deps())
 
     expect(result).toBe(1)
+  })
+
+  test('previews the selected Pi and Grok Build sources', async () => {
+    const piSnapshot: UsageSnapshot = { ...openCodeSnapshot, source: 'pi', model: 'deepseek-v4-pro' }
+    const grokSnapshot: UsageSnapshot = { ...openCodeSnapshot, source: 'grok-build', model: 'grok-4.5', costUsd: 0 }
+
+    for (const [flag, snapshot, override] of [
+      ['pi', piSnapshot, 'collectPiUsage'],
+      ['grok-build', grokSnapshot, 'collectGrokBuildUsage']
+    ] as const) {
+      const stdout: string[] = []
+      const result = await runCollectorCli(
+        ['preview', '--source', flag],
+        env,
+        deps({ stdout: (line) => stdout.push(line), [override]: async () => [snapshot] })
+      )
+
+      expect(result).toBe(0)
+      expect(JSON.parse(stdout[0])).toEqual([snapshot])
+    }
+  })
+
+  test('skips Pi and Grok Build when they are not installed', async () => {
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      env,
+      deps({
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectPiUsage: async () => { throw new Error('No Pi sessions found: /home/user/.pi/agent/sessions') },
+        collectGrokBuildUsage: async () => { throw new Error('No Grok Build sessions found: /home/user/.grok/sessions') }
+      })
+    )
+
+    expect(result).toBe(0)
+  })
+
+  test('omits Pi and Grok Build from hook-mode collection', async () => {
+    const called: string[] = []
+
+    await runCollectorCli(
+      ['preview', '--source', 'all'],
+      { ...env, TOKENBOARD_HOOK_MODE: '1' },
+      deps({
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectPiUsage: async () => { called.push('pi'); return [] },
+        collectGrokBuildUsage: async () => { called.push('grok-build'); return [] }
+      })
+    )
+
+    expect(called).toEqual([])
   })
 })
 

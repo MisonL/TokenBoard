@@ -12,7 +12,9 @@ import {
 import { isUnavailableLanguageServerError } from './providers/antigravity-gui-environment'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
+import { collectGrokBuildUsage } from './providers/grok-build'
 import { collectOpenCodeUsage } from './providers/opencode'
+import { collectPiUsage } from './providers/pi'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
 import { withCursorLock } from './providers/session-cursor-store'
 import { uploadSnapshots } from './upload'
@@ -25,6 +27,8 @@ type CliSource =
   | 'antigravity'
   | 'antigravity-ide'
   | 'opencode'
+  | 'pi'
+  | 'grok-build'
   | 'all'
 type ConcreteCliSource = Exclude<CliSource, 'all'>
 
@@ -59,6 +63,8 @@ type CliDeps = {
   collectAntigravityUsage?: typeof collectAntigravityUsage
   collectAntigravityIdeUsage?: typeof collectAntigravityIdeUsage
   collectOpenCodeUsage?: typeof collectOpenCodeUsage
+  collectPiUsage?: typeof collectPiUsage
+  collectGrokBuildUsage?: typeof collectGrokBuildUsage
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
@@ -74,6 +80,8 @@ const defaultDeps: CliDeps = {
   collectAntigravityUsage,
   collectAntigravityIdeUsage,
   collectOpenCodeUsage,
+  collectPiUsage,
+  collectGrokBuildUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
   warmHookCursorHighWater,
@@ -247,11 +255,21 @@ async function collectAllSnapshots(context: CollectionContext) {
   // unavailable and skipped rather than failing the whole run.
   const optionalSourceOptions = { deferFailure: true, failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
   await collectOptionalSource('opencode', () => readOpenCodeCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
+  await collectOptionalSource('pi', () => readPiCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
+  await collectOptionalSource('grok-build', () => readGrokBuildCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
   return { snapshots, collectedSources, sourceFailures }
 }
 
 function readOpenCodeCollector(deps: CliDeps) {
   return deps.collectOpenCodeUsage ?? noopCollector
+}
+
+function readPiCollector(deps: CliDeps) {
+  return deps.collectPiUsage ?? noopCollector
+}
+
+function readGrokBuildCollector(deps: CliDeps) {
+  return deps.collectGrokBuildUsage ?? noopCollector
 }
 
 async function noopCollector(): Promise<UsageSnapshot[]> {
@@ -283,6 +301,8 @@ function collectSingleSource(
   if (source === 'claude-code') return deps.collectClaudeCodeUsage(standardContext)
   if (source === 'codex') return deps.collectCodexUsage(standardContext)
   if (source === 'opencode') return readOpenCodeCollector(deps)(standardContext)
+  if (source === 'pi') return readPiCollector(deps)(standardContext)
+  if (source === 'grok-build') return readGrokBuildCollector(deps)(standardContext)
   const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)
@@ -420,6 +440,8 @@ function isOptionalSourceUnavailable(source: ConcreteCliSource, message: string)
     return message.includes('OpenCode database not found') ||
       message.includes('OpenCode SQLite reader unavailable')
   }
+  if (source === 'pi') return message.includes('No Pi sessions found')
+  if (source === 'grok-build') return message.includes('No Grok Build sessions found')
   if (!source.startsWith('antigravity')) return false
   return message.includes('statusline log not found') ||
     message.includes('Antigravity SQLite reader unavailable') ||
@@ -435,7 +457,7 @@ function readCommand(value: string | undefined): CliCommand {
     return value
   }
 
-  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|opencode|all]')
+  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|opencode|pi|grok-build|all]')
 }
 
 function readSource(value: string): CliSource {
@@ -446,6 +468,8 @@ function readSource(value: string): CliSource {
     value === 'antigravity' ||
     value === 'antigravity-ide' ||
     value === 'opencode' ||
+    value === 'pi' ||
+    value === 'grok-build' ||
     value === 'all'
   ) {
     return value
