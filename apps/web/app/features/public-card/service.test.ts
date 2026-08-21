@@ -105,7 +105,9 @@ describe('public card service', () => {
     expect(sqlStatements[1]).toContain('month_usage AS')
     expect(sqlStatements[1]).toContain('source_usage AS')
     expect(sqlStatements[1]).toContain('model_usage AS')
-    expect(sqlStatements[1]).toContain("source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')")
+    expect(sqlStatements[1]).toContain(
+      "source IN ('antigravity-cli', 'antigravity', 'antigravity-ide', 'grok-build', 'deepseek-harness')"
+    )
     expect(sqlStatements[1]).toContain("'costAvailable'")
     expect(sqlStatements[1]).toContain('effective_daily_usage_summary.usage_date >= params.month_start')
     expect(sqlStatements[1]).toContain("effective_daily_usage_summary.usage_date < date(params.month_start, '+1 month')")
@@ -186,7 +188,7 @@ describe('public card service', () => {
     expect(svg).toContain('100')
     expect(svg).toContain('Total Cost*')
     expect(svg).toContain('$42.50')
-    expect(svg).toContain('* Antigravity cost unavailable')
+    expect(svg).toContain('* Some sources report no cost')
     expect(svg).not.toContain('Today Cost*')
     expect(svg).not.toContain('Monthly Cost*')
     expect(svg).not.toContain('Monthly Tokens')

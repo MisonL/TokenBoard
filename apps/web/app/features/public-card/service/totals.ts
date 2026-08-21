@@ -1,4 +1,5 @@
 import {
+  costUnavailableSourcesSql,
   effectiveDailyUsageSummaryWith,
   usageSummaryParam,
   usageSummaryScopeSql
@@ -100,9 +101,9 @@ export async function getPublicTotals(input: {
           COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
           COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd
-          , CASE WHEN EXISTS (SELECT 1 FROM total_source_usage WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')) THEN 0 ELSE 1 END as totalCostAvailable
-          , CASE WHEN EXISTS (SELECT 1 FROM today_source_usage WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')) THEN 0 ELSE 1 END as todayCostAvailable
-          , CASE WHEN EXISTS (SELECT 1 FROM month_source_usage WHERE source IN ('antigravity-cli', 'antigravity', 'antigravity-ide')) THEN 0 ELSE 1 END as monthCostAvailable
+          , CASE WHEN EXISTS (SELECT 1 FROM total_source_usage WHERE source IN (${costUnavailableSourcesSql})) THEN 0 ELSE 1 END as totalCostAvailable
+          , CASE WHEN EXISTS (SELECT 1 FROM today_source_usage WHERE source IN (${costUnavailableSourcesSql})) THEN 0 ELSE 1 END as todayCostAvailable
+          , CASE WHEN EXISTS (SELECT 1 FROM month_source_usage WHERE source IN (${costUnavailableSourcesSql})) THEN 0 ELSE 1 END as monthCostAvailable
           ${publicBreakdownSelect(input.includeBreakdown, input.includeSourceSplit)}
         FROM params
         LEFT JOIN effective_totals ON effective_totals.user_id = params.user_id
@@ -140,7 +141,7 @@ function modelBreakdownCte() {
             COALESCE(SUM(total_tokens_without_cache_read), 0) as total_tokens_without_cache_read,
             COALESCE(SUM(cost_usd), 0) as cost_usd,
             MIN(CASE
-              WHEN source IN ('antigravity-cli', 'antigravity', 'antigravity-ide') THEN 0
+              WHEN source IN (${costUnavailableSourcesSql}) THEN 0
               ELSE 1
             END) as cost_available
           FROM month_usage

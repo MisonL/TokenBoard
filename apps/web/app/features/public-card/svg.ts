@@ -98,7 +98,7 @@ function labels(language: PublicCardConfig['language']) {
   if (language === 'en') {
     return {
       title: 'TokenBoard Stats',
-      costUnavailableNote: '* Antigravity cost unavailable',
+      costUnavailableNote: '* Some sources report no cost',
       metrics: {
         totalTokens: 'Total Tokens',
         totalTokensWithoutCacheRead: 'No Cache Read',
@@ -118,7 +118,7 @@ function labels(language: PublicCardConfig['language']) {
 
   return {
     title: 'TokenBoard 统计',
-    costUnavailableNote: '* Antigravity 费用不可用',
+    costUnavailableNote: '* 部分来源费用不可用',
     metrics: {
       totalTokens: '总 token',
       totalTokensWithoutCacheRead: '总量不含缓存读',

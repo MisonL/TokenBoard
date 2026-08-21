@@ -93,7 +93,7 @@ describe('public card svg renderer', () => {
     expect(svg).toContain('28%')
   })
 
-  test('marks cost metrics when Antigravity cost is unavailable', () => {
+  test('marks cost metrics when a source reports no cost', () => {
     const svg = renderUsageCardSvg({
       ...input,
       totalCostAvailable: false,
@@ -106,7 +106,7 @@ describe('public card svg renderer', () => {
     expect(svg).toContain('总额度*')
     expect(svg).toContain('本月额度*')
     expect(svg).not.toContain('今日额度*')
-    expect(svg).toContain('* Antigravity 费用不可用')
+    expect(svg).toContain('* 部分来源费用不可用')
   })
 
   test('does not add unavailable-cost notes when no cost metric is visible', () => {
@@ -117,7 +117,7 @@ describe('public card svg renderer', () => {
       metrics: ['totalTokens', 'monthTokens']
     })
 
-    expect(svg).not.toContain('Antigravity 费用不可用')
+    expect(svg).not.toContain('部分来源费用不可用')
     expect(svg).not.toContain('总 token*')
   })
 
@@ -131,6 +131,6 @@ describe('public card svg renderer', () => {
     })
 
     expect(svg).not.toContain('今日额度')
-    expect(svg).not.toContain('Antigravity 费用不可用')
+    expect(svg).not.toContain('部分来源费用不可用')
   })
 })

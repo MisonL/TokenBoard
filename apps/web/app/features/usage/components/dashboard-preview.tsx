@@ -3,7 +3,7 @@ import { LinkButton } from '../../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../../components/ui/card'
 import { formatPercentRate } from '../../../lib/usage-metrics'
 import type { DashboardSummary } from '../service'
-import { formatSource } from '../source-format'
+import { formatCostUnavailableNotice, formatSource } from '../source-format'
 import { UsageMetricCard, UsageMetricGrid } from './usage-metric-card'
 import { formatUsageMetricInteger, formatUsageMetricUsdWithCostAvailability } from './usage-metric-format'
 
@@ -17,6 +17,9 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
     0
   )
   const trendMaxTokens = Math.max(...props.summary.dailyTrend.map((item) => item.totalTokens), 0)
+  // The summary reports cost availability as a flag per period, so the notice is
+  // derived from the month source split rather than the period's own sources.
+  const costUnavailableNotice = formatCostUnavailableNotice(props.summary.sourceSplit)
   const trendTotalTokens = props.summary.dailyTrend.reduce(
     (total, item) => total + item.totalTokens,
     0
@@ -49,11 +52,11 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
         <UsageMetricCard label="今日 tokens" value={formatUsageMetricInteger(props.summary.todayTokens)} tone="lime" />
         <UsageMetricCard label="今日不含缓存读" value={formatUsageMetricInteger(props.summary.todayTokensWithoutCacheRead)} />
         <UsageMetricCard label="今日缓存率" value={formatPercentRate(props.summary.todayCacheReadRate)} />
-        <UsageMetricCard label="今日费用" value={formatUsageMetricUsdWithCostAvailability(props.summary.todayCostUsd, props.summary.todayCostAvailable)} />
+        <UsageMetricCard label="今日费用" value={formatUsageMetricUsdWithCostAvailability(props.summary.todayCostUsd, props.summary.todayCostAvailable, costUnavailableNotice)} />
         <UsageMetricCard label="本月 tokens" value={formatUsageMetricInteger(props.summary.monthTokens)} />
         <UsageMetricCard label="本月不含缓存读" value={formatUsageMetricInteger(props.summary.monthTokensWithoutCacheRead)} />
         <UsageMetricCard label="本月缓存率" value={formatPercentRate(props.summary.monthCacheReadRate)} />
-        <UsageMetricCard label="本月费用" value={formatUsageMetricUsdWithCostAvailability(props.summary.monthCostUsd, props.summary.monthCostAvailable)} />
+        <UsageMetricCard label="本月费用" value={formatUsageMetricUsdWithCostAvailability(props.summary.monthCostUsd, props.summary.monthCostAvailable, costUnavailableNotice)} />
       </UsageMetricGrid>
 
       <section class="grid gap-3 lg:grid-cols-[1.45fr_0.85fr]">

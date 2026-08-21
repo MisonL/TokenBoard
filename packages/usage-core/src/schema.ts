@@ -1,7 +1,39 @@
 import { z } from 'zod'
 
-export const usageSources = ['claude-code', 'codex', 'antigravity-cli', 'antigravity', 'antigravity-ide'] as const
+export const usageSources = [
+  'claude-code',
+  'codex',
+  'antigravity-cli',
+  'antigravity',
+  'antigravity-ide',
+  'opencode',
+  'pi',
+  'grok-build',
+  'deepseek-harness'
+] as const
 export const antigravityUsageSources = ['antigravity-cli', 'antigravity', 'antigravity-ide'] as const
+
+/**
+ * Sources whose local usage records carry no cost figure. Deriving one from a
+ * pricing table would be a guess, so the collector uploads `costUsd: 0` and
+ * every reporting surface labels the cost as unavailable instead of `$0.00`.
+ */
+export const costUnavailableSources = [
+  'antigravity-cli',
+  'antigravity',
+  'antigravity-ide',
+  'grok-build',
+  'deepseek-harness'
+] as const
+
+const costUnavailableMessages: Record<(typeof costUnavailableSources)[number], string> = {
+  'antigravity-cli': 'Antigravity source costs are unavailable; costUsd must be 0',
+  antigravity: 'Antigravity source costs are unavailable; costUsd must be 0',
+  'antigravity-ide': 'Antigravity source costs are unavailable; costUsd must be 0',
+  'grok-build': 'Grok Build source costs are unavailable; costUsd must be 0',
+  'deepseek-harness': 'DeepSeek Harness source costs are unavailable; costUsd must be 0'
+}
+
 export const usageSourceSchema = z.enum(usageSources)
 export const maxUsageTimezoneLength = 80
 export const maxUsageModelNameLength = 160
@@ -37,11 +69,11 @@ export const usageSnapshotSchema = z.object({
     })
   }
 
-  if (isAntigravityUsageSource(snapshot.source) && snapshot.costUsd > 0) {
+  if (isCostUnavailableSource(snapshot.source) && snapshot.costUsd > 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['costUsd'],
-      message: 'Antigravity source costs are unavailable; costUsd must be 0'
+      message: costUnavailableMessages[snapshot.source as (typeof costUnavailableSources)[number]]
     })
   }
 })
@@ -53,6 +85,11 @@ export type UsageSnapshotKey = Pick<UsageSnapshot, 'source' | 'usageDate' | 'mod
 
 export function isAntigravityUsageSource(source: UsageSource) {
   return (antigravityUsageSources as readonly UsageSource[]).includes(source)
+}
+
+/** True when the source cannot report a cost, so `costUsd` carries no meaning. */
+export function isCostUnavailableSource(source: UsageSource) {
+  return (costUnavailableSources as readonly UsageSource[]).includes(source)
 }
 
 export function snapshotKey(snapshot: UsageSnapshotKey) {

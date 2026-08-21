@@ -1,5 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 import {
+  costUnavailableSources,
+  isCostUnavailableSource,
   isValidTimezone,
   timezoneValidationCacheSize,
   usageSnapshotSchema,
@@ -43,6 +45,35 @@ describe('usage snapshot schema', () => {
           costUsd: 0.01
         })
       ).toThrow('Antigravity source costs are unavailable')
+    }
+  })
+
+  test('accepts the sources that report cost', () => {
+    for (const source of ['opencode', 'pi'] as const) {
+      expect(usageSourceSchema.parse(source)).toBe(source)
+      expect(usageSnapshotSchema.parse({ ...baseSnapshot, source }).costUsd).toBe(0.01)
+    }
+  })
+
+  test('rejects costs from sources that cannot report one', () => {
+    expect(() =>
+      usageSnapshotSchema.parse({ ...baseSnapshot, source: 'grok-build', costUsd: 0.01 })
+    ).toThrow('Grok Build source costs are unavailable')
+    expect(() =>
+      usageSnapshotSchema.parse({ ...baseSnapshot, source: 'deepseek-harness', costUsd: 0.01 })
+    ).toThrow('DeepSeek Harness source costs are unavailable')
+
+    for (const source of ['grok-build', 'deepseek-harness'] as const) {
+      expect(usageSnapshotSchema.parse({ ...baseSnapshot, source, costUsd: 0 }).source).toBe(source)
+    }
+  })
+
+  test('reports which sources cannot carry a cost', () => {
+    for (const source of costUnavailableSources) {
+      expect(isCostUnavailableSource(source)).toBe(true)
+    }
+    for (const source of ['claude-code', 'codex', 'opencode', 'pi'] as const) {
+      expect(isCostUnavailableSource(source)).toBe(false)
     }
   })
 

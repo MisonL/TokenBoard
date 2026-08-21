@@ -46,11 +46,11 @@ describe('LeaderboardPanel', () => {
     expect(html).not.toContain('colspan="4"')
   })
 
-  test('labels Antigravity cost as unavailable on leaderboards', async () => {
+  test('names every cost-unavailable source on leaderboards', async () => {
     const html = await renderToString(
       <LeaderboardPanel entries={[]} period="daily" metric="tokens" />
     )
 
-    expect(html).toContain('Antigravity 费用不可用，费用列和费用排名不包含该来源成本。')
+    expect(html).toContain('Antigravity、Grok Build、DeepSeek Harness 费用不可用，费用列和费用排名不包含这些来源成本。')
   })
 })
