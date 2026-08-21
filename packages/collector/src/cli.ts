@@ -12,12 +12,20 @@ import {
 import { isUnavailableLanguageServerError } from './providers/antigravity-gui-environment'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
+import { collectOpenCodeUsage } from './providers/opencode'
 import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
 import { withCursorLock } from './providers/session-cursor-store'
 import { uploadSnapshots } from './upload'
 
 type CliCommand = 'preview' | 'sync' | 'warm-hooks'
-type CliSource = 'claude-code' | 'codex' | 'antigravity-cli' | 'antigravity' | 'antigravity-ide' | 'all'
+type CliSource =
+  | 'claude-code'
+  | 'codex'
+  | 'antigravity-cli'
+  | 'antigravity'
+  | 'antigravity-ide'
+  | 'opencode'
+  | 'all'
 type ConcreteCliSource = Exclude<CliSource, 'all'>
 
 type CliEnv = Partial<Record<string, string>>
@@ -50,6 +58,7 @@ type CliDeps = {
   collectAntigravityCliUsage?: typeof collectAntigravityCliUsage
   collectAntigravityUsage?: typeof collectAntigravityUsage
   collectAntigravityIdeUsage?: typeof collectAntigravityIdeUsage
+  collectOpenCodeUsage?: typeof collectOpenCodeUsage
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
@@ -64,6 +73,7 @@ const defaultDeps: CliDeps = {
   collectAntigravityCliUsage,
   collectAntigravityUsage,
   collectAntigravityIdeUsage,
+  collectOpenCodeUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
   warmHookCursorHighWater,
@@ -167,7 +177,9 @@ async function warmHookCursors(
   if (since !== 'all') return
   const stateDir = resolveStateDir(env)
   for (const source of collectedSources.filter((item) => item !== 'all')) {
-    if (source.startsWith('antigravity')) continue
+    // Only Claude Code and Codex install notification hooks; every other source
+    // has no hook cursor to warm and must not fall through to the Claude path.
+    if (source !== 'claude-code' && source !== 'codex') continue
     const sessionsDir = source === 'codex'
       ? join(env.CODEX_HOME || join(homedir(), '.codex'), 'sessions')
       : join(env.CLAUDE_CONFIG_DIR || env.CLAUDE_HOME || join(homedir(), '.claude'), 'projects')
@@ -231,7 +243,19 @@ async function collectAllSnapshots(context: CollectionContext) {
   await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity', () => readAntigravityGuiCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity-ide', () => readAntigravityIdeCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
+  // Tools most users do not have installed: a missing local store is reported as
+  // unavailable and skipped rather than failing the whole run.
+  const optionalSourceOptions = { deferFailure: true, failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
+  await collectOptionalSource('opencode', () => readOpenCodeCollector(deps)(standardContext), snapshots, collectedSources, sourceFailures, deps, optionalSourceOptions)
   return { snapshots, collectedSources, sourceFailures }
+}
+
+function readOpenCodeCollector(deps: CliDeps) {
+  return deps.collectOpenCodeUsage ?? noopCollector
+}
+
+async function noopCollector(): Promise<UsageSnapshot[]> {
+  return []
 }
 
 function readAntigravityCollector(deps: CliDeps) {
@@ -258,6 +282,7 @@ function collectSingleSource(
   const standardContext = { timezone, since, stderr: deps.stderr }
   if (source === 'claude-code') return deps.collectClaudeCodeUsage(standardContext)
   if (source === 'codex') return deps.collectCodexUsage(standardContext)
+  if (source === 'opencode') return readOpenCodeCollector(deps)(standardContext)
   const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)
@@ -286,7 +311,9 @@ async function collectOptionalSource(
       return
     }
     if (options.ignoreUnavailable && isOptionalSourceUnavailable(source, message)) {
-      deps.stderr(formatAntigravityDiagnostic(source, 'unavailable', message))
+      deps.stderr(source.startsWith('antigravity')
+        ? formatAntigravityDiagnostic(source, 'unavailable', message)
+        : `Skipping unavailable ${source} source: ${message}`)
       return
     }
     if (options.failFast || (options.failOnNonUnavailable && !options.deferFailure)) {
@@ -389,6 +416,10 @@ function formatSourceFailures(failures: SourceFailure[]) {
 }
 
 function isOptionalSourceUnavailable(source: ConcreteCliSource, message: string) {
+  if (source === 'opencode') {
+    return message.includes('OpenCode database not found') ||
+      message.includes('OpenCode SQLite reader unavailable')
+  }
   if (!source.startsWith('antigravity')) return false
   return message.includes('statusline log not found') ||
     message.includes('Antigravity SQLite reader unavailable') ||
@@ -404,7 +435,7 @@ function readCommand(value: string | undefined): CliCommand {
     return value
   }
 
-  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|all]')
+  throw new Error('Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|opencode|all]')
 }
 
 function readSource(value: string): CliSource {
@@ -414,6 +445,7 @@ function readSource(value: string): CliSource {
     value === 'antigravity-cli' ||
     value === 'antigravity' ||
     value === 'antigravity-ide' ||
+    value === 'opencode' ||
     value === 'all'
   ) {
     return value
