@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { link, mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
+import { usageSources, type UsageSnapshot, type UsageSource } from '@tokenboard/usage-core'
 import {
   isValidAntigravityFileScanState,
   type AntigravityFileScanState
@@ -287,11 +287,8 @@ export function cursorFileName(source: UsageSource, scope?: string) {
 }
 
 function sourceCursorFileName(source: UsageSource) {
-  if (source === 'codex') return 'codex-cursor.json'
-  if (source === 'antigravity-cli') return 'antigravity-cli-cursor.json'
-  if (source === 'antigravity') return 'antigravity-cursor.json'
-  if (source === 'antigravity-ide') return 'antigravity-ide-cursor.json'
-  return 'claude-code-cursor.json'
+  if (source === 'claude-code') return 'claude-code-cursor.json'
+  return `${source}-cursor.json`
 }
 
 function isValidCursor(value: unknown, source: UsageSource): value is CursorState {
@@ -329,13 +326,7 @@ function isValidCursorEntry(value: unknown): value is CursorEntry {
 function isValidCursorSnapshot(value: unknown): value is CursorSnapshot {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as CursorSnapshot
-  if (
-    candidate.source !== 'codex' &&
-    candidate.source !== 'claude-code' &&
-    candidate.source !== 'antigravity-cli' &&
-    candidate.source !== 'antigravity' &&
-    candidate.source !== 'antigravity-ide'
-  ) return false
+  if (!(usageSources as readonly string[]).includes(candidate.source)) return false
   return typeof candidate.usageDate === 'string' &&
     typeof candidate.timezone === 'string' &&
     typeof candidate.model === 'string' &&
