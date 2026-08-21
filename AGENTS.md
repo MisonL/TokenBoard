@@ -27,7 +27,7 @@ pnpm deploy
 
 - `apps/web/`：HonoX + Cloudflare Workers Web/API 应用。
 - `apps/web/app/features/`：按业务 feature 组织的服务、查询、schema、组件和测试。
-- `packages/collector/`：本地 Node.js collector，负责调用 `ccusage` 并上传 snapshot。
+- `packages/collector/`：本地 Node.js collector，负责调用 `ccusage`、读取各工具本地 usage 记录并上传 snapshot。
 - `packages/usage-core/`：跨端共享的 usage schema、normalize、hash 和工具函数。
 - `skills/tokenboard/`：Codex / Claude Code 安装、同步、hook、schedule 脚本。
 - `apps/web/app/components/ui/`：通用 UI 原语；业务组件不要放这里。
@@ -54,7 +54,7 @@ TokenBoard 是一个面向多用户的 AI token 使用统计平台，而不是�
 第一阶段目标：
 
 - 支持用户注册或创建个人上传 token。
-- 支持 Claude Code、Codex、Antigravity CLI、Antigravity、Antigravity IDE 五类 usage 来源。
+- 支持 Claude Code、Codex、Antigravity CLI、Antigravity、Antigravity IDE、OpenCode、Pi、Grok Build、DeepSeek Harness 九类 usage 来源。
 - 通过 TokenBoard skill + collector CLI 调用 `ccusage`、`@ccusage/codex`，并从 Antigravity 三类本地历史中提取 token 元数据。
 - Antigravity CLI 可额外通过官方 `statusLine.command` 写入脱敏 token 事件；该路径是增量辅助来源，不是唯一来源。
 - 后端接收标准化后的 usage snapshot，并按用户、日期、来源、模型聚合。
@@ -95,6 +95,10 @@ TokenBoard 是一个面向多用户的 AI token 使用统计平台，而不是�
   - Antigravity CLI: `~/.gemini/antigravity-cli/conversations/*.db` 的 `gen_metadata.data` token 元数据；可叠加 `~/.gemini/antigravity-cli/settings.json` 的 `statusLine.command`
   - Antigravity: `~/.gemini/antigravity/conversations` 的 SQLite token 元数据和 bounded language-server metadata projection
   - Antigravity IDE: `~/.gemini/antigravity-ide/conversations` 的 SQLite token 元数据和 bounded language-server metadata projection
+  - OpenCode: `~/.local/share/opencode/opencode.db` 的 `message` 表，SQL 内投影 token 字段（`XDG_DATA_HOME` 可覆盖）
+  - Pi: `~/.pi/agent/sessions/**/*.jsonl` 的 `usage` 与 `cost`（`PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR` 可覆盖）
+  - Grok Build: `~/.grok/{sessions,archived_sessions}/**/updates.jsonl` 的 `turn_completed` 事件（`GROK_HOME` 可覆盖）
+  - DeepSeek Harness: `~/.dsh/sessions/**/session.jsonl[.zstd]` 的 `assistant/message` 事件（`DSH_HOME`、`DSH_SESSION_ROOT` 可覆盖）
 - 数据上传：HTTPS `POST /api/v1/ingest`
 
 ### 部署
@@ -150,6 +154,23 @@ Antigravity 三类来源特殊约束：
 - Antigravity placeholder model ID 可以保留为 model fallback；若 responseModel 存在，优先使用 responseModel。
 - Antigravity 三类来源费用不可用，`costUsd` 只能置为 `0`，所有 Web、日报和排行榜费用展示必须标注该来源费用不可用，禁止从 credits 推算成本。
 
+OpenCode / Pi / Grok Build / DeepSeek Harness 约束：
+
+- `source` 固定使用 `opencode`、`pi`、`grok-build`、`deepseek-harness`。
+- 本地读取位置：OpenCode 读 `~/.local/share/opencode/opencode.db`；Pi 读 `~/.pi/agent/sessions`；Grok Build 读 `~/.grok/{sessions,archived_sessions}`；DSH 读 `~/.dsh/sessions`。各自支持官方环境变量覆盖。
+- 只投影 token、model、timestamp 和会话标识；禁止读取或保存 prompt、completion、回复正文、`replayState`、本地路径。
+- OpenCode 的 `message.data` 同时含 prompt、回复和本地 `path`，必须在 SQL 内用 `json_extract` 投影 token 字段，禁止把整个 blob 读进 collector；查询必须以只读方式打开。
+- SQLite 读取优先使用 Node 内置 `node:sqlite`（无需额外安装），运行时缺失时回退外部 `sqlite3`；显式设置 `TOKENBOARD_SQLITE_BIN` 表示强制走外部二进制。两条路径必须产出一致结果并有测试覆盖。
+- 费用可用性：OpenCode 和 Pi 自报费用，可以直接使用；Grok Build 和 DSH 不提供费用，`costUsd` 只能置 `0`，禁止用定价表推算。
+- 费用不可用来源统一由 `usage-core` 的 `costUnavailableSources` 声明，Web、SVG、日报、排行榜必须由该常量派生，禁止再硬编码来源列表。
+- Grok Build 的 `turn_completed` 是逐轮独立总量而非累计快照，必须按面值入账；禁止对相邻事件做差分。其 `inputTokens` 含 `cachedReadTokens`，必须减出 fresh input；`reasoningTokens` 已包含在 `outputTokens` 内，不得重复累加。
+- Pi 的 session 文件是 `id`/`parentId` 树，fork 会复制共享历史，必须按 entry id 去重；usage 载体包含 assistant message、toolResult、compaction、branch_summary 四类。
+- Pi 的 cache write 按 TTL 分两档：`cacheWrite` 与 `cacheWrite1h`，两者都属 cache creation，必须同时累加，漏掉后者会少记用量。订阅额度模型的 `cost` 各项为真实的 0。
+- DSH 日志默认 zstd 且为拼接帧，Node 的 `zstdDecompress` 只解第一帧，必须自行按帧头定界后逐帧解压；尾帧被写入截断属正常情况，不得视为错误。
+- 扫描用户主目录下的 session 必须 bounded：限制递归深度、不跟随 symlink、跳过超限文件、逐行流式读取。
+- 这四类来源不安装 hook，不得进入 hook mode 采集，也不得参与 hook cursor warm。
+- 未安装的来源在 `--source all` 中按 unavailable 跳过；真实读取失败必须报错，禁止静默丢数据。
+
 ## 数据模型规范
 
 所有上传数据必须先标准化为统一 usage snapshot。后端只接收标准格式，不在 API route 中写来源特定解析逻辑。
@@ -157,7 +178,16 @@ Antigravity 三类来源特殊约束：
 标准字段建议：
 
 ```ts
-type UsageSource = "claude-code" | "codex" | "antigravity-cli" | "antigravity" | "antigravity-ide";
+type UsageSource =
+  | "claude-code"
+  | "codex"
+  | "antigravity-cli"
+  | "antigravity"
+  | "antigravity-ide"
+  | "opencode"
+  | "pi"
+  | "grok-build"
+  | "deepseek-harness";
 
 type UsageSnapshot = {
   source: UsageSource;
@@ -367,6 +397,14 @@ packages/collector/
     providers/
       claude-code.ts
       codex.ts
+      opencode.ts
+      pi.ts
+      grok-build.ts
+      deepseek-harness.ts
+      bounded-session-scan.ts
+      session-usage-aggregate.ts
+      sqlite-reader.ts
+      zstd-frames.ts
       antigravity-cli.ts
       antigravity-cli-cursor.ts
       antigravity-cli-statusline.ts
@@ -414,7 +452,7 @@ skills/tokenboard/
 - 数据库字段使用 snake_case。
 - TypeScript 字段使用 camelCase。
 - route path 使用 kebab-case。
-- usage source 使用稳定枚举值，例如 `claude-code`、`codex`、`antigravity-cli`、`antigravity`、`antigravity-ide`。
+- usage source 使用稳定枚举值：`claude-code`、`codex`、`antigravity-cli`、`antigravity`、`antigravity-ide`、`opencode`、`pi`、`grok-build`、`deepseek-harness`。
 - user-facing slug 必须全局唯一。
 
 ## 测试规范

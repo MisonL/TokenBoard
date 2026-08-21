@@ -3,7 +3,7 @@ import { Badge } from '../../components/ui/badge'
 import { LinkButton } from '../../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card'
 import { formatPercentRate } from '../../lib/usage-metrics'
-import { formatModelCostWithAvailability, formatSource, hasUnavailableCostSource } from '../usage/source-format'
+import { formatCostUnavailableNotice, formatModelCostWithAvailability, formatSource, hasUnavailableCostSource } from '../usage/source-format'
 import { UsageMetricCard, UsageMetricGrid } from '../usage/components/usage-metric-card'
 import { formatUsageMetricInteger, formatUsageMetricUsdWithAvailability } from '../usage/components/usage-metric-format'
 import type { DailyReportHistoryItem } from './report-history-item'
@@ -57,7 +57,7 @@ export function SharedDailyReportPage(props: {
           />
           <ReportList
             title="主要模型"
-            description={`按不含缓存读 token 排序，费用为当前日报快照的估算值。${hasUnavailableCostSource(props.report.sourceSplit) ? 'Antigravity 费用不可用。' : ''}`}
+            description={`按不含缓存读 token 排序，费用为当前日报快照的估算值。${hasUnavailableCostSource(props.report.sourceSplit) ? `${formatCostUnavailableNotice(props.report.sourceSplit)}。` : ''}`}
             items={props.report.topModels.map((item) => ({
               name: item.model,
               value: `${formatInteger(item.totalTokensWithoutCacheRead)} / ${formatInteger(item.totalTokens)} tokens`,

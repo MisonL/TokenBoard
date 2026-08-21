@@ -3,7 +3,7 @@ import { toIsoDate } from '../../lib/time'
 import { usageSourceSchema } from './schema'
 import { normalizeDeviceFilter, usageSummaryStrictMode } from './deduped-daily-usage'
 import type { Bindings } from '../../lib/db'
-import { isAntigravityUsageSource, type UsageSource } from '@tokenboard/usage-core'
+import { isCostUnavailableSource, type UsageSource } from '@tokenboard/usage-core'
 
 export type DashboardSummary = UsageSummary & {
   dailyTrend: DailyUsageTrendItem[]
@@ -87,7 +87,7 @@ export function usageDetailsToCsv(details: UsageDetails) {
   ]
 
   const rows = details.modelRows.map((row) => {
-    const costAvailable = !isAntigravityUsageSource(row.source)
+    const costAvailable = !isCostUnavailableSource(row.source)
     return [
       row.usageDate,
       row.source,

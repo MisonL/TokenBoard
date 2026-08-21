@@ -1,22 +1,22 @@
 # TokenBoard
 
-TokenBoard is a hosted AI token usage dashboard for Claude Code, Codex, and Antigravity. A local
-collector normalizes daily usage snapshots, uploads them to a Cloudflare Workers + D1 backend, and
-the web app serves private dashboards, leaderboards, public JSON, README SVG cards, and scheduled
-reports.
+TokenBoard is a hosted AI token usage dashboard for Claude Code, Codex, Antigravity, OpenCode, Pi,
+Grok Build and DeepSeek Harness. A local collector normalizes daily usage snapshots, uploads them to
+a Cloudflare Workers + D1 backend, and the web app serves private dashboards, leaderboards, public
+JSON, README SVG cards, and scheduled reports.
 
 TokenBoard never uploads prompts, completions, raw conversation logs, local paths, or plaintext upload
 tokens.
 
 ## Highlights
 
-- Claude Code, Codex, Antigravity CLI, Antigravity, and Antigravity IDE collection through a local
-  Node.js collector.
+- Claude Code, Codex, Antigravity CLI, Antigravity, Antigravity IDE, OpenCode, Pi, Grok Build and
+  DeepSeek Harness collection through a local Node.js collector.
 - Dashboard totals, detail drill-down, CSV export, public JSON, README SVG cards, and leaderboards.
 - Total tokens, tokens without cache reads, and cache-read rate across every reporting surface.
 - Device-aware upload tokens, device-link reconnect, and legacy collector compatibility.
-- Antigravity cost is marked unavailable everywhere instead of being treated as complete `$0.00`
-  usage.
+- Sources that report no cost of their own (Antigravity, Grok Build, DeepSeek Harness) are marked
+  unavailable everywhere instead of being treated as complete `$0.00` usage.
 - Daily webhook reports for WeCom, DingTalk, Feishu, and Lark.
 - D1 summary caches and bounded cron backfills tuned for Cloudflare free-tier limits.
 
@@ -122,6 +122,27 @@ four-column, two-column, then single-column layout.
   ref checkout.
 - Antigravity collection reads local metadata only and emits `costUsd: 0`. Web, public, report, and
   leaderboard surfaces label those costs as unavailable.
+- OpenCode, Pi, Grok Build and DeepSeek Harness read each tool's own local usage records. A tool that
+  is not installed is skipped; a genuine read failure fails the run instead of dropping usage.
+- Grok Build and DeepSeek Harness report no cost of their own, so they emit `costUsd: 0` and every
+  surface labels the cost as unavailable rather than deriving a figure from a pricing table.
+
+Local usage sources:
+
+| Source | Reads |
+| --- | --- |
+| OpenCode | `~/.local/share/opencode/opencode.db` (`XDG_DATA_HOME` respected) |
+| Pi | `~/.pi/agent/sessions/**/*.jsonl` (`PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`) |
+| Grok Build | `~/.grok/{sessions,archived_sessions}/**/updates.jsonl` (`GROK_HOME`) |
+| DeepSeek Harness | `~/.dsh/sessions/**/session.jsonl[.zstd]` (`DSH_HOME`, `DSH_SESSION_ROOT`) |
+
+Only token counts, model ids and timestamps are read from these stores. For OpenCode the token fields
+are projected inside SQLite so the message blob, which also holds prompts and a local path, never
+enters the collector. SQLite is read through Node's built-in `node:sqlite`, so nothing has to be
+installed; runtimes without it fall back to a `sqlite3` executable, and setting
+`TOKENBOARD_SQLITE_BIN` selects that executable explicitly. Both open the database read-only.
+Scanning is bounded: depth-capped, symlinked directories are not followed, and oversized files are
+skipped.
 
 Notifier hooks:
 

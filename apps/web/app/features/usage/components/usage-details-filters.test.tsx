@@ -1,6 +1,8 @@
 import { renderToString } from 'hono/jsx/dom/server'
 import { describe, expect, test } from 'vitest'
+import { usageSources } from '@tokenboard/usage-core'
 import { UsageDetailsFiltersForm } from './usage-details-filters'
+import { formatSource } from '../source-format'
 
 describe('UsageDetailsFiltersForm', () => {
   test('renders feedback-ready filter and export buttons', async () => {
@@ -35,5 +37,27 @@ describe('UsageDetailsFiltersForm', () => {
     expect(html).toContain('href="/dashboard/details.csv?')
     expect(html).toContain('Antigravity CLI (agy)')
     expect(html).toContain('MacBook Pro')
+  })
+  test('offers every usage source in the source filter', async () => {
+    const html = await renderToString(
+      <UsageDetailsFiltersForm
+        filters={{
+          source: 'all',
+          startDate: '2026-05-01',
+          endDate: '2026-05-31',
+          deviceId: 'all',
+          modelQuery: ''
+        }}
+        devices={[]}
+      />
+    )
+
+    // The query layer validates the source with usageSourceSchema, so a source
+    // it accepts must be reachable from this control.
+    for (const source of usageSources) {
+      expect(html).toContain(`value="${source}"`)
+      expect(html).toContain(formatSource(source))
+    }
+    expect(html).toContain('value="all"')
   })
 })

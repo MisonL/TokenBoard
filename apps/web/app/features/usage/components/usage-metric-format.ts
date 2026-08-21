@@ -1,7 +1,8 @@
 import { formatUsd } from '../../../lib/money'
-import { hasUnavailableCostSource, type SourceSplitItem } from '../source-format'
+import { formatCostUnavailableNotice, hasUnavailableCostSource, type SourceSplitItem } from '../source-format'
 
 const compactThreshold = 1_000_000
+const defaultCostUnavailableNotice = 'Antigravity 费用不可用'
 
 const compactUnits = [
   { value: 1_000_000_000_000_000, suffix: 'P' },
@@ -43,15 +44,29 @@ export function formatUsageMetricUsd(value: number): UsageMetricValue {
 }
 
 export function formatUsageMetricUsdWithAvailability(value: number, sourceSplit: SourceSplitItem[]): UsageMetricValue {
-  return formatUsageMetricUsdWithCostAvailability(value, !hasUnavailableCostSource(sourceSplit))
+  return formatUsageMetricUsdWithCostAvailability(
+    value,
+    !hasUnavailableCostSource(sourceSplit),
+    formatCostUnavailableNotice(sourceSplit)
+  )
 }
 
-export function formatUsageMetricUsdWithCostAvailability(value: number, costAvailable: boolean): UsageMetricValue {
+/**
+ * `notice` names the unavailable source family. It defaults to Antigravity for
+ * callers that only carry a boolean, because Antigravity was the first source
+ * without cost; pass a notice whenever the source split is known.
+ */
+export function formatUsageMetricUsdWithCostAvailability(
+  value: number,
+  costAvailable: boolean,
+  notice = defaultCostUnavailableNotice
+): UsageMetricValue {
   const metric = formatUsageMetricUsd(value)
   if (costAvailable) return metric
+  const detailNotice = notice || defaultCostUnavailableNotice
   return {
     ...metric,
-    detail: metric.detail ? `${metric.detail}, Antigravity 费用不可用` : 'Antigravity 费用不可用'
+    detail: metric.detail ? `${metric.detail}, ${detailNotice}` : detailNotice
   }
 }
 

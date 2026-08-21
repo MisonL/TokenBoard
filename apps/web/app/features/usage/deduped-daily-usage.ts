@@ -1,6 +1,18 @@
+import { costUnavailableSources } from '@tokenboard/usage-core'
+
 const usageSqlValueBrand = Symbol('usage-sql-value')
 const dailyUsageScopeBrand = Symbol('daily-usage-scope-filter')
 const usageSummaryScopeBrand = Symbol('usage-summary-scope-filter')
+
+/**
+ * SQL list literal of every source that cannot report a cost, for use inside an
+ * `IN (...)` clause. Built from the `usage-core` constant so a new source only
+ * has to be declared once. Values are compile-time constants from a const
+ * tuple, never user input.
+ */
+export const costUnavailableSourcesSql = costUnavailableSources
+  .map((source) => `'${source}'`)
+  .join(', ')
 
 type UsageSqlValue = {
   readonly [usageSqlValueBrand]: true

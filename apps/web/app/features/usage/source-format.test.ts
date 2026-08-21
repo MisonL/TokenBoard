@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'vitest'
-import { formatCostWithAvailability, formatSource, formatSourceCostNote, hasUnavailableCostSource } from './source-format'
+import {
+  costUnavailableSourceNames,
+  formatCostUnavailableNotice,
+  formatCostUnavailableSourceName,
+  formatCostWithAvailability,
+  formatSource,
+  formatSourceCostNote,
+  hasUnavailableCostSource
+} from './source-format'
 
 describe('source-format', () => {
   test('formats all Antigravity sources', () => {
@@ -22,5 +30,49 @@ describe('source-format', () => {
       { source: 'antigravity-cli' },
       { source: 'antigravity-ide' }
     ])).toBe('$0.42 (Antigravity 费用不可用)')
+  })
+
+  test('formats the new sources', () => {
+    expect(formatSource('opencode')).toBe('OpenCode')
+    expect(formatSource('pi')).toBe('Pi')
+    expect(formatSource('grok-build')).toBe('Grok Build')
+    expect(formatSource('deepseek-harness')).toBe('DeepSeek Harness')
+    expect(formatSource('unknown-tool')).toBe('unknown-tool')
+  })
+
+  test('treats Grok Build and DeepSeek Harness cost as unavailable', () => {
+    expect(hasUnavailableCostSource([{ source: 'grok-build' }])).toBe(true)
+    expect(hasUnavailableCostSource([{ source: 'deepseek-harness' }])).toBe(true)
+    expect(hasUnavailableCostSource([{ source: 'opencode' }, { source: 'pi' }])).toBe(false)
+
+    expect(formatCostWithAvailability(0.42, [{ source: 'grok-build' }]))
+      .toBe('$0.42 (Grok Build 费用不可用)')
+    expect(formatSourceCostNote('deepseek-harness')).toBe('DeepSeek Harness 费用不可用')
+  })
+
+  test('stays generic when unavailable sources span different families', () => {
+    const mixed = [{ source: 'antigravity-cli' }, { source: 'grok-build' }]
+
+    expect(formatCostWithAvailability(0.42, mixed)).toBe('$0.42 (部分来源费用不可用)')
+    expect(formatCostUnavailableNotice(mixed)).toBe('部分来源费用不可用')
+    expect(formatCostUnavailableSourceName(mixed)).toBe('无费用来源')
+  })
+
+  test('keeps Antigravity wording when it is the only unavailable family', () => {
+    const antigravityOnly = [{ source: 'codex' }, { source: 'antigravity-ide' }]
+
+    expect(formatCostUnavailableNotice(antigravityOnly)).toBe('Antigravity 费用不可用')
+    expect(formatCostUnavailableSourceName(antigravityOnly)).toBe('Antigravity')
+    expect(formatCostUnavailableNotice([{ source: 'codex' }])).toBe('')
+    expect(formatCostUnavailableSourceName([{ source: 'codex' }])).toBe('')
+  })
+
+  test('names a single non-Antigravity unavailable source', () => {
+    expect(formatCostUnavailableNotice([{ source: 'grok-build' }])).toBe('Grok Build 费用不可用')
+    expect(formatCostUnavailableSourceName([{ source: 'grok-build' }])).toBe('Grok Build')
+  })
+
+  test('lists every cost-unavailable source family once', () => {
+    expect(costUnavailableSourceNames()).toEqual(['Antigravity', 'Grok Build', 'DeepSeek Harness'])
   })
 })

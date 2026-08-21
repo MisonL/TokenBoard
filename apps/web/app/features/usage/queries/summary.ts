@@ -1,6 +1,7 @@
 import type { UsageSource } from '@tokenboard/usage-core'
 import { cacheReadRateFromTotals } from '../../../lib/usage-metrics'
 import {
+  costUnavailableSourcesSql,
   effectiveDailyUsageSummaryWith,
   usageSummaryParam,
   usageSummaryScopeSql
@@ -62,11 +63,11 @@ export async function getUsageSummary(
           COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens ELSE 0 END), 0) as todayTokens,
           COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens_without_cache_read ELSE 0 END), 0) as todayTokensWithoutCacheRead,
           COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.cost_usd ELSE 0 END), 0) as todayCostUsd,
-          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today AND month_usage.source IN ('antigravity-cli', 'antigravity', 'antigravity-ide') THEN 1 ELSE 0 END), 0) = 0 as todayCostAvailable,
+          COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today AND month_usage.source IN (${costUnavailableSourcesSql}) THEN 1 ELSE 0 END), 0) = 0 as todayCostAvailable,
           COALESCE(SUM(month_usage.total_tokens), 0) as monthTokens,
           COALESCE(SUM(month_usage.total_tokens_without_cache_read), 0) as monthTokensWithoutCacheRead,
           COALESCE(SUM(month_usage.cost_usd), 0) as monthCostUsd,
-          COALESCE(SUM(CASE WHEN month_usage.source IN ('antigravity-cli', 'antigravity', 'antigravity-ide') THEN 1 ELSE 0 END), 0) = 0 as monthCostAvailable,
+          COALESCE(SUM(CASE WHEN month_usage.source IN (${costUnavailableSourcesSql}) THEN 1 ELSE 0 END), 0) = 0 as monthCostAvailable,
           device_stats.lastSyncedAt as lastSyncedAt,
           COALESCE(device_stats.deviceCount, 0) as deviceCount,
           (

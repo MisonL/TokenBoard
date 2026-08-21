@@ -7,7 +7,7 @@ import { formatPercentRate } from '../../../lib/usage-metrics'
 import type { UserDevice } from '../../device/service'
 import type { UsageDetails } from '../queries'
 import type { UsageDetailsFilters } from '../service'
-import { formatCostWithAvailability, hasUnavailableCostSource } from '../source-format'
+import { formatCostUnavailableSourceName, formatCostWithAvailability, hasUnavailableCostSource } from '../source-format'
 import { UsageMetricCard, UsageMetricGrid } from './usage-metric-card'
 import { UsageDetailsFiltersForm } from './usage-details-filters'
 import { formatInteger, formatPercent, formatSource } from './usage-details-format'
@@ -26,7 +26,7 @@ export function UsageDetailsPanel(props: { details: UsageDetails; filters: Usage
         <UsageMetricCard label="范围 tokens" value={formatUsageMetricInteger(props.details.summary.totalTokens)} tone="lime" />
         <UsageMetricCard label="不含缓存读" value={formatUsageMetricInteger(props.details.summary.totalTokensWithoutCacheRead)} />
         <UsageMetricCard label="缓存率" value={formatPercentRate(props.details.summary.cacheReadRate)} />
-        <UsageMetricCard label={hasUnavailableCost ? '范围费用(不含 Antigravity)' : '范围费用'} value={formatUsageMetricUsdWithAvailability(props.details.summary.costUsd, props.details.modelRows)} />
+        <UsageMetricCard label={hasUnavailableCost ? `范围费用(不含 ${formatCostUnavailableSourceName(props.details.modelRows)})` : '范围费用'} value={formatUsageMetricUsdWithAvailability(props.details.summary.costUsd, props.details.modelRows)} />
         <UsageMetricCard label="Sessions" value={formatUsageMetricInteger(props.details.summary.sessionCount)} />
         <UsageMetricCard label="活跃天数" value={formatUsageMetricInteger(props.details.summary.activeDays)} />
       </UsageMetricGrid>
