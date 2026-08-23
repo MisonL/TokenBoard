@@ -13,7 +13,7 @@
     "preview": "pnpm --filter @tokenboard/web preview",
     "deploy": "pnpm --filter @tokenboard/web run deploy",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r --workspace-concurrency=1 test"
   },
   "devDependencies": {
     "tsx": "^4.21.0",
@@ -23,8 +23,13 @@
   "pnpm": {
     "overrides": {
       "@esbuild-kit/core-utils>esbuild": "0.25.12",
+      "@hono/vite-dev-server>@hono/node-server": "2.0.11",
+      "@hono/vite-dev-server>minimatch": "10.2.5",
+      "miniflare>sharp": "0.35.3",
+      "miniflare>undici": "7.29.0",
       "miniflare>ws": "8.21.0",
-      "minimatch@10.2.5>brace-expansion": "5.0.6",
+      "minimatch@10.2.5>brace-expansion": "5.0.9",
+      "postcss": "8.5.23",
       "tsx>esbuild": "0.28.1"
     }
   },

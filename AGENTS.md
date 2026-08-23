@@ -56,7 +56,7 @@ TokenBoard 是一个面向多用户的 AI token 使用统计平台，而不是�
 - 支持用户注册或创建个人上传 token。
 - 支持 Claude Code、Codex、Antigravity CLI、Antigravity、Antigravity IDE、OpenCode、Pi、Grok Build、DeepSeek Harness 九类 usage 来源。
 - 通过 TokenBoard skill + collector CLI 调用 `ccusage`、`@ccusage/codex`，并从 Antigravity 三类本地历史中提取 token 元数据。
-- Antigravity CLI 可额外通过官方 `statusLine.command` 写入脱敏 token 事件；该路径是增量辅助来源，不是唯一来源。
+- Antigravity CLI 可额外通过官方 `statusLine.command` 写入脱敏本地诊断事件；该路径不参与 collector snapshot 或上传计量。
 - 后端接收标准化后的 usage snapshot，并按用户、日期、来源、模型聚合。
 - 提供统计 dashboard、公开 JSON API、GitHub README SVG 卡片。
 - 提供每日、每月排行榜，例如 token 总量、费用、连续同步天数、模型使用分布等。
@@ -92,7 +92,7 @@ TokenBoard 是一个面向多用户的 AI token 使用统计平台，而不是�
 - Usage source:
   - Claude Code: `ccusage`
   - Codex: `@ccusage/codex`
-  - Antigravity CLI: `~/.gemini/antigravity-cli/conversations/*.db` 的 `gen_metadata.data` token 元数据；可叠加 `~/.gemini/antigravity-cli/settings.json` 的 `statusLine.command`
+  - Antigravity CLI: `~/.gemini/antigravity-cli/conversations/*.db` 的 `gen_metadata.data` token 元数据；`~/.gemini/antigravity-cli/settings.json` 的 `statusLine.command` 仅写入本地脱敏诊断日志
   - Antigravity: `~/.gemini/antigravity/conversations` 的 SQLite token 元数据和 bounded language-server metadata projection
   - Antigravity IDE: `~/.gemini/antigravity-ide/conversations` 的 SQLite token 元数据和 bounded language-server metadata projection
   - OpenCode: `~/.local/share/opencode/opencode.db` 的 `message` 表，SQL 内投影 token 字段（`XDG_DATA_HOME` 可覆盖）
@@ -407,7 +407,7 @@ packages/collector/
       zstd-frames.ts
       antigravity-cli.ts
       antigravity-cli-cursor.ts
-      antigravity-cli-statusline.ts
+      antigravity-cli-history-authority.ts
       antigravity-gui.ts
       antigravity-gui-cursor.ts
       antigravity-gui-client.ts

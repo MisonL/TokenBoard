@@ -103,6 +103,8 @@ describe('Wrangler deploy config', () => {
     if (!existsSync(schemaCheckPath)) return
 
     const schemaCheck = readFileSync(schemaCheckPath, 'utf8')
+    expect(schemaCheck).toContain('FROM upload_tokens')
+    expect(schemaCheck).toContain('upload_tokens.installation_id')
     expect(schemaCheck).toContain('FROM device_installations')
     expect(schemaCheck).toContain('install_claim_hash')
     expect(schemaCheck).toContain('installation_id')
@@ -139,7 +141,7 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('Drizzle schema declares webhook migration indexes', () => {
     const schema = readDrizzleSchema()

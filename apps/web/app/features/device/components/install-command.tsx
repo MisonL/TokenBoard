@@ -196,7 +196,7 @@ function CommandSection(props: {
   )
 }
 
-function CopyableCommandBlock(props: {
+export function CopyableCommandBlock(props: {
   title: string
   command: string
   targetId: string

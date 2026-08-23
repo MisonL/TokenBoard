@@ -36,6 +36,29 @@ describe('sign-in route', () => {
     expect(html).toContain('app-login-card')
   })
 
+  test('keeps the sign-in action ahead of explanatory content on narrow screens', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    const response = await GET[0](signInContext() as never, async () => undefined) as Response
+    const html = await response.text()
+
+    expect(html).toContain('order-2 min-w-0 lg:order-1')
+    expect(html).toContain('app-login-card order-1')
+    expect(html).toContain('data-auth-benefits="true"')
+    expect(html).toContain('不上传对话正文')
+    expect(html).toContain('每台设备使用独立上传令牌')
+  })
+
+  test('keeps compound names intact in the narrowest login layout', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    const response = await GET[0](signInContext() as never, async () => undefined) as Response
+    const html = await response.text()
+
+    expect(html).toContain('whitespace-nowrap">AI token</span>')
+    expect(html).toContain('max-[359px]:flex-col')
+  })
+
   test('keeps the GitHub auth failure message visible', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
@@ -43,6 +66,7 @@ describe('sign-in route', () => {
     const html = await response.text()
 
     expect(response.status).toBe(200)
+    expect(html).toContain('role="alert"')
     expect(html).toContain('GitHub 登录失败。请检查 OAuth 配置后重试。')
   })
 })

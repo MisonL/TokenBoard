@@ -10,16 +10,62 @@ import {
   formatMetadataRequestTransportError,
   listAntigravityCascades,
   requestGeneratorMetadata,
+  waitForReady,
   type AntigravityCascadeFileSystem
 } from './antigravity-gui-client'
 import type { AntigravityFileScanState } from './antigravity-file-scan'
 
-const metadataResponseLimitBytes = 8 * 1024 * 1024
+const metadataResponseLimitBytes = 32 * 1024 * 1024
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }))
 
 vi.mock('node:https', () => ({ request: requestMock }))
 
 describe('createAntigravityLanguageServerClient', () => {
+  test('accepts a reachable TLS endpoint without a legacy startup marker', async () => {
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const server = Object.assign(new EventEmitter(), {
+      stdout,
+      stderr,
+      exitCode: null,
+      signalCode: null
+    }) as unknown as Parameters<typeof waitForReady>[0]
+    const probe = vi.fn().mockResolvedValue(undefined)
+
+    await expect(waitForReady(server, 43123, probe)).resolves.toBeUndefined()
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(probe).toHaveBeenCalledWith(43123)
+  })
+
+  test('rejects without waiting for a hanging readiness probe after the language server has already exited', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS', '1')
+    const server = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: 1,
+      signalCode: null
+    }) as unknown as Parameters<typeof waitForReady>[0]
+    const probe = vi.fn(() => new Promise<void>(() => {}))
+    const readiness = waitForReady(server, 43123, probe)
+    const completion = readiness.then(
+      () => ({ error: null }),
+      (error) => ({ error })
+    )
+
+    try {
+      expect(probe).not.toHaveBeenCalled()
+      await expect(completion).resolves.toMatchObject({
+        error: expect.objectContaining({ message: 'Antigravity language server exited before it was ready' })
+      })
+    } finally {
+      await vi.advanceTimersByTimeAsync(1)
+      await completion
+      vi.unstubAllEnvs()
+      vi.useRealTimers()
+    }
+  })
+
   test('does not include raw response bodies in metadata HTTP errors', () => {
     const rawBody = [
       'prompt: summarize /Users/test/private/project/file.ts',
@@ -159,32 +205,6 @@ describe('createAntigravityLanguageServerClient', () => {
     }
   })
 
-  test.skipIf(process.platform === 'win32')('detects readiness markers split across output chunks', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-split-ready-'))
-    try {
-      const serverPath = join(root, 'server.mjs')
-      await writeFile(serverPath, [
-        '#!/usr/bin/env node',
-        'const portIndex = process.argv.indexOf("--https_server_port")',
-        'const port = process.argv[portIndex + 1]',
-        'process.stdout.write("fixed port ")',
-        'setTimeout(() => process.stderr.write(`at ${port} `), 25)',
-        'setTimeout(() => process.stdout.write("for HTTPS"), 50)',
-        'setInterval(() => undefined, 1000)'
-      ].join('\n'))
-      await chmod(serverPath, 0o700)
-
-      const client = await createAntigravityLanguageServerClient({
-        source: 'antigravity',
-        languageServerPath: serverPath
-      })
-
-      await client.close()
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   test.skipIf(process.platform === 'win32')('does not treat an unrelated port diagnostic as readiness', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-port-diagnostic-'))
     const previousTimeout = process.env.TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS
@@ -212,6 +232,31 @@ describe('createAntigravityLanguageServerClient', () => {
       expect((result as Error).message).toContain('Timed out starting Antigravity language server')
     } finally {
       restoreEnv('TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS', previousTimeout)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.skipIf(process.platform === 'win32')('does not expose language server startup output in exit errors', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-ls-private-output-'))
+    try {
+      const serverPath = join(root, 'server.mjs')
+      await writeFile(serverPath, [
+        '#!/usr/bin/env node',
+        'process.stderr.write("/Users/test/private/prompt.txt RAW_LANGUAGE_SERVER_OUTPUT")',
+        'process.exit(1)'
+      ].join('\n'))
+      await chmod(serverPath, 0o700)
+
+      const error = await createAntigravityLanguageServerClient({
+        source: 'antigravity',
+        languageServerPath: serverPath
+      }).then(() => null, (cause) => cause)
+
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toBe('Antigravity language server exited before it was ready')
+      expect((error as Error).message).not.toContain('/Users/test/private')
+      expect((error as Error).message).not.toContain('RAW_LANGUAGE_SERVER_OUTPUT')
+    } finally {
       await rm(root, { recursive: true, force: true })
     }
   })

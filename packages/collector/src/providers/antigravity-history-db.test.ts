@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
-import { readAntigravityDbUsageEvents } from './antigravity-history-db'
+import {
+  AntigravityDbRowCursorResetError,
+  readAntigravityDbUsageEvents
+} from './antigravity-history-db'
 import type { AntigravityFileScanState } from './antigravity-file-scan'
 
 describe('readAntigravityDbUsageEvents', () => {
@@ -49,6 +52,8 @@ describe('readAntigravityDbUsageEvents', () => {
 
       expect(result.events).toHaveLength(0)
       expect(result.cascadeIds).toHaveLength(0)
+      expect(result.completeDirectoryScan).toBe(true)
+      expect(result.knownCascadeIds).toEqual(new Set([cascadeId]))
       expect(result.lastReadRowIndexByCascade?.get(cascadeId)).toBe(7)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -79,6 +84,28 @@ describe('readAntigravityDbUsageEvents', () => {
     }
   })
 
+  test('reads an unprocessed database when its mtime predates the bounded since date', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-unprocessed-old-mtime-'))
+    try {
+      const dir = join(root, 'conversations')
+      const cascadeId = '00000000-0000-0000-0000-000000000001'
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `${cascadeId}.db`), '')
+
+      const result = await readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        readSqlite: async () => '7|\n',
+        sinceDate: '2026-06-24',
+        timezone: 'UTC',
+        statFile: async () => ({ mtimeMs: Date.parse('2026-06-23T00:00:00.000Z'), size: 0 })
+      })
+
+      expect(result.lastReadRowIndexByCascade?.get(cascadeId)).toBe(7)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('records a successful empty database scan so bounded backlog selection can advance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-cursor-'))
     try {
@@ -93,6 +120,30 @@ describe('readAntigravityDbUsageEvents', () => {
       })
 
       expect(result.lastReadRowIndexByCascade?.get(cascadeId)).toBe(-1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('returns every enumerated cascade as known even when a bounded read selects only one empty database', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-known-db-directory-'))
+    try {
+      const dir = join(root, 'conversations')
+      const cascadeIds = [cascadeId(1), cascadeId(2), cascadeId(3)]
+      await mkdir(dir, { recursive: true })
+      for (const cascade of cascadeIds) {
+        await writeFile(join(dir, `${cascade}.db`), '')
+      }
+
+      const result = await readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        readSqlite: async () => '',
+        maxDbFiles: 1
+      })
+
+      expect(result.knownCascadeIds).toEqual(new Set(cascadeIds))
+      expect(result.completeDirectoryScan).toBe(false)
+      expect(result.lastReadRowIndexByCascade?.size).toBe(1)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -117,6 +168,31 @@ describe('readAntigravityDbUsageEvents', () => {
       })
 
       expect(actualQuery).toBe('select idx, hex(data) from gen_metadata where idx > 41 order by idx limit 500')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('fails explicitly when a compacted cursor is ahead of a recreated database', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-reset-db-'))
+    try {
+      const dir = join(root, 'conversations')
+      const cascadeId = '00000000-0000-0000-0000-000000000001'
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `${cascadeId}.db`), '')
+
+      await expect(readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        readSqlite: async (_dbFile, sql) => sql.includes('max(idx)') ? '7\n' : '',
+        lastSeenRowIndexByCascadeHash: new Map([[hash(cascadeId), 41]]),
+        detectRowCursorReset: true
+      })).rejects.toBeInstanceOf(AntigravityDbRowCursorResetError)
+      await expect(readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        readSqlite: async (_dbFile, sql) => sql.includes('max(idx)') ? '7\n' : '',
+        lastSeenRowIndexByCascadeHash: new Map([[hash(cascadeId), 41]]),
+        detectRowCursorReset: true
+      })).rejects.toThrow(`Antigravity SQLite metadata cursor reset detected for ${join(dir, `${cascadeId}.db`)}`)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -148,6 +224,23 @@ describe('readAntigravityDbUsageEvents', () => {
 
       expect(lastSeenRowIndexByCascadeHash.get(hash(cascadeId))).toBe(41)
       expect(queries).toEqual([query, query])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects a non-integer SQLite metadata row index instead of truncating it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-invalid-row-index-'))
+    try {
+      const dir = join(root, 'conversations')
+      const cascadeId = '00000000-0000-0000-0000-000000000001'
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, `${cascadeId}.db`), '')
+
+      await expect(readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        readSqlite: async () => '7invalid|\n'
+      })).rejects.toThrow(`Invalid Antigravity SQLite metadata row in ${join(dir, `${cascadeId}.db`)}`)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -304,6 +397,11 @@ describe('readAntigravityDbUsageEvents', () => {
         conversationDir: dir,
         readSqlite: recordSqliteCalls(calls),
         maxDbFiles: 2,
+        listFiles: async function * () {
+          for (let index = 0; index < 200; index += 1) {
+            yield { name: `${cascadeId(index)}.db`, isFile: () => true }
+          }
+        },
         statFile: async (filePath) => {
           statCount += 1
           return { mtimeMs: Number(basename(filePath, '.db').slice(-12)) }
@@ -370,7 +468,7 @@ describe('readAntigravityDbUsageEvents', () => {
       await mkdir(dir, { recursive: true })
       await writeFile(skippedDb, '')
       await writeFile(keptDb, '')
-      await readAntigravityDbUsageEvents({
+      const result = await readAntigravityDbUsageEvents({
         conversationDir: dir,
         readSqlite: recordSqliteCalls(calls),
         statFile: async (filePath) => {
@@ -382,6 +480,55 @@ describe('readAntigravityDbUsageEvents', () => {
       })
 
       expect(calls).toEqual([keptDb])
+      expect(result.completeDirectoryScan).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('fails a required complete scan when an enumerated database disappears before stat', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-complete-db-race-'))
+    try {
+      const dir = join(root, 'conversations')
+      const skippedCascadeId = cascadeId(4)
+      const keptCascadeId = cascadeId(5)
+      const skippedDb = join(dir, `${skippedCascadeId}.db`)
+      await mkdir(dir, { recursive: true })
+      await writeFile(skippedDb, '')
+      await writeFile(join(dir, `${keptCascadeId}.db`), '')
+
+      await expect(readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        maxDbFiles: null,
+        requireCompleteDirectoryScan: true,
+        statFile: async (filePath) => {
+          if (filePath === skippedDb) {
+            throw Object.assign(new Error('file disappeared'), { code: 'ENOENT' })
+          }
+          return { mtimeMs: 2000 }
+        }
+      })).rejects.toThrow(
+        'Antigravity CLI full history scan could not read every enumerated SQLite database; retry after the conversations directory is stable'
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('reports an injected sqlite reader ENOENT as a metadata read failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-reader-enoent-'))
+    try {
+      const dir = join(root, 'conversations')
+      const dbFile = join(dir, `${cascadeId(6)}.db`)
+      await mkdir(dir, { recursive: true })
+      await writeFile(dbFile, '')
+
+      await expect(readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        readSqlite: async () => {
+          throw Object.assign(new Error('database disappeared'), { code: 'ENOENT' })
+        }
+      })).rejects.toThrow(`Failed to read Antigravity SQLite metadata from ${dbFile}: database disappeared`)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

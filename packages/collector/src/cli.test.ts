@@ -1,6 +1,8 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
-import { join } from 'node:path'
 import { runCollectorCli } from './cli'
 
 const claudeSnapshot: UsageSnapshot = {
@@ -46,6 +48,63 @@ describe('runCollectorCli', () => {
     expect(uploaded).toEqual([])
   })
 
+  test('passes the collector state directory to the Codex provider', async () => {
+    const stateDirs: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      { TOKENBOARD_STATE_DIR: '/isolated-state', TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          stateDirs.push(options?.stateDir ?? '')
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(stateDirs).toEqual(['/isolated-state'])
+  })
+
+  test('passes unambiguous JSON Codex homes to the provider', async () => {
+    const configuredHomes = ['/profiles/primary,work', '/profiles/secondary']
+    const receivedHomes: string[][] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      {
+        CODEX_HOME: '/ignored/legacy-home',
+        TOKENBOARD_CODEX_HOMES_JSON: JSON.stringify(configuredHomes),
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          receivedHomes.push(options?.codexHomes ?? [])
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(receivedHomes).toEqual([configuredHomes.map((home) => resolve(home))])
+  })
+
   test.each([
     {
       label: 'environment endpoint',
@@ -87,7 +146,9 @@ describe('runCollectorCli', () => {
       {
         stdout: () => undefined,
         stderr: () => undefined,
-        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
         collectCodexUsage: async () => [codexSnapshot],
         uploadSnapshots: async (config, snapshots) => {
           uploaded.push({
@@ -153,7 +214,9 @@ describe('runCollectorCli', () => {
         {
           stdout: () => undefined,
           stderr: () => undefined,
-          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectClaudeCodeUsage: async () => {
+            throw new Error('codex-only test must not collect Claude Code')
+          },
           collectCodexUsage: async () => [codexSnapshot],
           uploadSnapshots: async () => ({ upserted: 1 }),
           warmHookCursorHighWater: async (input) => {
@@ -163,7 +226,7 @@ describe('runCollectorCli', () => {
       )
 
       expect(result).toBe(0)
-      expect(warmed).toEqual([`/state:codex:${join('/codex-home', 'sessions')}:1234`])
+      expect(warmed).toEqual([`/state:codex:${join(resolve('/codex-home'), 'sessions')}:1234`])
     } finally {
       now.mockRestore()
     }
@@ -187,7 +250,9 @@ describe('runCollectorCli', () => {
         {
           stdout: () => undefined,
           stderr: () => undefined,
-          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectClaudeCodeUsage: async () => {
+            throw new Error('codex-only test must not collect Claude Code')
+          },
           collectCodexUsage: async () => [codexSnapshot],
           uploadSnapshots: async () => ({ upserted: 1 }),
           warmHookCursorHighWater: async (input) => {
@@ -197,7 +262,7 @@ describe('runCollectorCli', () => {
       )
 
       expect(result).toBe(0)
-      expect(warmed).toEqual([`/custom-tokenboard:codex:${join('/codex-home', 'sessions')}:1234`])
+      expect(warmed).toEqual([`/custom-tokenboard:codex:${join(resolve('/codex-home'), 'sessions')}:1234`])
     } finally {
       now.mockRestore()
     }
@@ -295,7 +360,70 @@ describe('runCollectorCli', () => {
       expect(result).toBe(0)
       expect(warmed).toEqual([
         `/state:claude-code:${join('/claude', 'projects')}:1234`,
-        `/state:codex:${join('/codex', 'sessions')}:1234`
+        `/state:codex:${join(resolve('/codex'), 'sessions')}:1234`
+      ])
+    } finally {
+      now.mockRestore()
+    }
+  })
+
+  test('warms every configured Codex profile cursor independently', async () => {
+    const warmed: Array<{
+      cursorScope: string | undefined
+      highWaterMs: number
+      sessionsDir: string | undefined
+      source: string
+      stateDir: string
+    }> = []
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1234).mockReturnValue(9999)
+
+    try {
+      const result = await runCollectorCli(
+        ['warm-hooks', '--source', 'codex'],
+        {
+          CODEX_HOME: '/profiles/first,/profiles/second',
+          TOKENBOARD_STATE_DIR: '/state'
+        },
+        {
+          stdout: () => undefined,
+          stderr: () => undefined,
+          collectClaudeCodeUsage: async () => {
+            throw new Error('warm-hooks must not collect Claude Code')
+          },
+          collectCodexUsage: async () => {
+            throw new Error('warm-hooks must not collect Codex')
+          },
+          uploadSnapshots: async () => {
+            throw new Error('warm-hooks must not upload')
+          },
+          warmHookCursorHighWater: async (input) => {
+            warmed.push({
+              cursorScope: input.cursorScope,
+              highWaterMs: input.highWaterMs,
+              sessionsDir: input.sessionsDir,
+              source: input.source,
+              stateDir: input.stateDir
+            })
+          }
+        }
+      )
+
+      expect(result).toBe(0)
+      expect(warmed).toEqual([
+        {
+          cursorScope: resolve('/profiles/first'),
+          highWaterMs: 1234,
+          sessionsDir: join(resolve('/profiles/first'), 'sessions'),
+          source: 'codex',
+          stateDir: '/state'
+        },
+        {
+          cursorScope: resolve('/profiles/second'),
+          highWaterMs: 1234,
+          sessionsDir: join(resolve('/profiles/second'), 'sessions'),
+          source: 'codex',
+          stateDir: '/state'
+        }
       ])
     } finally {
       now.mockRestore()
@@ -317,7 +445,9 @@ describe('runCollectorCli', () => {
       {
         stdout: () => undefined,
         stderr: () => undefined,
-        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
         collectCodexUsage: async () => [codexSnapshot],
         uploadSnapshots: async () => ({ upserted: 1 }),
         clearPendingUploadCursors: async (input) => {
@@ -328,6 +458,86 @@ describe('runCollectorCli', () => {
 
     expect(result).toBe(0)
     expect(acks).toEqual(['/state:codex'])
+  })
+
+  test('acks legacy and every configured Codex profile cursor after a hook upload succeeds', async () => {
+    const acks: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        CODEX_HOME: '/profiles/first,/profiles/second',
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_HOOK_MODE: '1',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => ({ upserted: 1 }),
+        clearPendingUploadCursors: async (input) => {
+          acks.push(`${input.stateDir}:${input.source}:${input.cursorScope ?? 'legacy'}`)
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(acks).toEqual([
+      '/state:codex:legacy',
+      `/state:codex:${resolve('/profiles/first')}`,
+      `/state:codex:${resolve('/profiles/second')}`
+    ])
+  })
+
+  test('acks the legacy and active profile cursor after a single-profile legacy migration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cli-codex-legacy-ack-'))
+    const stateDir = join(root, 'state')
+    const codexHome = join(root, 'codex')
+    const acks: string[] = []
+
+    try {
+      await mkdir(stateDir, { recursive: true })
+      await writeFile(join(stateDir, 'codex-cursor.json'), `${JSON.stringify({
+        version: 1,
+        source: 'codex',
+        files: {}
+      })}\n`)
+
+      const result = await runCollectorCli(
+        ['sync', '--source', 'codex'],
+        {
+          CODEX_HOME: codexHome,
+          TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+          TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+          TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+          TOKENBOARD_HOOK_MODE: '1',
+          TOKENBOARD_STATE_DIR: stateDir
+        },
+        {
+          stdout: () => undefined,
+          stderr: () => undefined,
+          collectClaudeCodeUsage: async () => {
+            throw new Error('codex-only test must not collect Claude Code')
+          },
+          collectCodexUsage: async () => [codexSnapshot],
+          uploadSnapshots: async () => ({ upserted: 1 }),
+          clearPendingUploadCursors: async (input) => {
+            acks.push(input.cursorScope ?? 'legacy')
+          }
+        }
+      )
+
+      expect(result).toBe(0)
+      expect(acks).toEqual(['legacy', resolve(codexHome)])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test('holds the collector run lock through collection, upload, and acknowledgement', async () => {

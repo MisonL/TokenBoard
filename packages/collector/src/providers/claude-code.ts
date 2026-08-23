@@ -10,6 +10,7 @@ import {
   isHookMode
 } from './hook-incremental'
 import { mergeSnapshots } from './session-cursor'
+import { assertValidDateFilter } from '../iso-calendar-date'
 
 export type CollectUsageOptions = {
   timezone?: string
@@ -64,6 +65,7 @@ async function collectClaudeHookUsage(input: {
     source: 'claude-code',
     sessionsDir: join(claudeHome, 'projects'),
     cursorName: 'claude-code-cursor.json',
+    stderr: input.options.stderr,
     timezone,
     collectedAt: input.collectedAt
   })
@@ -151,10 +153,10 @@ function readPackageCommandRetries() {
 function buildRangeArgs(options: { since?: string; until?: string }) {
   const args: string[] = []
   if (options.since && options.since !== 'all') {
-    args.push('--since', options.since)
+    args.push('--since', assertValidDateFilter(options.since, 'Claude since date', true))
   }
   if (options.until) {
-    args.push('--until', options.until)
+    args.push('--until', assertValidDateFilter(options.until, 'Claude until date'))
   }
   return args
 }

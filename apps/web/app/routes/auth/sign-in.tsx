@@ -1,4 +1,4 @@
-import { LogIn, ShieldCheck, Trophy } from 'lucide'
+import { KeyRound, ShieldCheck, Upload, type IconNode } from 'lucide'
 import { createRoute } from 'honox/factory'
 import { AppNav } from '../../components/app-nav'
 import { Button, LinkButton } from '../../components/ui/button'
@@ -21,43 +21,54 @@ function AuthScreen(props: { hasError: boolean }) {
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>登录 - TokenBoard</title>
       <AppNav isAuthenticated={false} />
-      <section class="mx-auto grid min-h-[calc(100vh-7rem)] max-w-6xl items-center gap-8 lg:grid-cols-[1.05fr_0.95fr]">
-        <div class="app-surface-floating relative overflow-hidden rounded-xl border border-lime-200/10 bg-[radial-gradient(circle_at_20%_10%,rgba(190,242,100,.22),transparent_32%),linear-gradient(135deg,var(--app-panel-strong),var(--app-bg-soft))] p-5 sm:p-8">
-          <div class="absolute -right-20 top-12 h-56 w-56 rounded-full border border-lime-300/20" />
-          <p class="app-accent-text text-sm font-semibold uppercase tracking-[0.35em]">TokenBoard</p>
-          <h1 class="mt-8 max-w-xl text-4xl font-black leading-none tracking-tight text-[var(--app-text)] sm:text-5xl md:text-7xl">
-            你的 AI token 驾驶舱。
+      <section class="mx-auto grid min-h-[calc(100vh-7rem)] max-w-5xl items-center gap-8 py-8 sm:gap-10 sm:py-10 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,26rem)] lg:gap-12">
+        <div class="order-2 min-w-0 lg:order-1">
+          <p class="app-accent-text text-sm font-semibold uppercase tracking-[0.28em]">TokenBoard</p>
+          <h1 class="mt-4 max-w-xl text-3xl font-black leading-tight text-balance text-[var(--app-text)] sm:text-4xl">
+            管理你的 <span class="whitespace-nowrap">AI token</span> 用量。
           </h1>
-          <p class="mt-6 max-w-lg text-base leading-7 text-[var(--app-muted)]">
-            使用 GitHub 登录，连接本地采集器，并只公开你明确允许展示的聚合 token 统计。
+          <p class="mt-4 max-w-xl text-base leading-7 text-pretty text-[var(--app-muted)]">
+            连接本机采集器，按日期、来源和模型查看聚合后的使用数据。
           </p>
-          <div class="mt-10 grid gap-3 sm:grid-cols-3">
-            <Panel icon={ShieldCheck} label="默认私有" value="0 prompt" />
-            <Panel icon={LogIn} label="登录方式" value="GitHub OAuth" />
-            <Panel icon={Trophy} label="排行榜" value="主动参与" />
-          </div>
+          <dl class="mt-8 max-w-xl divide-y divide-[var(--app-border)] border-y border-[var(--app-border)]" data-auth-benefits="true">
+            <AuthBenefit
+              icon={ShieldCheck}
+              title="使用数据默认私有"
+              description="不上传对话正文；公开范围由你主动开启。"
+            />
+            <AuthBenefit
+              icon={KeyRound}
+              title="GitHub 只用于登录"
+              description="采集器不会使用你的网页登录会话。"
+            />
+            <AuthBenefit
+              icon={Upload}
+              title="设备独立上传"
+              description="每台设备使用独立上传令牌，便于单独管理。"
+            />
+          </dl>
         </div>
 
-        <Card class="app-login-card p-6 backdrop-blur" data-login-card="true">
+        <Card class="app-login-card order-1 w-full p-5 sm:p-6 lg:order-2" data-login-card="true">
           <form method="post" data-submit-feedback="true">
-            <div class="mb-6 flex items-center justify-between gap-4">
+            <div class="mb-6 flex items-start justify-between gap-4 max-[359px]:flex-col max-[359px]:gap-3">
               <div>
-                <p class="app-accent-text text-sm">需要 GitHub 账号</p>
-                <h2 class="mt-1 text-2xl font-bold">登录 TokenBoard</h2>
+                <p class="app-accent-text text-sm font-semibold">安全登录</p>
+                <h2 class="mt-1 text-2xl font-black">登录 TokenBoard</h2>
               </div>
-              <LinkButton variant="secondary" size="sm" href="/">返回首页</LinkButton>
+              <LinkButton class="max-[359px]:self-start" variant="secondary" size="sm" href="/">返回首页</LinkButton>
             </div>
             {props.hasError ? (
-              <p class="app-flash-error mb-4 p-3 text-sm">
+              <p class="app-flash-error mb-4 p-3 text-sm" role="alert">
                 GitHub 登录失败。请检查 OAuth 配置后重试。
               </p>
             ) : null}
-            <Button class="w-full rounded-md" type="submit" data-login-primary="true" data-submitting-label="正在跳转 GitHub...">
+            <Button class="w-full" type="submit" data-login-primary="true" data-submitting-label="正在跳转 GitHub...">
               <GitHubMark />
               使用 GitHub 继续
             </Button>
             <p class="mt-4 text-sm leading-6 text-[var(--app-muted)]">
-              TokenBoard 只使用 GitHub 确认身份；采集端上传仍然使用每台设备独立的 upload token。
+              GitHub 仅用于确认身份。本机采集器使用每台设备独立的上传令牌。
             </p>
           </form>
         </Card>
@@ -66,12 +77,14 @@ function AuthScreen(props: { hasError: boolean }) {
   )
 }
 
-function Panel(props: { icon: typeof ShieldCheck; label: string; value: string }) {
+function AuthBenefit(props: { icon: IconNode; title: string; description: string }) {
   return (
-    <div class="app-surface-subtle rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
-      <LucideIcon icon={props.icon} class="app-accent-text" />
-      <p class="mt-3 text-xs uppercase tracking-wide text-[var(--app-muted)]">{props.label}</p>
-      <p class="mt-2 text-lg font-bold text-[var(--app-text)]">{props.value}</p>
+    <div class="py-4 first:pt-0 last:pb-0">
+      <dt class="flex items-center gap-3 text-sm font-bold text-[var(--app-text)]">
+        <LucideIcon icon={props.icon} class="app-accent-text" size={18} />
+        {props.title}
+      </dt>
+      <dd class="mt-1 pl-[30px] text-sm leading-6 text-[var(--app-muted)]">{props.description}</dd>
     </div>
   )
 }

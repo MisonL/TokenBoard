@@ -94,7 +94,7 @@ describe('collectAntigravityGuiUsage', () => {
         ...options,
         collectedAt: '2026-06-23T10:05:00.000Z'
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-ide' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-ide', timezone: 'UTC' })
       const third = await collectAntigravityIdeUsage({
         ...options,
         collectedAt: '2026-06-23T10:10:00.000Z'
@@ -131,7 +131,12 @@ describe('collectAntigravityGuiUsage', () => {
         }
 
         const first = await collectAntigravityGuiUsage(firstOptions)
-        await clearPendingUploadCursors({ stateDir: root, source, cursorScope: serverA })
+        await clearPendingUploadCursors({
+          stateDir: root,
+          source,
+          cursorScope: serverA,
+          timezone: 'UTC'
+        })
         const second = await collectAntigravityGuiUsage(secondOptions)
 
         expect(first).toHaveLength(1)
@@ -181,7 +186,7 @@ describe('collectAntigravityGuiUsage', () => {
           lastReadRowIndexByCascade: new Map([['conversation-db', 1]])
         })
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'UTC' })
       const second = await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-23T16:45:00.000Z',
@@ -473,7 +478,7 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
-  test('keeps invalid max language server limits bounded', async () => {
+  test.each([Number.NaN, Number.MAX_SAFE_INTEGER])('keeps invalid or excessive max language server limits bounded', async (maxLanguageServerCascades) => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-invalid-max-'))
     try {
       const calls: string[] = []
@@ -481,7 +486,7 @@ describe('collectAntigravityGuiUsage', () => {
         source: 'antigravity',
         stateDir: root,
         timezone: 'UTC',
-        maxLanguageServerCascades: Number.NaN,
+        maxLanguageServerCascades,
         listCascades: async () => Array.from({ length: 20 }, (_, index) => ({
           id: `conversation-${index}`,
           mtimeMs: 2000 - index,
@@ -737,6 +742,52 @@ describe('collectAntigravityGuiUsage', () => {
         collectedAt: '2026-06-24T02:05:00.000Z'
       }])
       expect(seenDbCursorSizes).toEqual([0, 1])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.each([
+    {
+      message: 'Antigravity metadata response exceeded the 8388608-byte limit for antigravity',
+      expected: 'collection failed'
+    },
+    {
+      message: 'Antigravity metadata request returned invalid JSON for antigravity: Unexpected token',
+      expected: 'collection failed'
+    }
+  ])('keeps DB snapshots but fails fatal when language-server metadata is invalid: $message', async ({ message, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-fatal-metadata-'))
+    const dbEvent = {
+      cascadeHash: 'c'.repeat(64),
+      eventHash: 'e'.repeat(64),
+      createdAt: '2026-06-23T16:30:00.000Z',
+      model: 'gemini-3-flash-a',
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 30
+    }
+    try {
+      const thrown = await expectFatalPartialAntigravityUsage(collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        timezone: 'UTC',
+        listCascadeIds: async () => ['conversation-a'],
+        requestGeneratorMetadata: async () => {
+          throw new Error(message)
+        },
+        readDbUsageEvents: async () => ({
+          cascadeIds: new Set(['conversation-db']),
+          events: [dbEvent],
+          lastReadRowIndexByCascade: new Map([['conversation-db', 3]])
+        })
+      }))
+
+      expect(thrown.message).toContain(expected)
+      expect(thrown.snapshots).toEqual([
+        expect.objectContaining({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 })
+      ])
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -1183,14 +1234,14 @@ describe('collectAntigravityGuiUsage', () => {
         ...options,
         collectedAt: '2026-01-01T10:05:00.000Z'
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'UTC' })
       const cursorPath = join(root, 'antigravity-cursor.json')
       const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
       for (const entry of Object.values(cursor.files) as Array<{ updatedAt: string }>) {
         entry.updatedAt = '2025-01-01T00:00:00.000Z'
       }
       await writeFile(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`)
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'UTC' })
       const second = await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
@@ -1248,7 +1299,7 @@ describe('collectAntigravityGuiUsage', () => {
         ...options,
         collectedAt: '2026-01-01T10:05:00.000Z'
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'UTC' })
       const second = await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
@@ -1308,7 +1359,7 @@ describe('collectAntigravityGuiUsage', () => {
         ...options,
         collectedAt: '2026-01-01T10:05:00.000Z'
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'UTC' })
       const second = await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
@@ -1369,7 +1420,7 @@ describe('collectAntigravityGuiUsage', () => {
         ...options,
         collectedAt: '2026-01-01T10:05:00.000Z'
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'UTC' })
       const second = await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
@@ -1405,7 +1456,7 @@ describe('collectAntigravityGuiUsage', () => {
         ...options,
         collectedAt: '2026-01-01T10:05:00.000Z'
       })
-      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity' })
+      await clearPendingUploadCursors({ stateDir: root, source: 'antigravity', timezone: 'UTC' })
       await collectAntigravityGuiUsage({
         ...options,
         collectedAt: '2026-06-24T02:00:00.000Z'
@@ -1449,6 +1500,38 @@ describe('collectAntigravityGuiUsage', () => {
             chatModel: {
               model: 'Gemini 3.5 Flash (Medium)',
               chatStartMetadata: { createdAt: 'June 23, 2026 10:00:00' },
+              usage: {
+                model: 'Gemini 3.5 Flash (Medium)',
+                inputTokens: '10',
+                outputTokens: '2',
+                responseId: 'response-a'
+              }
+            }
+          }]
+        })
+      })).rejects.toThrow('createdAt must be an ISO datetime')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test.each([
+    '2026-02-30T00:00:00.000Z',
+    '2025-04-31T23:59:59.000+08:00'
+  ])('rejects impossible ISO calendar dates: %s', async (createdAt) => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-invalid-calendar-date-'))
+    try {
+      await expect(collectAntigravityGuiUsage({
+        source: 'antigravity',
+        stateDir: root,
+        listCascadeIds: async () => ['conversation-a'],
+        requestGeneratorMetadata: async () => ({
+          generatorMetadata: [{
+            executionId: 'execution-a',
+            stepIndices: [3],
+            chatModel: {
+              model: 'Gemini 3.5 Flash (Medium)',
+              chatStartMetadata: { createdAt },
               usage: {
                 model: 'Gemini 3.5 Flash (Medium)',
                 inputTokens: '10',

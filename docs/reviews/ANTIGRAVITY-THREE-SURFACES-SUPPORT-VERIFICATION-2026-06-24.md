@@ -15,8 +15,10 @@ shared `UsageSnapshot` contract.
 ## Collection Contract
 
 - Antigravity CLI reads `~/.gemini/antigravity-cli/conversations/*.db`
-  `gen_metadata.data`; it may also read the optional sanitized status line
-  JSONL produced by `statusLine.command`.
+  `gen_metadata.data` as its only raw Antigravity usage source. Its cursor
+  persists only incremental, retry, and deduplication state. The optional
+  sanitized status line JSONL produced by `statusLine.command` is private
+  local diagnostic state and never contributes snapshots or uploads.
 - Standalone Antigravity reads `~/.gemini/antigravity/conversations` SQLite
   metadata. For `.pb`-only histories, it discovers recent candidates by file
   mtime, then bounds language-server metadata requests with the configured
@@ -68,7 +70,12 @@ pnpm build
 git diff --check
 ```
 
-Latest observed results:
+Historical observed results (2026-06-24):
+
+The following counts belong to the original Antigravity verification snapshot.
+They are retained for provenance only and are not evidence for later collector,
+Web, skill, or deployment candidates. Current release-gate evidence is recorded
+in the active follow-up review documents.
 
 - `usage-core`: 7 tests passed.
 - `collector`: 236 tests passed.
@@ -81,9 +88,9 @@ Latest observed results:
 
 ## Review Notes
 
-Reviewed and fixed edge cases around DB/statusline dedupe, statusline-only CLI
-sync, optional unavailable products in `--source all`, real DB parse failures,
-partial DB snapshot retry, GUI/IDE recency selection before bounded
+Reviewed and fixed edge cases around SQLite history authority, optional
+unavailable products in `--source all`, real DB parse failures, partial DB
+snapshot retry, GUI/IDE recency selection before bounded
 language-server requests, cursor acknowledgement, raw HTTP body redaction,
 public JSON cost availability, and Antigravity cost-unavailable labels.
 

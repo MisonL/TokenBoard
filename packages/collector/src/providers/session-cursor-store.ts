@@ -15,21 +15,39 @@ export type CursorEntry = {
   size: number
   mtimeMs: number
   sha256: string
+  endsWithNewline?: boolean
   snapshots: CursorSnapshot[]
   missingCost: boolean
   pendingUpload?: boolean
   compactedIdentity?: true
+  statuslineClaimed?: true
+  antigravityOrigin?: AntigravityUsageOrigin
   updatedAt: string
 }
+
+export type AntigravityUsageOrigin = 'database' | 'language-server'
+
+export const antigravityGuiDbResetCorrectionPrefix = 'gui-db-reset-correction\0'
 
 export type CursorState = {
   version: 1
   source: UsageSource
+  codexHookProfileHash?: string
   lastScanHighWaterMs?: number
   lastScanOffsetBytes?: number
   lastScanGeneration?: string
+  lastScanPrefixSha256?: string
   antigravityDbFileScan?: AntigravityFileScanState
   antigravityCascadeFileScan?: AntigravityFileScanState
+  antigravityHistoryAliasMtimes?: Record<string, number[]>
+  antigravityHistoryReplayReady?: true
+  antigravityStatuslineReplayReady?: true
+  antigravityHistoryReplayCompacted?: true
+  antigravityStatuslineReplayCompacted?: true
+  antigravityCliMeteringVersion?: number
+  antigravityCliHistoryComplete?: true
+  antigravityCliHistoryCompacted?: true
+  antigravityCliHistoryCompactedThroughDate?: string
   files: Record<string, CursorEntry>
 }
 
@@ -229,7 +247,7 @@ async function sameCursorLockOwner(lockPath: string, expected: CursorLockOwner) 
   return current?.pid === expected.pid && current.token === expected.token
 }
 
-async function assertCursorWriteOwnership(cursorPath: string) {
+export async function assertCursorWriteOwnership(cursorPath: string) {
   const lease = cursorLockContext.getStore()
   if (!lease || lease.cursorPath !== cursorPath) return
   if (!await sameCursorLockOwner(lease.lockPath, lease.owner)) {
@@ -283,7 +301,8 @@ export function cursorFileName(source: UsageSource, scope?: string) {
   const baseName = sourceCursorFileName(source)
   if (!scope) return baseName
   const scopeHash = createHash('sha256').update(scope).digest('hex')
-  return baseName.replace(/\.json$/, `.server-${scopeHash}.json`)
+  const scopeLabel = source === 'codex' ? 'profile' : 'server'
+  return baseName.replace(/\.json$/, `.${scopeLabel}-${scopeHash}.json`)
 }
 
 function sourceCursorFileName(source: UsageSource) {
@@ -296,17 +315,41 @@ function isValidCursor(value: unknown, source: UsageSource): value is CursorStat
   const candidate = value as CursorState
   return candidate.version === 1 &&
     candidate.source === source &&
+    (candidate.codexHookProfileHash === undefined || isSha256(candidate.codexHookProfileHash)) &&
     (candidate.lastScanHighWaterMs === undefined || isFiniteTimestampMs(candidate.lastScanHighWaterMs)) &&
-    (candidate.lastScanOffsetBytes === undefined || isFiniteTimestampMs(candidate.lastScanOffsetBytes)) &&
+    (candidate.lastScanOffsetBytes === undefined || isNonNegativeSafeInteger(candidate.lastScanOffsetBytes)) &&
     (candidate.lastScanGeneration === undefined || isValidScanGeneration(candidate.lastScanGeneration)) &&
+    (candidate.lastScanPrefixSha256 === undefined || isSha256(candidate.lastScanPrefixSha256)) &&
     (candidate.antigravityDbFileScan === undefined ||
       isValidAntigravityFileScanState(candidate.antigravityDbFileScan)) &&
     (candidate.antigravityCascadeFileScan === undefined ||
       isValidAntigravityFileScanState(candidate.antigravityCascadeFileScan)) &&
+    (candidate.antigravityHistoryAliasMtimes === undefined ||
+      isValidAntigravityHistoryAliasMtimes(candidate.antigravityHistoryAliasMtimes)) &&
+    (candidate.antigravityHistoryReplayReady === undefined || candidate.antigravityHistoryReplayReady === true) &&
+    (candidate.antigravityStatuslineReplayReady === undefined || candidate.antigravityStatuslineReplayReady === true) &&
+    (candidate.antigravityHistoryReplayCompacted === undefined || candidate.antigravityHistoryReplayCompacted === true) &&
+    (candidate.antigravityStatuslineReplayCompacted === undefined || candidate.antigravityStatuslineReplayCompacted === true) &&
+    (candidate.antigravityCliMeteringVersion === undefined ||
+      (Number.isSafeInteger(candidate.antigravityCliMeteringVersion) && candidate.antigravityCliMeteringVersion >= 1)) &&
+    (candidate.antigravityCliHistoryComplete === undefined || candidate.antigravityCliHistoryComplete === true) &&
+    (candidate.antigravityCliHistoryCompacted === undefined || candidate.antigravityCliHistoryCompacted === true) &&
+    (candidate.antigravityCliHistoryCompactedThroughDate === undefined ||
+      isUsageDate(candidate.antigravityCliHistoryCompactedThroughDate)) &&
     candidate.files !== null &&
     typeof candidate.files === 'object' &&
     !Array.isArray(candidate.files) &&
     Object.values(candidate.files).every(isValidCursorEntry)
+}
+
+function isValidAntigravityHistoryAliasMtimes(value: unknown): value is Record<string, number[]> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.entries(value).every(([key, mtimes]) => /^[a-f0-9]{64}$/.test(key) &&
+      Array.isArray(mtimes) && mtimes.every(isFiniteNumber))
+}
+
+function isUsageDate(value: unknown) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
 }
 
 function isValidCursorEntry(value: unknown): value is CursorEntry {
@@ -315,12 +358,17 @@ function isValidCursorEntry(value: unknown): value is CursorEntry {
   return isFiniteNumber(candidate.size) &&
     isFiniteNumber(candidate.mtimeMs) &&
     typeof candidate.sha256 === 'string' &&
+    (candidate.endsWithNewline === undefined || typeof candidate.endsWithNewline === 'boolean') &&
     Array.isArray(candidate.snapshots) &&
     candidate.snapshots.every(isValidCursorSnapshot) &&
     typeof candidate.missingCost === 'boolean' &&
     typeof candidate.updatedAt === 'string' &&
     (candidate.pendingUpload === undefined || typeof candidate.pendingUpload === 'boolean') &&
-    (candidate.compactedIdentity === undefined || candidate.compactedIdentity === true)
+    (candidate.compactedIdentity === undefined || candidate.compactedIdentity === true) &&
+    (candidate.statuslineClaimed === undefined || candidate.statuslineClaimed === true) &&
+    (candidate.antigravityOrigin === undefined ||
+      candidate.antigravityOrigin === 'database' ||
+      candidate.antigravityOrigin === 'language-server')
 }
 
 function isValidCursorSnapshot(value: unknown): value is CursorSnapshot {
@@ -343,10 +391,18 @@ function isFiniteNumber(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
+function isNonNegativeSafeInteger(value: unknown) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
 function isFiniteTimestampMs(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0
 }
 
 function isValidScanGeneration(value: unknown) {
   return typeof value === 'string' && /^[a-f0-9]{32}$/.test(value)
+}
+
+function isSha256(value: unknown) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 }

@@ -11,16 +11,20 @@ export const users = sqliteTable('users', {
   updatedAt: text('updated_at').notNull()
 })
 
-export const sessions = sqliteTable('sessions', {
-  id: text('id').primaryKey(),
-  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  token: text('token').notNull().unique(),
-  expiresAt: integer('expires_at').notNull(),
-  ipAddress: text('ip_address'),
-  userAgent: text('user_agent'),
-  createdAt: integer('created_at').notNull(),
-  updatedAt: integer('updated_at').notNull()
-})
+export const sessions = sqliteTable(
+  'sessions',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    token: text('token').notNull().unique(),
+    expiresAt: integer('expires_at').notNull(),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull()
+  },
+  (table) => [index('sessions_user_id_idx').on(table.userId)]
+)
 
 export const accounts = sqliteTable('accounts', {
   id: text('id').primaryKey(),
@@ -36,7 +40,7 @@ export const accounts = sqliteTable('accounts', {
   password: text('password'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull()
-})
+}, (table) => [index('accounts_user_id_idx').on(table.userId)])
 
 export const verifications = sqliteTable('verifications', {
   id: text('id').primaryKey(),
@@ -45,7 +49,7 @@ export const verifications = sqliteTable('verifications', {
   expiresAt: integer('expires_at').notNull(),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull()
-})
+}, (table) => [index('verifications_identifier_idx').on(table.identifier)])
 
 export const profiles = sqliteTable('profiles', {
   userId: text('user_id').notNull().primaryKey().references(() => users.id, { onDelete: 'cascade' }),
@@ -59,7 +63,7 @@ export const profiles = sqliteTable('profiles', {
   participatesInLeaderboards: integer('participates_in_leaderboards', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
-})
+}, (table) => [index('profiles_public_leaderboard_idx').on(table.isPublic, table.participatesInLeaderboards)])
 
 export const uploadTokens = sqliteTable('upload_tokens', {
   id: text('id').primaryKey(),
@@ -74,6 +78,8 @@ export const uploadTokens = sqliteTable('upload_tokens', {
   revokedAt: text('revoked_at')
 }, (table) => [
   index('upload_tokens_user_id_idx').on(table.userId),
+  index('upload_tokens_device_id_idx').on(table.deviceId),
+  index('upload_tokens_installation_id_idx').on(table.installationId),
   uniqueIndex('upload_tokens_active_successor_idx')
     .on(table.supersedesTokenId)
     .where(sql`${table.supersedesTokenId} IS NOT NULL AND ${table.revokedAt} IS NULL`)
@@ -89,7 +95,9 @@ export const pairingCodes = sqliteTable('pairing_codes', {
   expiresAt: text('expires_at').notNull(),
   consumedAt: text('consumed_at'),
   createdAt: text('created_at').notNull()
-})
+}, (table) => [
+  index('pairing_codes_target_device_idx').on(table.userId, table.targetDeviceId)
+])
 
 export const devices = sqliteTable('devices', {
   id: text('id').primaryKey(),
@@ -99,7 +107,7 @@ export const devices = sqliteTable('devices', {
   lastSyncedAt: text('last_synced_at'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
-})
+}, (table) => [index('devices_user_id_idx').on(table.userId)])
 
 export const deviceInstallations = sqliteTable('device_installations', {
   id: text('id').primaryKey(),

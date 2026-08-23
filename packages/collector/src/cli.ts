@@ -12,13 +12,20 @@ import {
 import { isUnavailableLanguageServerError } from './providers/antigravity-gui-environment'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
+import { resolveCodexHomes as resolveConfiguredCodexHomes } from './providers/codex-homes'
+import { resolveCodexHookCursorPlan } from './providers/codex-hook-profiles'
 import { collectDeepSeekHarnessUsage } from './providers/deepseek-harness'
 import { collectGrokBuildUsage } from './providers/grok-build'
 import { collectOpenCodeUsage } from './providers/opencode'
 import { collectPiUsage } from './providers/pi'
-import { clearPendingUploadCursors, warmHookCursorHighWater } from './providers/session-cursor'
+import {
+  clearPendingUploadCursors,
+  cursorSnapshotGroupKey,
+  warmHookCursorHighWater
+} from './providers/session-cursor'
 import { withCursorLock } from './providers/session-cursor-store'
 import { uploadSnapshots } from './upload'
+import { assertValidTimeZone } from './timezone'
 
 type CliCommand = 'preview' | 'sync' | 'warm-hooks'
 type CliSource =
@@ -45,6 +52,7 @@ type CollectOptionalSourceOptions = {
   deferFailure?: boolean
   failFast?: boolean
   failOnNonUnavailable?: boolean
+  ignoreLanguageServerUnavailable?: boolean
   ignoreUnavailable?: boolean
 }
 
@@ -155,6 +163,7 @@ export async function runCollectorCli(
       collectedSources: collection.collectedSources,
       cursorScope,
       since: options.since,
+      snapshots: collection.snapshots,
       timezone: options.timezone,
       deps,
       env
@@ -192,10 +201,26 @@ async function warmHookCursors(
     // Only Claude Code and Codex install notification hooks; every other source
     // has no hook cursor to warm and must not fall through to the Claude path.
     if (source !== 'claude-code' && source !== 'codex') continue
-    const sessionsDir = source === 'codex'
-      ? join(env.CODEX_HOME || join(homedir(), '.codex'), 'sessions')
-      : join(env.CLAUDE_CONFIG_DIR || env.CLAUDE_HOME || join(homedir(), '.claude'), 'projects')
-    await deps.warmHookCursorHighWater?.({ stateDir, source, sessionsDir, highWaterMs })
+    if (source === 'codex') {
+      const codexHomes = resolveCodexHomes(env)
+      const cursorPlan = await resolveCodexHookCursorPlan({ codexHomes, stateDir })
+      for (const [index, codexHome] of codexHomes.entries()) {
+        await deps.warmHookCursorHighWater?.({
+          stateDir,
+          source,
+          cursorScope: cursorPlan.cursorScopes[index],
+          sessionsDir: join(codexHome, 'sessions'),
+          highWaterMs
+        })
+      }
+      continue
+    }
+    await deps.warmHookCursorHighWater?.({
+      stateDir,
+      source,
+      sessionsDir: join(env.CLAUDE_CONFIG_DIR || env.CLAUDE_HOME || join(homedir(), '.claude'), 'projects'),
+      highWaterMs
+    })
   }
 }
 
@@ -203,7 +228,9 @@ function parseArgs(args: string[], env: CliEnv) {
   const command = readCommand(args[0])
   const flags = readFlags(args.slice(1))
   const source = readSource(flags.source ?? env.TOKENBOARD_SOURCE ?? 'all')
-  const timezone = flags.timezone ?? env.TOKENBOARD_TIMEZONE ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timezone = assertValidTimeZone(
+    flags.timezone ?? env.TOKENBOARD_TIMEZONE ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+  )
 
   return {
     command,
@@ -245,13 +272,24 @@ async function collectAllSnapshots(context: CollectionContext) {
   const hookMode = env.TOKENBOARD_HOOK_MODE === '1'
   const failFast = hookMode
   const standardContext = { timezone, since, stderr: deps.stderr }
+  const codexContext = {
+    ...standardContext,
+    stateDir: resolveStateDir(env),
+    codexHomes: resolveCodexHomes(env)
+  }
   await collectOptionalSource('claude-code', () => deps.collectClaudeCodeUsage(standardContext), snapshots, collectedSources, sourceFailures, deps, { failFast })
-  await collectOptionalSource('codex', () => deps.collectCodexUsage(standardContext), snapshots, collectedSources, sourceFailures, deps, { failFast })
+  await collectOptionalSource('codex', () => deps.collectCodexUsage(codexContext), snapshots, collectedSources, sourceFailures, deps, { failFast })
   if (hookMode) {
     return { snapshots, collectedSources, sourceFailures }
   }
-  const antigravityOptions = { deferFailure: true, failFast, failOnNonUnavailable: true, ignoreUnavailable: true }
-  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
+  const antigravityOptions = {
+    deferFailure: true,
+    failFast,
+    failOnNonUnavailable: true,
+    ignoreUnavailable: true,
+    ignoreLanguageServerUnavailable: env.TOKENBOARD_FAIL_ON_SOURCE_ERROR !== '1'
+  }
+  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope, stderr: deps.stderr }
   await collectOptionalSource('antigravity-cli', () => readAntigravityCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity', () => readAntigravityGuiCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
   await collectOptionalSource('antigravity-ide', () => readAntigravityIdeCollector(deps)(antigravityContext), snapshots, collectedSources, sourceFailures, deps, antigravityOptions)
@@ -308,12 +346,18 @@ function collectSingleSource(
   const { cursorScope, deps, env, since, timezone } = context
   const standardContext = { timezone, since, stderr: deps.stderr }
   if (source === 'claude-code') return deps.collectClaudeCodeUsage(standardContext)
-  if (source === 'codex') return deps.collectCodexUsage(standardContext)
+  if (source === 'codex') {
+    return deps.collectCodexUsage({
+      ...standardContext,
+      stateDir: resolveStateDir(env),
+      codexHomes: resolveCodexHomes(env)
+    })
+  }
   if (source === 'opencode') return readOpenCodeCollector(deps)(standardContext)
   if (source === 'pi') return readPiCollector(deps)(standardContext)
   if (source === 'grok-build') return readGrokBuildCollector(deps)(standardContext)
   if (source === 'deepseek-harness') return readDeepSeekHarnessCollector(deps)(standardContext)
-  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope }
+  const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope, stderr: deps.stderr }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)
   return readAntigravityIdeCollector(deps)(antigravityContext)
@@ -340,7 +384,11 @@ async function collectOptionalSource(
       deps.stderr(formatAntigravityDiagnostic(source, 'partial', message))
       return
     }
-    if (options.ignoreUnavailable && isOptionalSourceUnavailable(source, message)) {
+    if (options.ignoreUnavailable && isOptionalSourceUnavailable(
+      source,
+      message,
+      options.ignoreLanguageServerUnavailable
+    )) {
       deps.stderr(source.startsWith('antigravity')
         ? formatAntigravityDiagnostic(source, 'unavailable', message)
         : `Skipping unavailable ${source} source: ${message}`)
@@ -367,6 +415,7 @@ async function ackUploadCursors(input: {
   collectedSources: CliSource[]
   cursorScope?: string
   since: string
+  snapshots: UsageSnapshot[]
   timezone: string
   deps: CliDeps
   env: CliEnv
@@ -377,17 +426,33 @@ async function ackUploadCursors(input: {
   for (const source of sources) {
     if (!shouldAckCursor(source, input.env)) continue
     try {
-      await input.deps.clearPendingUploadCursors?.({
-        stateDir,
-        source,
-        cursorScope: source.startsWith('antigravity') ? input.cursorScope : undefined,
-        since: source.startsWith('antigravity') ? input.since : undefined,
-        timezone: source.startsWith('antigravity') ? input.timezone : undefined
-      })
+      const cursorScopes = source === 'codex'
+        ? await codexCursorScopes(input.env, stateDir)
+        : [undefined]
+      for (const cursorScope of cursorScopes) {
+        await input.deps.clearPendingUploadCursors?.({
+          stateDir,
+          source,
+          cursorScope: source.startsWith('antigravity') ? input.cursorScope : cursorScope,
+          since: source.startsWith('antigravity') ? input.since : undefined,
+          timezone: source.startsWith('antigravity') ? input.timezone : undefined,
+          acknowledgedSnapshotGroups: source.startsWith('antigravity')
+            ? snapshotGroupsForSource(input.snapshots, source)
+            : undefined
+        })
+      }
     } catch (error) {
       throw safeSourceError(source, error, errorMessage(error))
     }
   }
+}
+
+function snapshotGroupsForSource(snapshots: UsageSnapshot[], source: ConcreteCliSource) {
+  return [...new Set(
+    snapshots
+      .filter((snapshot) => snapshot.source === source)
+      .map((snapshot) => cursorSnapshotGroupKey(snapshot))
+  )]
 }
 
 function shouldAckCursor(source: ConcreteCliSource, env: CliEnv) {
@@ -397,6 +462,19 @@ function shouldAckCursor(source: ConcreteCliSource, env: CliEnv) {
 
 function resolveStateDir(env: CliEnv = process.env) {
   return env.TOKENBOARD_STATE_DIR || env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
+}
+
+async function codexCursorScopes(env: CliEnv, stateDir: string) {
+  const codexHomes = resolveCodexHomes(env)
+  const plan = await resolveCodexHookCursorPlan({ codexHomes, stateDir })
+  return plan.usesProfileCursors ? [undefined, ...plan.cursorScopes] : [undefined]
+}
+
+function resolveCodexHomes(env: CliEnv) {
+  return resolveConfiguredCodexHomes({
+    legacyValue: env.CODEX_HOME,
+    jsonValue: env.TOKENBOARD_CODEX_HOMES_JSON
+  })
 }
 
 function cursorScopeFromEndpoint(endpoint: string) {
@@ -427,25 +505,47 @@ function safeSourceError(source: ConcreteCliSource, error: unknown, message: str
 
 function antigravityErrorCategory(message: string) {
   if (message.toLowerCase().includes('cursor')) return 'cursor-state-failed'
-  if (message.includes('statusline log not found')) return 'statusline-unavailable'
   if (message.includes('Antigravity SQLite reader unavailable')) return 'sqlite-reader-unavailable'
+  if (message.includes('Antigravity CLI requires --since all before a bounded scan can complete an incomplete SQLite directory scan')) {
+    return 'sqlite-full-baseline-required'
+  }
+  if (message.includes('Antigravity CLI --since all requires a complete SQLite directory scan') ||
+      message.includes('Antigravity CLI full history scan could not read every enumerated SQLite database')) {
+    return 'sqlite-directory-incomplete'
+  }
   if (message.includes('Antigravity conversations directory not found') ||
       message.includes('No Antigravity conversations found')) return 'history-unavailable'
+  if (isAntigravityMetadataLimitError(message)) return 'metadata-limit-exceeded'
+  if (isAntigravityInvalidMetadataError(message)) return 'invalid-metadata'
   if (message.includes('Antigravity language server unavailable after DB history was collected') ||
       isUnavailableLanguageServerError(new Error(message))) {
     return 'language-server-unavailable'
   }
-  if (message.includes('Invalid Antigravity')) return 'invalid-metadata'
   if (message.includes('Failed to read Antigravity SQLite metadata')) return 'sqlite-read-failed'
   if (message.includes('Failed to read Antigravity metadata')) return 'metadata-read-failed'
   return 'collection-failed'
+}
+
+function isAntigravityMetadataLimitError(message: string) {
+  return message.includes('Antigravity metadata response exceeded the ') ||
+    message.includes('Antigravity generator metadata response exceeded the ') ||
+    message.includes('Antigravity language server metadata exceeded the ')
+}
+
+function isAntigravityInvalidMetadataError(message: string) {
+  return message.includes('Invalid Antigravity') ||
+    message.includes('Antigravity metadata request returned invalid JSON for ')
 }
 
 function formatSourceFailures(failures: SourceFailure[]) {
   return failures.map((failure) => `${failure.source}: ${failure.message}`).join('; ')
 }
 
-function isOptionalSourceUnavailable(source: ConcreteCliSource, message: string) {
+function isOptionalSourceUnavailable(
+  source: ConcreteCliSource,
+  message: string,
+  ignoreLanguageServerUnavailable = false
+) {
   if (source === 'opencode') {
     return message.includes('OpenCode database not found') ||
       message.includes('OpenCode SQLite reader unavailable')
@@ -454,11 +554,8 @@ function isOptionalSourceUnavailable(source: ConcreteCliSource, message: string)
   if (source === 'grok-build') return message.includes('No Grok Build sessions found')
   if (source === 'deepseek-harness') return message.includes('No DeepSeek Harness sessions found')
   if (!source.startsWith('antigravity')) return false
-  return message.includes('statusline log not found') ||
-    message.includes('Antigravity SQLite reader unavailable') ||
-    message.includes('Antigravity language server exited before it was ready') ||
-    message.includes('Timed out starting Antigravity language server') ||
-    message.match(/^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/) !== null ||
+  return message.includes('Antigravity SQLite reader unavailable') ||
+    (ignoreLanguageServerUnavailable && isUnavailableLanguageServerError(new Error(message))) ||
     message.includes('Antigravity conversations directory not found') ||
     message.includes('No Antigravity conversations found')
 }

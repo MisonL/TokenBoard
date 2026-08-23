@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildUpgradePlan, resolveArchiveUrl, resolveArchiveUrls, resolveRepoUrl, runUpgrade } from './upgrade.mjs'
-import { errorMessage, runStep } from './upgrade-utils.mjs'
+import { assertAutomaticUpgradeBranch, buildUpgradePlan, resolveArchiveUrl, resolveArchiveUrls, resolveRepoUrl, runUpgrade } from './upgrade.mjs'
+import { errorMessage, runStep, samePath } from './upgrade-utils.mjs'
 
 test('normalizes empty error diagnostics', () => {
   assert.equal(errorMessage(new Error('')), 'Error')
   assert.equal(errorMessage(new Error('   ')), 'Error')
   assert.equal(errorMessage(''), 'Unknown error')
+})
+
+test('treats Windows paths that differ only by case as the same filesystem path', () => {
+  assert.equal(
+    samePath('C:\\Users\\QDM\\.tokenboard', 'c:\\users\\qdm\\.TOKENBOARD', 'win32'),
+    true
+  )
 })
 
 test('updates collector and installed skill from the collector checkout', () => {
@@ -84,6 +91,249 @@ test('does not copy the installed skill onto itself', () => {
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       }
     ]
+  )
+})
+
+test('refreshes installed notifier handlers from the upgraded collector checkout', () => {
+  const calls = []
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const configDirectory = '/home/user/.tokenboard'
+
+  runUpgrade({
+    flags: {
+      'repo-ref': 'feature/reliability',
+      'skill-dir': `${collectorDir}/skills/tokenboard`
+    },
+    env: { TOKENBOARD_CONFIG_DIR: configDirectory },
+    readConfigFile: () => ({
+      collectorDir,
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'feature/reliability',
+      packageManager: 'pnpm'
+    }),
+    mergeConfigFile: () => {},
+    configDirectory,
+    exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+    spawn: (command, args, options) => {
+      calls.push({ command, args, options })
+      if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+      return { status: 0, stdout: '' }
+    },
+    log: () => {}
+  })
+
+  const refreshIndex = calls.findIndex((call) =>
+    call.command === process.execPath &&
+    call.args[0] === `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`
+  )
+  const installIndex = calls.findIndex((call) =>
+    call.command === 'corepack' && call.args[0] === 'pnpm'
+  )
+
+  assert.ok(refreshIndex > installIndex)
+  assert.deepEqual(calls[refreshIndex].args, [
+    `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`
+  ])
+  assert.equal(calls[refreshIndex].options.env.TOKENBOARD_CONFIG_DIR, configDirectory)
+})
+
+test('fails visibly when the upgraded notifier handler refresh fails', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+
+  assert.throws(
+    () => runUpgrade({
+      flags: {
+        'repo-ref': 'feature/reliability',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'feature/reliability',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args) => {
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === process.execPath && args[0].endsWith('/refresh-notify-handler.mjs')) {
+          return { status: 17 }
+        }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /TokenBoard notify handler refresh failed with exit code 17/
+  )
+})
+
+test('automatic upgrade refuses to switch a clean development branch', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      automatic: true,
+      flags: {
+        'repo-ref': 'master',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'master',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'fix/reliability\n' }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /Refusing automatic TokenBoard upgrade from branch fix\/reliability to master/
+  )
+
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), false)
+})
+
+test('automatic upgrade continues when the checked out branch matches the configured branch', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  const result = runUpgrade({
+    automatic: true,
+    flags: {
+      'repo-ref': 'master',
+      'skill-dir': `${collectorDir}/skills/tokenboard`
+    },
+    env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+    readConfigFile: () => ({
+      collectorDir,
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'master',
+      packageManager: 'pnpm'
+    }),
+    mergeConfigFile: () => {},
+    configDirectory: '/home/user/.tokenboard',
+    exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+    spawn: (command, args, options) => {
+      calls.push({ command, args, options })
+      if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+      if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'master\n' }
+      return { status: 0, stdout: '' }
+    },
+    log: () => {}
+  })
+
+  assert.equal(result.repoRef, 'master')
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), true)
+})
+
+test('automatic upgrade refuses a detached checkout before mutating it', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      automatic: true,
+      flags: {
+        'repo-ref': 'master',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'master',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: '' }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /Refusing automatic TokenBoard upgrade from a detached HEAD/
+  )
+
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), false)
+})
+
+test('automatic upgrade refuses a configured tag before mutating the checkout', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      automatic: true,
+      flags: {
+        'repo-ref': 'refs/tags/v1.2.3',
+        'skill-dir': `${collectorDir}/skills/tokenboard`
+      },
+      env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+      readConfigFile: () => ({
+        collectorDir,
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        repoRef: 'refs/tags/v1.2.3',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: () => {},
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === collectorDir || path === `${collectorDir}/.git`,
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+        if (command === 'git' && args[0] === 'branch') return { status: 0, stdout: 'master\n' }
+        return { status: 0, stdout: '' }
+      },
+      log: () => {}
+    }),
+    /configured ref is not a branch/
+  )
+
+  assert.equal(calls.some((call) =>
+    call.command === 'git' && call.args[0] === 'remote' && call.args[1] === 'set-url'
+  ), false)
+})
+
+test('automatic upgrade refuses to guess when the remote default branch cannot be resolved', () => {
+  const collectorDir = process.cwd()
+
+  assert.throws(
+    () => assertAutomaticUpgradeBranch({
+      collectorDir,
+      repoRef: null,
+      spawn: (command, args) => {
+        if (command !== 'git') throw new Error(`unexpected command: ${command}`)
+        if (args.join('\u0000') === ['branch', '--show-current'].join('\u0000')) {
+          return { status: 0, stdout: 'master\n' }
+        }
+        if (args.join('\u0000') === ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'].join('\u0000')) {
+          return { status: 1, stdout: '' }
+        }
+        throw new Error(`unexpected git arguments: ${args.join(' ')}`)
+      }
+    }),
+    /unable to resolve the remote default branch/
   )
 })
 
@@ -263,6 +513,7 @@ test('does not archive-replace an existing git checkout after git upgrade fails'
   assert.throws(
     () => runUpgrade({
       flags: {},
+      platform: 'linux',
       env: {
         TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard',
         TOKENBOARD_COLLECTOR_DIR: '/home/user/.tokenboard/TokenBoard'
@@ -302,6 +553,7 @@ test('does not archive-replace an existing git checkout after git upgrade fails'
   assert.deepEqual(
     calls.map((call) => call.args),
     [
+      ['status', '--porcelain', '--untracked-files=all'],
       ['remote', 'set-url', 'origin', 'https://github.com/example/TokenBoard.git'],
       ['ls-remote', '--symref', 'origin', 'HEAD'],
       ['config', '--replace-all', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
@@ -314,6 +566,67 @@ test('does not archive-replace an existing git checkout after git upgrade fails'
       ['pull', '--ff-only']
     ]
   )
+})
+
+test('refuses to upgrade a dirty collector checkout before changing repository state', () => {
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      flags: {},
+      env: {},
+      readConfigFile: () => ({
+        collectorDir: '/home/user/.tokenboard/TokenBoard',
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: (...args) => calls.push({ command: 'mergeConfig', args }),
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === '/home/user/.tokenboard/TokenBoard' || path === '/home/user/.tokenboard/TokenBoard/.git',
+      spawn: (command, args) => {
+        calls.push({ command, args })
+        if (command === 'git' && args[0] === 'status') {
+          return { status: 0, stdout: ' M packages/collector/src/cli.ts\n' }
+        }
+        return { status: 0 }
+      },
+      log: () => {}
+    }),
+    /Refusing to upgrade a collector checkout with uncommitted changes/
+  )
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['status', '--porcelain', '--untracked-files=all']
+  ])
+})
+
+test('refuses to upgrade when the collector worktree cannot be inspected', () => {
+  const calls = []
+
+  assert.throws(
+    () => runUpgrade({
+      flags: {},
+      env: {},
+      readConfigFile: () => ({
+        collectorDir: '/home/user/.tokenboard/TokenBoard',
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        packageManager: 'pnpm'
+      }),
+      mergeConfigFile: (...args) => calls.push({ command: 'mergeConfig', args }),
+      configDirectory: '/home/user/.tokenboard',
+      exists: (path) => path === '/home/user/.tokenboard/TokenBoard' || path === '/home/user/.tokenboard/TokenBoard/.git',
+      spawn: (command, args) => {
+        calls.push({ command, args })
+        return { status: 1 }
+      },
+      log: () => {}
+    }),
+    /Unable to inspect the TokenBoard collector worktree before upgrade/
+  )
+
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['status', '--porcelain', '--untracked-files=all']
+  ])
 })
 
 test('default branch guard checks out origin default branch from detached head', () => {
@@ -640,6 +953,23 @@ test('refuses to replace the config directory as a non-git collector during upgr
   )
 })
 
+test('refuses a case-variant Windows config directory as a non-git collector', () => {
+  assert.throws(
+    () => buildUpgradePlan({
+      collectorDir: 'C:\\Users\\QDM\\.tokenboard',
+      skillDir: 'C:\\Users\\QDM\\.codex\\skills\\tokenboard',
+      configDir: 'c:\\users\\qdm\\.TOKENBOARD',
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      packageManager: 'pnpm',
+      collectorExists: true,
+      collectorIsGitRepo: false,
+      workDir: 'C:\\Users\\QDM\\.tokenboard\\upgrade-work',
+      platform: 'win32'
+    }),
+    /Refusing to replace TokenBoard config directory as collector checkout/
+  )
+})
+
 test('archive fallback also refuses to install the skill into the config directory', () => {
   const calls = []
   assert.throws(
@@ -922,6 +1252,7 @@ test('archive fallback retries a short tag ref after branch archive download fai
   const calls = []
   runUpgrade({
     flags: { 'repo-ref': 'v1.2.3' },
+    platform: 'linux',
     env: {
       TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard',
       TOKENBOARD_COLLECTOR_DIR: '/home/user/.tokenboard/TokenBoard'

@@ -387,7 +387,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       this.pairingCodeConsumeStatement(input)
     ])
     assertBatchSucceeded(results, 5)
-    assertStatementChanged(results[0], 'Device was not created')
+    assertStatementChanged(results[0], 'Pairing code is no longer current')
     assertStatementChanged(results[1], 'Installation was not created')
     assertStatementChanged(results[2], 'Upload token was not created')
     assertStatementChanged(results[3], 'Device pairing was not recorded')
@@ -416,7 +416,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       this.reconnectInstallationInsertStatement(input),
       this.reconnectUploadTokenInsertStatement(input),
       this.reconnectDevicePairAuditLogInsertStatement(input),
-      this.pairingCodeConsumeStatement(input)
+      this.pairingCodeConsumeStatement(input, 'reconnect_device')
     )
 
     const results = await this.db.batch(statements)
@@ -629,31 +629,24 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
       .prepare(
         `
           INSERT INTO devices (id, user_id, name, platform, created_at, updated_at)
-          VALUES (
-            ?,
-            (
-              SELECT user_id
-              FROM pairing_codes
-              WHERE id = ?
-                AND user_id = ?
-                AND pairing_type = 'new_device'
-                AND consumed_at IS NULL
-                AND expires_at > ?
-              LIMIT 1
-            ),
-            ?, ?, ?, ?
-          )
+          SELECT ?, pairing.user_id, ?, ?, ?, ?
+          FROM pairing_codes pairing
+          WHERE pairing.id = ?
+            AND pairing.user_id = ?
+            AND pairing.pairing_type = 'new_device'
+            AND pairing.consumed_at IS NULL
+            AND pairing.expires_at > ?
         `
       )
       .bind(
         input.deviceId,
-        input.pairingCodeId,
-        input.userId,
-        input.consumedAt,
         input.deviceName,
         input.platform,
         input.createdAt,
-        input.createdAt
+        input.createdAt,
+        input.pairingCodeId,
+        input.userId,
+        input.consumedAt
       )
   }
 
@@ -673,20 +666,31 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             created_at,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          SELECT ?, device.user_id, device.id, ?, ?, ?, ?, ?, ?, ?
+          FROM devices device
+          JOIN pairing_codes pairing
+            ON pairing.id = ?
+            AND pairing.user_id = device.user_id
+            AND pairing.pairing_type = 'new_device'
+            AND pairing.consumed_at IS NULL
+            AND pairing.expires_at > ?
+          WHERE device.id = ?
+            AND device.user_id = ?
         `
       )
       .bind(
         input.installationId,
-        input.userId,
-        input.deviceId,
         input.platform,
         input.deviceName,
         input.installClaimHash,
         input.createdAt,
         input.createdAt,
         input.createdAt,
-        input.createdAt
+        input.createdAt,
+        input.pairingCodeId,
+        input.consumedAt,
+        input.deviceId,
+        input.userId
       )
   }
 
@@ -703,34 +707,76 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
             installation_id,
             created_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          SELECT ?, installation.user_id, ?, ?, installation.device_id, installation.id, ?
+          FROM device_installations installation
+          JOIN pairing_codes pairing
+            ON pairing.id = ?
+            AND pairing.user_id = installation.user_id
+            AND pairing.pairing_type = 'new_device'
+            AND pairing.consumed_at IS NULL
+            AND pairing.expires_at > ?
+          WHERE installation.id = ?
+            AND installation.user_id = ?
+            AND installation.device_id = ?
         `
       )
       .bind(
         input.uploadTokenId,
-        input.userId,
         input.deviceName,
         input.uploadTokenHash,
-        input.deviceId,
+        input.createdAt,
+        input.pairingCodeId,
+        input.consumedAt,
         input.installationId,
-        input.createdAt
+        input.userId,
+        input.deviceId
       )
   }
 
   private devicePairAuditLogInsertStatement(input: InstallationInput) {
-    return this.createAuditLogStatement({
-      auditLogId: input.auditLogId,
-      userId: input.userId,
-      actorType: 'user',
-      action: input.auditAction,
-      targetType: 'device',
-      targetId: input.deviceId,
-      metadata: input.auditMetadata ?? null,
-      createdAt: input.createdAt
-    })
+    return this.db
+      .prepare(
+        `
+          INSERT INTO audit_logs (
+            id,
+            user_id,
+            actor_type,
+            action,
+            target_type,
+            target_id,
+            metadata,
+            created_at
+          )
+          SELECT ?, installation.user_id, 'user', ?, 'device', installation.device_id, ?, ?
+          FROM device_installations installation
+          JOIN pairing_codes pairing
+            ON pairing.id = ?
+            AND pairing.user_id = installation.user_id
+            AND pairing.pairing_type = 'new_device'
+            AND pairing.consumed_at IS NULL
+            AND pairing.expires_at > ?
+          WHERE installation.id = ?
+            AND installation.user_id = ?
+            AND installation.device_id = ?
+        `
+      )
+      .bind(
+        input.auditLogId,
+        input.auditAction,
+        input.auditMetadata ?? null,
+        input.createdAt,
+        input.pairingCodeId,
+        input.consumedAt,
+        input.installationId,
+        input.userId,
+        input.deviceId
+      )
   }
 
-  private pairingCodeConsumeStatement(input: InstallationInput) {
+  private pairingCodeConsumeStatement(
+    input: InstallationInput,
+    pairingType: 'new_device' | 'reconnect_device' = 'new_device'
+  ) {
     return this.db
       .prepare(
         `
@@ -738,6 +784,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
           SET consumed_at = ?
           WHERE id = ?
             AND user_id = ?
+            AND pairing_type = ?
             AND consumed_at IS NULL
             AND expires_at > ?
             AND EXISTS (
@@ -761,6 +808,7 @@ export class D1DevicePairingRepository implements DevicePairingRepository {
         input.consumedAt,
         input.pairingCodeId,
         input.userId,
+        pairingType,
         input.consumedAt,
         input.uploadTokenId,
         input.userId,

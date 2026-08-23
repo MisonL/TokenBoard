@@ -94,6 +94,71 @@ describe('uploadSnapshots resilience', () => {
     }
   })
 
+  test('retries and fails visibly when a snapshot check request exceeds its deadline', async () => {
+    vi.stubEnv('TOKENBOARD_FETCH_RETRY_DELAY_MS', '0')
+    vi.stubEnv('TOKENBOARD_FETCH_TIMEOUT_MS', '1')
+    const signals: AbortSignal[] = []
+    const fetcher = vi.fn((_url: string, init: RequestInit) => {
+      const signal = init.signal
+      if (!signal) throw new Error('Expected a request deadline signal')
+      signals.push(signal)
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    })
+
+    try {
+      await expect(uploadSnapshots(config, [unchangedSnapshot], fetcher)).rejects.toThrow(
+        'TokenBoard request timed out after 1ms'
+      )
+      expect(fetcher).toHaveBeenCalledTimes(3)
+      expect(signals.every((signal) => signal.aborted)).toBe(true)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }, 500)
+
+  test('retries and fails visibly when upload response parsing exceeds its deadline', async () => {
+    vi.stubEnv('TOKENBOARD_FETCH_RETRY_DELAY_MS', '0')
+    vi.stubEnv('TOKENBOARD_FETCH_TIMEOUT_MS', '1')
+    const requests: string[] = []
+    const fetcher = async (url: string) => {
+      requests.push(url)
+      if (url.endsWith('/check')) return successResponse(url)
+      const response = new Response()
+      response.json = () => new Promise<never>(() => undefined)
+      return response
+    }
+
+    try {
+      await expect(uploadSnapshots(config, [unchangedSnapshot], fetcher)).rejects.toThrow(
+        'TokenBoard request timed out after 1ms'
+      )
+      expect(requests).toEqual([
+        `${config.endpoint}/check`,
+        config.endpoint,
+        config.endpoint,
+        config.endpoint
+      ])
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  }, 500)
+
+  test('uses the default deadline when the configured timeout is not a complete positive integer', async () => {
+    vi.stubEnv('TOKENBOARD_FETCH_TIMEOUT_MS', '30s')
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+
+    try {
+      await uploadSnapshots(config, [], async (url: string) => successResponse(url))
+
+      expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 30_000)
+    } finally {
+      timeoutSpy.mockRestore()
+      vi.unstubAllEnvs()
+    }
+  })
+
   test('does not retry non-retryable upload responses', async () => {
     const requests: string[] = []
     const fetcher = async (url: string) => {

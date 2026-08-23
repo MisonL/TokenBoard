@@ -52,6 +52,37 @@ describe('runCollectorCli Antigravity source', () => {
     expect(JSON.parse(stdout[0])).toEqual([antigravitySnapshot])
   })
 
+  test('acknowledges only Antigravity snapshot groups uploaded in the current sync', async () => {
+    const acknowledgements: Array<{ source: string; groups: string[] | undefined }> = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'antigravity-cli'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      deps({
+        collectAntigravityCliUsage: async () => [antigravitySnapshot],
+        uploadSnapshots: async () => ({ upserted: 1, skipped: 0 }),
+        clearPendingUploadCursors: async (input) => {
+          acknowledgements.push({ source: input.source, groups: input.acknowledgedSnapshotGroups })
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(acknowledgements).toEqual([{
+      source: 'antigravity-cli',
+      groups: [[
+        antigravitySnapshot.source,
+        antigravitySnapshot.usageDate,
+        antigravitySnapshot.timezone,
+        antigravitySnapshot.model
+      ].join('\0')]
+    }])
+  })
+
   test('previews the standalone Antigravity source', async () => {
     const stdout: string[] = []
 
@@ -122,7 +153,7 @@ describe('runCollectorCli Antigravity source', () => {
     expect(JSON.parse(stdout[0])).toEqual([{ ...antigravitySnapshot, source: 'antigravity-ide' }])
   })
 
-  test('treats missing Antigravity statusline capture as optional in all mode', async () => {
+  test('treats missing Antigravity CLI history as optional in all mode', async () => {
     const stderr: string[] = []
 
     const result = await runCollectorCli(
@@ -131,14 +162,14 @@ describe('runCollectorCli Antigravity source', () => {
       deps({
         stderr: (line) => stderr.push(line),
         collectAntigravityCliUsage: async () => {
-          throw new Error('Antigravity CLI statusline log not found: /state/antigravity-cli-statusline.jsonl')
+          throw new Error('Antigravity conversations directory not found: /state/antigravity-cli/conversations')
         }
       })
     )
 
     expect(result).toBe(0)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity-cli status=unavailable category=statusline-unavailable'
+      'Antigravity collection: source=antigravity-cli status=unavailable category=history-unavailable'
     ])
   })
 
@@ -192,7 +223,7 @@ describe('runCollectorCli Antigravity source', () => {
           return { upserted: snapshots.length, skipped: 0 }
         },
         collectAntigravityCliUsage: async () => {
-          throw new Error('Antigravity CLI statusline log not found: /state/antigravity-cli-statusline.jsonl')
+          throw new Error('Antigravity conversations directory not found: /state/antigravity-cli/conversations')
         },
         collectAntigravityUsage: async () => {
           throw new Error('Antigravity conversations directory not found: /Users/test/.gemini/antigravity/conversations')
@@ -206,7 +237,7 @@ describe('runCollectorCli Antigravity source', () => {
     expect(result).toBe(0)
     expect(uploaded).toEqual([[]])
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity-cli status=unavailable category=statusline-unavailable',
+      'Antigravity collection: source=antigravity-cli status=unavailable category=history-unavailable',
       'Antigravity collection: source=antigravity status=unavailable category=history-unavailable',
       'Antigravity collection: source=antigravity-ide status=unavailable category=history-unavailable'
     ])
@@ -242,7 +273,7 @@ describe('runCollectorCli Antigravity source', () => {
     ])
   })
 
-  test('does not fail strict all mode when an optional Antigravity language server is unavailable', async () => {
+  test('fails strict all mode when installed Antigravity language-server startup is unavailable', async () => {
     const stderr: string[] = []
     const uploaded: UsageSnapshot[][] = []
 
@@ -265,14 +296,15 @@ describe('runCollectorCli Antigravity source', () => {
       })
     )
 
-    expect(result).toBe(0)
+    expect(result).toBe(1)
     expect(uploaded).toEqual([[]])
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=unavailable category=language-server-unavailable'
+      'Antigravity collection: source=antigravity status=failed category=language-server-unavailable',
+      'One or more sources failed: antigravity: status=failed category=language-server-unavailable'
     ])
   })
 
-  test('does not fail strict all mode when a missing Antigravity language server path contains spaces', async () => {
+  test('fails strict all mode when an installed Antigravity language-server path contains spaces', async () => {
     const stderr: string[] = []
     const uploaded: UsageSnapshot[][] = []
 
@@ -295,10 +327,11 @@ describe('runCollectorCli Antigravity source', () => {
       })
     )
 
-    expect(result).toBe(0)
+    expect(result).toBe(1)
     expect(uploaded).toEqual([[]])
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=unavailable category=language-server-unavailable'
+      'Antigravity collection: source=antigravity status=failed category=language-server-unavailable',
+      'One or more sources failed: antigravity: status=failed category=language-server-unavailable'
     ])
   })
 
@@ -324,6 +357,26 @@ describe('runCollectorCli Antigravity source', () => {
     ])
     expect(stderr.join('\n')).not.toContain('/Users/private')
     expect(stderr.join('\n')).not.toContain('RAW_PROCESS_OUTPUT')
+  })
+
+  test.each(['0', 'false'])('treats TOKENBOARD_FAIL_ON_SOURCE_ERROR=%s as disabled', async (value) => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      { TOKENBOARD_FAIL_ON_SOURCE_ERROR: value },
+      deps({
+        stderr: (line) => stderr.push(line),
+        collectAntigravityUsage: async () => {
+          throw new Error('Antigravity language server exited before it was ready')
+        }
+      })
+    )
+
+    expect(result).toBe(0)
+    expect(stderr).toEqual([
+      'Antigravity collection: source=antigravity status=unavailable category=language-server-unavailable'
+    ])
   })
 
   test('sanitizes partial Antigravity errors before writing stderr', async () => {
@@ -636,13 +689,45 @@ describe('runCollectorCli Antigravity source', () => {
   test.each([
     {
       label: 'metadata response size-limit errors',
-      message: 'Antigravity metadata response exceeded the 8388608-byte limit for antigravity'
+      message: 'Antigravity metadata response exceeded the 8388608-byte limit for antigravity',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      label: 'metadata item-limit errors',
+      message: 'Antigravity generator metadata response exceeded the 8192-item limit',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      label: 'metadata total-event limit errors',
+      message: 'Antigravity language server metadata exceeded the 32768 usage-event limit',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      label: 'metadata invalid JSON errors',
+      message: 'Antigravity metadata request returned invalid JSON for antigravity: Unexpected token',
+      category: 'invalid-metadata'
     },
     {
       label: 'metadata HTTP errors',
-      message: 'Antigravity metadata request failed for antigravity: HTTP 500'
+      message: 'Antigravity metadata request failed for antigravity: HTTP 500',
+      category: 'language-server-unavailable'
+    },
+    {
+      label: 'bounded SQLite scans that require a full baseline',
+      message: 'Antigravity CLI requires --since all before a bounded scan can complete an incomplete SQLite directory scan',
+      category: 'sqlite-full-baseline-required'
+    },
+    {
+      label: 'incomplete explicit full-history SQLite scans',
+      message: 'Antigravity CLI --since all requires a complete SQLite directory scan',
+      category: 'sqlite-directory-incomplete'
+    },
+    {
+      label: 'unstable SQLite directories during full-history reads',
+      message: 'Antigravity CLI full history scan could not read every enumerated SQLite database; retry after the conversations directory is stable',
+      category: 'sqlite-directory-incomplete'
     }
-  ])('classifies $label as language-server unavailable', async ({ message }) => {
+  ])('classifies $label as $category', async ({ message, category }) => {
     const stderr: string[] = []
 
     const result = await runCollectorCli(
@@ -661,7 +746,102 @@ describe('runCollectorCli Antigravity source', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual([
-      'Antigravity collection: source=antigravity status=failed category=language-server-unavailable'
+      `Antigravity collection: source=antigravity status=failed category=${category}`
+    ])
+  })
+
+  test.each([
+    {
+      message: 'Antigravity metadata response exceeded the 8388608-byte limit for antigravity',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      message: 'Antigravity generator metadata response exceeded the 8192-item limit',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      message: 'Antigravity language server metadata exceeded the 32768 usage-event limit',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      message: 'Antigravity metadata request returned invalid JSON for antigravity: Unexpected token',
+      category: 'invalid-metadata'
+    }
+  ])('fails default all mode for fatal metadata failures: $message', async ({ message, category }) => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new Error(message)
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[]])
+    expect(stderr).toEqual([
+      `Antigravity collection: source=antigravity status=failed category=${category}`,
+      `One or more sources failed: antigravity: status=failed category=${category}`
+    ])
+  })
+
+  test.each([
+    {
+      message: 'Antigravity language server collection failed after DB history was collected: Antigravity metadata response exceeded the 8388608-byte limit for antigravity',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      message: 'Antigravity language server collection failed after DB history was collected: Antigravity generator metadata response exceeded the 8192-item limit',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      message: 'Antigravity language server collection failed after DB history was collected: Antigravity language server metadata exceeded the 32768 usage-event limit',
+      category: 'metadata-limit-exceeded'
+    },
+    {
+      message: 'Antigravity language server collection failed after DB history was collected: Antigravity metadata request returned invalid JSON for antigravity: Unexpected token',
+      category: 'invalid-metadata'
+    }
+  ])('uploads partial DB snapshots then fails default all mode for fatal metadata failures: $category', async ({ message, category }) => {
+    const stderr: string[] = []
+    const uploaded: UsageSnapshot[][] = []
+    const snapshot = { ...antigravitySnapshot, source: 'antigravity' as const }
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'all'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token'
+      },
+      deps({
+        stderr: (line) => stderr.push(line),
+        uploadSnapshots: async (_config, snapshots) => {
+          uploaded.push(snapshots)
+          return { upserted: snapshots.length, skipped: 0 }
+        },
+        collectAntigravityUsage: async () => {
+          throw new AntigravityPartialUsageError(message, [snapshot], undefined, true)
+        }
+      })
+    )
+
+    expect(result).toBe(1)
+    expect(uploaded).toEqual([[snapshot]])
+    expect(stderr).toEqual([
+      `Antigravity collection: source=antigravity status=partial category=${category}`,
+      `One or more sources failed: antigravity: status=partial category=${category}`
     ])
   })
 

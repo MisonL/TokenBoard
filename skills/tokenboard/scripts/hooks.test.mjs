@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildNotifyHandler, hookPaths, hookStatus, installHooks, uninstallHooks } from './hooks.mjs'
+import { win32 as windowsPath } from 'node:path'
+import { runInNewContext } from 'node:vm'
+import { buildNotifyHandler, hookPaths, hookStatus, installHooks, refreshInstalledNotifyHandler, uninstallHooks } from './hooks.mjs'
 
 test('notify handler only enqueues signal and spawns background notify script', () => {
   const source = buildNotifyHandler({
@@ -9,12 +11,11 @@ test('notify handler only enqueues signal and spawns background notify script', 
     nodePath: '/usr/bin/node'
   })
 
-  assert.match(source, /appendFileSync\(join\(STATE_DIR, "notify\.signal"\)/)
   assert.match(source, /const SIGNAL_DIR = join\(STATE_DIR, "notify\.signal\.d"\)/)
-  assert.match(source, /writeQueuedSignal\(signalPayload\)/)
+  assert.match(source, /writeQueuedSignal\(signalPayload, source\)/)
   assert.match(source, /spawn\(NODE_PATH, \[NOTIFY_SCRIPT/)
   assert.match(source, /detached: true/)
-  assert.equal(source.match(/windowsHide: true/g)?.length, 2)
+  assert.equal(source.match(/windowsHide: true/g)?.length, 3)
   assert.doesNotMatch(source, /ccusage/)
 })
 
@@ -26,7 +27,7 @@ test('notify handler preserves legacy signal append when queued signal rename fa
   })
 
   assert.match(source, /let queueError;/)
-  assert.match(source, /appendFileSync\(join\(STATE_DIR, "notify\.signal"\), signalPayload, "utf8"\);/)
+  assert.match(source, /if \(queueError\) \{\s+appendFileSync\(join\(STATE_DIR, "notify\.signal"\), signalPayload, "utf8"\);/)
   assert.match(source, /unlinkSync\(tempPath\);/)
 })
 
@@ -41,15 +42,46 @@ test('notify handler passes its configured state directory to the background not
   assert.match(source, /TOKENBOARD_STATE_DIR: STATE_DIR/)
 })
 
-test('notify handler uses the runtime node executable for the background process', () => {
+test('notify handler uses the current Unix runtime and the configured Windows runtime', () => {
   const source = buildNotifyHandler({
     stateDir: '/home/user/.tokenboard',
     notifyScriptPath: '/repo/scripts/notify.mjs',
     nodePath: '/old/node'
   })
 
-  assert.match(source, /const NODE_PATH = process\.execPath;/)
-  assert.doesNotMatch(source, /const NODE_PATH = "\/old\/node"/)
+  const declaration = source.match(/const NODE_PATH = [\s\S]*?;\n/)?.[0]
+  assert.ok(declaration)
+  const evaluate = (platform) => {
+    const context = {
+      process: { platform, execPath: '/current/node' },
+      result: undefined
+    }
+    runInNewContext(`${declaration}\nresult = NODE_PATH;`, context)
+    return context.result
+  }
+
+  assert.equal(evaluate('darwin'), '/current/node')
+  assert.equal(evaluate('linux'), '/current/node')
+  assert.equal(evaluate('win32'), '/old/node')
+})
+
+test('notify handler resolves Windows tasklist from an absolute System32 path instead of PATH', () => {
+  const source = buildNotifyHandler({
+    stateDir: '/home/user/.tokenboard',
+    notifyScriptPath: '/repo/scripts/notify.mjs',
+    nodePath: '/usr/bin/node'
+  })
+
+  assert.match(source, /System32[\s\S]*tasklist\.exe/)
+  assert.match(source, /windowsPath\.isAbsolute\(process\.env\.SystemRoot \|\| ""\)/)
+  assert.doesNotMatch(source, /TASKLIST_COMMAND = process\.platform/)
+  assert.doesNotMatch(source, /:\s*"tasklist";/)
+})
+
+test('notify handler falls back to an absolute Windows system root for missing or drive-relative SystemRoot', () => {
+  assertTasklistPaths(generatedTasklistPaths(), 'C:\\Windows')
+  assertTasklistPaths(generatedTasklistPaths('C:relative'), 'C:\\Windows')
+  assertTasklistPaths(generatedTasklistPaths('D:\\Windows'), 'D:\\Windows')
 })
 
 test('notify handler forwards Codex payload args to the preserved original notify command', () => {
@@ -102,6 +134,31 @@ test('hook paths include Antigravity CLI, IDE, and standalone homes', () => {
   assert.equal(paths.antigravityPath, '/custom/agy-app')
 })
 
+function generatedTasklistPaths(systemRoot) {
+  const source = buildNotifyHandler({
+    stateDir: '/home/user/.tokenboard',
+    notifyScriptPath: '/repo/scripts/notify.mjs',
+    nodePath: '/usr/bin/node'
+  })
+  const declarations = source.match(/const SYSTEM_ROOT = [\s\S]*?\n\);\n(?=const NODE_PATH)/)?.[0]
+  assert.ok(declarations)
+  const context = {
+    process: { env: systemRoot === undefined ? {} : { SystemRoot: systemRoot } },
+    windowsPath,
+    result: undefined
+  }
+
+  runInNewContext(`${declarations}\nresult = { systemRoot: SYSTEM_ROOT, command: TASKLIST_COMMAND };`, context)
+  return context.result
+}
+
+function assertTasklistPaths(result, systemRoot) {
+  assert.equal(result.systemRoot, systemRoot)
+  assert.equal(result.command, `${systemRoot}\\System32\\tasklist.exe`)
+  assert.equal(windowsPath.isAbsolute(result.systemRoot), true)
+  assert.equal(windowsPath.isAbsolute(result.command), true)
+}
+
 test('status detects Antigravity GUI products with local history support', () => {
   const paths = createPaths()
   const fs = memoryFs({
@@ -144,6 +201,38 @@ test('installs and restores Codex notify while preserving original command', () 
 
   assert.equal(removed.hooks[0].changed, true)
   assert.match(fs.files.get(paths.codexConfigPath), /notify = \["old", "--flag"\]/)
+})
+
+test('refreshes the generated handler for an already installed Codex hook', () => {
+  const paths = createPaths()
+  const codexConfig = `model = "gpt-5"\nnotify = ["/usr/bin/env", "node", "${paths.notifyPath}", "--source=codex"]\n`
+  const fs = memoryFs({
+    [paths.codexConfigPath]: codexConfig,
+    [paths.notifyPath]: 'old handler'
+  })
+
+  const refreshed = refreshInstalledNotifyHandler({ paths, fs, nodePath: '/usr/bin/node' })
+
+  assert.deepEqual(refreshed.sources, ['codex'])
+  assert.equal(refreshed.changed, true)
+  assert.equal(fs.files.get(paths.codexConfigPath), codexConfig)
+  assert.match(fs.files.get(paths.notifyPath), /TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN/)
+})
+
+test('does not create a generated handler when no notifier hook is installed', () => {
+  const paths = createPaths()
+  const fs = memoryFs({
+    [paths.codexConfigPath]: 'model = "gpt-5"\n',
+    [paths.claudeSettingsPath]: JSON.stringify({ hooks: {} })
+  })
+
+  const refreshed = refreshInstalledNotifyHandler({ paths, fs, nodePath: '/usr/bin/node' })
+
+  assert.deepEqual(refreshed.sources, [])
+  assert.equal(refreshed.changed, false)
+  assert.equal(fs.files.has(paths.notifyPath), false)
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).codex, 'not-installed')
+  assert.equal(hookStatus({ paths, fs, nodePath: '/usr/bin/node' }).claudeCode, 'not-installed')
 })
 
 test('installs and restores Codex notify with an inline TOML comment', () => {

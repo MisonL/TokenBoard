@@ -199,6 +199,50 @@ test('does not delete the config directory before the collector when they are th
   ])
 })
 
+test('treats case-variant Windows collector and config paths as the same path', () => {
+  const harness = createHarness()
+
+  const removed = uninstallClient({
+    ...harness.options,
+    platform: 'win32',
+    collectorDir: 'C:\\Users\\TokenBoard\\.tokenboard',
+    configDir: 'c:\\users\\tokenboard\\.TOKENBOARD',
+    configPath: 'c:\\users\\tokenboard\\.TOKENBOARD\\config.json',
+    deviceLinkPath: 'c:\\users\\tokenboard\\.TOKENBOARD\\device-link.json',
+    argv: ['--all'],
+    exists: (path) => path.toLowerCase().includes('tokenboard')
+  })
+
+  assert.equal(removed.collector, false)
+  assert.equal(removed.configDir, true)
+})
+
+test('does not change directory for a Windows cwd on another drive', () => {
+  const harness = createHarness()
+  let chdirCalls = 0
+
+  const removed = uninstallClient({
+    ...harness.options,
+    platform: 'win32',
+    collectorDir: 'C:\\Users\\TokenBoard\\.tokenboard\\TokenBoard',
+    configDir: 'C:\\Users\\TokenBoard\\.tokenboard',
+    configPath: 'C:\\Users\\TokenBoard\\.tokenboard\\config.json',
+    deviceLinkPath: 'C:\\Users\\TokenBoard\\.tokenboard\\device-link.json',
+    fallbackCwd: 'Z:\\missing',
+    cwd: () => 'D:\\work',
+    chdir: () => {
+      chdirCalls += 1
+      throw new Error('fallback directory should not be used')
+    },
+    exists: () => true,
+    argv: ['--all']
+  })
+
+  assert.equal(chdirCalls, 0)
+  assert.equal(removed.collector, true)
+  assert.equal(removed.configDir, true)
+})
+
 function createHarness() {
   const existingPaths = new Set([
     '/home/tokenboard/.tokenboard',

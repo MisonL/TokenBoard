@@ -12,10 +12,23 @@ import { errorMessage } from './error-message.mjs'
 const defaultMaxInputBytes = 256 * 1024
 const maxTokenValue = 1_000_000_000
 const maxModelLength = 160
+const maxUpstreamEventIdentifierLength = 4096
 const schemaVersion = 'antigravity-statusline/v1'
 const defaultMaxLogBytes = 8 * 1024 * 1024
 const minMaxLogBytes = 1024
 const maxMaxLogBytes = 64 * 1024 * 1024
+const upstreamEventIdentifierFields = [
+  'event_id',
+  'eventId',
+  'inference_request_id',
+  'inferenceRequestId',
+  'response_id',
+  'responseId',
+  'provider_assigned_message_id',
+  'providerAssignedMessageId',
+  'message_id',
+  'messageId'
+]
 
 export async function runStatuslineCli(argv = process.argv.slice(2), env = process.env) {
   const options = readOptions(argv, env)
@@ -67,6 +80,7 @@ export function extractStatuslineEvent(raw, capturedAt, captureId) {
   const conversationId = readBoundedString(payload.conversation_id, 4096, 'conversation_id')
   const conversationHash = hashLegacyIdentifier(conversationId)
   const conversationHashAliases = hashIdentifier(conversationId)
+  const statuslineEventHash = readStatuslineEventHash(payload)
   const model = readModel(payload.model)
   const inputTokens = readToken(usage.input_tokens, 'input_tokens')
   const outputTokens = readToken(usage.output_tokens, 'output_tokens')
@@ -85,6 +99,7 @@ export function extractStatuslineEvent(raw, capturedAt, captureId) {
     conversationHashAliases: conversationHashAliases && conversationHashAliases !== conversationHash
       ? [conversationHashAliases]
       : undefined,
+    ...(statuslineEventHash ? { statuslineEventHash } : {}),
     model,
     usage: {
       inputTokens,
@@ -172,6 +187,14 @@ function readModel(value) {
     readBoundedString(model.id, maxModelLength, 'model.id')
 }
 
+function readStatuslineEventHash(payload) {
+  for (const field of upstreamEventIdentifierFields) {
+    const value = readOptionalBoundedString(payload[field], maxUpstreamEventIdentifierLength)
+    if (value) return hashStatuslineEventIdentifier(field, value)
+  }
+  return null
+}
+
 function readToken(value, field) {
   if (value === null || value === undefined) return null
   if (!Number.isSafeInteger(value) || value < 0 || value > maxTokenValue) {
@@ -190,6 +213,12 @@ function readBoundedString(value, maxLength, field) {
   return trimmed
 }
 
+function readOptionalBoundedString(value, maxLength) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed && trimmed.length <= maxLength ? trimmed : null
+}
+
 function readObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 }
@@ -205,6 +234,15 @@ function hashLegacyIdentifier(value) {
   if (!value) return null
   return createHash('sha256')
     .update('tokenboard-antigravity-cli\0')
+    .update(value)
+    .digest('hex')
+}
+
+function hashStatuslineEventIdentifier(field, value) {
+  return createHash('sha256')
+    .update('tokenboard-antigravity-statusline-event\0')
+    .update(field)
+    .update('\0')
     .update(value)
     .digest('hex')
 }

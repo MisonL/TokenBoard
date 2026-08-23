@@ -81,3 +81,87 @@ deploy helper was run again against the same private Worker and D1 database.
 - Post-deploy home page: HTTP 200 and `TokenBoard` document title.
 - Unauthenticated `/dashboard/details` and `/settings/devices`: HTTP 302 to `/auth/sign-in`.
 - Remote migration list: no migrations to apply.
+
+## Current Follow-up Runtime Evidence - 2026-07-27
+
+This section records a new private-environment runtime check for the current uncommitted
+`fix/post-merge-reliability-followups` candidate. Private account, route, database, restore-point,
+credential, device, and usage identifiers remain intentionally omitted.
+
+- Private Wrangler config validation passed.
+- The remote migration list reported no pending migrations.
+- Remote `db/verify-critical-schema.sql` and `PRAGMA foreign_key_check` both completed successfully
+  without a reported schema or foreign-key violation.
+- The private Worker has an active deployment; health and home responses succeeded, and the JS/CSS
+  resources referenced by the deployed home page responded successfully.
+- Anonymous `/api/v1/me` and `/api/v1/ingest/check` returned the expected `UNAUTHORIZED` boundary.
+  Anonymous `/dashboard/details` and `/settings/devices` redirected to sign-in.
+- A saved, inactive legacy-compatible local profile was used only through a child-process environment
+  with an isolated temporary collector state directory. A real `antigravity-cli --since all` upload
+  exited successfully; the server skipped existing idempotent snapshots and advanced both the matched
+  upload token's last-used time and device's last-synced time. The temporary state directory was
+  removed after the command. No active profile, device-link state, or local credential was changed.
+
+Authenticated dashboard/device rendering, the installation-command copy controls, and AJAX navigation
+remain pending because the browser has no authenticated session for this private site. This section
+does not claim those checks, a new deployment operation, or a current D1 Time Travel restore point
+were completed.
+
+## Current Follow-up Browser Evidence - 2026-07-28
+
+The pending browser checks above were completed against the same private deployment after the
+maintainer completed GitHub OAuth in an isolated, headed browser session. No browser state,
+account data, device identifiers, credentials, command contents, or clipboard data was exported.
+
+- The authenticated dashboard rendered with the signed-in navigation and no sign-in link.
+- `/dashboard/details` rendered without an error state or loading residue at desktop and 390 px
+  mobile widths; both checks found no horizontal overflow.
+- `/settings/devices` rendered its overview and device list at desktop and 390 px mobile widths
+  without an error state or horizontal overflow. A visible device-details action issued the
+  authenticated fragment request, received HTTP 200, and populated the modal with a close control.
+- `/settings/install` rendered six labelled copy controls while no one-time pairing prompt was
+  generated. Copying the non-secret notifier-hook command produced the expected success state and
+  accessible success toast; the clipboard was not read.
+- Anonymous home and leaderboard pages rendered at desktop and 390 px mobile widths without
+  horizontal overflow. Switching the leaderboard to monthly tokens used its fragment request and
+  updated the URL and document title without a full-page navigation fallback.
+
+The current candidate therefore has private D1/schema, anonymous boundary, authenticated page,
+client navigation, copy-control, and real collector-ingest evidence. Commit, push, and pull-request
+publication remain separate release-preparation work and are not claimed by this section.
+
+## Isolated Private Preview Deployment Evidence - 2026-07-29
+
+This is a separate verification of the committed `fix/post-merge-reliability-followups` candidate
+at `3230289`. It used an isolated private `workers.dev` Worker and D1 database. It did not deploy
+to the upstream custom domain, touch the upstream D1 database, or change any upstream Worker
+configuration.
+
+- A private D1 Time Travel restore point was recorded before migrations. Its identifier is retained
+  only in the private deployment record.
+- Migrations `0022` through `0029` applied successfully. The remote critical-schema verification
+  passed, and a subsequent migration check reported no pending migrations.
+- `WEBHOOK_ENCRYPTION_KEY` and `BETTER_AUTH_SECRET` were verified as Worker secrets rather than
+  plain Wrangler variables. Their values were not read or recorded.
+- `GET /api/v1/health` returned HTTP 200. Anonymous `/api/v1/me` returned HTTP 401, while
+  anonymous `/dashboard` and `/settings/devices` redirected to sign-in as expected.
+- A temporary preview-only identity and upload token performed a real ingest and snapshot-hash
+  check successfully. Remote D1 showed the expected usage, summary, token, device, and
+  installation updates. All temporary records, including their rate-limit rows, were removed and
+  a follow-up count check returned zero.
+
+The isolated preview deliberately did not receive GitHub OAuth client secrets, so it does not
+claim a GitHub OAuth callback check. GitHub's own OAuth login page is provider-hosted and is not
+styled or served by TokenBoard; its appearance is outside the Worker deployment surface. This
+section is deployment evidence for the current candidate, not evidence of an upstream production
+release.
+
+## Public Sign-In Presentation Boundary - 2026-07-29
+
+The public TokenBoard sign-in route was rendered again at desktop and 390 px mobile widths. Its
+navigation, primary GitHub button, and responsive layout had no horizontal overflow, overlap, or
+unusable control. Activating the button redirected to GitHub's provider-hosted OAuth login page.
+That page is not served by the Worker and does not consume TokenBoard CSS, so a visual difference
+there must be investigated through GitHub or the user's browser environment rather than by changing
+the TokenBoard application. This check did not export browser state, account data, credentials, or
+cookies.

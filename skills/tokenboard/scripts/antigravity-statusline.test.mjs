@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { extractStatuslineEvent } from './antigravity-statusline.mjs'
-import { terminateOriginalCommandTree } from './antigravity-statusline-original.mjs'
+import { terminateOriginalCommandTree, windowsTaskkillCommand } from './antigravity-statusline-original.mjs'
 import { createHash } from 'node:crypto'
 
 const scriptPath = fileURLToPath(new URL('./antigravity-statusline.mjs', import.meta.url))
@@ -39,6 +39,26 @@ test('preserves a local capture id for distinct statusline calls', () => {
   assert.equal(event.captureId, 'a'.repeat(32))
 })
 
+test('hashes a stable upstream statusline identifier without persisting it', () => {
+  const rawMessageId = 'raw-provider-message-id'
+  const raw = JSON.stringify(statuslinePayload({ message_id: rawMessageId }))
+
+  const event = extractStatuslineEvent(raw, '2026-06-23T10:00:00.000Z')
+
+  assert.equal(event.statuslineEventHash, statuslineEventHash('message_id', rawMessageId))
+  assert.doesNotMatch(JSON.stringify(event), /raw-provider-message-id/)
+})
+
+test('keeps valid usage when an optional upstream event identifier is too long', () => {
+  const raw = JSON.stringify(statuslinePayload({ message_id: 'x'.repeat(4097) }))
+
+  const event = extractStatuslineEvent(raw, '2026-06-23T10:00:00.000Z')
+
+  assert.equal(event.model, 'Gemini 3.5 Flash (Medium)')
+  assert.equal(event.usage.inputTokens, 100)
+  assert.equal(event.statuslineEventHash, undefined)
+})
+
 test('statusline CLI writes sanitized JSONL and preserves original command output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-statusline-'))
   try {
@@ -51,7 +71,7 @@ test('statusline CLI writes sanitized JSONL and preserves original command outpu
       'process.stdin.on("data", (chunk) => { raw += chunk })',
       'process.stdin.on("end", () => { process.stdout.write("original-statusline") })'
     ].join('\n'))
-    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+    await writeFile(backupPath, `${JSON.stringify({ command: shellCommand(process.execPath, originalPath) })}\n`)
 
     const result = spawnSync(process.execPath, [
       scriptPath,
@@ -95,7 +115,7 @@ test('statusline CLI forwards oversized input to the original command', async ()
       'process.stdin.on("data", (chunk) => { hash.update(chunk) })',
       'process.stdin.on("end", () => { process.stdout.write(hash.digest("hex")) })'
     ].join('\n'))
-    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+    await writeFile(backupPath, `${JSON.stringify({ command: shellCommand(process.execPath, originalPath) })}\n`)
     const raw = Buffer.alloc(2 * 1024 * 1024, 0xff)
 
     const result = spawnSync(process.execPath, [
@@ -126,7 +146,7 @@ test('statusline CLI preserves successful original output when the original comm
       'process.stdout.write("static-output")',
       'process.stdin.destroy()'
     ].join('\n'))
-    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+    await writeFile(backupPath, `${JSON.stringify({ command: shellCommand(process.execPath, originalPath) })}\n`)
 
     const result = spawnSync(process.execPath, [
       scriptPath,
@@ -158,7 +178,7 @@ test('statusline CLI force-terminates an original command that ignores its timeo
       'process.stdin.resume()',
       'setTimeout(() => {}, 6000)'
     ].join('\n'))
-    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+    await writeFile(backupPath, `${JSON.stringify({ command: shellCommand(process.execPath, originalPath) })}\n`)
     const startedAt = Date.now()
 
     const result = spawnSync(process.execPath, [
@@ -201,17 +221,28 @@ test('statusline command termination uses taskkill for the full Windows process 
 
   assert.deepEqual(calls, [
     {
-      command: 'taskkill',
+      command: 'C:\\Windows\\System32\\taskkill.exe',
       args: ['/PID', '4321', '/T'],
       options: { stdio: 'ignore', windowsHide: true }
     },
     {
-      command: 'taskkill',
+      command: 'C:\\Windows\\System32\\taskkill.exe',
       args: ['/PID', '4321', '/T', '/F'],
       options: { stdio: 'ignore', windowsHide: true }
     }
   ])
   assert.equal(unrefCount, 2)
+})
+
+test('resolves taskkill from SystemRoot without relying on PATH', () => {
+  assert.equal(
+    windowsTaskkillCommand({ SystemRoot: 'D:\\Windows' }),
+    'D:\\Windows\\System32\\taskkill.exe'
+  )
+  assert.equal(
+    windowsTaskkillCommand({ SystemRoot: 'relative\\Windows' }),
+    'C:\\Windows\\System32\\taskkill.exe'
+  )
 })
 
 test('statusline command termination falls back when Windows taskkill exits nonzero', () => {
@@ -260,7 +291,7 @@ test('statusline CLI force-terminates descendants after the original command exi
       'process.stdin.resume()',
       'setInterval(() => {}, 1000)'
     ].join('\n'))
-    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+    await writeFile(backupPath, `${JSON.stringify({ command: shellCommand(process.execPath, originalPath) })}\n`)
 
     const result = spawnSync(process.execPath, [
       scriptPath,
@@ -289,7 +320,7 @@ test('statusline CLI preserves the original output-limit error when stdin forwar
       'process.stdout.write("x".repeat(9000))',
       'process.stdin.destroy()'
     ].join('\n'))
-    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+    await writeFile(backupPath, `${JSON.stringify({ command: shellCommand(process.execPath, originalPath) })}\n`)
 
     const result = spawnSync(process.execPath, [
       scriptPath,
@@ -320,7 +351,7 @@ test('statusline CLI suppresses partial output from a failed original command', 
       '  process.exitCode = 2',
       '})'
     ].join('\n'))
-    await writeFile(backupPath, `${JSON.stringify({ command: `${process.execPath} ${originalPath}` })}\n`)
+    await writeFile(backupPath, `${JSON.stringify({ command: shellCommand(process.execPath, originalPath) })}\n`)
 
     const result = spawnSync(process.execPath, [
       scriptPath,
@@ -375,9 +406,9 @@ test('statusline CLI does not run an original command that was disabled', async 
     await writeFile(backupPath, `${JSON.stringify({
       statusLine: {
         enabled: false,
-        command: `${process.execPath} ${originalPath}`
+        command: shellCommand(process.execPath, originalPath)
       },
-      command: `${process.execPath} ${originalPath}`
+      command: shellCommand(process.execPath, originalPath)
     })}\n`)
 
     const result = spawnSync(process.execPath, [
@@ -573,6 +604,16 @@ function statuslinePayload(overrides = {}) {
   }
 }
 
+function shellCommand(executable, script) {
+  return [executable, script].map(shellQuote).join(' ')
+}
+
+function shellQuote(value) {
+  const text = String(value)
+  if (process.platform === 'win32') return `"${text.replaceAll('"', '""')}"`
+  return `'${text.replaceAll("'", "'\\''")}'`
+}
+
 async function readErrorRecords(errorPath) {
   return (await readFile(errorPath, 'utf8'))
     .trim()
@@ -582,6 +623,15 @@ async function readErrorRecords(errorPath) {
 
 function plainHash(value) {
   return createHash('sha256').update(value).digest('hex')
+}
+
+function statuslineEventHash(field, value) {
+  return createHash('sha256')
+    .update('tokenboard-antigravity-statusline-event\0')
+    .update(field)
+    .update('\0')
+    .update(value)
+    .digest('hex')
 }
 
 function isProcessAlive(pid) {

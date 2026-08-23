@@ -1,8 +1,13 @@
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, test } from 'vitest'
-import { commandShellOption, runJsonCommand } from './command'
+import {
+  assertWindowsShellSafeInvocation,
+  buildShellInvocation,
+  commandShellOption,
+  runJsonCommand
+} from './command'
 
 describe('runJsonCommand', () => {
   test('passes arguments directly without shell parsing', async () => {
@@ -82,5 +87,63 @@ describe('runJsonCommand', () => {
     expect(commandShellOption('pnpm.bat', 'win32')).toBe(true)
     expect(commandShellOption('pnpm', 'win32')).toBe(false)
     expect(commandShellOption('npm.cmd', 'linux')).toBe(false)
+  })
+
+  test('rejects shell metacharacters before invoking a Windows command shim', () => {
+    expect(() => assertWindowsShellSafeInvocation('npm.cmd', ['exec', 'ccusage', '--timezone', 'UTC&whoami'], true))
+      .toThrow('Windows command argument 3')
+    expect(() => assertWindowsShellSafeInvocation('npm.cmd', ['exec', 'ccusage', '--timezone', 'Asia/Shanghai'], true))
+      .not.toThrow()
+  })
+
+  test('allows legal parentheses in Windows command arguments', () => {
+    expect(() => assertWindowsShellSafeInvocation(
+      'npm.cmd',
+      ['exec', 'ccusage', '--input-dir', 'C:\\Program Files (x86)\\TokenBoard'],
+      true
+    )).not.toThrow()
+  })
+
+  test('rejects shell metacharacters in a Windows command shim path', () => {
+    expect(() => assertWindowsShellSafeInvocation('C:/tools/npm.cmd&whoami', [], true))
+      .toThrow('Windows command shim path')
+  })
+
+  test('allows legal parentheses in a Windows command shim path', () => {
+    expect(() => assertWindowsShellSafeInvocation(
+      'C:/Program Files (x86)/nodejs/npm.cmd',
+      ['exec', 'ccusage', '--timezone', 'Asia/Shanghai'],
+      true
+    )).not.toThrow()
+  })
+
+  test('quotes Windows shell arguments including parenthesized paths', () => {
+    expect(buildShellInvocation(
+      'C:/Program Files (x86)/nodejs/npm.cmd',
+      ['exec', 'ccusage', '--input-dir', 'C:/checkouts/(repo) with spaces', 'C:\\work\\'],
+      true
+    )).toEqual({
+      command: '"C:/Program Files (x86)/nodejs/npm.cmd" "exec" "ccusage" "--input-dir" "C:/checkouts/(repo) with spaces" "C:\\work\\\\"',
+      args: [],
+      shell: true
+    })
+  })
+
+  test.skipIf(process.platform !== 'win32')('runs a Windows shim with quoted parenthesized arguments', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'tokenboard-command-windows-'))
+    const shim = join(dir, 'capture shim.cmd')
+    const printer = join(dir, 'capture-args.mjs')
+    try {
+      await writeFile(printer, 'console.log(JSON.stringify({ argv: process.argv.slice(2) }))\r\n', 'utf8')
+      await writeFile(shim, `@echo off\r\nnode "${printer}" %*\r\n`, 'utf8')
+
+      await expect(
+        runJsonCommand(shim, ['alpha beta', 'C:\\Program Files (x86)\\TokenBoard\\', 'tail'])
+      ).resolves.toEqual({
+        argv: ['alpha beta', 'C:\\Program Files (x86)\\TokenBoard\\', 'tail']
+      })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

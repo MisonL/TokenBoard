@@ -15,12 +15,21 @@ export type AntigravityUsageEvent = {
 
 const maxTokenValue = 1_000_000_000
 const maxModelLength = 160
+const maxMetadataIdentityLength = 4_096
+const maxMetadataStepIndices = 512
 const placeholderModelPrefix = 'MODEL_PLACEHOLDER_'
 const isoDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/
+
+export const maxAntigravityGeneratorMetadataItems = 8_192
 
 export function parseGeneratorMetadata(response: unknown, cascadeId: string) {
   if (!isRecord(response) || !Array.isArray(response.generatorMetadata)) {
     throw new Error('Invalid Antigravity generator metadata response')
+  }
+  if (response.generatorMetadata.length > maxAntigravityGeneratorMetadataItems) {
+    throw new Error(
+      `Antigravity generator metadata response exceeded the ${maxAntigravityGeneratorMetadataItems}-item limit`
+    )
   }
   const cascadeHash = hash(cascadeId)
   const events: AntigravityUsageEvent[] = []
@@ -47,9 +56,10 @@ function parseGeneratorMetadataItem(
   const startMetadata = readRecord(chatModel.chatStartMetadata)
   const createdAt = readIsoDateTime(startMetadata?.createdAt, index)
   const model = readModel({ usage, chatModel, index })
+  const identity = readUsageEventIdentity({ item, usage, index })
   return {
     cascadeHash,
-    eventHash: usageEventHash({ item, usage, tokens, model, createdAt }),
+    eventHash: usageEventHash({ identity, tokens, model, createdAt }),
     createdAt,
     model,
     ...tokens
@@ -117,6 +127,48 @@ function readString(value: unknown, field: string, index: number) {
   return value
 }
 
+function readUsageEventIdentity(input: {
+  item: Record<string, unknown>
+  usage: Record<string, unknown>
+  index: number
+}) {
+  return {
+    responseId: readOptionalMetadataIdentity(input.usage.responseId, 'responseId', input.index),
+    executionId: readOptionalMetadataIdentity(input.item.executionId, 'executionId', input.index),
+    stepIndices: readStepIndices(input.item.stepIndices, input.index)
+  }
+}
+
+function readOptionalMetadataIdentity(value: unknown, field: string, index: number) {
+  if (value === undefined || value === null) return null
+  if (
+    (typeof value !== 'string' || value.length > maxMetadataIdentityLength) &&
+    (typeof value !== 'number' || !Number.isSafeInteger(value))
+  ) {
+    throw new Error(
+      `Invalid Antigravity generator metadata item ${index}: ${field} must be a bounded identifier`
+    )
+  }
+  return value
+}
+
+function readStepIndices(value: unknown, index: number) {
+  if (value === undefined || value === null) return null
+  if (!Array.isArray(value) || value.length > maxMetadataStepIndices) {
+    throw new Error(
+      `Invalid Antigravity generator metadata item ${index}: stepIndices must be a bounded integer array`
+    )
+  }
+  return value.map((step) => {
+    if (!Number.isSafeInteger(step) || step < 0) {
+      throw new Error(
+        `Invalid Antigravity generator metadata item ${index}: stepIndices must be a bounded integer array`
+      )
+    }
+    return step
+  })
+}
+
 function readIsoDateTime(value: unknown, index: number) {
   if (typeof value !== 'string' || !isValidIsoDateTime(value)) {
     throw new Error(`Invalid Antigravity generator metadata item ${index}: createdAt must be an ISO datetime`)
@@ -152,8 +204,11 @@ function isLeapYear(year: number) {
 }
 
 function usageEventHash(input: {
-  item: Record<string, unknown>
-  usage: Record<string, unknown>
+  identity: {
+    responseId: string | number | null
+    executionId: string | number | null
+    stepIndices: number[] | null
+  }
   tokens: {
     inputTokens: number
     outputTokens: number
@@ -164,9 +219,9 @@ function usageEventHash(input: {
   createdAt: string
 }) {
   return hash(JSON.stringify([
-    input.usage.responseId,
-    input.item.executionId,
-    input.item.stepIndices,
+    input.identity.responseId,
+    input.identity.executionId,
+    input.identity.stepIndices,
     input.model,
     input.createdAt,
     input.tokens.inputTokens,

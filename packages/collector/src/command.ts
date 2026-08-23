@@ -33,11 +33,14 @@ export type CommandRunner = (command: string, args: string[], options?: CommandR
 export const runJsonCommand: CommandRunner = async (command, args, options = {}) => {
   const retries = readRetryCount(options.retries)
   const maxAttempts = retries + 1
+  const shell = commandShellOption(command)
+  assertWindowsShellSafeInvocation(command, args, shell)
+  const invocation = buildShellInvocation(command, args, shell)
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const { stdout } = await execFileAsync(command, args, {
-        shell: commandShellOption(command),
+      const { stdout } = await execFileAsync(invocation.command, invocation.args, {
+        shell: invocation.shell,
         maxBuffer: 128 * 1024 * 1024,
         timeout: options.timeoutMs ?? readCommandTimeoutMs(),
         env: options.env
@@ -61,6 +64,27 @@ export const runJsonCommand: CommandRunner = async (command, args, options = {})
 
 export function commandShellOption(command: string, platform = process.platform) {
   return platform === 'win32' && /\.(cmd|bat)$/i.test(command)
+}
+
+export function assertWindowsShellSafeInvocation(command: string, args: string[], shell: boolean) {
+  if (!shell) return
+  if (windowsShellCommandMetacharacters.test(command)) {
+    throw new Error('Refusing to pass shell metacharacters in a Windows command shim path')
+  }
+  const unsafeIndex = args.findIndex((arg) => windowsShellMetacharacters.test(arg))
+  if (unsafeIndex >= 0) {
+    throw new Error(`Refusing to pass shell metacharacters in Windows command argument ${unsafeIndex}`)
+  }
+}
+
+export function buildShellInvocation(command: string, args: string[], shell: boolean) {
+  if (!shell) return { command, args, shell: false }
+  assertWindowsShellSafeInvocation(command, args, true)
+  return {
+    command: [command, ...args].map(quoteWindowsShellArgument).join(' '),
+    args: [],
+    shell: true
+  }
 }
 
 function readCommandTimeoutMs() {
@@ -101,4 +125,16 @@ function wait(delayMs: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, delayMs)
   })
+}
+
+// Parentheses are valid inside the command string passed to cmd.exe and in
+// normal Windows paths such as "Program Files (x86)". Keep rejecting control
+// and expansion operators that can still alter shell evaluation.
+const windowsShellMetacharacters = /[&|<>^%!"\r\n]/
+const windowsShellCommandMetacharacters = /[&|<>^%!"\r\n]/
+
+function quoteWindowsShellArgument(value: string) {
+  const text = String(value)
+  const trailingBackslashes = text.match(/\\+$/)?.[0].length ?? 0
+  return `"${text}${'\\'.repeat(trailingBackslashes)}"`
 }

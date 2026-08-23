@@ -2,6 +2,7 @@ type UsageInput = {
   inputTokens: number
   cacheReadTokens: number
   outputTokens: number
+  totalTokens?: number
 }
 
 export function sessionMeta(id: string, timestamp: string) {
@@ -254,6 +255,6 @@ function tokenUsage(usage: UsageInput) {
     input_tokens: usage.inputTokens,
     cached_input_tokens: usage.cacheReadTokens,
     output_tokens: usage.outputTokens,
-    total_tokens: usage.inputTokens + usage.outputTokens
+    total_tokens: usage.totalTokens ?? usage.inputTokens + usage.outputTokens
   }
 }

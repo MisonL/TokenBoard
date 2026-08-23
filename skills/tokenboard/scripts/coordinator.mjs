@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
-import { appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
+import { acknowledgeSignalSource, appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
 import { errorMessage } from './error-message.mjs'
 
 const defaultLockTimeoutMs = 60_000
-const defaultMaxFollowUps = 3
+const defaultLockTimeoutRetryDelayMs = 60_000
+const defaultMaxFollowUps = 0
 const defaultMaxRunLogs = 1_024
 
 class SuccessfulSyncCheckpointError extends Error {
@@ -25,12 +26,29 @@ class SuccessfulSyncCheckpointError extends Error {
   }
 }
 
-class CompletedSyncCleanupError extends Error {
+class CompletedSyncPostProcessError extends Error {
   constructor(cause, completedResult) {
     super(errorMessage(cause))
-    this.name = 'CompletedSyncCleanupError'
+    this.name = 'CompletedSyncPostProcessError'
     this.cause = cause
     this.completedResult = completedResult
+  }
+
+  withCleanupFailure(cleanupError) {
+    return new CompletedSyncPostProcessError(
+      new AggregateError(
+        [this.cause, cleanupError],
+        `${this.message}; sync lock release failed: ${errorMessage(cleanupError)}`
+      ),
+      this.completedResult
+    )
+  }
+}
+
+class CompletedSyncCleanupError extends CompletedSyncPostProcessError {
+  constructor(cause, completedResult) {
+    super(cause, completedResult)
+    this.name = 'CompletedSyncCleanupError'
   }
 }
 
@@ -47,7 +65,7 @@ export function coordinatedSync(trigger, options) {
     completed = runCoordinator(trigger, runtime, result)
   } catch (error) {
     const failedResult = error instanceof SuccessfulSyncCheckpointError ||
-      error instanceof CompletedSyncCleanupError
+      error instanceof CompletedSyncPostProcessError
       ? error.completedResult
       : result
     completed = { ...failedResult, error: errorMessage(error) }
@@ -65,7 +83,7 @@ function runCoordinator(trigger, runtime, result) {
   const lockPath = join(runtime.stateDir, 'sync.lock')
   const lock = acquireCoordinatorLock(lockPath, trigger, runtime, result)
   if (lock.result) {
-    if (lock.acquired) releaseLock(lockPath, runtime)
+    if (lock.acquired) releaseLock(lockPath, runtime, lock.owner)
     return lock.result
   }
 
@@ -82,19 +100,28 @@ function runCoordinator(trigger, runtime, result) {
       return skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock })
     }
 
-    const completed = { ...result, ...runLockedCycles(trigger, runtime, syncSources), waitedForLock: lock.waited }
+    const completed = {
+      ...result,
+      ...runLockedCycles(trigger, runtime, syncSources, lock.owner.token),
+      waitedForLock: lock.waited
+    }
     completedResult = completed
     writeSuccessfulSyncCheckpoint(completed, runtime)
-    return completed
+    return scheduleDeferredFollowUps(trigger, runtime, completed)
   } catch (error) {
-    coordinatorError = error
-    throw error
+    coordinatorError = completedResult && !(error instanceof SuccessfulSyncCheckpointError)
+      ? new CompletedSyncPostProcessError(error, completedResult)
+      : error
+    throw coordinatorError
   } finally {
     if (lock.acquired) {
       try {
-        releaseLock(lockPath, runtime)
+        releaseLock(lockPath, runtime, lock.owner)
       } catch (error) {
         if (coordinatorError instanceof SuccessfulSyncCheckpointError) {
+          throw coordinatorError.withCleanupFailure(error)
+        }
+        if (coordinatorError instanceof CompletedSyncPostProcessError) {
           throw coordinatorError.withCleanupFailure(error)
         }
         if (completedResult) throw new CompletedSyncCleanupError(error, completedResult)
@@ -105,22 +132,36 @@ function runCoordinator(trigger, runtime, result) {
 }
 
 function acquireCoordinatorLock(lockPath, trigger, runtime, result) {
-  if (acquireLock(lockPath, runtime)) {
-    return { acquired: true, waited: false, result: null }
+  const owner = acquireLock(lockPath, runtime)
+  if (owner) {
+    return { acquired: true, owner, waited: false, result: null }
   }
 
   appendSignal(runtime, trigger)
   const wait = waitForLock(lockPath, runtime)
   if (!wait.acquired) {
+    const trailingSources = [trigger.source]
+    const trailingDelayMs = lockTimeoutRetryDelayMs(runtime)
+    const trailingScheduled = scheduleTrailingSources(trigger, trailingSources, runtime, trailingDelayMs)
     return {
       acquired: false,
       waited: true,
-      result: { ...result, waitedForLock: true, skippedSync: true, error: wait.error || 'lock timeout' }
+      result: {
+        ...result,
+        waitedForLock: true,
+        skippedSync: true,
+        skippedReason: 'lock-timeout',
+        error: wait.error || 'lock timeout',
+        trailingScheduled,
+        ...(trailingScheduled ? { trailingDelayMs } : {}),
+        trailingSources
+      }
     }
   }
 
   return {
     acquired: true,
+    owner: wait.owner,
     waited: true,
     result: null
   }
@@ -160,15 +201,17 @@ function cooldownResult({ result, lock, remainingMs, trailingScheduled, trailing
     skippedReason: 'cooldown',
     cooldownRemainingMs: remainingMs,
     trailingScheduled,
+    ...(trailingScheduled ? { trailingDelayMs: remainingMs } : {}),
     trailingSources
   }
 }
 
-function runLockedCycles(trigger, runtime, initialSources) {
+function runLockedCycles(trigger, runtime, initialSources, lockToken) {
   const cycles = []
   let followUpCount = 0
   let hadFollowUp = false
   let error
+  let deferredSources = []
   const failedSources = new Set()
   let sources = initialSources.length > 0 ? initialSources : [trigger.source]
 
@@ -177,9 +220,11 @@ function runLockedCycles(trigger, runtime, initialSources) {
     for (const source of sources) {
       const sourceTrigger = { ...trigger, source }
       try {
+        const syncResult = runtime.executeSync(sourceTrigger, lockToken)
+        acknowledgeSignalSource(runtime, source)
         cycles.push({
           source,
-          result: runtime.executeSync(sourceTrigger)
+          result: syncResult
         })
         failedSources.delete(source)
       } catch (cause) {
@@ -196,7 +241,10 @@ function runLockedCycles(trigger, runtime, initialSources) {
       throw cause
     }
     if (sources.length === 0) break
-    if (followUpCount >= runtime.maxFollowUps) break
+    if (followUpCount >= runtime.maxFollowUps) {
+      deferredSources = sources
+      break
+    }
     hadFollowUp = true
     followUpCount += 1
   }
@@ -208,6 +256,7 @@ function runLockedCycles(trigger, runtime, initialSources) {
     followUpCount,
     skippedSync: false,
     cycles,
+    ...(deferredSources.length > 0 ? { deferredSources } : {}),
     ...(error ? { error } : {})
   }
 }
@@ -233,7 +282,7 @@ function buildRuntime(options = {}) {
   if (typeof options.executeSync !== 'function') {
     throw new Error('coordinatedSync requires executeSync')
   }
-  const hasCustomFileOps = Boolean(options.readFile || options.writeFile || options.unlink || options.exists)
+  const hasCustomFileOps = Boolean(options.readFile || options.writeFile || options.unlink || options.exists || options.rename || options.link)
   return {
     stateDir: readStateDir(options),
     executeSync: options.executeSync,
@@ -244,6 +293,9 @@ function buildRuntime(options = {}) {
     trailingProcess: options.trailingProcess === true,
     version: options.version || 'unknown',
     now: options.now || Date.now,
+    nodeVersion: options.nodeVersion || process.versions.node,
+    platform: options.platform || process.platform,
+    runTasklist: options.runTasklist,
     sleep: options.sleep || sleepSync,
     process: options.process || process,
     scheduleTrailing: options.scheduleTrailing || (() => false),
@@ -253,6 +305,7 @@ function buildRuntime(options = {}) {
     readdir: options.readdir || (hasCustomFileOps ? undefined : readdirSync),
     listRunLogs: options.listRunLogs || (hasCustomFileOps ? undefined : readdirSync),
     rename: options.rename || (hasCustomFileOps ? undefined : renameSync),
+    link: options.link || (hasCustomFileOps ? undefined : linkSync),
     unlink: options.unlink || unlinkSync,
     exists: options.exists || existsSync
   }
@@ -305,6 +358,22 @@ function scheduleTrailingSources(trigger, sources, runtime, remainingMs) {
     runtime.scheduleTrailing({ ...trigger, source }, remainingMs) || scheduled, false)
 }
 
+function lockTimeoutRetryDelayMs(runtime) {
+  return defaultLockTimeoutRetryDelayMs
+}
+
+function scheduleDeferredFollowUps(trigger, runtime, result) {
+  if (deriveStatus(result) !== 'success' || !result.deferredSources?.length) return result
+  const remainingMs = cooldownRemainingMs(runtime)
+  const trailingScheduled = scheduleTrailingSources(trigger, result.deferredSources, runtime, remainingMs)
+  return {
+    ...result,
+    trailingScheduled,
+    ...(trailingScheduled ? { trailingDelayMs: remainingMs } : {}),
+    trailingSources: result.deferredSources
+  }
+}
+
 function writeSuccessfulSyncCheckpoint(result, runtime) {
   if (deriveStatus(result) !== 'success') return
   try {
@@ -319,20 +388,22 @@ function writeSuccessfulSyncCheckpoint(result, runtime) {
 
 function writeRunLog(result, startedAtMs, runtime) {
   const lockPath = join(runtime.stateDir, 'run-logs.lock')
-  acquireRunLogLock(lockPath, runtime)
+  const owner = acquireRunLogLock(lockPath, runtime)
   try {
     writeRunLogEntry(result, startedAtMs, runtime)
   } finally {
-    releaseLock(lockPath, runtime)
+    releaseLock(lockPath, runtime, owner)
   }
 }
 
 function acquireRunLogLock(lockPath, runtime) {
-  if (acquireLock(lockPath, runtime)) return
+  const owner = acquireLock(lockPath, runtime)
+  if (owner) return owner
   const wait = waitForLock(lockPath, runtime)
   if (!wait.acquired) {
     throw new Error(`run log ${wait.error || 'lock timeout'}`)
   }
+  return wait.owner
 }
 
 function writeRunLogEntry(result, startedAtMs, runtime) {
@@ -351,7 +422,9 @@ function writeRunLogEntry(result, startedAtMs, runtime) {
       ...(result.skippedReason ? { skippedReason: result.skippedReason } : {}),
       ...(result.cooldownRemainingMs != null ? { cooldownRemainingMs: result.cooldownRemainingMs } : {}),
       ...(result.trailingScheduled != null ? { trailingScheduled: result.trailingScheduled } : {}),
+      ...(result.trailingDelayMs != null ? { trailingDelayMs: result.trailingDelayMs } : {}),
       ...(result.trailingSources ? { trailingSources: result.trailingSources } : {}),
+      ...(result.deferredSources ? { deferredSources: result.deferredSources } : {}),
       hadFollowUp: result.hadFollowUp,
       followUpCount: result.followUpCount
     },

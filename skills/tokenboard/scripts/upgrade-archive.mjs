@@ -21,10 +21,10 @@ export function runArchiveFallback({
   readDir,
   remove
 }) {
-  if (configDir && samePath(skillDir, configDir)) {
+  if (configDir && samePath(skillDir, configDir, platform)) {
     throw new Error(`Refusing to replace TokenBoard config directory as skill install: ${skillDir}`)
   }
-  if (configDir && samePath(collectorDir, configDir)) {
+  if (configDir && samePath(collectorDir, configDir, platform)) {
     throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${collectorDir}`)
   }
 
@@ -39,7 +39,7 @@ export function runArchiveFallback({
   remove(collectorDir, { recursive: true, force: true })
   copy(extractedRoot, collectorDir, { recursive: true, force: true })
   const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
-  if (!samePath(collectorSkillDir, skillDir)) {
+  if (!samePath(collectorSkillDir, skillDir, platform)) {
     copy(collectorSkillDir, skillDir, { recursive: true, force: true })
   }
   runStep({

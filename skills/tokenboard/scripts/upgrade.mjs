@@ -36,10 +36,10 @@ export function buildUpgradePlan({
   workDir,
   platform = process.platform
 }) {
-  if (configDir && samePath(skillDir, configDir)) {
+  if (configDir && samePath(skillDir, configDir, platform)) {
     throw new Error(`Refusing to replace TokenBoard config directory as skill install: ${skillDir}`)
   }
-  if (collectorExists && !collectorIsGitRepo && configDir && samePath(collectorDir, configDir)) {
+  if (collectorExists && !collectorIsGitRepo && configDir && samePath(collectorDir, configDir, platform)) {
     throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${collectorDir}`)
   }
 
@@ -68,7 +68,7 @@ export function buildUpgradePlan({
         ]
 
   const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
-  if (!samePath(collectorSkillDir, skillDir)) {
+  if (!samePath(collectorSkillDir, skillDir, platform)) {
     steps.push({
       command: 'copy',
       args: [collectorSkillDir, skillDir],
@@ -89,6 +89,8 @@ export function runUpgrade({
   flags = {},
   env = process.env,
   platform = process.platform,
+  nodePath = process.execPath,
+  automatic = false,
   spawn = spawnSync,
   exists = existsSync,
   copy = cpSync,
@@ -108,6 +110,17 @@ export function runUpgrade({
   const skillDir = flags['skill-dir'] || env.TOKENBOARD_SKILL_DIR || resolve(dirname(fileURLToPath(import.meta.url)), '..')
   const collectorExists = exists(collector)
   const collectorIsGitRepo = exists(join(collector, '.git'))
+
+  if (collectorExists && collectorIsGitRepo) {
+    assertCleanGitWorktree({ collectorDir: collector, spawn })
+    if (automatic) {
+      assertAutomaticUpgradeBranch({
+        collectorDir: collector,
+        repoRef,
+        spawn
+      })
+    }
+  }
 
   try {
     for (const step of buildUpgradePlan({
@@ -143,6 +156,14 @@ export function runUpgrade({
     })
   }
 
+  refreshInstalledNotifyHandler({
+    collectorDir: collector,
+    configDirectory,
+    env,
+    nodePath,
+    spawn
+  })
+
   mergeConfigFile({
     collectorDir: collector,
     repoUrl,
@@ -153,6 +174,112 @@ export function runUpgrade({
   })
   log(`TokenBoard upgraded from ${repoUrl}${repoRef ? `#${repoRef}` : ''}`)
   return { collectorDir: collector, skillDir, repoUrl, repoRef, packageManager }
+}
+
+export function refreshInstalledNotifyHandler({
+  collectorDir,
+  configDirectory,
+  env = process.env,
+  nodePath = process.execPath,
+  spawn = spawnSync
+} = {}) {
+  const scriptPath = joinForPlatform(
+    joinForPlatform(collectorDir, 'skills', 'tokenboard'),
+    'scripts',
+    'refresh-notify-handler.mjs'
+  )
+  const result = spawn(nodePath, [scriptPath], {
+    stdio: 'inherit',
+    shell: false,
+    windowsHide: true,
+    env: {
+      ...env,
+      TOKENBOARD_CONFIG_DIR: configDirectory
+    }
+  })
+  if (result.error) {
+    throw new Error(`TokenBoard notify handler refresh failed: ${errorMessage(result.error)}`)
+  }
+  if (result.status !== 0) {
+    throw new Error(`TokenBoard notify handler refresh failed with exit code ${result.status ?? 1}`)
+  }
+  return { scriptPath }
+}
+
+export function assertCleanGitWorktree({ collectorDir, spawn = spawnSync }) {
+  const result = spawn('git', ['status', '--porcelain', '--untracked-files=all'], {
+    cwd: collectorDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    shell: false
+  })
+  if (result.status !== 0) {
+    throw new Error('Unable to inspect the TokenBoard collector worktree before upgrade')
+  }
+  if (String(result.stdout ?? '').trim()) {
+    throw new Error('Refusing to upgrade a collector checkout with uncommitted changes')
+  }
+}
+
+export function assertAutomaticUpgradeBranch({ collectorDir, repoRef, spawn = spawnSync }) {
+  const currentBranch = readGitBranch({ collectorDir, spawn })
+  if (!currentBranch) {
+    throw new Error(
+      'Refusing automatic TokenBoard upgrade from a detached HEAD. ' +
+      'Run upgrade.mjs manually after switching the checkout to the intended branch.'
+    )
+  }
+
+  const targetBranch = resolveAutomaticUpgradeBranch({ collectorDir, repoRef, spawn })
+  if (!targetBranch) {
+    const explicitRef = trimmedString(repoRef)
+    throw new Error(
+      explicitRef
+        ? `Refusing automatic TokenBoard upgrade from branch ${currentBranch}: the configured ref is not a branch. ` +
+          'Run upgrade.mjs manually after switching the checkout to the intended ref.'
+        : `Refusing automatic TokenBoard upgrade from branch ${currentBranch}: unable to resolve the remote default branch. ` +
+          'Run upgrade.mjs manually after verifying the origin remote and its default branch.'
+    )
+  }
+  if (currentBranch !== targetBranch) {
+    throw new Error(
+      `Refusing automatic TokenBoard upgrade from branch ${currentBranch} to ${targetBranch}. ` +
+      'Run upgrade.mjs manually after switching the checkout to the intended branch.'
+    )
+  }
+}
+
+function resolveAutomaticUpgradeBranch({ collectorDir, repoRef, spawn }) {
+  const explicitRef = trimmedString(repoRef)
+  if (explicitRef) {
+    if (explicitRef.startsWith('refs/heads/')) {
+      return explicitRef.slice('refs/heads/'.length)
+    }
+    return explicitRef.startsWith('refs/') ? '' : explicitRef
+  }
+
+  const result = spawn('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], {
+    cwd: collectorDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    shell: false
+  })
+  if (result.status !== 0) return ''
+  const remoteHead = String(result.stdout ?? '').trim()
+  return remoteHead.startsWith('origin/') ? remoteHead.slice('origin/'.length) : ''
+}
+
+function readGitBranch({ collectorDir, spawn }) {
+  const result = spawn('git', ['branch', '--show-current'], {
+    cwd: collectorDir,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    shell: false
+  })
+  if (result.status !== 0) {
+    throw new Error('Unable to inspect the TokenBoard collector branch before automatic upgrade')
+  }
+  return String(result.stdout ?? '').trim()
 }
 
 export function resolveArchiveUrls({ flags = {}, env = process.env, config = {}, repoUrl = defaultRepoUrl, repoRef = null } = {}) {

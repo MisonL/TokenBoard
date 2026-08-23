@@ -2,14 +2,15 @@
 import { existsSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { collectorDir, configDir, mergeConfig, parseArgs, readPackageManager } from './config.mjs'
 import {
   buildCloneSteps,
   buildDefaultBranchPullSteps,
   buildFetchAndCheckoutRefSteps,
   errorMessage,
-  runStep
+  runStep,
+  samePath
 } from './upgrade-utils.mjs'
 
 const defaultRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
@@ -36,7 +37,7 @@ export function buildInstallCollectorPlan({
   configDir,
   platform = process.platform
 }) {
-  if (exists && !isGitRepo && configDir && samePath(dir, configDir)) {
+  if (exists && !isGitRepo && configDir && samePath(dir, configDir, platform)) {
     throw new Error(`Refusing to replace TokenBoard config directory as collector checkout: ${dir}`)
   }
 
@@ -84,10 +85,6 @@ function runCli() {
 
   mergeConfig({ collectorDir: dir, repoUrl, repoRef, packageManager, updatedAt: new Date().toISOString() })
   console.log(`TokenBoard collector ready at ${dir}`)
-}
-
-function samePath(leftPath, rightPath) {
-  return resolve(leftPath) === resolve(rightPath)
 }
 
 function corepackCommand(platform) {

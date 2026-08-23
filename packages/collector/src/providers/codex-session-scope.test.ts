@@ -55,6 +55,95 @@ describe('createCodexSessionScope', () => {
     }
   })
 
+  test('preserves a comma in an explicitly configured Codex home array', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-scope-comma-home-'))
+    const codexHome = join(root, 'profile,primary')
+    const sessionFile = join(codexHome, 'sessions', '2026', '05', '09', 'session.jsonl')
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-09T04:24:07.234Z')])
+      const scope = await createCodexSessionScope({ codexHomes: [codexHome], since: 'all' })
+
+      try {
+        expect(scope?.codexHomes).toHaveLength(1)
+        await expect(readFile(join(scope!.codexHome, 'sessions', '2026', '05', '09', 'session.jsonl'), 'utf8'))
+          .resolves.toContain('token_count')
+      } finally {
+        await scope?.cleanup()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects an existing comma-containing legacy CODEX_HOME as ambiguous', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-scope-ambiguous-home-'))
+    const codexHome = join(root, 'profile,primary')
+
+    try {
+      await mkdir(codexHome, { recursive: true })
+      await expect(createCodexSessionScope({ codexHome, since: 'all' })).rejects.toThrow(
+        'CODEX_HOME is ambiguous because the configured path contains a comma'
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects and cleans up a temporary scope when TMPDIR contains a comma', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    const tempRoot = await mkdtemp(join(tmpdir(), 'tokenboard-scope-comma-root-'))
+    const commaTmpdir = join(tempRoot, 'temporary,scope')
+    const temporaryDirectoryVariables = process.platform === 'win32' ? ['TEMP', 'TMP'] : ['TMPDIR']
+    const previousTemporaryDirectoryValues = temporaryDirectoryVariables.map((name) => process.env[name])
+
+    try {
+      await mkdir(commaTmpdir)
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', '09', 'session.jsonl'), [
+        tokenCountEvent('2026-05-09T04:24:07.234Z')
+      ])
+      for (const name of temporaryDirectoryVariables) process.env[name] = commaTmpdir
+
+      await expect(createCodexSessionScope({ codexHome, since: 'all' })).rejects.toThrow(
+        'Temporary Codex session scope path contains a comma'
+      )
+      await expect(listScopeTempDirs(commaTmpdir)).resolves.toEqual([])
+    } finally {
+      temporaryDirectoryVariables.forEach((name, index) => restoreEnv(name, previousTemporaryDirectoryValues[index]))
+      await rm(codexHome, { recursive: true, force: true })
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('reads comma-containing Codex homes from an unambiguous JSON environment value', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-scope-json-homes-'))
+    const codexHome = join(root, 'profile,primary')
+    const ignoredLegacyHome = join(root, 'legacy')
+    const previousCodexHome = process.env.CODEX_HOME
+    const previousCodexHomesJson = process.env.TOKENBOARD_CODEX_HOMES_JSON
+
+    try {
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', '09', 'session.jsonl'), [
+        tokenCountEvent('2026-05-09T04:24:07.234Z')
+      ])
+      process.env.CODEX_HOME = ignoredLegacyHome
+      process.env.TOKENBOARD_CODEX_HOMES_JSON = JSON.stringify([codexHome])
+
+      const scope = await createCodexSessionScope({ since: 'all' })
+      try {
+        expect(scope?.codexHomes).toHaveLength(1)
+        await expect(readFile(join(scope!.codexHome, 'sessions', '2026', '05', '09', 'session.jsonl'), 'utf8'))
+          .resolves.toContain('token_count')
+      } finally {
+        await scope?.cleanup()
+      }
+    } finally {
+      restoreEnv('CODEX_HOME', previousCodexHome)
+      restoreEnv('TOKENBOARD_CODEX_HOMES_JSON', previousCodexHomesJson)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('selects sessions by token_count timestamp before directory date', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
     try {
@@ -216,6 +305,43 @@ describe('createCodexSessionScope', () => {
     }
   })
 
+  test('groups complete relative paths across profiles when a nested directory sorts beside a sibling file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-scope-order-'))
+    const firstHome = join(root, 'first')
+    const secondHome = join(root, 'second')
+    const firstSibling = join(firstHome, 'sessions', 'a.jsonl')
+    const secondSibling = join(secondHome, 'sessions', 'a.jsonl')
+    const firstNested = join(firstHome, 'sessions', 'a', 'nested.jsonl')
+
+    try {
+      await Promise.all([
+        writeJsonl(firstSibling, [tokenCountEvent('2026-05-09T04:24:07.234Z')]),
+        writeJsonl(secondSibling, [tokenCountEvent('2026-05-09T04:24:07.234Z')]),
+        writeJsonl(firstNested, [tokenCountEvent('2026-05-09T04:24:07.234Z')])
+      ])
+
+      const batches: string[][] = []
+      for await (const scope of createCodexSessionScopeBatches({
+        codexHomes: [firstHome, secondHome],
+        since: 'all',
+        batchSize: 1
+      })) {
+        try {
+          batches.push([...scope.sourceFiles.values()].sort())
+        } finally {
+          await scope.cleanup()
+        }
+      }
+
+      expect(batches).toEqual([
+        [firstSibling, secondSibling].sort(),
+        [firstNested]
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('combines every matching file in the compatibility scope API', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
     try {
@@ -236,6 +362,84 @@ describe('createCodexSessionScope', () => {
       } finally {
         await scope?.cleanup()
       }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('copies an explicitly selected archived session and retains its original-file mapping', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    const archived = join(codexHome, 'archived_sessions', '2026', '05', 'archived.jsonl')
+    try {
+      await writeJsonl(archived, [tokenCountEvent('2026-05-09T04:24:07.234Z')])
+
+      const scope = await createCodexSessionScope({ codexHome, files: [archived] })
+      expect(scope).not.toBeNull()
+      try {
+        const scopedFile = join(scope!.codexHome, 'archived_sessions', '2026', '05', 'archived.jsonl')
+        await expect(readFile(scopedFile, 'utf8')).resolves.toContain('token_count')
+        expect(scope!.sourceFiles.get(scopedFile)).toBe(archived)
+      } finally {
+        await scope?.cleanup()
+      }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('includes archive-only sessions in full scan scopes', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    const archived = join(codexHome, 'archived_sessions', '2026', '05', 'archive-only.jsonl')
+    try {
+      await writeJsonl(archived, [tokenCountEvent('2026-05-09T04:24:07.234Z')])
+
+      const scope = await createCodexSessionScope({ codexHome, since: 'all' })
+      expect(scope).not.toBeNull()
+      try {
+        await expect(
+          readFile(join(scope!.codexHome, 'archived_sessions', '2026', '05', 'archive-only.jsonl'), 'utf8')
+        ).resolves.toContain('token_count')
+      } finally {
+        await scope?.cleanup()
+      }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('prefers an active session when an archive has the same relative path', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    const active = join(codexHome, 'sessions', '2026', '05', 'shared.jsonl')
+    const archived = join(codexHome, 'archived_sessions', '2026', '05', 'shared.jsonl')
+    try {
+      await writeJsonl(active, [{ source: 'active' }])
+      await writeJsonl(archived, [{ source: 'archived' }])
+
+      const scope = await createCodexSessionScope({ codexHome, files: [archived, active] })
+      expect(scope).not.toBeNull()
+      try {
+        const scoped = join(scope!.codexHome, 'sessions', '2026', '05', 'shared.jsonl')
+        await expect(readFile(scoped, 'utf8')).resolves.toContain('"source":"active"')
+        expect(scope!.sourceFiles.get(scoped)).toBe(active)
+      } finally {
+        await scope?.cleanup()
+      }
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects explicit session files outside active and archived session directories', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))
+    const outside = join(codexHome, 'outside.jsonl')
+    try {
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', 'valid.jsonl'), [
+        tokenCountEvent('2026-05-09T04:24:07.234Z')
+      ])
+      await writeJsonl(outside, [tokenCountEvent('2026-05-09T04:24:07.234Z')])
+
+      await expect(createCodexSessionScope({ codexHome, files: [outside] }))
+        .rejects.toThrow('Invalid Codex session file path for canonical session attribution')
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }

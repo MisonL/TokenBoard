@@ -6,7 +6,11 @@ import {
   withCursorLock,
   writeCursor
 } from './session-cursor-store'
-import { mergeSnapshots } from './session-cursor'
+import {
+  mergeSnapshots,
+  selectPendingCursorSnapshotGroups,
+  shouldIncludeCursorSnapshot
+} from './session-cursor'
 import {
   createAntigravityLanguageServerClient,
   listAntigravityCascades,
@@ -14,7 +18,10 @@ import {
   type AntigravityGeneratorMetadataRequest
 } from './antigravity-gui-client'
 import { hash, parseGeneratorMetadata } from './antigravity-gui-parser'
-import type { AntigravityDbUsageResult } from './antigravity-history-db'
+import {
+  isAntigravityDbRowCursorResetError,
+  type AntigravityDbUsageResult
+} from './antigravity-history-db'
 import {
   resolveAntigravityCollectionRange,
   type AntigravityCollectionRange
@@ -27,7 +34,9 @@ import {
   prepareGuiHistoryScope,
   pushCompleteGuiCursorSnapshots,
   pushGuiUsageEvent,
+  queueGuiDbResetCorrections,
   readEmptyCascadeFrontier,
+  resetGuiDbCursorState,
   type EmptyCascadeFrontier,
   shouldRequestCascade
 } from './antigravity-gui-cursor'
@@ -57,12 +66,16 @@ export type CollectAntigravityGuiUsageOptions = {
     maxDbFiles?: number | null
     sinceDate?: string
     timezone?: string
+    detectRowCursorReset?: boolean
   }) => Promise<AntigravityDbUsageResult>
+  stderr?: (line: string) => void
   maxLanguageServerCascades?: number
   maxDbFiles?: number | null
 }
 
 const defaultMaxLanguageServerCascades = 12
+
+export const maxAntigravityLanguageServerUsageEvents = 32_768
 
 export class AntigravityPartialUsageError extends Error {
   readonly fatal: boolean
@@ -112,15 +125,34 @@ async function collectAntigravityGuiUsageLocked(input: {
   const { options, timezone, collectedAt, cursorPath } = input
   const cursor = await readCursor(cursorPath, options.source)
   const range = resolveAntigravityCollectionRange({ since: options.since, timezone })
+  const pendingSnapshotGroups = selectPendingCursorSnapshotGroups({
+    cursor,
+    sinceDate: range.sinceDate
+  })
   prepareGuiHistoryScope({ cursor, source: options.source, historyScope: range.historyScope })
   cursor.antigravityDbFileScan ??= { nextSequence: 0, files: {} }
   cursor.antigravityCascadeFileScan ??= { nextSequence: 0, files: {} }
   const snapshots: UsageSnapshot[] = []
   const emittedKeys = new Set<string>()
 
-  const { usage: localDbUsage, error: localDbError } = await readAntigravityGuiLocalDbUsage(options, cursor, range, timezone)
+  const { usage: localDbUsage, error: localDbError } = await readGuiLocalDbUsageWithCursorRecovery({
+    options,
+    cursor,
+    range,
+    timezone,
+    collectedAt
+  })
   for (const event of localDbUsage.events.filter((item) => range.includesTimestamp(item.createdAt))) {
-    pushGuiUsageEvent({ event, cursor, snapshots, emittedKeys, timezone, collectedAt, source: options.source })
+    pushGuiUsageEvent({
+      event,
+      origin: 'database',
+      cursor,
+      snapshots,
+      emittedKeys,
+      timezone,
+      collectedAt,
+      source: options.source
+    })
   }
 
   if (localDbError && !isUnavailableDbError(localDbError)) {
@@ -142,10 +174,44 @@ async function collectAntigravityGuiUsageLocked(input: {
     cursor,
     collectedAt,
     emittedKeys,
-    (snapshot) => !range.sinceDate || snapshot.usageDate >= range.sinceDate
+    (snapshot) => shouldIncludeCursorSnapshot(snapshot, range.sinceDate, pendingSnapshotGroups)
   )
   await writeCursor(cursorPath, cursor)
   return mergeSnapshots(snapshots)
+}
+
+async function readGuiLocalDbUsageWithCursorRecovery(input: {
+  options: CollectAntigravityGuiUsageOptions
+  cursor: Awaited<ReturnType<typeof readCursor>>
+  range: AntigravityCollectionRange
+  timezone: string
+  collectedAt: string
+}) {
+  const firstAttempt = await readAntigravityGuiLocalDbUsage(
+    input.options,
+    input.cursor,
+    input.range,
+    input.timezone
+  )
+  if (!input.range.fullHistory || !isAntigravityDbRowCursorResetError(firstAttempt.error)) {
+    return firstAttempt
+  }
+
+  const corrections = resetGuiDbCursorState({
+    cursor: input.cursor,
+    source: input.options.source
+  })
+  const stderr = input.options.stderr ?? console.error
+  stderr('Antigravity SQLite metadata cursor reset detected; rebuilding full local database history once')
+  const rebuilt = await readAntigravityGuiLocalDbUsage(input.options, input.cursor, input.range, input.timezone)
+  if (rebuilt.error) {
+    throw new Error(
+      `Antigravity SQLite metadata cursor reset recovery failed: ${errorMessage(rebuilt.error)}`,
+      { cause: rebuilt.error }
+    )
+  }
+  queueGuiDbResetCorrections({ cursor: input.cursor, corrections, collectedAt: input.collectedAt })
+  return rebuilt
 }
 
 async function collectLanguageServerUsage(input: {
@@ -195,14 +261,18 @@ async function requestLanguageServerUsage(
   },
   request: Awaited<ReturnType<typeof createRequestContext>>
 ) {
+  let usageEventCount = 0
   for (const cascade of input.uncapturedCascades) {
     const response = await request.requestGeneratorMetadata({ source: input.options.source, cascadeId: cascade.id })
+    const events = parseGeneratorMetadata(response, cascade.id)
+    usageEventCount = reserveAntigravityLanguageServerUsageEvents(usageEventCount, events.length)
     let hasUsableEvents = false
-    for (const event of parseGeneratorMetadata(response, cascade.id)) {
+    for (const event of events) {
       hasUsableEvents = true
       if (!input.range.includesTimestamp(event.createdAt)) continue
       pushGuiUsageEvent({
         event,
+        origin: 'language-server',
         cursor: input.cursor,
         snapshots: input.snapshots,
         emittedKeys: input.emittedKeys,
@@ -231,6 +301,16 @@ async function requestLanguageServerUsage(
   }
 }
 
+export function reserveAntigravityLanguageServerUsageEvents(currentCount: number, incomingCount: number) {
+  const nextCount = currentCount + incomingCount
+  if (nextCount > maxAntigravityLanguageServerUsageEvents) {
+    throw new Error(
+      `Antigravity language server metadata exceeded the ${maxAntigravityLanguageServerUsageEvents} usage-event limit`
+    )
+  }
+  return nextCount
+}
+
 async function preservePartialGuiUsage(
   input: Parameters<typeof collectLanguageServerUsage>[0],
   cleanupErrors: unknown[]
@@ -247,7 +327,11 @@ async function preservePartialGuiUsage(
       input.cursor,
       input.collectedAt,
       input.emittedKeys,
-      (snapshot) => !input.range.sinceDate || snapshot.usageDate >= input.range.sinceDate
+      (snapshot) => shouldIncludeCursorSnapshot(
+        snapshot,
+        input.range.sinceDate,
+        selectPendingCursorSnapshotGroups({ cursor: input.cursor, sinceDate: input.range.sinceDate })
+      )
     )
     await writeCursor(input.cursorPath, input.cursor)
   } catch (cleanupError) {
@@ -369,7 +453,7 @@ function compareCascadeRecency(left: AntigravityCascadeRef, right: AntigravityCa
 function normalizeMaxLanguageServerCascades(value: number | undefined) {
   if (value === undefined) return defaultMaxLanguageServerCascades
   if (!Number.isFinite(value) || value < 0) return defaultMaxLanguageServerCascades
-  return Math.floor(value)
+  return Math.min(Math.floor(value), defaultMaxLanguageServerCascades)
 }
 
 async function readLanguageServerCascadeRefs(input: {

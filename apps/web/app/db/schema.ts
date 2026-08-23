@@ -41,7 +41,10 @@ export const dailyUsage = sqliteTable(
       table.source,
       table.model,
       table.deviceId
-    )
+    ),
+    index('daily_usage_usage_date_idx').on(table.usageDate),
+    index('daily_usage_user_date_idx').on(table.userId, table.usageDate),
+    index('daily_usage_user_device_date_idx').on(table.userId, table.deviceId, table.usageDate)
   ]
 )
 

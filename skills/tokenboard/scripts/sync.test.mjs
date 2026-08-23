@@ -114,6 +114,10 @@ test('sync script forwards resolved since to all collectors', () => {
 test('hook sync forwards hook mode and state directory to the collector', () => {
   const invocation = buildSyncInvocation({
     flags: { hook: true, source: 'codex' },
+    env: {
+      TOKENBOARD_COORDINATOR_LOCK_HELD: '1',
+      TOKENBOARD_COORDINATOR_LOCK_TOKEN: 'coordinator-token'
+    },
     config: {
       endpoint: 'https://tokenboard.example.com/api/v1/ingest',
       uploadToken: 'test-upload-token',
@@ -127,6 +131,8 @@ test('hook sync forwards hook mode and state directory to the collector', () => 
 
   assert.equal(invocation.env.TOKENBOARD_HOOK_MODE, '1')
   assert.equal(invocation.env.TOKENBOARD_STATE_DIR, '/home/user/.tokenboard')
+  assert.equal(invocation.env.TOKENBOARD_COORDINATOR_LOCK_HELD, undefined)
+  assert.equal(invocation.env.TOKENBOARD_COORDINATOR_LOCK_TOKEN, undefined)
 })
 
 test('hook sync preserves an explicit TokenBoard state directory', () => {

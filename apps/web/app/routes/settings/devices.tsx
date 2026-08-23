@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Input } from '../../components/ui/input'
 import { LucideIcon } from '../../components/ui/icon'
 import { requireUser } from '../../features/auth/middleware'
+import { CopyableCommandBlock } from '../../features/device/components/install-command'
 import {
   listLatestDeviceAuditLogs,
   listUserDevices,
@@ -21,7 +22,7 @@ import {
 import { requireDeviceStepUp } from '../../features/device/step-up'
 import { getCanonicalPublicOrigin } from '../../features/settings/service'
 import { jsonError } from '../../lib/http'
-import { Info, LayoutGrid, List, Search, X, type IconNode } from 'lucide'
+import { Info, KeyRound, LayoutGrid, List, Search, X, type IconNode } from 'lucide'
 import { cn } from '../../lib/cn'
 
 export const GET = createRoute(async (c) => {
@@ -384,25 +385,48 @@ function RotatedTokenFlash(props: {
   if (!props.credentials) return null
   const deviceLinkCommands = buildRotatedTokenUpdateCommands(props.credentials, props.serverOrigin)
   return (
-    <section class="app-flash-success grid gap-2 p-3 text-sm">
-      <p class="font-bold">新的上传凭证只显示一次，请立即更新对应 client 配置。</p>
-      <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
-        {props.credentials.uploadToken}
-      </code>
+    <section class="app-flash-success grid gap-4 p-4 text-sm sm:p-5">
+      <div role="status">
+        <header class="flex items-start gap-3">
+          <span class="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-lime-700/20 bg-lime-300/30 text-lime-950">
+            <LucideIcon icon={KeyRound} size={18} />
+          </span>
+          <div class="min-w-0">
+            <p class="font-black text-[var(--app-text)]">新的上传凭证只显示一次</p>
+            <p class="mt-1 text-xs leading-5 text-[var(--app-muted)]">
+              立即复制并更新对应 client。轮换后旧 upload token 和 install claim 已失效。
+            </p>
+          </div>
+        </header>
+      </div>
+      <div class="grid min-w-0 gap-3">
+        <CopyableCommandBlock
+          title="Upload token"
+          command={props.credentials.uploadToken}
+          targetId="rotated-upload-token-text"
+          copyLabel="复制新的 upload token"
+        />
+        {deviceLinkCommands ? (
+          <>
+            <CopyableCommandBlock
+              title="macOS / Linux / Git Bash"
+              command={deviceLinkCommands.bash}
+              targetId="rotated-token-bash-command-text"
+              copyLabel="复制 macOS / Linux / Git Bash 令牌更新命令"
+            />
+            <CopyableCommandBlock
+              title="Windows PowerShell"
+              command={deviceLinkCommands.powerShell}
+              targetId="rotated-token-powershell-command-text"
+              copyLabel="复制 Windows PowerShell 令牌更新命令"
+            />
+          </>
+        ) : null}
+      </div>
       {deviceLinkCommands ? (
-        <>
-          <p class="text-xs text-[var(--app-muted)]">
-            在对应 client 机器执行一次，更新 config 和 device-link 恢复状态，旧 install claim 已失效：
-          </p>
-          <p class="text-xs font-bold text-[var(--app-muted)]">macOS / Linux / Git Bash</p>
-          <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
-            {deviceLinkCommands.bash}
-          </code>
-          <p class="text-xs font-bold text-[var(--app-muted)]">Windows PowerShell</p>
-          <code class="block break-all rounded-lg bg-[var(--app-bg-soft)] p-3 font-mono text-xs text-[var(--app-text)]">
-            {deviceLinkCommands.powerShell}
-          </code>
-        </>
+        <p class="text-xs leading-5 text-[var(--app-muted)]">
+          在对应 client 机器执行其中一条命令，以同时更新 config 和 device-link 恢复状态。
+        </p>
       ) : null}
     </section>
   )

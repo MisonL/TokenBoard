@@ -1,6 +1,6 @@
 SELECT
-  installation_id,
-  supersedes_token_id
+  upload_tokens.installation_id,
+  upload_tokens.supersedes_token_id
 FROM upload_tokens
 LIMIT 0;
 

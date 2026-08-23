@@ -816,7 +816,7 @@ describe('pairDevice', () => {
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' })
   })
 
-  test('rejects a pairing code that was consumed by another request', async () => {
+  test('maps a new-device pairing code consumed by another request to unauthorized', async () => {
     const { repository } = createRepository({
       async createUploadTokenAndDevice() {
         throw new Error('Pairing code is no longer current')
@@ -836,7 +836,10 @@ describe('pairDevice', () => {
           hash: async (value) => `hash:${value}`
         }
       )
-    ).rejects.toThrow('Pairing code is no longer current')
+    ).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+      message: 'Invalid or expired pairing code'
+    })
   })
 })
 

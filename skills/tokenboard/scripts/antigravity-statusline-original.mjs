@@ -1,5 +1,6 @@
 import { spawn as spawnProcess } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
+import { win32 as windowsPath } from 'node:path'
 
 const commandTimeoutMs = 3_000
 const forceKillGraceMs = 250
@@ -153,7 +154,12 @@ function abortCommand(child, state, error) {
 export function terminateOriginalCommandTree(child, signal, options = {}) {
   const platform = options.platform ?? process.platform
   if (platform === 'win32') {
-    terminateWindowsCommandTree(child, signal, options.spawnTreeKiller ?? spawnProcess)
+    terminateWindowsCommandTree(
+      child,
+      signal,
+      options.spawnTreeKiller ?? spawnProcess,
+      options.taskkillCommand ?? windowsTaskkillCommand(options.env)
+    )
     return
   }
   if (child.pid) {
@@ -167,7 +173,7 @@ export function terminateOriginalCommandTree(child, signal, options = {}) {
   } catch {}
 }
 
-function terminateWindowsCommandTree(child, signal, spawnTreeKiller) {
+function terminateWindowsCommandTree(child, signal, spawnTreeKiller, taskkillCommand) {
   if (!child.pid) {
     try {
       child.kill(signal)
@@ -177,7 +183,7 @@ function terminateWindowsCommandTree(child, signal, spawnTreeKiller) {
   try {
     const args = ['/PID', String(child.pid), '/T']
     if (signal === 'SIGKILL') args.push('/F')
-    const treeKiller = spawnTreeKiller('taskkill', args, {
+    const treeKiller = spawnTreeKiller(taskkillCommand, args, {
       stdio: 'ignore',
       windowsHide: true
     })
@@ -199,6 +205,12 @@ function terminateWindowsCommandTree(child, signal, spawnTreeKiller) {
       child.kill(signal)
     } catch {}
   }
+}
+
+export function windowsTaskkillCommand(env = process.env) {
+  const systemRoot = typeof env?.SystemRoot === 'string' ? env.SystemRoot.trim() : ''
+  const root = windowsPath.isAbsolute(systemRoot) ? systemRoot : 'C:\\Windows'
+  return windowsPath.join(root, 'System32', 'taskkill.exe')
 }
 
 function readOriginalCommand(filePath, selfPath) {

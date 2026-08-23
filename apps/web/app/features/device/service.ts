@@ -1506,6 +1506,10 @@ function isStaleReconnectPairingError(error: unknown) {
   return error instanceof Error && error.message === 'Reconnect pairing code is no longer current'
 }
 
+function isStaleNewDevicePairingError(error: unknown) {
+  return error instanceof Error && error.message === 'Pairing code is no longer current'
+}
+
 export async function pairDevice(
   repository: DevicePairingRepository,
   request: DevicePairRequest,
@@ -1574,6 +1578,9 @@ export async function pairDevice(
       await repository.createUploadTokenAndDevice(input)
     }
   } catch (error) {
+    if (pairingCode.pairingType !== 'reconnect_device' && isStaleNewDevicePairingError(error)) {
+      throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
+    }
     if (pairingCode.pairingType === 'reconnect_device') {
       if (isStaleReconnectPairingError(error)) {
         throw new ApiError('UNAUTHORIZED', 'Invalid or expired pairing code', 401)
