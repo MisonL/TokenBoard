@@ -10,7 +10,9 @@ import {
   type AntigravityGuiSource
 } from './antigravity-gui'
 
-describe('collectAntigravityGuiUsage', () => {
+// Cases in this suite spawn language-server stand-ins and SQLite fixtures;
+// under full-suite parallelism on slower machines they exceed the default 5s.
+describe('collectAntigravityGuiUsage', { timeout: 30_000 }, () => {
   test('extracts standalone generator metadata without persisting raw local identifiers', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-gui-'))
     try {
@@ -1312,7 +1314,7 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
-  test('keeps DB-covered markers when default cascade listing filters language-server requests', { timeout: 30_000 }, async () => {
+  test('keeps DB-covered markers when default cascade listing filters language-server requests', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-covered-default-list-'))
     const conversationDir = join(root, 'conversations')
     const cascadeId = '11111111-1111-1111-1111-111111111111'
