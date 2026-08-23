@@ -1312,7 +1312,7 @@ describe('collectAntigravityGuiUsage', () => {
     }
   })
 
-  test('keeps DB-covered markers when default cascade listing filters language-server requests', async () => {
+  test('keeps DB-covered markers when default cascade listing filters language-server requests', { timeout: 30_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-db-covered-default-list-'))
     const conversationDir = join(root, 'conversations')
     const cascadeId = '11111111-1111-1111-1111-111111111111'

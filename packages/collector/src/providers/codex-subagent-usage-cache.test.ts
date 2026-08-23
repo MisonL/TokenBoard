@@ -5,6 +5,20 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import { retainCacheEntries, withCodexSubagentUsageCache } from './codex-subagent-usage-cache'
 
+// Creating symbolic links requires elevated privileges on Windows; skip the
+// symlink-rejection coverage when the environment cannot create one.
+const canCreateSymlinks = await (async () => {
+  const probeDir = await mkdtemp(join(tmpdir(), 'tokenboard-symlink-probe-'))
+  try {
+    await symlink(join(probeDir, 'target.jsonl'), join(probeDir, 'link.jsonl'))
+    return true
+  } catch {
+    return false
+  } finally {
+    await rm(probeDir, { recursive: true, force: true })
+  }
+})()
+
 describe('Codex subagent usage cache', () => {
   test('bounds entries when one correction uses more than the cache capacity', () => {
     const entries = Object.fromEntries(Array.from({ length: 2_001 }, (_, index) => [
@@ -281,7 +295,7 @@ describe('Codex subagent usage cache', () => {
     }
   })
 
-  test('rejects a symbolic link even when it resolves to an unchanged cached child session', async () => {
+  test.skipIf(!canCreateSymlinks)('rejects a symbolic link even when it resolves to an unchanged cached child session', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-symlink-'))
     const childPath = join(stateDir, 'child.jsonl')
     const targetPath = join(stateDir, 'child-target.jsonl')

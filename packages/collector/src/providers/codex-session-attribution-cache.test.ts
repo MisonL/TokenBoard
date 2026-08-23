@@ -31,6 +31,20 @@ import {
   withCodexSessionAttributionCache
 } from './codex-session-attribution-cache'
 
+// Creating symbolic links requires elevated privileges on Windows; skip the
+// symlink-rejection coverage when the environment cannot create one.
+const canCreateSymlinks = await (async () => {
+  const probeDir = await mkdtemp(join(tmpdir(), 'tokenboard-symlink-probe-'))
+  try {
+    await symlink(join(probeDir, 'target.jsonl'), join(probeDir, 'link.jsonl'))
+    return true
+  } catch {
+    return false
+  } finally {
+    await rm(probeDir, { recursive: true, force: true })
+  }
+})()
+
 describe('Codex session attribution cache', () => {
   test('rejects a cache hit when its source session changes before the transaction finishes', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
@@ -252,7 +266,7 @@ describe('Codex session attribution cache', () => {
     }
   })
 
-  test('rejects a symbolic link substituted for an attribution cache source', async () => {
+  test.skipIf(!canCreateSymlinks)('rejects a symbolic link substituted for an attribution cache source', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
     const sourceDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-source-'))
     const sessionFile = join(sourceDir, 'session.jsonl')
