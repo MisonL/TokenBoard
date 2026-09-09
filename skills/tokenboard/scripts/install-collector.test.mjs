@@ -220,7 +220,7 @@ test('removes an existing non-git collector directory before cloning', () => {
 test('uses corepack pnpm for workspace dependency install on Windows', () => {
   assert.deepEqual(
     buildInstallCollectorPlan({
-      dir: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard',
+      dir: 'C:\\Users\\example\\.tokenboard\\TokenBoard',
       repoUrl: 'https://github.com/example/TokenBoard.git',
       packageManager: 'npm',
       exists: false,
@@ -229,7 +229,7 @@ test('uses corepack pnpm for workspace dependency install on Windows', () => {
     {
       command: 'corepack.cmd',
       args: ['pnpm', 'install', '--frozen-lockfile'],
-      options: { cwd: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard' }
+      options: { cwd: 'C:\\Users\\example\\.tokenboard\\TokenBoard' }
     }
   )
 })
@@ -251,8 +251,8 @@ test('refuses to replace the config directory as a non-git collector', () => {
 test('refuses a case-variant Windows config directory as a non-git collector', () => {
   assert.throws(
     () => buildInstallCollectorPlan({
-      dir: 'C:\\Users\\QDM\\.tokenboard',
-      configDir: 'c:\\users\\qdm\\.TOKENBOARD',
+      dir: 'C:\\Users\\example\\.tokenboard',
+      configDir: 'c:\\users\\example\\.TOKENBOARD',
       repoUrl: 'https://github.com/example/TokenBoard.git',
       packageManager: 'pnpm',
       exists: true,

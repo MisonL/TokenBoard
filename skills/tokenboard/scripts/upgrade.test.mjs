@@ -11,7 +11,7 @@ test('normalizes empty error diagnostics', () => {
 
 test('treats Windows paths that differ only by case as the same filesystem path', () => {
   assert.equal(
-    samePath('C:\\Users\\QDM\\.tokenboard', 'c:\\users\\qdm\\.TOKENBOARD', 'win32'),
+    samePath('C:\\Users\\example\\.tokenboard', 'c:\\users\\example\\.TOKENBOARD', 'win32'),
     true
   )
 })
@@ -956,14 +956,14 @@ test('refuses to replace the config directory as a non-git collector during upgr
 test('refuses a case-variant Windows config directory as a non-git collector', () => {
   assert.throws(
     () => buildUpgradePlan({
-      collectorDir: 'C:\\Users\\QDM\\.tokenboard',
-      skillDir: 'C:\\Users\\QDM\\.codex\\skills\\tokenboard',
-      configDir: 'c:\\users\\qdm\\.TOKENBOARD',
+      collectorDir: 'C:\\Users\\example\\.tokenboard',
+      skillDir: 'C:\\Users\\example\\.codex\\skills\\tokenboard',
+      configDir: 'c:\\users\\example\\.TOKENBOARD',
       repoUrl: 'https://github.com/example/TokenBoard.git',
       packageManager: 'pnpm',
       collectorExists: true,
       collectorIsGitRepo: false,
-      workDir: 'C:\\Users\\QDM\\.tokenboard\\upgrade-work',
+      workDir: 'C:\\Users\\example\\.tokenboard\\upgrade-work',
       platform: 'win32'
     }),
     /Refusing to replace TokenBoard config directory as collector checkout/
@@ -1334,16 +1334,16 @@ test('windows archive fallback retries a short tag ref after branch archive down
   runUpgrade({
     flags: { 'repo-ref': 'v1.2.3' },
     env: {
-      TOKENBOARD_CONFIG_DIR: 'C:\\Users\\QDM\\.tokenboard',
-      TOKENBOARD_COLLECTOR_DIR: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard'
+      TOKENBOARD_CONFIG_DIR: 'C:\\Users\\example\\.tokenboard',
+      TOKENBOARD_COLLECTOR_DIR: 'C:\\Users\\example\\.tokenboard\\TokenBoard'
     },
     readConfigFile: () => ({
-      collectorDir: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard',
+      collectorDir: 'C:\\Users\\example\\.tokenboard\\TokenBoard',
       repoUrl: 'https://github.com/example/TokenBoard.git',
       packageManager: 'pnpm'
     }),
     mergeConfigFile: (...args) => calls.push({ command: 'mergeConfig', args }),
-    configDirectory: 'C:\\Users\\QDM\\.tokenboard',
+    configDirectory: 'C:\\Users\\example\\.tokenboard',
     exists: () => false,
     platform: 'win32',
     spawn: (command, args) => {
