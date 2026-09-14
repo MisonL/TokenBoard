@@ -152,7 +152,7 @@ export async function runCollectorCli(
       until: options.until,
       cursorScope,
       deps,
-      env
+      env: options.endpoint ? { ...env, TOKENBOARD_ENDPOINT: options.endpoint } : env
     }
     const collection = await collectSnapshots(options.source, collectionContext)
     const hasFatalSourceFailure = collection.sourceFailures.some((failure) => failure.fatal)
@@ -317,10 +317,10 @@ async function collectAllSnapshots(context: CollectionContext) {
   const sourceFailures: SourceFailure[] = []
   const hookMode = env.TOKENBOARD_HOOK_MODE === '1'
   const failFast = hookMode
-  const standardContext = { timezone, since, until, stderr: deps.stderr }
+  const standardContext = { timezone, since, until, stderr: deps.stderr, env }
   await collectOptionalSource(
     'claude-code',
-    () => deps.collectClaudeCodeUsage(standardContext),
+    () => deps.collectClaudeCodeUsage({ ...standardContext, stateDir: resolveStateDir(env) }),
     snapshots,
     collectedSources,
     sourceFailures,
@@ -460,8 +460,10 @@ async function noopAntigravityCollector(): Promise<UsageSnapshot[]> {
 
 function collectSingleSource(source: ConcreteCliSource, context: CollectionContext) {
   const { cursorScope, deps, env, since, timezone, until } = context
-  const standardContext = { timezone, since, until, stderr: deps.stderr }
-  if (source === 'claude-code') return deps.collectClaudeCodeUsage(standardContext)
+  const standardContext = { timezone, since, until, stderr: deps.stderr, env }
+  if (source === 'claude-code') {
+    return deps.collectClaudeCodeUsage({ ...standardContext, stateDir: resolveStateDir(env) })
+  }
   if (source === 'codex') {
     return deps.collectCodexUsage({
       ...standardContext,
@@ -579,7 +581,7 @@ function shouldAckCursor(source: ConcreteCliSource, env: CliEnv) {
 }
 
 function resolveStateDir(env: CliEnv = process.env) {
-  return env.TOKENBOARD_STATE_DIR || env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
+  return env.TOKENBOARD_STATE_DIR?.trim() || env.TOKENBOARD_CONFIG_DIR?.trim() || join(homedir(), '.tokenboard')
 }
 
 async function codexCursorScopes(env: CliEnv, stateDir: string) {

@@ -65,6 +65,27 @@ describe('worker server', () => {
     expect(mockedGetModelPricing).not.toHaveBeenCalled()
   })
 
+  test('serves the versioned model-pricing alias when the legacy slug is occupied', async () => {
+    mockedGetModelPricing.mockResolvedValue({ state: null, models: [], nextCursor: null })
+    const env = createEnv({ publicProfile: true, profileSlug: 'model-pricing' })
+
+    const response = await worker.fetch(
+      workerRequest('https://tokenboard.example/api/v1/model-pricing?limit=2'),
+      env,
+      createExecutionContext()
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ models: [], nextCursor: null })
+    expect(mockedGetModelPricing).toHaveBeenCalledWith({
+      db: env.DB,
+      provider: undefined,
+      includeInactive: false,
+      limit: 2,
+      cursor: undefined
+    })
+  })
+
   test('does not expose pricing when an existing model-pricing profile is private', async () => {
     mockedGetModelPricing.mockResolvedValue({ state: null, models: [], nextCursor: null })
     const env = createEnv({ profileSlug: 'model-pricing', profileExists: true })

@@ -820,6 +820,56 @@ describe('Codex multi-profile hook collection', () => {
     }
   })
 
+  test('retains a persisted pending snapshot when its dynamic model leaves the current rules', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-pending-pricing-stale-rule-'))
+    const codexHome = join(root, 'profile')
+    const stateDir = join(root, 'state')
+    const relativePath = '2026/05/22/missing.jsonl'
+    const cursorPath = join(stateDir, cursorFileName('codex', resolve(codexHome)))
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('TOKENBOARD_ENDPOINT', '')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      const stderr: string[] = []
+      await writeProfileCursor({
+        cursorPath,
+        relativePath,
+        totalTokens: 15,
+        size: 1,
+        mtimeMs: Date.parse('2026-05-22T01:00:00.000Z'),
+        sha256: 'a'.repeat(64),
+        pendingUpload: true,
+        model: 'gpt-6-astra',
+        costUsd: 0.01,
+        contextPricingPending: true
+      })
+
+      await expect(
+        collectCodexUsage({
+          codexHome,
+          stateDir,
+          timezone: 'Asia/Shanghai',
+          collectedAt: '2026-05-22T10:01:00.000Z',
+          stderr: (line) => stderr.push(line),
+          async runner() {
+            throw new Error('a stale dynamic pricing rule must not invoke reconciliation')
+          }
+        })
+      ).resolves.toEqual([])
+      expect(stderr).toHaveLength(1)
+      expect(stderr[0]).toMatch(
+        /^Codex context pricing is unavailable for pending snapshots without source session files; keeping them pending:/
+      )
+      expect(JSON.parse(await readFile(cursorPath, 'utf8')).files[relativePath].pendingUpload).toBe(true)
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('retains a missing file when only some of its pending snapshots can upload', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-mixed-pending-'))
     const codexHome = join(root, 'codex')

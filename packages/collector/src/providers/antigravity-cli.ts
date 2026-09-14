@@ -238,7 +238,11 @@ function defaultMaxDbFilesForCurrentRun(range: AntigravityCollectionRange) {
 }
 
 function readStateDir() {
-  return process.env.TOKENBOARD_STATE_DIR || process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
+  return (
+    process.env.TOKENBOARD_STATE_DIR?.trim() ||
+    process.env.TOKENBOARD_CONFIG_DIR?.trim() ||
+    join(homedir(), '.tokenboard')
+  )
 }
 
 function defaultConversationDir() {

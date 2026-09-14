@@ -1337,6 +1337,123 @@ test('archive fallback restores the existing collector when install fails', () =
   }
 })
 
+test('archive fallback removes a partially installed skill after a first install fails', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-skill-first-install-'))
+  const collectorDir = join(root, 'TokenBoard')
+  const configDir = join(root, 'config')
+  const skillDir = join(root, 'skill')
+  const workDir = join(configDir, 'upgrade-work')
+
+  try {
+    mkdirSync(join(collectorDir, 'skills', 'tokenboard'), { recursive: true })
+    writeFileSync(join(collectorDir, 'sentinel.txt'), 'old collector')
+
+    assert.throws(
+      () =>
+        runArchiveFallback({
+          archiveUrls: ['https://example.test/tokenboard.zip'],
+          collectorDir,
+          configDir,
+          skillDir,
+          workDir,
+          platform: 'linux',
+          spawn: (command, args) => {
+            if (command === 'curl') {
+              writeFileSync(args[args.indexOf('-o') + 1], 'archive')
+              return { status: 0 }
+            }
+            if (command === 'unzip') {
+              const extractDir = args[args.indexOf('-d') + 1]
+              const extractedRoot = join(extractDir, 'TokenBoard-main')
+              mkdirSync(join(extractedRoot, 'skills', 'tokenboard'), { recursive: true })
+              writeFileSync(join(extractedRoot, 'sentinel.txt'), 'new collector')
+              return { status: 0 }
+            }
+            return { status: 0 }
+          },
+          copy: (source, destination, options) => {
+            if (destination === skillDir) {
+              mkdirSync(destination, { recursive: true })
+              writeFileSync(join(destination, 'partial.txt'), 'partial skill')
+              throw new Error('skill copy failed')
+            }
+            return cpSync(source, destination, options)
+          },
+          mkdir: mkdirSync,
+          readDir: readdirSync,
+          remove: rmSync,
+          rename: renameSync
+        }),
+      /skill copy failed/
+    )
+
+    assert.equal(existsSync(skillDir), false)
+    assert.equal(readFileSync(join(collectorDir, 'sentinel.txt'), 'utf8'), 'old collector')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('archive fallback restores an existing skill after a partial replacement fails', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-skill-rollback-'))
+  const collectorDir = join(root, 'TokenBoard')
+  const configDir = join(root, 'config')
+  const skillDir = join(root, 'skill')
+  const workDir = join(configDir, 'upgrade-work')
+
+  try {
+    mkdirSync(join(collectorDir, 'skills', 'tokenboard'), { recursive: true })
+    writeFileSync(join(collectorDir, 'sentinel.txt'), 'old collector')
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, 'sentinel.txt'), 'old skill')
+
+    assert.throws(
+      () =>
+        runArchiveFallback({
+          archiveUrls: ['https://example.test/tokenboard.zip'],
+          collectorDir,
+          configDir,
+          skillDir,
+          workDir,
+          platform: 'linux',
+          spawn: (command, args) => {
+            if (command === 'curl') {
+              writeFileSync(args[args.indexOf('-o') + 1], 'archive')
+              return { status: 0 }
+            }
+            if (command === 'unzip') {
+              const extractDir = args[args.indexOf('-d') + 1]
+              const extractedRoot = join(extractDir, 'TokenBoard-main')
+              mkdirSync(join(extractedRoot, 'skills', 'tokenboard'), { recursive: true })
+              writeFileSync(join(extractedRoot, 'sentinel.txt'), 'new collector')
+              return { status: 0 }
+            }
+            return { status: 0 }
+          },
+          copy: (source, destination, options) => {
+            if (destination === skillDir) {
+              mkdirSync(destination, { recursive: true })
+              writeFileSync(join(destination, 'partial.txt'), 'partial skill')
+              throw new Error('skill copy failed')
+            }
+            return cpSync(source, destination, options)
+          },
+          mkdir: mkdirSync,
+          readDir: readdirSync,
+          remove: rmSync,
+          rename: renameSync
+        }),
+      /skill copy failed/
+    )
+
+    assert.equal(readFileSync(join(skillDir, 'sentinel.txt'), 'utf8'), 'old skill')
+    assert.equal(existsSync(join(skillDir, 'partial.txt')), false)
+    assert.equal(readFileSync(join(collectorDir, 'sentinel.txt'), 'utf8'), 'old collector')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('archive fallback preserves the original failure when workspace cleanup also fails', () => {
   const root = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-cleanup-error-'))
   const collectorDir = join(root, 'TokenBoard')

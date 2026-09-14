@@ -1,8 +1,14 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
+
+const bundledCcusageConfigArgs = [
+  '--config',
+  join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'ccusage.json')
+]
 
 describe('collectCodexUsage', () => {
   afterEach(() => {
@@ -69,11 +75,29 @@ describe('collectCodexUsage', () => {
       expect(calls).toEqual([
         {
           command: platformCommand('npx'),
-          args: ['ccusage@20.0.20', 'codex', 'daily', '--json', '--offline', '--timezone', 'Asia/Shanghai']
+          args: [
+            'ccusage@20.0.20',
+            'codex',
+            'daily',
+            '--json',
+            '--offline',
+            '--timezone',
+            'Asia/Shanghai',
+            ...bundledCcusageConfigArgs
+          ]
         },
         {
           command: platformCommand('npx'),
-          args: ['ccusage@20.0.20', 'codex', 'session', '--json', '--offline', '--timezone', 'Asia/Shanghai']
+          args: [
+            'ccusage@20.0.20',
+            'codex',
+            'session',
+            '--json',
+            '--offline',
+            '--timezone',
+            'Asia/Shanghai',
+            ...bundledCcusageConfigArgs
+          ]
         }
       ])
       expect(snapshots[0]).toMatchObject({
@@ -84,6 +108,33 @@ describe('collectCodexUsage', () => {
         totalTokens: 10,
         sessionCount: 1
       })
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('passes the bundled pricing config when called directly without an endpoint', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const calls: string[][] = []
+    try {
+      await collectCodexUsage({
+        codexHome,
+        env: {
+          TOKENBOARD_ENDPOINT: '',
+          TOKENBOARD_FORCE_PACKAGE_RUNNER: '1'
+        },
+        async runner(_command, args) {
+          calls.push(args)
+          return { data: [] }
+        }
+      })
+
+      const bundledConfigPath = bundledCcusageConfigArgs[1]
+      expect(calls).toHaveLength(2)
+      for (const args of calls) {
+        expect(args).toContain('--config')
+        expect(args).toContain(bundledConfigPath)
+      }
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
@@ -728,15 +779,43 @@ describe('collectCodexUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260501']
+        args: [
+          'ccusage@20.0.20',
+          'codex',
+          'daily',
+          '--json',
+          '--offline',
+          '--single-thread',
+          '--since',
+          '20260501',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260501']
+        args: [
+          'ccusage@20.0.20',
+          'codex',
+          'session',
+          '--json',
+          '--offline',
+          '--single-thread',
+          '--since',
+          '20260501',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'codex', 'session', '--json', '--offline', '--single-thread']
+        args: [
+          'ccusage@20.0.20',
+          'codex',
+          'session',
+          '--json',
+          '--offline',
+          '--single-thread',
+          ...bundledCcusageConfigArgs
+        ]
       }
     ])
   })
@@ -779,7 +858,8 @@ describe('collectCodexUsage', () => {
         '--until',
         '20260709',
         '--timezone',
-        'Asia/Shanghai'
+        'Asia/Shanghai',
+        ...bundledCcusageConfigArgs
       ],
       [
         'ccusage@20.0.20',
@@ -793,9 +873,20 @@ describe('collectCodexUsage', () => {
         '--until',
         '20260709',
         '--timezone',
-        'Asia/Shanghai'
+        'Asia/Shanghai',
+        ...bundledCcusageConfigArgs
       ],
-      ['ccusage@20.0.20', 'codex', 'session', '--json', '--offline', '--single-thread', '--timezone', 'Asia/Shanghai']
+      [
+        'ccusage@20.0.20',
+        'codex',
+        'session',
+        '--json',
+        '--offline',
+        '--single-thread',
+        '--timezone',
+        'Asia/Shanghai',
+        ...bundledCcusageConfigArgs
+      ]
     ])
   })
 

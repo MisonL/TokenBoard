@@ -3,12 +3,24 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
-import { assertHookReconciliationSnapshots, collectHookIncremental } from './hook-incremental'
+import { assertHookReconciliationSnapshots, collectHookIncremental, readStateDir } from './hook-incremental'
 import { clearPendingUploadCursors } from './session-cursor'
+import { fileURLToPath } from 'node:url'
 
 const canDenyFileReadWithModeBits = process.platform !== 'win32' && process.getuid?.() !== 0
+const bundledCcusageConfigArgs = [
+  '--config',
+  join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'ccusage.json')
+]
 
 describe('hook sync collection', () => {
+  test('trims blank state directory environment values before using config dir', () => {
+    vi.stubEnv('TOKENBOARD_STATE_DIR', '   ')
+    vi.stubEnv('TOKENBOARD_CONFIG_DIR', '/configured/state')
+
+    expect(readStateDir()).toBe('/configured/state')
+  })
+
   test('reconciles explicitly provided keys even when expected dates are empty', () => {
     expect(() =>
       assertHookReconciliationSnapshots({
@@ -231,7 +243,8 @@ describe('hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ],
         [
           'ccusage@20.0.20',
@@ -245,7 +258,8 @@ describe('hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ]
       ])
       expect(snapshots).toEqual([
@@ -334,7 +348,8 @@ describe('hook sync collection', () => {
           '--until',
           '20260523',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ],
         [
           'ccusage@20.0.20',
@@ -348,7 +363,8 @@ describe('hook sync collection', () => {
           '--until',
           '20260523',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ]
       ])
       expect(snapshots).toEqual([expect.objectContaining({ usageDate: '2026-05-23', totalTokens: 25 })])
@@ -483,7 +499,8 @@ describe('hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ],
         [
           'ccusage@20.0.20',
@@ -497,7 +514,8 @@ describe('hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ]
       ])
       expect(snapshots).toEqual([

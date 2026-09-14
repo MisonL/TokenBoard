@@ -229,7 +229,7 @@ function restoreCursorSnapshot(snapshot: CursorSnapshot, collectedAt: string) {
   const { codexContextPricingPending, ...publicSnapshot } = snapshot
   return {
     snapshot: { ...publicSnapshot, collectedAt } as UsageSnapshot,
-    contextPricingPending: isUnresolvedCodexContextPricingSnapshot(snapshot)
+    contextPricingPending: codexContextPricingPending === true || isUnresolvedCodexContextPricingSnapshot(snapshot)
   }
 }
 
@@ -361,12 +361,16 @@ export function assertHookReconciliationSnapshots(input: {
   )
 }
 
-export function isHookMode() {
-  return process.env.TOKENBOARD_HOOK_MODE === '1'
+export function isHookMode(env: NodeJS.ProcessEnv = process.env) {
+  return env.TOKENBOARD_HOOK_MODE === '1'
 }
 
 export function readStateDir() {
-  return process.env.TOKENBOARD_STATE_DIR || process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
+  return (
+    process.env.TOKENBOARD_STATE_DIR?.trim() ||
+    process.env.TOKENBOARD_CONFIG_DIR?.trim() ||
+    join(homedir(), '.tokenboard')
+  )
 }
 
 function buildDateRangeArgs(dates: Set<string>) {

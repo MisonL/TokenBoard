@@ -1,5 +1,14 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectClaudeCodeUsage } from './claude-code'
+
+const bundledCcusageConfigArgs = [
+  '--config',
+  join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'ccusage.json')
+]
 
 describe('collectClaudeCodeUsage', () => {
   afterEach(() => {
@@ -52,11 +61,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown']
+        args: ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.20', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -95,7 +104,8 @@ describe('collectClaudeCodeUsage', () => {
           '--json',
           '--breakdown',
           '--since',
-          '20260509'
+          '20260509',
+          ...bundledCcusageConfigArgs
         ]
       },
       {
@@ -111,7 +121,8 @@ describe('collectClaudeCodeUsage', () => {
           'session',
           '--json',
           '--since',
-          '20260509'
+          '20260509',
+          ...bundledCcusageConfigArgs
         ]
       }
     ])
@@ -131,8 +142,17 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown', '--since', '20260501'],
-      ['ccusage@20.0.20', 'claude', 'session', '--json', '--since', '20260501']
+      [
+        'ccusage@20.0.20',
+        'claude',
+        'daily',
+        '--json',
+        '--breakdown',
+        '--since',
+        '20260501',
+        ...bundledCcusageConfigArgs
+      ],
+      ['ccusage@20.0.20', 'claude', 'session', '--json', '--since', '20260501', ...bundledCcusageConfigArgs]
     ])
   })
 
@@ -152,8 +172,29 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown', '--since', '20260708', '--until', '20260709'],
-      ['ccusage@20.0.20', 'claude', 'session', '--json', '--since', '20260708', '--until', '20260709']
+      [
+        'ccusage@20.0.20',
+        'claude',
+        'daily',
+        '--json',
+        '--breakdown',
+        '--since',
+        '20260708',
+        '--until',
+        '20260709',
+        ...bundledCcusageConfigArgs
+      ],
+      [
+        'ccusage@20.0.20',
+        'claude',
+        'session',
+        '--json',
+        '--since',
+        '20260708',
+        '--until',
+        '20260709',
+        ...bundledCcusageConfigArgs
+      ]
     ])
   })
 
@@ -196,13 +237,80 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown']
+        args: ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.20', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
       }
     ])
+  })
+
+  test('passes the generated dynamic pricing config to every ccusage invocation', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-claude-pricing-'))
+    const calls: string[][] = []
+    try {
+      await collectClaudeCodeUsage({
+        env: {
+          TOKENBOARD_ENDPOINT: 'https://tokenboard.example/api/v1/ingest',
+          TOKENBOARD_STATE_DIR: stateDir,
+          TOKENBOARD_FORCE_PACKAGE_RUNNER: '1'
+        },
+        pricingFetcher: async () =>
+          new Response(
+            JSON.stringify({
+              models: [
+                {
+                  provider: 'anthropic',
+                  modelId: 'claude-fable-5-1',
+                  inputCostPerMillion: 10,
+                  outputCostPerMillion: 50,
+                  cacheReadCostPerMillion: 1,
+                  cacheWriteCostPerMillion: 12.5,
+                  contextWindow: 1_000_000,
+                  maxInputTokens: 1_000_000,
+                  pricing: {}
+                }
+              ],
+              nextCursor: null
+            })
+          ),
+        async runner(_command, args) {
+          calls.push(args)
+          return { data: [] }
+        }
+      })
+
+      expect(calls).toHaveLength(2)
+      for (const args of calls) {
+        expect(args).toContain('--config')
+        expect(args).toContain(join(stateDir, 'ccusage.dynamic.json'))
+      }
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  test('passes the bundled pricing config when called directly without an endpoint', async () => {
+    const calls: string[][] = []
+
+    await collectClaudeCodeUsage({
+      env: {
+        TOKENBOARD_ENDPOINT: '',
+        TOKENBOARD_FORCE_PACKAGE_RUNNER: '1'
+      },
+      async runner(_command, args) {
+        calls.push(args)
+        return { data: [] }
+      }
+    })
+
+    const bundledConfigPath = bundledCcusageConfigArgs[1]
+    expect(calls).toHaveLength(2)
+    for (const args of calls) {
+      expect(args).toContain('--config')
+      expect(args).toContain(bundledConfigPath)
+    }
   })
 })
 

@@ -1,9 +1,11 @@
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runJsonCommand, type CommandRunner } from '../command'
 import { normalizeCcusageDailyJson } from '../normalize-ccusage'
 import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
+import { prepareDynamicCcusageConfig, type PricingFetcher } from '../model-pricing'
 import { assertHookReconciliationSnapshots, collectHookIncremental, isHookMode } from './hook-incremental'
 import { mergeSnapshots } from './session-cursor'
 import { assertValidDateFilterRange } from '../iso-calendar-date'
@@ -15,37 +17,68 @@ export type CollectUsageOptions = {
   until?: string
   runner?: CommandRunner
   stderr?: (line: string) => void
+  stateDir?: string
+  env?: NodeJS.ProcessEnv
+  pricingFetcher?: PricingFetcher
 }
 
 const DEFAULT_PACKAGE_COMMAND_RETRIES = 2
 
 export async function collectClaudeCodeUsage(options: CollectUsageOptions = {}): Promise<UsageSnapshot[]> {
   const runner = options.runner ?? runJsonCommand
-  const packageRunner = resolvePackageRunner()
+  const env = options.env ?? process.env
+  const stateDir = options.stateDir?.trim() || env.TOKENBOARD_STATE_DIR?.trim() || env.TOKENBOARD_CONFIG_DIR?.trim()
+  const prepared = await prepareDynamicCcusageConfig({
+    endpoint: env.TOKENBOARD_ENDPOINT,
+    stateDir,
+    hookMode: isHookMode(env),
+    explicitConfigPath: env.TOKENBOARD_CCUSAGE_CONFIG,
+    fetcher: options.pricingFetcher,
+    stderr: env.TOKENBOARD_ENDPOINT ? options.stderr : undefined
+  })
+  const commandEnv: NodeJS.ProcessEnv = prepared.configPath
+    ? { ...env, TOKENBOARD_DYNAMIC_CCUSAGE_CONFIG: prepared.configPath }
+    : { ...env }
+  const collectionOptions: CollectUsageOptions = {
+    ...options,
+    env: commandEnv,
+    stateDir
+  }
+  const packageRunner = resolvePackageRunner(
+    commandEnv.TOKENBOARD_PACKAGE_MANAGER,
+    process.platform,
+    existsSync,
+    commandEnv
+  )
   const collectedAt = options.collectedAt ?? new Date().toISOString()
 
-  if (isHookMode()) {
-    return collectClaudeHookUsage({
+  if (isHookMode(env)) {
+    const snapshots = await collectClaudeHookUsage({
       runner,
       packageRunner,
-      options,
-      collectedAt
+      options: collectionOptions,
+      collectedAt,
+      env: commandEnv
     })
+    reportUnpricedClaudeSnapshots(snapshots, prepared.coveredModelIds, options.stderr)
+    return snapshots
   }
 
   const rangeArgs = buildRangeArgs({
-    since: options.since ?? (process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''),
-    until: options.until ?? process.env.TOKENBOARD_UNTIL ?? ''
+    since: options.since ?? (env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE || ''),
+    until: options.until ?? env.TOKENBOARD_UNTIL ?? ''
   })
 
-  return collectClaudeCcusageRange({
+  const snapshots = await collectClaudeCcusageRange({
     runner,
     packageRunner,
     rangeArgs,
-    options,
+    options: collectionOptions,
     collectedAt,
-    env: process.env
+    env: commandEnv
   })
+  reportUnpricedClaudeSnapshots(snapshots, prepared.coveredModelIds, options.stderr)
+  return snapshots
 }
 
 async function collectClaudeHookUsage(input: {
@@ -53,13 +86,15 @@ async function collectClaudeHookUsage(input: {
   packageRunner: PackageRunner
   options: CollectUsageOptions
   collectedAt: string
+  env: NodeJS.ProcessEnv
 }) {
-  const claudeHome = readClaudeHome()
+  const claudeHome = readClaudeHome(input.env)
   const timezone = input.options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
   const incremental = await collectHookIncremental({
     source: 'claude-code',
     sessionsDir: join(claudeHome, 'projects'),
     cursorName: 'claude-code-cursor.json',
+    stateDir: input.options.stateDir,
     stderr: input.options.stderr,
     timezone,
     collectedAt: input.collectedAt
@@ -77,7 +112,7 @@ async function collectClaudeHookUsage(input: {
           rangeArgs: withTimezoneArgs(incremental.rangeArgs, timezone),
           options: input.options,
           collectedAt: input.collectedAt,
-          env: { ...process.env, CLAUDE_CONFIG_DIR: claudeHome, CLAUDE_HOME: claudeHome }
+          env: { ...input.env, CLAUDE_CONFIG_DIR: claudeHome, CLAUDE_HOME: claudeHome }
         })
       : []
   if (incremental.rangeArgs.length > 0) {
@@ -144,17 +179,33 @@ function packageCommandOptions({
 }) {
   return {
     env,
-    retries: readPackageCommandRetries(),
+    retries: readPackageCommandRetries(env),
     onRetry: stderr
   }
 }
 
-function readPackageCommandRetries() {
-  const value = Number.parseInt(process.env.TOKENBOARD_PACKAGE_COMMAND_RETRIES || '', 10)
+function readPackageCommandRetries(env: NodeJS.ProcessEnv = process.env) {
+  const value = Number.parseInt(env.TOKENBOARD_PACKAGE_COMMAND_RETRIES || '', 10)
   if (Number.isFinite(value) && value >= 0) {
     return value
   }
   return DEFAULT_PACKAGE_COMMAND_RETRIES
+}
+
+function reportUnpricedClaudeSnapshots(
+  snapshots: readonly UsageSnapshot[],
+  coveredModelIds: ReadonlySet<string>,
+  stderr?: (line: string) => void
+) {
+  const models = new Set(
+    snapshots
+      .filter((snapshot) => snapshot.source === 'claude-code' && snapshot.totalTokens > 0)
+      .map((snapshot) => snapshot.model)
+      .filter((model) => !coveredModelIds.has(model))
+  )
+  for (const model of models) {
+    stderr?.(`TokenBoard model pricing unavailable for Claude Code model ${model}; preserving ccusage result`)
+  }
 }
 
 function buildRangeArgs(options: { since?: string; until?: string }) {
@@ -173,6 +224,6 @@ function withTimezoneArgs(args: string[], timezone: string) {
   return [...args, '--timezone', timezone]
 }
 
-function readClaudeHome() {
-  return process.env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_HOME || join(homedir(), '.claude')
+function readClaudeHome(env: NodeJS.ProcessEnv = process.env) {
+  return env.CLAUDE_CONFIG_DIR || env.CLAUDE_HOME || join(homedir(), '.claude')
 }

@@ -48,6 +48,23 @@ describe('resolvePackageRunner', () => {
     ).toEqual([expectedCcusagePackageSpecifier, 'daily', '--json', '--config', packageConfigPath()])
   })
 
+  test('prefers the generated dynamic pricing configuration over the static override', () => {
+    const dynamicPath = '/tmp/tokenboard/ccusage.dynamic.json'
+    const runner = resolvePackageRunner('', process.platform, (path) => path === dynamicPath, {
+      TOKENBOARD_FORCE_PACKAGE_RUNNER: '1',
+      TOKENBOARD_DYNAMIC_CCUSAGE_CONFIG: dynamicPath,
+      TOKENBOARD_CCUSAGE_CONFIG: packageConfigPath()
+    })
+
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['daily', '--json'])).toEqual([
+      'ccusage@20.0.20',
+      'daily',
+      '--json',
+      '--config',
+      dynamicPath
+    ])
+  })
+
   test('uses Windows command shims on win32', () => {
     vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
     vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')

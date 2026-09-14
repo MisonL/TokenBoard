@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { usageModelSchema, usageSnapshotSchema, usageSourceSchema } from '@tokenboard/usage-core'
+import { isValidIsoDate, usageModelSchema, usageSnapshotSchema, usageSourceSchema } from '@tokenboard/usage-core'
 
 export const maxIngestSnapshotBatchSize = 500
 export const maxSnapshotCheckBatchSize = maxIngestSnapshotBatchSize
@@ -13,7 +13,7 @@ export const snapshotCheckRequestSchema = z.object({
     .array(
       z.object({
         source: usageSourceSchema,
-        usageDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        usageDate: z.string().refine(isValidIsoDate, 'Invalid ISO date'),
         model: usageModelSchema
       })
     )

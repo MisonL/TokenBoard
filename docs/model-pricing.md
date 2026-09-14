@@ -98,31 +98,42 @@ successful generation and records the failure for the next scheduled retry.
 
 ## Collector integration
 
-Claude Code and Codex usage is still calculated locally by the pinned `ccusage@20.0.20` runtime.
-The installed TokenBoard sync script passes the checkout's `packages/collector/ccusage.json`
-through `--config` for local, pnpm, npm, and bun runners; it does not depend on the caller's current
-working directory. The server catalogue is the authoritative maintenance and audit surface, while
-the collector override file remains the offline client fallback until a future client protocol can
-consume a signed server snapshot.
+Claude Code and Codex usage is calculated locally by the pinned `ccusage@20.0.20` runtime. Before a
+normal preview or sync, the collector derives the origin from `TOKENBOARD_ENDPOINT`, reads the
+paginated `/api/v1/model-pricing` compatibility alias, and writes a merged temporary `ccusage` config
+under `TOKENBOARD_STATE_DIR`. Dynamic catalogue prices override the bundled
+`packages/collector/ccusage.json`; a user-supplied `TOKENBOARD_CCUSAGE_CONFIG` remains the highest
+priority layer. The generated config is passed through `TOKENBOARD_DYNAMIC_CCUSAGE_CONFIG` and the
+same package-runner entry point for local binaries, npx, npm, pnpm, and bun.
+For Codex request-level repricing, models explicitly listed in the user's `pricingOverrides` are
+excluded from catalogue and static context rules so the explicit prices remain authoritative.
+
+The catalogue cache is `TOKENBOARD_STATE_DIR/model-pricing-cache.json`, is written atomically, and
+has a 24-hour TTL. A regular or manual sync refreshes an expired cache with ETag support. Hook mode
+does not make network requests: it uses a fresh or stale last-successful cache, then the bundled
+static config. A failed refresh never blocks token collection. Diagnostics identify the selected
+source and refresh failure; a model without reliable input/output pricing keeps the existing
+collector result and emits a warning instead of being silently treated as free.
 
 The catalogue is intentionally not joined into historical usage aggregation. Ingested `costUsd`
 values are the collector's timestamped pricing result and remain stable when the catalogue changes;
-the catalogue is used for current price discovery, audit and future collector updates. Repricing old
-snapshots would require a separate, explicitly versioned migration because provider tiers, cache
-semantics and exchange-rate assumptions can change independently of token counts.
+dynamic pricing applies only to new collection runs. Repricing old snapshots is not performed and
+would require a separate, explicitly versioned migration because provider tiers, cache semantics and
+exchange-rate assumptions can change independently of token counts.
 
 The override values are USD per token, so official USD-per-million values are divided by 1,000,000.
 `ccusage@20.0.20` exposes only fields named `*Above200kTokens`; those fields are intentionally not
 used for GPT-5.x because the current long-context boundary is 272,000 tokens. Do not change that
 boundary without upgrading the collector runtime and adding a matching schema test.
 
-For Codex request-level repricing, the collector currently applies the published context tiers to
-`gpt-5.6-sol`, `gpt-5.6`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4`,
-`gpt-5.4-pro` at 272,000 input tokens, and `grok-4.5` at 200,000 input tokens. These are request
-thresholds: once a request is above the threshold, all of its priced input, output, cache-read and
-cache-write components use that tier. They are not the models' context-window limits. Raw Codex
-`token_count` events are used because the current ccusage schema cannot represent the 272,000
-boundary exactly.
+For Codex request-level repricing, runtime rules are generated from each catalogue row's explicit
+`pricing_json.tiers` context threshold and cache prices. Static rules remain available when the
+catalogue is unavailable. A 200,000 threshold can be represented by ccusage's `*Above200kTokens`
+fields; a 272,000 or other threshold is never incorrectly mapped to 200,000, and is instead applied
+from raw Codex `token_count` events. Once a request is above its threshold, all of its priced input,
+output, cache-read and cache-write components use that tier. Fast and priority multipliers are kept
+when published or when a matching static rule provides them. These are request thresholds, not model
+context-window limits.
 
 Codex session records can use either of two cache representations. In the legacy representation,
 `input_tokens` already includes `cached_input_tokens`; in the additive representation,

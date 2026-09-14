@@ -40,10 +40,13 @@ export function runArchiveFallback({
   const replacementDir = joinForPlatform(workDir, 'TokenBoard')
   recoverOrphanedBackup({ collectorDir, platform, readDir, rename, copy, remove, log })
   const backupDir = selectAvailableBackupPath({ collectorDir, platform, readDir, stat })
+  const skillBackupDir = selectAvailableBackupPath({ collectorDir: skillDir, platform, readDir, stat })
   remove(workDir, { recursive: true, force: true })
   mkdir(workDir, { recursive: true })
   let backupCreated = false
   let replacementInstalled = false
+  let skillBackupCreated = false
+  let skillInstallStarted = false
   try {
     downloadArchive({ archiveUrls: urls, zipPath, platform, spawn })
     extractArchive({ zipPath, extractDir, platform, spawn, mkdir })
@@ -84,9 +87,32 @@ export function runArchiveFallback({
 
     const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
     if (!samePath(collectorSkillDir, skillDir, platform)) {
+      try {
+        movePath(skillDir, skillBackupDir, { rename, copy, remove })
+        skillBackupCreated = true
+      } catch (error) {
+        if (!error || error.code !== 'ENOENT') throw error
+      }
+      skillInstallStarted = true
       copy(collectorSkillDir, skillDir, { recursive: true, force: true })
     }
   } catch (error) {
+    const rollbackErrors = []
+    if (skillInstallStarted || skillBackupCreated) {
+      try {
+        remove(skillDir, { recursive: true, force: true })
+      } catch (cleanupError) {
+        rollbackErrors.push(`failed to remove incomplete skill: ${errorMessage(cleanupError)}`)
+      }
+    }
+    if (skillBackupCreated) {
+      try {
+        movePath(skillBackupDir, skillDir, { rename, copy, remove })
+        skillBackupCreated = false
+      } catch (restoreError) {
+        rollbackErrors.push(`existing skill restore failed: ${errorMessage(restoreError)}`)
+      }
+    }
     if (backupCreated) {
       try {
         remove(collectorDir, { recursive: true, force: true })
@@ -94,27 +120,23 @@ export function runArchiveFallback({
         backupCreated = false
         replacementInstalled = false
       } catch (restoreError) {
-        throw new Error(`${errorMessage(error)}; existing collector restore failed: ${errorMessage(restoreError)}`, {
-          cause: error
-        })
+        rollbackErrors.push(`existing collector restore failed: ${errorMessage(restoreError)}`)
       }
     } else if (replacementInstalled) {
       try {
         remove(collectorDir, { recursive: true, force: true })
         replacementInstalled = false
       } catch (cleanupError) {
-        throw new Error(
-          `${errorMessage(error)}; failed to remove incomplete collector: ${errorMessage(cleanupError)}`,
-          { cause: error }
-        )
+        rollbackErrors.push(`failed to remove incomplete collector: ${errorMessage(cleanupError)}`)
       }
     }
     try {
       remove(workDir, { recursive: true, force: true })
     } catch (cleanupError) {
-      throw new Error(`${errorMessage(error)}; upgrade workspace cleanup failed: ${errorMessage(cleanupError)}`, {
-        cause: error
-      })
+      rollbackErrors.push(`upgrade workspace cleanup failed: ${errorMessage(cleanupError)}`)
+    }
+    if (rollbackErrors.length > 0) {
+      throw new Error(`${errorMessage(error)}; ${rollbackErrors.join('; ')}`, { cause: error })
     }
     throw error
   }
@@ -134,6 +156,15 @@ export function runArchiveFallback({
       backupCreated = false
     } catch (error) {
       log(`TokenBoard collector upgraded, but old checkout cleanup failed: ${errorMessage(error)}`)
+    }
+  }
+
+  if (replacementInstalled && skillBackupCreated) {
+    try {
+      remove(skillBackupDir, { recursive: true, force: true })
+      skillBackupCreated = false
+    } catch (error) {
+      log(`TokenBoard collector upgraded, but old skill cleanup failed: ${errorMessage(error)}`)
     }
   }
 }

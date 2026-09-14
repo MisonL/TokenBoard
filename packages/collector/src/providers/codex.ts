@@ -1,9 +1,11 @@
+import { existsSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runJsonCommand, type CommandRunner } from '../command'
 import { errorMessage } from '../error-message'
 import { normalizeCcusageDailyJson, readCcusageSessionAttribution } from '../normalize-ccusage'
 import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
+import { prepareDynamicCcusageConfig, type PricingFetcher } from '../model-pricing'
 import {
   codexCommandArgs,
   packageCommandOptions,
@@ -33,6 +35,7 @@ import {
   isUnresolvedCodexContextPricingSnapshot,
   maxCodexContextPricingFiles,
   normalizeModelId,
+  withCodexContextPricingRules,
   type CodexContextPricingModelHints,
   type CodexContextPricingFileModelHints,
   type CodexContextPricingFileInventory,
@@ -83,69 +86,114 @@ export type CollectCodexUsageOptions = {
   runner?: CommandRunner
   stderr?: (line: string) => void
   codexSymlinkRoots?: readonly string[]
+  env?: NodeJS.ProcessEnv
+  pricingFetcher?: PricingFetcher
 }
 
 export async function collectCodexUsage(options: CollectCodexUsageOptions = {}): Promise<UsageSnapshot[]> {
   const runner = options.runner ?? runJsonCommand
-  const packageRunner = resolvePackageRunner()
+  const env = options.env ?? process.env
+  const stateDir = options.stateDir?.trim() || env.TOKENBOARD_STATE_DIR?.trim() || env.TOKENBOARD_CONFIG_DIR?.trim()
+  const prepared = await prepareDynamicCcusageConfig({
+    endpoint: env.TOKENBOARD_ENDPOINT,
+    stateDir,
+    hookMode: isHookMode(env),
+    explicitConfigPath: env.TOKENBOARD_CCUSAGE_CONFIG,
+    fetcher: options.pricingFetcher,
+    stderr: env.TOKENBOARD_ENDPOINT ? options.stderr : undefined
+  })
+  const commandEnv: NodeJS.ProcessEnv = prepared.configPath
+    ? { ...env, TOKENBOARD_DYNAMIC_CCUSAGE_CONFIG: prepared.configPath }
+    : { ...env }
+  const collectionOptions: CollectCodexUsageOptions = {
+    ...options,
+    env: commandEnv,
+    stateDir
+  }
+  const packageRunner = resolvePackageRunner(
+    commandEnv.TOKENBOARD_PACKAGE_MANAGER,
+    process.platform,
+    existsSync,
+    commandEnv
+  )
   const collectedAt = options.collectedAt ?? new Date().toISOString()
-  if (isHookMode()) {
-    return collectCodexHookUsage({
-      runner,
-      packageRunner,
-      options,
-      collectedAt
-    })
-  }
+  const snapshots = await withCodexContextPricingRules(prepared.contextPricingRules, async () => {
+    if (isHookMode(env)) {
+      return collectCodexHookUsage({
+        runner,
+        packageRunner,
+        options: collectionOptions,
+        collectedAt
+      })
+    }
 
-  const requestedSince = options.since ?? readSince()
-  const since = isAllDateFilter(requestedSince) ? 'all' : requestedSince
-  const until = options.until ?? process.env.TOKENBOARD_UNTIL ?? ''
-  const rangeArgs = buildRangeArgs({ since, until })
-  const codexHomes = resolveCodexHomesFromOptions(options)
-  const codexSymlinkRoots = resolveCodexSymlinkRootsFromOptions(options)
-  const requiresCommaSafeScope = !since && !until && codexHomes.some((home) => home.includes(','))
-  const usesScopedScan = (isAllDateFilter(since) && !until) || requiresCommaSafeScope
-  if (usesScopedScan) {
-    return collectScopedCodexUsageWithRetry({
-      runner,
-      packageRunner,
-      rangeArgs,
-      since: requiresCommaSafeScope ? 'all' : since,
-      until,
-      options,
-      collectedAt,
-      codexHomes,
-      codexSymlinkRoots
-    })
-  }
+    const requestedSince = collectionOptions.since ?? readSince(commandEnv)
+    const since = isAllDateFilter(requestedSince) ? 'all' : requestedSince
+    const until = collectionOptions.until ?? commandEnv.TOKENBOARD_UNTIL ?? ''
+    const rangeArgs = buildRangeArgs({ since, until })
+    const codexHomes = resolveCodexHomesFromOptions(collectionOptions)
+    const codexSymlinkRoots = resolveCodexSymlinkRootsFromOptions(collectionOptions)
+    const requiresCommaSafeScope = !since && !until && codexHomes.some((home) => home.includes(','))
+    const usesScopedScan = (isAllDateFilter(since) && !until) || requiresCommaSafeScope
+    if (usesScopedScan) {
+      return collectScopedCodexUsageWithRetry({
+        runner,
+        packageRunner,
+        rangeArgs,
+        since: requiresCommaSafeScope ? 'all' : since,
+        until,
+        options: collectionOptions,
+        collectedAt,
+        codexHomes,
+        codexSymlinkRoots
+      })
+    }
 
-  const env = { ...process.env, CODEX_HOME: codexHomes.join(',') }
-  if (rangeArgs.length > 0) {
-    return collectBoundedCodexUsage({
+    const collectionEnv = commandEnvForOptions(collectionOptions, { CODEX_HOME: codexHomes.join(',') })
+    if (rangeArgs.length > 0) {
+      return collectBoundedCodexUsage({
+        runner,
+        packageRunner,
+        rangeArgs,
+        since,
+        until,
+        options: collectionOptions,
+        collectedAt,
+        codexHomes,
+        codexSymlinkRoots
+      })
+    }
+    return collectCodexCcusageRange({
       runner,
       packageRunner,
       rangeArgs,
       since,
       until,
-      options,
+      options: collectionOptions,
       collectedAt,
+      env: collectionEnv,
       codexHomes,
       codexSymlinkRoots
     })
-  }
-  return collectCodexCcusageRange({
-    runner,
-    packageRunner,
-    rangeArgs,
-    since,
-    until,
-    options,
-    collectedAt,
-    env,
-    codexHomes,
-    codexSymlinkRoots
   })
+  reportUnpricedCodexSnapshots(snapshots, prepared.coveredModelIds, options.stderr)
+  return snapshots
+}
+
+function reportUnpricedCodexSnapshots(
+  snapshots: readonly UsageSnapshot[],
+  coveredModelIds: ReadonlySet<string>,
+  stderr?: (line: string) => void
+) {
+  const models = new Set(
+    snapshots
+      .filter((snapshot) => snapshot.source === 'codex' && snapshot.totalTokens > 0)
+      .map((snapshot) => snapshot.model)
+      .filter((model) => !coveredModelIds.has(model))
+  )
+  for (const model of models) {
+    stderr?.(`TokenBoard model pricing unavailable for Codex model ${model}; preserving collected result`)
+  }
 }
 
 async function collectScopedCodexUsage(input: {
@@ -168,7 +216,7 @@ async function collectScopedCodexUsage(input: {
     codexSymlinkRoots: input.codexSymlinkRoots,
     since: input.since,
     until: input.until,
-    batchSize: readBatchSize(),
+    batchSize: readBatchSize(input.options.env),
     onMissingSessionFile: (sessionPath) =>
       input.options.stderr?.(`Skipping Codex session file that disappeared before copy: ${sessionPath}`),
     onCopyFallback: input.options.stderr,
@@ -298,22 +346,42 @@ async function collectCodexHookUsageAttempt(input: {
       snapshots
     })
   }
-  reportUnrecoverablePendingCodexPricing(incremental.unresolvedContextPricingSnapshots ?? [], input.options.stderr)
+  const unresolvedContextPricingSnapshots = incremental.unresolvedContextPricingSnapshots ?? []
+  reportUnrecoverablePendingCodexPricing(unresolvedContextPricingSnapshots, input.options.stderr)
+  const unresolvedSnapshotKeys = new Set(unresolvedContextPricingSnapshots.map(codexSnapshotIdentity))
   const cachedSnapshots = incremental.cachedSnapshots.filter(
-    (snapshot) => !isUnresolvedCodexContextPricingSnapshot(snapshot)
+    (snapshot) =>
+      !unresolvedSnapshotKeys.has(codexSnapshotIdentity(snapshot)) && !isUnresolvedCodexContextPricingSnapshot(snapshot)
   )
   const merged = mergeSnapshots([...snapshots, ...cachedSnapshots])
   return attachCodexHookAcknowledgement(merged, incremental.acknowledgedFilesByCursorScope)
 }
 
 function reportUnrecoverablePendingCodexPricing(snapshots: readonly UsageSnapshot[], stderr?: (line: string) => void) {
-  const unrecoverable = snapshots.filter((snapshot) => isUnresolvedCodexContextPricingSnapshot(snapshot))
+  const unrecoverable = snapshots
   if (unrecoverable.length === 0) return
   const details = unrecoverable
     .map((snapshot) => `${snapshot.usageDate}/${normalizeModelId(snapshot.model)}`)
     .join(', ')
   const message = `Codex context pricing is unavailable for pending snapshots without source session files; keeping them pending: ${details}`
   stderr?.(message)
+}
+
+function codexSnapshotIdentity(snapshot: UsageSnapshot) {
+  return JSON.stringify([
+    snapshot.source,
+    snapshot.usageDate,
+    snapshot.timezone,
+    snapshot.model,
+    snapshot.inputTokens,
+    snapshot.outputTokens,
+    snapshot.cacheCreationTokens,
+    snapshot.cacheReadTokens,
+    snapshot.totalTokens,
+    snapshot.costUsd,
+    snapshot.sessionCount,
+    snapshot.correction ?? null
+  ])
 }
 
 async function collectCodexCcusageRange(input: {
@@ -588,7 +656,7 @@ async function collectBoundedCodexUsageAttempt(input: {
     codexHomes: input.codexHomes,
     since: input.since,
     until: input.until,
-    batchSize: readBatchSize(),
+    batchSize: readBatchSize(input.options.env),
     onMissingSessionFile: (sessionPath) => {
       missingSessionFiles += 1
       input.options.stderr?.(`Skipping Codex session file that disappeared before bounded copy: ${sessionPath}`)
@@ -658,7 +726,7 @@ async function collectFrozenBoundedCodexBatch(input: {
     missingSourceFiles: string[]
   }
 }) {
-  const env = { ...process.env, CODEX_HOME: input.scope.codexHome }
+  const env = commandEnvForOptions(input.options, { CODEX_HOME: input.scope.codexHome })
   const daily = await input.runner(
     input.packageRunner.command,
     input.packageRunner.runPackageArgs(
@@ -819,7 +887,7 @@ async function collectCanonicalAttributionsForMissingFiles(input: {
   for await (const scope of createCodexSessionScopeBatchesForFiles({
     codexHomes: input.scope.codexHomes,
     groups,
-    batchSize: readBatchSize(),
+    batchSize: readBatchSize(input.options.env),
     codexSymlinkRoots: input.codexSymlinkRoots,
     onMissingSessionFile: (sessionPath) =>
       input.options.stderr?.(
@@ -876,10 +944,9 @@ async function collectCanonicalAttributionsFromScope(input: {
         })
       ),
       options: packageCommandOptions({
-        env: {
-          ...process.env,
+        env: commandEnvForOptions(input.options, {
           CODEX_HOME: homeIndex === undefined ? input.scope.codexHome : input.scope.codexHomes[homeIndex]
-        },
+        }),
         timeoutMs: readSessionTimeoutMs(),
         stderr: input.options.stderr
       }),
@@ -922,7 +989,7 @@ async function collectScopedSessionCountsByHome(input: {
         })
       ),
       options: packageCommandOptions({
-        env: { ...process.env, CODEX_HOME: input.scope.codexHomes[homeIndex] },
+        env: commandEnvForOptions(input.options, { CODEX_HOME: input.scope.codexHomes[homeIndex] }),
         timeoutMs: readSessionTimeoutMs(),
         stderr: input.options.stderr
       }),
@@ -1436,7 +1503,7 @@ async function collectScopedBatch(input: {
   since?: string
   until?: string
 }) {
-  const env = { ...process.env, CODEX_HOME: input.scope.codexHome }
+  const env = commandEnvForOptions(input.options, { CODEX_HOME: input.scope.codexHome })
   const daily = await input.runner(
     input.packageRunner.command,
     input.packageRunner.runPackageArgs(
@@ -1658,7 +1725,7 @@ async function collectCanonicalSessionRowsByHome(input: {
         })
       ),
       options: packageCommandOptions({
-        env: { ...process.env, CODEX_HOME: codexHome },
+        env: commandEnvForOptions(input.options, { CODEX_HOME: codexHome }),
         timeoutMs: readSessionTimeoutMs(),
         stderr: input.options.stderr
       }),
@@ -1792,30 +1859,35 @@ function hookDateBounds(dates: string[]) {
   }
 }
 
-function readSince() {
-  const since = process.env.TOKENBOARD_SINCE || process.env.TOKENBOARD_DEFAULT_SINCE || ''
+function readSince(env: NodeJS.ProcessEnv = process.env) {
+  const since = env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE || ''
   return since || ''
 }
 
 function resolveCodexHomesFromOptions(options: CollectCodexUsageOptions) {
+  const env = options.env ?? process.env
   const hasExplicitOptions = options.codexHomes !== undefined || options.codexHome !== undefined
   return resolveConfiguredCodexHomes({
     explicitHomes: options.codexHomes,
-    legacyValue: options.codexHome ?? (options.codexHomes === undefined ? process.env.CODEX_HOME : undefined),
-    jsonValue: hasExplicitOptions ? undefined : process.env.TOKENBOARD_CODEX_HOMES_JSON
+    legacyValue: options.codexHome ?? (options.codexHomes === undefined ? env.CODEX_HOME : undefined),
+    jsonValue: hasExplicitOptions ? undefined : env.TOKENBOARD_CODEX_HOMES_JSON
   })
 }
 
 function resolveCodexSymlinkRootsFromOptions(options: CollectCodexUsageOptions) {
   if (options.codexSymlinkRoots !== undefined) return normalizeCodexSymlinkRoots(options.codexSymlinkRoots)
-  const configured = process.env.TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON
+  const configured = (options.env ?? process.env).TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON
   return configured === undefined ? undefined : normalizeCodexSymlinkRoots(configured)
 }
 
-function readBatchSize() {
-  const value = Number(process.env.TOKENBOARD_CODEX_BATCH_SIZE || DEFAULT_CODEX_BATCH_SIZE)
+function readBatchSize(env: NodeJS.ProcessEnv = process.env) {
+  const value = Number(env.TOKENBOARD_CODEX_BATCH_SIZE || DEFAULT_CODEX_BATCH_SIZE)
   if (!Number.isFinite(value) || value < 1) {
     return DEFAULT_CODEX_BATCH_SIZE
   }
   return Math.min(Math.floor(value), MAX_CODEX_BATCH_SIZE)
+}
+
+function commandEnvForOptions(options: CollectCodexUsageOptions, extra: NodeJS.ProcessEnv = {}) {
+  return { ...(options.env ?? process.env), ...extra }
 }

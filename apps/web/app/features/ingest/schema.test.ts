@@ -126,4 +126,18 @@ describe('ingest schemas', () => {
       })
     ).toThrow()
   })
+
+  test('rejects impossible calendar dates in snapshot hash checks', () => {
+    expect(() =>
+      snapshotCheckRequestSchema.parse({
+        keys: [
+          {
+            source: 'codex',
+            usageDate: '2026-02-30',
+            model: 'gpt-5'
+          }
+        ]
+      })
+    ).toThrow('Invalid ISO date')
+  })
 })

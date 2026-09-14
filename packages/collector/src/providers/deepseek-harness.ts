@@ -135,6 +135,7 @@ async function* readLogLines(filePath: string): AsyncGenerator<string> {
   }
   let decodedBytes = 0
   let pending = ''
+  const decoder = new TextDecoder('utf-8')
   for (const frame of scanZstdFrames(compressed)) {
     let decoded: Buffer
     try {
@@ -151,12 +152,20 @@ async function* readLogLines(filePath: string): AsyncGenerator<string> {
     if (decodedBytes > maxSessionFileBytes) {
       throw new Error(`DeepSeek Harness decompressed session log exceeds ${maxSessionFileBytes} bytes`)
     }
-    pending += decoded.toString('utf8')
+    // Keep decoder state across frames so a multibyte UTF-8 sequence split at
+    // a frame boundary is not replaced before the next frame arrives.
+    pending += decoder.decode(decoded, { stream: true })
     let newline: number
     while ((newline = pending.indexOf('\n')) >= 0) {
       yield pending.slice(0, newline)
       pending = pending.slice(newline + 1)
     }
+  }
+  pending += decoder.decode()
+  let newline: number
+  while ((newline = pending.indexOf('\n')) >= 0) {
+    yield pending.slice(0, newline)
+    pending = pending.slice(newline + 1)
   }
   if (pending) yield pending
 }

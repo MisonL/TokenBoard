@@ -1,9 +1,15 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, test, vi } from 'vitest'
 import { collectClaudeCodeUsage } from './claude-code'
 import { clearPendingUploadCursors } from './session-cursor'
+
+const bundledCcusageConfigArgs = [
+  '--config',
+  join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'ccusage.json')
+]
 
 describe('Claude hook sync collection', () => {
   test('uses changed Claude project files to run narrow ccusage reconciliation despite external since', async () => {
@@ -86,7 +92,8 @@ describe('Claude hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ],
         [
           'ccusage@20.0.20',
@@ -98,7 +105,8 @@ describe('Claude hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ]
       ])
       expect(snapshots).toEqual([
@@ -203,7 +211,8 @@ describe('Claude hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ],
         [
           'ccusage@20.0.20',
@@ -215,7 +224,8 @@ describe('Claude hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ]
       ])
       expect(snapshots).toEqual([
@@ -313,7 +323,8 @@ describe('Claude hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ],
         [
           'ccusage@20.0.20',
@@ -325,7 +336,8 @@ describe('Claude hook sync collection', () => {
           '--until',
           '20260522',
           '--timezone',
-          'Asia/Shanghai'
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
         ]
       ])
       expect(snapshots).toEqual([

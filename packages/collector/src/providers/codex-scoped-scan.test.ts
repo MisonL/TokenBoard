@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
 import { createEmptyCodexHome, fileExists, platformCommand, tokenCountEvent, writeJsonl } from './codex-test-helpers'
@@ -10,6 +11,11 @@ import { subagentSessionMeta, totalUsageEvent } from './codex-subagent-usage-tes
 afterEach(() => {
   vi.unstubAllEnvs()
 })
+
+const bundledCcusageConfigArgs = [
+  '--config',
+  join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'ccusage.json')
+]
 
 describe('collectCodexUsage scoped scans', () => {
   test('splits context-priced usage from a non-context canonical model in full scans', async () => {
@@ -349,15 +355,43 @@ describe('collectCodexUsage scoped since scans', () => {
     expect(calls).toEqual([
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@20.0.20', 'codex', 'daily', '--json', '--offline', '--single-thread', '--since', '20260509']
+        args: [
+          'ccusage@20.0.20',
+          'codex',
+          'daily',
+          '--json',
+          '--offline',
+          '--single-thread',
+          '--since',
+          '20260509',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@20.0.20', 'codex', 'session', '--json', '--offline', '--single-thread', '--since', '20260509']
+        args: [
+          'ccusage@20.0.20',
+          'codex',
+          'session',
+          '--json',
+          '--offline',
+          '--single-thread',
+          '--since',
+          '20260509',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: '/opt/bin/bunx',
-        args: ['ccusage@20.0.20', 'codex', 'session', '--json', '--offline', '--single-thread']
+        args: [
+          'ccusage@20.0.20',
+          'codex',
+          'session',
+          '--json',
+          '--offline',
+          '--single-thread',
+          ...bundledCcusageConfigArgs
+        ]
       }
     ])
   })
@@ -523,7 +557,17 @@ function twoBatchCodexCalls() {
 function codexCall(report: 'daily' | 'session') {
   return {
     command: platformCommand('npx'),
-    args: ['ccusage@20.0.20', 'codex', report, '--json', '--offline', '--single-thread', '--timezone', 'Asia/Shanghai']
+    args: [
+      'ccusage@20.0.20',
+      'codex',
+      report,
+      '--json',
+      '--offline',
+      '--single-thread',
+      '--timezone',
+      'Asia/Shanghai',
+      ...bundledCcusageConfigArgs
+    ]
   }
 }
 

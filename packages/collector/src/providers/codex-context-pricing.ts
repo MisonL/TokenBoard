@@ -1,4 +1,5 @@
 import { basename, dirname, join, resolve, sep } from 'node:path'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { assertValidDateFilter, isAllDateFilter } from '../iso-calendar-date'
 import { normalizeCodexTotalTokens } from '../codex-token-usage'
 import { resolveSessionJsonlFiles } from './session-file-walk'
@@ -36,6 +37,7 @@ export type CodexContextPricingRule = {
   standard: PricingRates
   longContext: PricingRates
   fastMultiplier?: number
+  priorityMultiplier?: number
 }
 
 export type CodexContextPricingCost = {
@@ -210,25 +212,172 @@ export const codexContextPricingRules: readonly CodexContextPricingRule[] = [
   }
 ]
 
-const knownContextPricingModelBases = new Set(
-  codexContextPricingRules.flatMap((rule) => rule.modelIds.map((model) => model.trim().toLowerCase()))
-)
-const ruleByModel: Map<string, CodexContextPricingRule> = new Map(
-  codexContextPricingRules.flatMap((rule) => rule.modelIds.map((model) => [normalizeModelId(model), rule] as const))
-)
-const canonicalModelByAlias = new Map(
-  codexContextPricingRules.flatMap((rule) => {
-    const canonical = normalizeModelId(rule.modelIds[0] ?? '')
-    return rule.modelIds.map((model) => [normalizeModelId(model), canonical] as const)
-  })
-)
+type CodexContextPricingIndexes = {
+  rules: readonly CodexContextPricingRule[]
+  knownModelBases: ReadonlySet<string>
+  ruleByModel: ReadonlyMap<string, CodexContextPricingRule>
+  canonicalModelByAlias: ReadonlyMap<string, string>
+}
+
+const codexContextPricingStorage = new AsyncLocalStorage<CodexContextPricingIndexes>()
+let defaultCodexContextPricingIndexes = buildCodexContextPricingIndexes(codexContextPricingRules)
+
+export type DynamicCodexPricingModel = {
+  provider?: string
+  modelId: string
+  inputCostPerMillion: number
+  outputCostPerMillion: number
+  cacheReadCostPerMillion: number | null
+  cacheWriteCostPerMillion: number | null
+  pricing: Readonly<Record<string, unknown>>
+}
+
+export function getCodexContextPricingRules() {
+  return currentCodexContextPricingIndexes().rules
+}
+
+export function setCodexContextPricingRules(rules: readonly CodexContextPricingRule[]) {
+  const previous = defaultCodexContextPricingIndexes.rules
+  defaultCodexContextPricingIndexes = buildCodexContextPricingIndexes(rules)
+  return previous
+}
+
+export async function withCodexContextPricingRules<T>(
+  rules: readonly CodexContextPricingRule[],
+  callback: () => Promise<T> | T
+): Promise<T> {
+  return await codexContextPricingStorage.run(buildCodexContextPricingIndexes(rules), callback)
+}
+
+export function buildCodexContextPricingRules(
+  models: readonly DynamicCodexPricingModel[],
+  baseRules: readonly CodexContextPricingRule[] = codexContextPricingRules,
+  stderr?: (line: string) => void,
+  excludedModelIds: ReadonlySet<string> = new Set()
+) {
+  const knownBaseIds = new Set(
+    baseRules.flatMap((rule) => rule.modelIds.map((modelId) => modelId.trim().toLowerCase()))
+  )
+  const excluded = new Set<string>()
+  for (const modelId of excludedModelIds) {
+    const normalized = modelId.trim().toLowerCase()
+    excluded.add(normalized)
+    excluded.add(normalizeModelIdWithBases(normalized, knownBaseIds))
+  }
+  const rules: CodexContextPricingRule[] = baseRules
+    .map((rule) => ({
+      ...rule,
+      modelIds: rule.modelIds.filter((modelId) => {
+        const normalized = modelId.trim().toLowerCase()
+        return !excluded.has(normalized) && !excluded.has(normalizeModelIdWithBases(normalized, knownBaseIds))
+      }),
+      standard: { ...rule.standard },
+      longContext: { ...rule.longContext }
+    }))
+    .filter((rule) => rule.modelIds.length > 0)
+  const ruleById = new Map<string, CodexContextPricingRule>()
+  const baseModelBases = new Set(rules.flatMap((rule) => rule.modelIds.map((model) => model.trim().toLowerCase())))
+  for (const rule of rules) {
+    for (const modelId of rule.modelIds) {
+      ruleById.set(normalizeModelIdWithBases(modelId, baseModelBases), rule)
+    }
+  }
+
+  for (const model of selectUnambiguousDynamicPricingModels(models)) {
+    const normalizedModelId = normalizeModelIdWithBases(model.modelId, baseModelBases)
+    if (excluded.has(model.modelId.trim().toLowerCase()) || excluded.has(normalizedModelId)) continue
+    const tier = readDynamicContextTier(model.pricing)
+    const existing = ruleById.get(normalizedModelId)
+    if (!tier) {
+      // A single threshold rule cannot safely represent changing prices across
+      // multiple published context tiers. Remove only this model from a shared
+      // static rule instead of silently repricing it with stale rates.
+      if (hasChangingDynamicContextTiers(model.pricing)) {
+        removeContextPricingRuleForModel(rules, ruleById, normalizedModelId, baseModelBases)
+        stderr?.(
+          `TokenBoard model pricing: skipping dynamic Codex context rule for ${model.modelId}; multiple changing context tiers cannot be represented by the request-level rule`
+        )
+      }
+      continue
+    }
+    const standard = dynamicRates(model, existing?.standard)
+    const longContext = dynamicLongContextRates(model, tier, existing?.longContext)
+    if (!standard || !longContext) {
+      const missingCachePrices = [
+        standard?.cacheRead === undefined || longContext?.cacheRead === undefined ? 'cache-read' : null,
+        standard?.cacheCreation === undefined || longContext?.cacheCreation === undefined ? 'cache-write' : null
+      ].filter((value): value is string => value !== null)
+      stderr?.(
+        `TokenBoard model pricing: skipping dynamic Codex context rule for ${model.modelId}; cache pricing is incomplete (${missingCachePrices.join(', ')})`
+      )
+      continue
+    }
+    if (existing) removeContextPricingRuleForModel(rules, ruleById, normalizedModelId, baseModelBases)
+    const dynamicRule: CodexContextPricingRule = {
+      modelIds: [...new Set([model.modelId, normalizedModelId])],
+      threshold: tier.threshold,
+      standard,
+      longContext,
+      fastMultiplier: readDynamicMultiplier(model.pricing) ?? existing?.fastMultiplier,
+      priorityMultiplier: readDynamicPriorityMultiplier(model.pricing) ?? existing?.priorityMultiplier
+    }
+    rules.push(dynamicRule)
+    ruleById.set(normalizedModelId, dynamicRule)
+  }
+  return rules
+}
+
+function removeContextPricingRuleForModel(
+  rules: CodexContextPricingRule[],
+  ruleById: Map<string, CodexContextPricingRule>,
+  normalizedModelId: string,
+  knownModelBases: ReadonlySet<string>
+) {
+  const existing = ruleById.get(normalizedModelId)
+  if (!existing) return
+
+  for (const [key, value] of ruleById) {
+    if (value === existing) ruleById.delete(key)
+  }
+
+  const remainingModelIds = existing.modelIds.filter(
+    (modelId) => normalizeModelIdWithBases(modelId, knownModelBases) !== normalizedModelId
+  )
+  const index = rules.indexOf(existing)
+  if (remainingModelIds.length === 0) {
+    if (index >= 0) rules.splice(index, 1)
+    return
+  }
+
+  const replacement = { ...existing, modelIds: remainingModelIds }
+  if (index >= 0) rules[index] = replacement
+  for (const modelId of remainingModelIds) {
+    ruleById.set(normalizeModelIdWithBases(modelId, knownModelBases), replacement)
+  }
+}
+
+/**
+ * The catalogue is provider-scoped while Codex records only carry a model id.
+ * Do not choose one provider's price when more than one catalogue row can
+ * describe the same id; leave the id to the static fallback (or unresolved).
+ */
+export function selectUnambiguousDynamicPricingModels<T extends { modelId: string }>(models: readonly T[]) {
+  const byModelId = new Map<string, T[]>()
+  for (const model of models) {
+    const key = model.modelId.trim().toLowerCase()
+    const entries = byModelId.get(key) ?? []
+    entries.push(model)
+    byModelId.set(key, entries)
+  }
+  return models.filter((model) => (byModelId.get(model.modelId.trim().toLowerCase())?.length ?? 0) === 1)
+}
 
 export function isCodexContextPricingModel(model: string) {
-  return ruleByModel.has(normalizeModelId(model))
+  return currentCodexContextPricingIndexes().ruleByModel.has(normalizeModelId(model))
 }
 
 export function isCodexContextPricingCostGuaranteedZero(model: string) {
-  const rule = ruleByModel.get(normalizeModelId(model))
+  const rule = currentCodexContextPricingIndexes().ruleByModel.get(normalizeModelId(model))
   if (!rule) return false
   return (
     Object.values(rule.standard).every((rate) => rate === 0) &&
@@ -528,11 +677,11 @@ export function priceCodexRequest(input: {
   cacheCreationTokens: number
   serviceTier?: CodexServiceTier
 }) {
-  const rule = ruleByModel.get(normalizeModelId(input.model))
+  const rule = currentCodexContextPricingIndexes().ruleByModel.get(normalizeModelId(input.model))
   if (!rule) return null
   const requestContextTokens = input.inputTokens + input.cacheCreationTokens
   const rates = requestContextTokens > rule.threshold ? rule.longContext : rule.standard
-  const multiplier = input.serviceTier === 'fast' || input.serviceTier === 'priority' ? (rule.fastMultiplier ?? 1) : 1
+  const multiplier = serviceTierMultiplier(rule, input.serviceTier)
   const uncachedInputTokens = input.uncachedInputTokens ?? Math.max(0, input.inputTokens - input.cacheReadTokens)
   return (
     multiplier *
@@ -591,7 +740,7 @@ export function applyCodexContextPricingUsageModelHints(
       usage.usageDate,
       canonicalModelsByDate
     )
-    if (!ruleByModel.has(normalizeModelId(model))) continue
+    if (!currentCodexContextPricingIndexes().ruleByModel.has(normalizeModelId(model))) continue
     // Keep the request-level context tier observed while scanning. Do not
     // recompute it from a date/model aggregate, because that would reprice
     // every standard request as long-context once the daily total crosses the
@@ -618,10 +767,10 @@ export function applyCodexContextPricingUsageModelHints(
 }
 
 function priceCodexUsageAtTier(input: CodexContextPricingUsage) {
-  const rule = ruleByModel.get(normalizeModelId(input.model))
+  const rule = currentCodexContextPricingIndexes().ruleByModel.get(normalizeModelId(input.model))
   if (!rule) return null
   const rates = input.contextTier === 'long' ? rule.longContext : rule.standard
-  const multiplier = input.serviceTier === 'fast' || input.serviceTier === 'priority' ? (rule.fastMultiplier ?? 1) : 1
+  const multiplier = serviceTierMultiplier(rule, input.serviceTier)
   return (
     multiplier *
     (input.uncachedInputTokens * rates.input +
@@ -646,7 +795,207 @@ export function normalizeModelId(value: string): string {
   const base = datedModel[1] ?? normalized
   // Only collapse a dated alias when its base is a known priced model. This
   // prevents a future model such as gpt-5-20241201 from being misread as gpt-5.
-  return knownContextPricingModelBases.has(base) ? base : normalized
+  return currentCodexContextPricingIndexes().knownModelBases.has(base) ? base : normalized
+}
+
+function currentCodexContextPricingIndexes() {
+  return codexContextPricingStorage.getStore() ?? defaultCodexContextPricingIndexes
+}
+
+function buildCodexContextPricingIndexes(rules: readonly CodexContextPricingRule[]): CodexContextPricingIndexes {
+  const knownModelBases = new Set(rules.flatMap((rule) => rule.modelIds.map((model) => model.trim().toLowerCase())))
+  const ruleByModel = new Map(
+    rules.flatMap((rule) =>
+      rule.modelIds.map((model) => [normalizeModelIdWithBases(model, knownModelBases), rule] as const)
+    )
+  )
+  const canonicalModelByAlias = new Map(
+    rules.flatMap((rule) => {
+      const canonical = normalizeModelIdWithBases(rule.modelIds[0] ?? '', knownModelBases)
+      return rule.modelIds.map((model) => [normalizeModelIdWithBases(model, knownModelBases), canonical] as const)
+    })
+  )
+  return { rules, knownModelBases, ruleByModel, canonicalModelByAlias }
+}
+
+function normalizeModelIdWithBases(value: string, knownModelBases: ReadonlySet<string>) {
+  const normalized = value.trim().toLowerCase()
+  const datedModel = /^(.+)-(\d{4})(\d{2})(\d{2})$/.exec(normalized)
+  if (!datedModel) return normalized
+  const year = Number(datedModel[2])
+  const month = Number(datedModel[3])
+  const day = Number(datedModel[4])
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return normalized
+  }
+  const base = datedModel[1] ?? normalized
+  return knownModelBases.has(base) ? base : normalized
+}
+
+function serviceTierMultiplier(rule: CodexContextPricingRule, serviceTier: CodexServiceTier | undefined) {
+  if (serviceTier === 'fast') return rule.fastMultiplier ?? 1
+  if (serviceTier === 'priority') return rule.priorityMultiplier ?? rule.fastMultiplier ?? 1
+  return 1
+}
+
+function dynamicRates(model: DynamicCodexPricingModel, fallback?: PricingRates): PricingRates | null {
+  const cacheRead =
+    model.cacheReadCostPerMillion === null ? fallback?.cacheRead : model.cacheReadCostPerMillion / 1_000_000
+  const cacheCreation =
+    model.cacheWriteCostPerMillion === null ? fallback?.cacheCreation : model.cacheWriteCostPerMillion / 1_000_000
+  if (cacheRead === undefined || cacheCreation === undefined) return null
+  return {
+    input: model.inputCostPerMillion / 1_000_000,
+    output: model.outputCostPerMillion / 1_000_000,
+    cacheRead,
+    cacheCreation
+  }
+}
+
+function dynamicLongContextRates(
+  model: DynamicCodexPricingModel,
+  tier: {
+    input: number
+    output: number
+    cacheRead: number | null
+    cacheWrite: number | null
+  },
+  fallback?: PricingRates
+): PricingRates | null {
+  const cacheRead =
+    tier.cacheRead === null
+      ? model.cacheReadCostPerMillion === null
+        ? fallback?.cacheRead
+        : model.cacheReadCostPerMillion / 1_000_000
+      : tier.cacheRead / 1_000_000
+  const cacheCreation =
+    tier.cacheWrite === null
+      ? model.cacheWriteCostPerMillion === null
+        ? fallback?.cacheCreation
+        : model.cacheWriteCostPerMillion / 1_000_000
+      : tier.cacheWrite / 1_000_000
+  if (cacheRead === undefined || cacheCreation === undefined) return null
+  return {
+    input: tier.input / 1_000_000,
+    output: tier.output / 1_000_000,
+    cacheRead,
+    cacheCreation
+  }
+}
+
+function readDynamicContextTier(pricing: Readonly<Record<string, unknown>>) {
+  const parsedExplicit = readDynamicContextTiers(pricing)
+  if (parsedExplicit[0] && !hasChangingLaterContextTier(parsedExplicit)) return parsedExplicit[0]
+  if (parsedExplicit[0]) return null
+  if (!isRecord(pricing.context_over_200k)) return null
+  return parseDynamicContextTier({ ...pricing.context_over_200k, tier: { type: 'context', size: 200_000 } })
+}
+
+function hasChangingDynamicContextTiers(pricing: Readonly<Record<string, unknown>>) {
+  const tiers = readDynamicContextTiers(pricing)
+  return tiers.length > 0 && hasChangingLaterContextTier(tiers)
+}
+
+function readDynamicContextTiers(pricing: Readonly<Record<string, unknown>>) {
+  const values: Array<Record<string, unknown>> = []
+  if (Array.isArray(pricing.tiers)) {
+    for (const value of pricing.tiers) {
+      if (isRecord(value)) values.push(value)
+    }
+  }
+  return values
+    .map((value) => {
+      const tier = isRecord(value.tier) ? value.tier : null
+      const threshold = tier?.type === 'context' ? tier.size : null
+      if (!isSafePositiveInteger(threshold)) return null
+      const input = finiteNonNegative(value.input)
+      const output = finiteNonNegative(value.output)
+      if (input === null || output === null) return null
+      return {
+        threshold,
+        input,
+        output,
+        cacheRead: nullableFiniteNonNegative(value.cache_read),
+        cacheWrite: nullableFiniteNonNegative(value.cache_write)
+      }
+    })
+    .filter((value): value is NonNullable<typeof value> => value !== null)
+    .sort((left, right) => left.threshold - right.threshold)
+}
+
+function hasChangingLaterContextTier(
+  tiers: ReadonlyArray<{
+    input: number
+    output: number
+    cacheRead: number | null
+    cacheWrite: number | null
+  }>
+) {
+  const first = tiers[0]
+  if (!first) return false
+  return tiers
+    .slice(1)
+    .some(
+      (tier) =>
+        tier.input !== first.input ||
+        tier.output !== first.output ||
+        tier.cacheRead !== first.cacheRead ||
+        tier.cacheWrite !== first.cacheWrite
+    )
+}
+
+function parseDynamicContextTier(value: Record<string, unknown>) {
+  const tier = isRecord(value.tier) ? value.tier : null
+  const threshold = tier?.type === 'context' ? tier.size : null
+  if (!isSafePositiveInteger(threshold)) return null
+  const input = finiteNonNegative(value.input)
+  const output = finiteNonNegative(value.output)
+  if (input === null || output === null) return null
+  return {
+    threshold,
+    input,
+    output,
+    cacheRead: nullableFiniteNonNegative(value.cache_read),
+    cacheWrite: nullableFiniteNonNegative(value.cache_write)
+  }
+}
+
+function readDynamicMultiplier(pricing: Readonly<Record<string, unknown>>) {
+  for (const key of ['fastMultiplier', 'fast_multiplier']) {
+    const value = finitePositive(pricing[key])
+    if (value !== null) return value
+  }
+  return null
+}
+
+function readDynamicPriorityMultiplier(pricing: Readonly<Record<string, unknown>>) {
+  for (const key of ['priorityMultiplier', 'priority_multiplier']) {
+    const value = finitePositive(pricing[key])
+    if (value !== null) return value
+  }
+  return null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function finiteNonNegative(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+function nullableFiniteNonNegative(value: unknown) {
+  if (value === null || value === undefined) return null
+  return finiteNonNegative(value)
+}
+
+function finitePositive(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
 function contextPricingKey(usageDate: string, model: string) {
@@ -697,7 +1046,7 @@ function hasBillableCodexTokens(snapshot: {
 
 function canonicalModelId(value: string) {
   const normalized = normalizeModelId(value)
-  return canonicalModelByAlias.get(normalized) ?? normalized
+  return currentCodexContextPricingIndexes().canonicalModelByAlias.get(normalized) ?? normalized
 }
 
 async function scanFile(input: {
@@ -815,7 +1164,7 @@ async function scanFile(input: {
     if (total) previousTotals.set(usageStreamKey, total)
     if (!usage || isEmptyUsage(usage)) continue
 
-    if (!normalizedModel || !modelKey || !ruleByModel.has(normalizedModel)) {
+    if (!normalizedModel || !modelKey || !currentCodexContextPricingIndexes().ruleByModel.has(normalizedModel)) {
       if (rawPricingModel && isCodexContextPricingModel(rawPricingModel) && !input.canonicalModel) {
         const candidates = input.canonicalModelsByDate?.get(date)
         const normalizedRawModel = normalizeModelId(rawPricingModel)
@@ -830,7 +1179,7 @@ async function scanFile(input: {
       continue
     }
     if (!isDateInBounds(date, input.since, input.until)) continue
-    const rule = ruleByModel.get(normalizedModel)
+    const rule = currentCodexContextPricingIndexes().ruleByModel.get(normalizedModel)
     if (!rule) continue
     const eventContentKey = [
       timestamp,
@@ -1204,7 +1553,8 @@ function usageEquals(left: UsageValues, right: UsageValues) {
 
 function readServiceTier(value: string | null): CodexServiceTier {
   if (value === 'default' || value === 'standard') return 'standard'
-  if (value === 'fast' || value === 'priority') return 'fast'
+  if (value === 'fast') return 'fast'
+  if (value === 'priority') return 'priority'
   return null
 }
 

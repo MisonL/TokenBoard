@@ -115,6 +115,27 @@ describe('collectDeepSeekHarnessUsage', () => {
     expect(snapshot.outputTokens).toBe(60)
   })
 
+  test('preserves a UTF-8 model id split across compressed frames', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'tokenboard-dsh-'))
+    const filePath = join(home, 'sessions', 'project', 'session-a', 'session.jsonl.zstd')
+    await mkdir(join(filePath, '..'), { recursive: true })
+    const line = Buffer.from(`${assistantMessage({ model: '模型-α' })}\n`, 'utf8')
+    const splitAt = line.indexOf(Buffer.from('模', 'utf8')) + 1
+    expect(splitAt).toBeGreaterThan(0)
+    expect(splitAt).toBeLessThan(line.length)
+    await writeFile(
+      filePath,
+      Buffer.concat([
+        zstdCompressSync(line.subarray(0, splitAt), zstdOptions),
+        zstdCompressSync(line.subarray(splitAt), zstdOptions)
+      ])
+    )
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.model).toBe('模型-α')
+  })
+
   test('never reports a cost for DeepSeek Harness', async () => {
     const home = await dshHome({
       'project/session-a/session.jsonl': {

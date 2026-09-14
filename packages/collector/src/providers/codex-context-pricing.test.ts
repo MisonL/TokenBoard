@@ -6,13 +6,15 @@ import { maxCodexChildSessionLineBytes } from './codex-subagent-usage-child'
 import {
   applyCodexContextPricingCosts,
   applyCodexContextPricingUsageModelHints,
+  buildCodexContextPricingRules,
   collectCodexContextPricingCostsFromFiles,
   collectCodexContextPricingCostsFromHomes,
   isUnresolvedCodexContextPricingSnapshot,
   maxCodexContextPricingFiles,
   normalizeModelId,
   priceCodexRequest,
-  priceCodexContextPricingUsages
+  priceCodexContextPricingUsages,
+  withCodexContextPricingRules
 } from './codex-context-pricing'
 
 describe('Codex context pricing', () => {
@@ -150,6 +152,327 @@ describe('Codex context pricing', () => {
     }
     expect(fast).toBeCloseTo((standard as number) * 2, 12)
     expect(priority).toBeCloseTo(fast as number, 12)
+  })
+
+  test('injects a dynamic 272k rule without mapping it to ccusage 200k pricing', async () => {
+    const rules = buildCodexContextPricingRules([
+      {
+        modelId: 'gpt-6-astra',
+        inputCostPerMillion: 5,
+        outputCostPerMillion: 30,
+        cacheReadCostPerMillion: 0.5,
+        cacheWriteCostPerMillion: 6,
+        pricing: {
+          tiers: [
+            {
+              tier: { type: 'context', size: 272_000 },
+              input: 10,
+              output: 45,
+              cache_read: 1,
+              cache_write: 12
+            }
+          ],
+          priority_multiplier: 3
+        }
+      }
+    ])
+
+    await withCodexContextPricingRules(rules, async () => {
+      expect(
+        priceCodexRequest({
+          model: 'gpt-6-astra',
+          inputTokens: 272_001,
+          outputTokens: 2,
+          cacheReadTokens: 3,
+          cacheCreationTokens: 4,
+          serviceTier: 'priority'
+        })
+      ).toBeCloseTo((3 * ((272_001 - 3) * 10 + 2 * 45 + 3 * 1 + 4 * 12)) / 1_000_000, 12)
+    })
+
+    expect(
+      priceCodexRequest({
+        model: 'gpt-6-astra',
+        inputTokens: 1,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0
+      })
+    ).toBeNull()
+  })
+
+  test('removes a stale static rule when a later context tier changes the effective rates', () => {
+    const diagnostics: string[] = []
+    const rules = buildCodexContextPricingRules(
+      [
+        {
+          modelId: 'gpt-6-multi-tier',
+          inputCostPerMillion: 5,
+          outputCostPerMillion: 30,
+          cacheReadCostPerMillion: 0.5,
+          cacheWriteCostPerMillion: 6,
+          pricing: {
+            tiers: [
+              {
+                tier: { type: 'context', size: 200_000 },
+                input: 10,
+                output: 45,
+                cache_read: 1,
+                cache_write: 12
+              },
+              {
+                tier: { type: 'context', size: 1_000_000 },
+                input: 20,
+                output: 90,
+                cache_read: 2,
+                cache_write: 24
+              }
+            ]
+          }
+        }
+      ],
+      [
+        {
+          modelIds: ['gpt-6-multi-tier', 'gpt-6-stable'],
+          threshold: 200_000,
+          standard: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
+          longContext: { input: 5, output: 6, cacheRead: 7, cacheCreation: 8 }
+        }
+      ],
+      (line) => diagnostics.push(line)
+    )
+
+    expect(rules).toEqual([
+      {
+        modelIds: ['gpt-6-stable'],
+        threshold: 200_000,
+        standard: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 },
+        longContext: { input: 5, output: 6, cacheRead: 7, cacheCreation: 8 }
+      }
+    ])
+    expect(diagnostics).toEqual([
+      'TokenBoard model pricing: skipping dynamic Codex context rule for gpt-6-multi-tier; multiple changing context tiers cannot be represented by the request-level rule'
+    ])
+
+    return withCodexContextPricingRules(rules, async () => {
+      expect(
+        priceCodexRequest({
+          model: 'gpt-6-multi-tier',
+          inputTokens: 1,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0
+        })
+      ).toBeNull()
+      expect(
+        priceCodexRequest({
+          model: 'gpt-6-stable',
+          inputTokens: 1,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0
+        })
+      ).toBe(1)
+    })
+  })
+
+  test('resolves dated dynamic aliases against the supplied base rules', async () => {
+    const rules = buildCodexContextPricingRules(
+      [
+        {
+          modelId: 'gpt-6-astra-20260901',
+          inputCostPerMillion: 5,
+          outputCostPerMillion: 30,
+          cacheReadCostPerMillion: null,
+          cacheWriteCostPerMillion: null,
+          pricing: { tiers: [{ tier: { type: 'context', size: 272_000 }, input: 10, output: 45 }] }
+        }
+      ],
+      [
+        {
+          modelIds: ['gpt-6-astra'],
+          threshold: 200_000,
+          standard: { input: 1, output: 1, cacheRead: 0, cacheCreation: 0 },
+          longContext: { input: 2, output: 2, cacheRead: 0, cacheCreation: 0 }
+        }
+      ]
+    )
+
+    await withCodexContextPricingRules(rules, async () => {
+      expect(
+        priceCodexRequest({
+          model: 'gpt-6-astra-20260901',
+          inputTokens: 272_001,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0
+        })
+      ).toBeCloseTo((272_001 * 10) / 1_000_000, 12)
+    })
+  })
+
+  test('splits a shared static rule before applying different dynamic model prices', () => {
+    const rules = buildCodexContextPricingRules([
+      {
+        modelId: 'gpt-5.6-sol',
+        inputCostPerMillion: 11,
+        outputCostPerMillion: 31,
+        cacheReadCostPerMillion: 1,
+        cacheWriteCostPerMillion: 2,
+        pricing: { tiers: [{ tier: { type: 'context', size: 272_000 }, input: 11, output: 31 }] }
+      },
+      {
+        modelId: 'gpt-5.6',
+        inputCostPerMillion: 22,
+        outputCostPerMillion: 42,
+        cacheReadCostPerMillion: 1,
+        cacheWriteCostPerMillion: 2,
+        pricing: { tiers: [{ tier: { type: 'context', size: 272_000 }, input: 22, output: 42 }] }
+      }
+    ])
+
+    const relevantRules = rules.filter(
+      (rule) => rule.modelIds.includes('gpt-5.6-sol') || rule.modelIds.includes('gpt-5.6')
+    )
+    expect(relevantRules).toHaveLength(2)
+    expect(relevantRules.find((rule) => rule.modelIds.includes('gpt-5.6-sol'))?.standard.input).toBe(11 / 1_000_000)
+    expect(relevantRules.find((rule) => rule.modelIds.includes('gpt-5.6'))?.standard.input).toBe(22 / 1_000_000)
+    expect(relevantRules.find((rule) => rule.modelIds.includes('gpt-5.6-sol'))?.modelIds).not.toContain('gpt-5.6')
+  })
+
+  test('excludes a dated explicit override from the corresponding context rule', () => {
+    const rules = buildCodexContextPricingRules(
+      [
+        {
+          modelId: 'gpt-5.6-sol-20260901',
+          inputCostPerMillion: 11,
+          outputCostPerMillion: 31,
+          cacheReadCostPerMillion: 1,
+          cacheWriteCostPerMillion: 2,
+          pricing: { tiers: [{ tier: { type: 'context', size: 272_000 }, input: 11, output: 31 }] }
+        }
+      ],
+      undefined,
+      undefined,
+      new Set(['gpt-5.6-sol-20260901'])
+    )
+
+    expect(rules.some((rule) => rule.modelIds.includes('gpt-5.6-sol'))).toBe(false)
+    expect(rules.some((rule) => rule.modelIds.includes('gpt-5.6-sol-20260901'))).toBe(false)
+  })
+
+  test('skips a dynamic model whose id is published by multiple providers', () => {
+    const rules = buildCodexContextPricingRules(
+      [
+        {
+          provider: 'openai',
+          modelId: 'provider-collision',
+          inputCostPerMillion: 1,
+          outputCostPerMillion: 2,
+          cacheReadCostPerMillion: null,
+          cacheWriteCostPerMillion: null,
+          pricing: { tiers: [{ tier: { type: 'context', size: 200_000 }, input: 3, output: 4 }] }
+        },
+        {
+          provider: 'azure',
+          modelId: 'provider-collision',
+          inputCostPerMillion: 99,
+          outputCostPerMillion: 98,
+          cacheReadCostPerMillion: null,
+          cacheWriteCostPerMillion: null,
+          pricing: { tiers: [{ tier: { type: 'context', size: 200_000 }, input: 97, output: 96 }] }
+        }
+      ],
+      []
+    )
+
+    expect(rules).toEqual([])
+  })
+
+  test('preserves existing standard cache prices when the catalogue omits them', () => {
+    const rules = buildCodexContextPricingRules([
+      {
+        modelId: 'gpt-5.6-luna',
+        inputCostPerMillion: 7,
+        outputCostPerMillion: 31,
+        cacheReadCostPerMillion: null,
+        cacheWriteCostPerMillion: null,
+        pricing: { tiers: [{ tier: { type: 'context', size: 272_000 }, input: 14, output: 46 }] }
+      }
+    ])
+    const rule = rules.find((candidate) => candidate.modelIds.includes('gpt-5.6-luna'))
+
+    expect(rule?.standard).toMatchObject({
+      input: 7 / 1_000_000,
+      output: 31 / 1_000_000,
+      cacheRead: 0.02 / 1_000_000,
+      cacheCreation: 0.25 / 1_000_000
+    })
+  })
+
+  test('skips a dynamic context rule when cache prices are incomplete without a static fallback', () => {
+    const diagnostics: string[] = []
+    const rules = buildCodexContextPricingRules(
+      [
+        {
+          provider: 'openai',
+          modelId: 'gpt-6-cache-unknown',
+          inputCostPerMillion: 5,
+          outputCostPerMillion: 30,
+          cacheReadCostPerMillion: null,
+          cacheWriteCostPerMillion: null,
+          pricing: {
+            tiers: [{ tier: { type: 'context', size: 272_000 }, input: 10, output: 45 }]
+          }
+        }
+      ],
+      [],
+      (line) => diagnostics.push(line)
+    )
+
+    expect(rules).toEqual([])
+    expect(diagnostics).toEqual([
+      'TokenBoard model pricing: skipping dynamic Codex context rule for gpt-6-cache-unknown; cache pricing is incomplete (cache-read, cache-write)'
+    ])
+  })
+
+  test('keeps concurrent dynamic pricing contexts isolated', async () => {
+    const makeRules = (modelId: string, input: number) =>
+      buildCodexContextPricingRules([
+        {
+          modelId,
+          inputCostPerMillion: input,
+          outputCostPerMillion: 0,
+          cacheReadCostPerMillion: 0,
+          cacheWriteCostPerMillion: 0,
+          pricing: { tiers: [{ tier: { type: 'context', size: 200_000 }, input, output: 0 }] }
+        }
+      ])
+
+    const [first, second] = await Promise.all([
+      withCodexContextPricingRules(makeRules('dynamic-a', 1), async () => {
+        await Promise.resolve()
+        return priceCodexRequest({
+          model: 'dynamic-a',
+          inputTokens: 1,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0
+        })
+      }),
+      withCodexContextPricingRules(makeRules('dynamic-b', 2), async () => {
+        await Promise.resolve()
+        return priceCodexRequest({
+          model: 'dynamic-b',
+          inputTokens: 1,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0
+        })
+      })
+    ])
+    expect(first).toBeCloseTo(1 / 1_000_000, 12)
+    expect(second).toBeCloseTo(2 / 1_000_000, 12)
   })
 
   test.each([
