@@ -244,3 +244,45 @@ describe('UsageDetailsPanel', () => {
     expect(html).not.toContain('不含 agy')
   })
 })
+
+// The date column here is the owner's local calendar day, exactly as on the dashboard and the
+// card. The subtitle named the window but not the zone it was measured in, so a user comparing
+// this page against a report from another tool had no way to see why the days differed.
+describe('UsageDetailsPanel timezone caption', () => {
+  test('names the zone the date window is measured in', async () => {
+    const html = await renderToString(
+      <UsageDetailsPanel
+        devices={[]}
+        filters={{
+          source: 'all',
+          startDate: '2026-04-26',
+          endDate: '2026-05-25',
+          deviceId: 'all',
+          modelQuery: ''
+        }}
+        details={emptyDetails()}
+        timezone="Asia/Shanghai"
+        timezoneLabel="UTC+8"
+      />
+    )
+
+    expect(html).toContain('data-usage-details-timezone="true"')
+    expect(html).toContain('Asia/Shanghai')
+    expect(html).toContain('UTC+8')
+  })
+})
+
+function emptyDetails() {
+  return {
+    summary: {
+      totalTokens: 0,
+      totalTokensWithoutCacheRead: 0,
+      cacheReadRate: 0,
+      costUsd: 0,
+      sessionCount: 0,
+      activeDays: 0
+    },
+    dailyRows: [],
+    modelRows: []
+  }
+}

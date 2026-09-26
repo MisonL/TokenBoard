@@ -17,6 +17,10 @@ export function UsageDetailsPanel(props: {
   details: UsageDetails
   filters: UsageDetailsFilters
   devices: UserDevice[]
+  /** The zone the date window is measured in — the user's own profile zone. */
+  timezone?: string
+  /** The offset of `timezone` right now, e.g. `UTC+8`. */
+  timezoneLabel?: string
 }) {
   const dailyRows = [...props.details.dailyRows].reverse()
   const selectedDevice = props.devices.find((device) => device.id === props.filters.deviceId)
@@ -24,7 +28,13 @@ export function UsageDetailsPanel(props: {
 
   return (
     <section class="mx-auto flex max-w-7xl flex-col gap-5">
-      <UsageDetailsHeader filters={props.filters} devices={props.devices} selectedDevice={selectedDevice} />
+      <UsageDetailsHeader
+        filters={props.filters}
+        devices={props.devices}
+        selectedDevice={selectedDevice}
+        timezone={props.timezone}
+        timezoneLabel={props.timezoneLabel}
+      />
 
       <UsageMetricGrid columns={3}>
         <UsageMetricCard
@@ -58,6 +68,8 @@ function UsageDetailsHeader(props: {
   filters: UsageDetailsFilters
   devices: UserDevice[]
   selectedDevice?: UserDevice
+  timezone?: string
+  timezoneLabel?: string
 }) {
   return (
     <header class="app-surface-raised rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5">
@@ -68,6 +80,12 @@ function UsageDetailsHeader(props: {
           <p class="mt-2 text-sm text-[var(--app-muted)]">
             {usageDetailsSubtitle(props.filters, props.selectedDevice)}
           </p>
+          {props.timezone ? (
+            <p class="mt-1 text-xs text-[var(--app-muted)]" data-usage-details-timezone="true">
+              日期按 {props.timezone}
+              {props.timezoneLabel ? `（${props.timezoneLabel}）` : ''} 的本地日历日归属。
+            </p>
+          ) : null}
         </div>
         <UsageDetailsFiltersForm filters={props.filters} devices={props.devices} />
       </div>

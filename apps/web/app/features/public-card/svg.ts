@@ -13,8 +13,16 @@ export function renderUsageCardSvg(input: UsageCardInput, configInput?: Partial<
   const subtitle = config.subtitle || subtitleText(input, config)
   const colorScheme = config.theme === 'light' ? 'only light' : 'dark'
   const unavailableCostNote = buildUnavailableCostNote(input, config)
+  const timezoneNote = buildTimezoneNote(input, config)
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="auto" viewBox="0 0 520 220" role="img" aria-label="${escapeXml(title)}" color-scheme="${colorScheme}" style="display:block;width:100%;height:auto;max-width:520px;color-scheme:${colorScheme};-webkit-force-dark:none">
+  // The card declares a fixed intrinsic size instead of sizing itself with a `style`
+  // attribute. The response carries the app's CSP, and `style-src 'self'` drops style
+  // attributes with no way to allow them by hash, so `max-width:520px` was silently
+  // discarded and the card stretched to the full viewport when the URL was opened
+  // directly. `width`/`height` are presentation attributes, which `style-src` does not
+  // govern. An `<img>` embed — how the README uses the card — still scales it to its
+  // container, because the fixed size only supplies the intrinsic ratio the layout needs.
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="220" viewBox="0 0 520 220" role="img" aria-label="${escapeXml(title)}" color-scheme="${colorScheme}">
   <title>${escapeXml(title)}</title>
   <defs>
     <linearGradient id="card-bg" x1="0" y1="0" x2="520" y2="220" gradientUnits="userSpaceOnUse">
@@ -40,6 +48,7 @@ export function renderUsageCardSvg(input: UsageCardInput, configInput?: Partial<
   <text x="94" y="64" fill="${palette.muted}" font-family="Arial, sans-serif" font-size="13">${escapeXml(subtitle)}</text>
   ${metrics.join('\n  ')}
   ${unavailableCostNote ? `<text x="24" y="211" fill="${palette.muted}" font-family="Arial, sans-serif" font-size="11">${escapeXml(unavailableCostNote)}</text>` : ''}
+  ${timezoneNote ? `<g data-card-timezone="true"><text x="496" y="211" text-anchor="end" fill="${palette.muted}" font-family="Arial, sans-serif" font-size="11">${escapeXml(timezoneNote)}</text></g>` : ''}
 </svg>`
 }
 
@@ -140,6 +149,23 @@ function buildUnavailableCostNote(input: UsageCardInput, config: PublicCardConfi
   return visibleMetrics(config).some((metric) => isCostMetric(metric) && !costAvailabilityForMetric(input, metric))
     ? labels(config.language).costUnavailableNote
     : ''
+}
+
+// Only worth saying when the card actually shows a figure that depends on the boundary. A card
+// of totals alone would carry a note about a day it never displays.
+//
+// The offset alone, without the zone name: it is what answers "which day", because two zones at
+// the same offset turn the day over at the same instant, so the name adds nothing a reader needs
+// here — and it does not fit. This shares the bottom line with the cost-unavailable note, and the
+// longest IANA name (`America/Argentina/ComodRivadavia`) pushed an English card's two notes into
+// each other. The name is on `/api/public/<slug>.json` for anything that needs to identify the
+// zone rather than its boundary.
+function buildTimezoneNote(input: UsageCardInput, config: PublicCardConfig) {
+  if (!input.timezoneLabel) return ''
+  const showsToday = visibleMetrics(config).some((metric) => metric.startsWith('today'))
+  if (!showsToday) return ''
+
+  return config.language === 'en' ? `Today: ${input.timezoneLabel}` : `今日：${input.timezoneLabel}`
 }
 
 function costAvailabilityForMetric(input: UsageCardInput, metric: PublicCardMetric) {

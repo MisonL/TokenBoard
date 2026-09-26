@@ -91,7 +91,7 @@ describe('settings service', () => {
                 return null
               },
               async run() {
-                return { success: true }
+                return { success: true, meta: { changes: 1 } }
               }
             }
           }
@@ -116,7 +116,17 @@ describe('settings service', () => {
     expect(sqlStatements[1]).toContain('UPDATE profiles')
     expect(sqlStatements[1]).toContain("timezone_source = 'user'")
     expect(bindings[0]).toEqual(['eve-tokenboard', 'user_1'])
-    expect(bindings[1]).toEqual(['eve-tokenboard', 'Eve', 'Asia/Hong_Kong', 1, 0, '2026-04-29T10:00:00.000Z', 'user_1'])
+    expect(bindings[1]).toEqual([
+      'eve-tokenboard',
+      'Eve',
+      'Asia/Hong_Kong',
+      1,
+      0,
+      '2026-04-29T10:00:00.000Z',
+      'user_1',
+      'eve-tokenboard',
+      'user_1'
+    ])
   })
 
   test('uses the canonical origin for public URLs', async () => {
@@ -217,6 +227,63 @@ describe('settings service', () => {
     expect(settings.timezone).toBe('UTC')
     expect(settings.profileNeedsRepair).toBe(true)
     expect(settings.publicCardConfig).toEqual(defaultPublicCardConfig)
+  })
+
+  test('does not normalize legacy profile values to a reserved public slug', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return {
+                  userId: 'user_123',
+                  slug: 'MODEL-PRICING',
+                  displayName: 'Model Pricing',
+                  timezone: 'UTC',
+                  isPublic: 1,
+                  participatesInLeaderboards: 0
+                }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const settings = await getProfileSettings(db, 'user_123', 'https://tokenboard.example.com')
+
+    expect(settings.slug).toBe('user-123')
+    expect(settings.publicJsonUrl).toBe('https://tokenboard.example.com/api/public/user-123.json')
+    expect(settings.profileNeedsRepair).toBe(true)
+  })
+
+  test('uses a stable user-specific fallback when every legacy slug candidate is reserved', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return {
+                  userId: 'model-pricing',
+                  slug: 'MODEL-PRICING',
+                  displayName: 'Model Pricing',
+                  timezone: 'UTC',
+                  isPublic: 1,
+                  participatesInLeaderboards: 0
+                }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const settings = await getProfileSettings(db, 'model-pricing', 'https://tokenboard.example.com')
+
+    expect(settings.slug).toBe('user-model-pricing')
+    expect(settings.slug).not.toBe('model-pricing')
   })
 
   test('reads profile timezone without requiring public card columns', async () => {
@@ -356,7 +423,7 @@ describe('settings service', () => {
                 return null
               },
               async run() {
-                return { success: true }
+                return { success: true, meta: { changes: 1 } }
               }
             }
           }
@@ -377,7 +444,17 @@ describe('settings service', () => {
       '2026-04-29T10:00:00.000Z'
     )
 
-    expect(bindings[1]).toEqual(['eve-tokenboard', 'Eve', 'UTC', 1, 1, '2026-04-29T10:00:00.000Z', 'user_1'])
+    expect(bindings[1]).toEqual([
+      'eve-tokenboard',
+      'Eve',
+      'UTC',
+      1,
+      1,
+      '2026-04-29T10:00:00.000Z',
+      'user_1',
+      'eve-tokenboard',
+      'user_1'
+    ])
   })
 
   test('updates profile and card settings together', async () => {
@@ -394,7 +471,7 @@ describe('settings service', () => {
                 return null
               },
               async run() {
-                return { success: true }
+                return { success: true, meta: { changes: 1 } }
               }
             }
           }
@@ -435,6 +512,8 @@ describe('settings service', () => {
       1,
       1,
       '2026-04-29T10:00:00.000Z',
+      'user_1',
+      'eve-tokenboard',
       'user_1'
     ])
   })
@@ -451,7 +530,7 @@ describe('settings service', () => {
                 return null
               },
               async run() {
-                return { success: true }
+                return { success: true, meta: { changes: 1 } }
               }
             }
           }
@@ -504,6 +583,163 @@ describe('settings service', () => {
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' })
   })
 
+  // The pre-check reads and the UPDATE writes in separate statements, so two users can
+  // pass the check at the same time. The write then matches no row for whichever loses.
+  // That must surface as a conflict, not as a save that silently did nothing.
+  // The race the guard exists for: the pre-check saw no conflict, a concurrent writer took
+  // the slug, and the guarded UPDATE then matched no row. The cause lookup that runs on a
+  // zero-row result is what distinguishes this from a missing profile row.
+  test('reports a conflict when the update matches no row', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                // Pre-check: free. Cause lookup after the zero-row UPDATE: taken.
+                return lookups++ === 0 ? null : { userId: 'user_2' }
+              },
+              async run() {
+                return { meta: { changes: 0 } } // the guarded UPDATE changed nothing
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+    let lookups = 0
+
+    await expect(
+      updateProfileSettings(db, 'user_1', {
+        slug: 'raced',
+        displayName: 'Eve',
+        timezone: 'UTC',
+        isPublic: false,
+        participatesInLeaderboards: false
+      })
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST', message: 'Slug is already taken' })
+  })
+
+  // Zero changed rows can also mean there is no profile row for this user. Calling that a
+  // slug conflict sends the caller to edit a slug that was never the problem.
+  test('reports a missing profile rather than a slug conflict when no row matches', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return null // no conflict, and no profile row either
+              },
+              async run() {
+                return { meta: { changes: 0 } }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await expect(
+      updateProfileSettings(db, 'user_missing', {
+        slug: 'brand-new',
+        displayName: 'Eve',
+        timezone: 'UTC',
+        isPublic: false,
+        participatesInLeaderboards: false
+      })
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  test('saves when the guarded update changes a row', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return null
+              },
+              async run() {
+                return { meta: { changes: 1 } }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await expect(
+      updateProfileSettings(db, 'user_1', {
+        slug: 'free',
+        displayName: 'Eve',
+        timezone: 'UTC',
+        isPublic: false,
+        participatesInLeaderboards: false
+      })
+    ).resolves.toBeUndefined()
+  })
+
+  // The WHERE guard should keep this unreachable, but if the UNIQUE index ever does
+  // fire, the caller must still get a conflict rather than an opaque 500.
+  test('reports a conflict when the UNIQUE index rejects the write', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return null
+              },
+              async run() {
+                throw new Error('UNIQUE constraint failed: profiles.slug')
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await expect(
+      updateProfileSettings(db, 'user_1', {
+        slug: 'raced',
+        displayName: 'Eve',
+        timezone: 'UTC',
+        isPublic: false,
+        participatesInLeaderboards: false
+      })
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST', message: 'Slug is already taken' })
+  })
+
+  test('does not mask an unrelated write failure as a conflict', async () => {
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return {
+              async first() {
+                return null
+              },
+              async run() {
+                throw new Error('D1_ERROR: no such table')
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await expect(
+      updateProfileSettings(db, 'user_1', {
+        slug: 'free',
+        displayName: 'Eve',
+        timezone: 'UTC',
+        isPublic: false,
+        participatesInLeaderboards: false
+      })
+    ).rejects.toThrow(/no such table/)
+  })
+
   test('rejects slugs reserved for public API endpoints', async () => {
     const prepare = vi.fn(() => ({
       bind: vi.fn(() => ({
@@ -521,31 +757,45 @@ describe('settings service', () => {
         participatesInLeaderboards: false
       })
     ).rejects.toMatchObject({ code: 'BAD_REQUEST', message: 'Slug is reserved' })
-    expect(prepare).toHaveBeenCalledOnce()
+    expect(prepare).not.toHaveBeenCalled()
   })
 
-  test('allows an existing owner to keep a legacy reserved slug', async () => {
-    const run = vi.fn(async () => ({ success: true }))
-    const db = {
-      prepare: vi.fn((sql: string) =>
-        sql.startsWith('SELECT')
-          ? {
-              bind: vi.fn(() => ({ first: vi.fn(async () => ({ userId: 'user_1' })) }))
-            }
-          : {
-              bind: vi.fn(() => ({ run }))
-            }
-      )
-    } as unknown as D1Database
+  test('rejects reserved slugs case-insensitively for existing owners too', async () => {
+    const prepare = vi.fn()
+    const db = { prepare } as unknown as D1Database
 
-    await updateProfileSettings(db, 'user_1', {
-      slug: 'model-pricing',
-      displayName: 'Eve',
-      timezone: 'UTC',
-      isPublic: true,
-      participatesInLeaderboards: false
-    })
+    await expect(
+      updateProfileSettings(db, 'user_1', {
+        slug: 'MODEL-PRICING',
+        displayName: 'Eve',
+        timezone: 'UTC',
+        isPublic: false,
+        participatesInLeaderboards: false
+      })
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST', message: 'Slug is reserved' })
+    expect(prepare).not.toHaveBeenCalled()
+  })
 
-    expect(run).toHaveBeenCalledOnce()
+  test('rejects reserved slugs for a non-owner updating the profile page', async () => {
+    const prepare = vi.fn(() => ({
+      bind: vi.fn(() => ({
+        first: vi.fn(async () => null)
+      }))
+    }))
+    const db = { prepare } as unknown as D1Database
+
+    await expect(
+      updateProfilePageSettings(db, 'user_1', {
+        profile: {
+          slug: 'model-pricing',
+          displayName: 'Eve',
+          timezone: 'UTC',
+          isPublic: false,
+          participatesInLeaderboards: false
+        },
+        publicCardConfig: null
+      })
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST', message: 'Slug is reserved' })
+    expect(prepare).not.toHaveBeenCalled()
   })
 })

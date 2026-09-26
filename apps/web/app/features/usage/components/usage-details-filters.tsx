@@ -21,7 +21,7 @@ export function UsageDetailsFiltersForm(props: { filters: UsageDetailsFilters; d
       <Button class="h-11 w-full sm:mt-7" type="submit" data-submitting-label="正在应用...">
         应用
       </Button>
-      <LinkButton class="h-11 w-full sm:mt-7" variant="secondary" href={csvHref(props.filters)}>
+      <LinkButton class="h-11 w-full sm:mt-7" variant="secondary" href={csvHref(props.filters)} download="">
         CSV
       </LinkButton>
     </form>

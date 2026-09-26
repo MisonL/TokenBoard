@@ -92,11 +92,16 @@ function leaderboardBindings(input: LeaderboardQuery) {
 }
 
 function leaderboardOrderBy(metric: LeaderboardQuery['metric']) {
-  if (metric === 'cost') return 'ORDER BY costUsd DESC, totalTokens DESC'
+  // Every branch ends in `profiles.slug`, which is unique. Without a unique final key the
+  // order of tied rows is whatever SQLite happens to return, so two users with identical
+  // totals could swap places between requests — and at a page boundary that makes a user
+  // appear to drop off the leaderboard and come back on refresh. The slug decides ties
+  // deterministically without changing who outranks whom on the metric itself.
+  if (metric === 'cost') return 'ORDER BY costUsd DESC, totalTokens DESC, profiles.slug ASC'
   if (metric === 'tokens-without-cache-read') {
-    return 'ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC, costUsd DESC'
+    return 'ORDER BY totalTokensWithoutCacheRead DESC, totalTokens DESC, costUsd DESC, profiles.slug ASC'
   }
-  return 'ORDER BY totalTokens DESC, costUsd DESC'
+  return 'ORDER BY totalTokens DESC, costUsd DESC, profiles.slug ASC'
 }
 
 function nextIsoDate(date: string) {

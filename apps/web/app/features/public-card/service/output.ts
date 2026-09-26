@@ -1,4 +1,5 @@
 import { renderUsageCardSvg } from '../svg'
+import { timezoneOffsetLabel } from '../../../lib/time'
 import { getPublicUsageProfile, getPublicUsageProfileCore } from './profile'
 
 export async function getPublicUsageJson(db: D1Database, slug: string, now = new Date(), summaryStrict = false) {
@@ -60,7 +61,10 @@ export async function getPublicUsageCard(
       todayCacheReadRate: profile.todayCacheReadRate,
       todayCostUsd: profile.todayCostUsd,
       todayCostAvailable: profile.todayCostAvailable,
-      sourceSplit: profile.sourceSplit
+      sourceSplit: profile.sourceSplit,
+      // The card is read from anywhere, so it has to say which day its "今日" covers. Read at
+      // the instant of rendering rather than cached, because the offset changes with the season.
+      timezoneLabel: timezoneOffsetLabel(profile.timezone, now)
     },
     profile.publicCardConfig
   )

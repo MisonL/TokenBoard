@@ -91,3 +91,50 @@ describe('ProfilePage layout', () => {
     expect(html).toContain('Private%20preview')
   })
 })
+
+// This is the moment the split is created. Saving here writes only the profile; the collector's
+// zone was frozen into its config at install time and nothing propagates the change to it. The
+// user has no way to know that from the form, so the consequence has to be stated where the
+// change is made rather than only afterwards on the dashboard, where it looks like a quiet day.
+describe('ProfilePage timezone consequence', () => {
+  test('says that changing the zone requires reinstalling the collector', async () => {
+    const html = await renderToString(
+      <ProfilePage email="user@example.com" saved={false} profile={profile()} collectorTimezones={['UTC']} />
+    )
+
+    expect(html).toContain('data-timezone-collector-notice="true"')
+    expect(html).toContain('/settings/install')
+  })
+
+  test('does not tell a user with no devices to reinstall anything', async () => {
+    const html = await renderToString(
+      <ProfilePage email="user@example.com" saved={false} profile={profile()} collectorTimezones={[]} />
+    )
+
+    expect(html).not.toContain('data-timezone-collector-notice="true"')
+  })
+
+  test('names the zone a collector is still using', async () => {
+    const html = await renderToString(
+      <ProfilePage email="user@example.com" saved={false} profile={profile()} collectorTimezones={['Asia/Shanghai']} />
+    )
+
+    expect(html).toContain('Asia/Shanghai')
+  })
+})
+
+function profile() {
+  return {
+    displayName: 'Example User',
+    slug: 'example-user',
+    timezone: 'UTC',
+    isPublic: false,
+    participatesInLeaderboards: false,
+    shouldUseBrowserTimezoneDefault: false,
+    publicJsonUrl: 'https://tokenboard.example/api/public/example-user.json',
+    publicSvgUrl: 'https://tokenboard.example/api/public/example-user.svg',
+    publicMarkdown:
+      '[![TokenBoard](https://tokenboard.example/api/public/example-user.svg)](https://tokenboard.example)',
+    publicCardConfig: defaultPublicCardConfig
+  }
+}

@@ -13,6 +13,12 @@ export type LeaderboardPanelProps = {
   entries: LeaderboardEntry[]
   period: 'daily' | 'monthly'
   metric: LeaderboardMetric
+  /** The window this page ranked — `2026-05-01` daily, `2026-05` monthly. */
+  rangeLabel: string
+  /** The zone the window was measured in, which is the viewer's own. */
+  timezone: string
+  /** The offset of `timezone` right now, e.g. `UTC+8`. */
+  timezoneLabel: string
 }
 
 export function LeaderboardPanel(props: LeaderboardPanelProps) {
@@ -21,19 +27,39 @@ export function LeaderboardPanel(props: LeaderboardPanelProps) {
   return (
     <div data-leaderboard-panel="true">
       <Card class="mx-auto max-w-6xl rounded-2xl">
-        <LeaderboardPanelHeader title={title} period={props.period} metric={props.metric} />
+        <LeaderboardPanelHeader
+          title={title}
+          period={props.period}
+          metric={props.metric}
+          rangeLabel={props.rangeLabel}
+          timezone={props.timezone}
+          timezoneLabel={props.timezoneLabel}
+        />
         <LeaderboardPanelContent entries={props.entries} />
       </Card>
     </div>
   )
 }
 
-function LeaderboardPanelHeader(props: { title: string; period: 'daily' | 'monthly'; metric: LeaderboardMetric }) {
+function LeaderboardPanelHeader(props: {
+  title: string
+  period: 'daily' | 'monthly'
+  metric: LeaderboardMetric
+  rangeLabel: string
+  timezone: string
+  timezoneLabel: string
+}) {
   return (
     <CardHeader class="flex-col gap-4 border-b border-[var(--app-border)] md:flex-row md:items-end md:justify-between">
       <div>
         <Badge>排行榜</Badge>
         <h1 class="mt-3 text-3xl font-black tracking-tight sm:text-4xl">{props.title}</h1>
+        <LeaderboardRangeCaption
+          period={props.period}
+          rangeLabel={props.rangeLabel}
+          timezone={props.timezone}
+          timezoneLabel={props.timezoneLabel}
+        />
         <p class="mt-2 max-w-2xl text-sm text-[var(--app-muted)]">
           {costUnavailableSourceNames().join('、')} 费用不可用，费用列和费用排名不包含这些来源成本。
         </p>
@@ -43,6 +69,33 @@ function LeaderboardPanelHeader(props: { title: string; period: 'daily' | 'month
         <SegmentedControl items={metricItems(props.period, props.metric)} />
       </div>
     </CardHeader>
+  )
+}
+
+// The board is the one surface that spans users, and `usage_date` is stamped by each collector
+// in its own local zone — so two rows labelled `2026-05-01` were collected 16 hours apart. The
+// window below is the one this page actually ranked, and the note says why a viewer abroad may
+// see a different set of rows than they would expect from the same date.
+function LeaderboardRangeCaption(props: {
+  period: 'daily' | 'monthly'
+  rangeLabel: string
+  timezone: string
+  timezoneLabel: string
+}) {
+  const rangeText = props.period === 'monthly' ? `${props.rangeLabel} 当月` : `${props.rangeLabel} 当天`
+
+  return (
+    <div class="mt-3 flex flex-col gap-1" data-leaderboard-range="true">
+      <p class="text-sm font-bold text-[var(--app-text)]">
+        统计范围：{rangeText}
+        <span class="ml-2 font-normal text-[var(--app-muted)]">
+          （{props.timezone}，{props.timezoneLabel}）
+        </span>
+      </p>
+      <p class="max-w-2xl text-xs text-[var(--app-muted)]">
+        每位用户的用量按各自本地时区归属到日期，跨时区对比时同一天的绝对时间窗口并不完全重合。
+      </p>
+    </div>
   )
 }
 

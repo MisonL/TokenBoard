@@ -7,7 +7,14 @@ import { formatCostUnavailableNotice, formatSource } from '../source-format'
 import { UsageMetricCard, UsageMetricGrid } from './usage-metric-card'
 import { formatUsageMetricInteger, formatUsageMetricUsdWithCostAvailability } from './usage-metric-format'
 
-export function DashboardPreview(props: { summary: DashboardSummary; userName?: string }) {
+export function DashboardPreview(props: {
+  summary: DashboardSummary
+  userName?: string
+  /** The zone the "today" figures are measured in — the user's own profile zone. */
+  timezone?: string
+  /** The offset of `timezone` right now, e.g. `UTC+8`. */
+  timezoneLabel?: string
+}) {
   const totalSourceTokens = props.summary.sourceSplit.reduce((total, item) => total + item.totalTokens, 0)
   const totalSourceTokensWithoutCacheRead = props.summary.sourceSplit.reduce(
     (total, item) => total + item.totalTokensWithoutCacheRead,
@@ -40,6 +47,11 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
                 设备数：{props.summary.deviceCount}
               </a>
             </p>
+            <DashboardTimezoneCaption
+              timezone={props.timezone}
+              timezoneLabel={props.timezoneLabel}
+              mismatchedUsageTimezones={props.summary.mismatchedUsageTimezones}
+            />
           </div>
           <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard/details">
@@ -169,6 +181,56 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
         </Card>
       </section>
     </section>
+  )
+}
+
+// "今日" is a local day, and the boundary is not visible from the numbers: the same instant is
+// two different dates either side of it. Naming the zone — and its offset, which is what says
+// how far the boundary sits from UTC — is what lets a user tell which midnight the figure
+// resets at, and notice when they have changed it.
+function DashboardTimezoneCaption(props: {
+  timezone?: string
+  timezoneLabel?: string
+  mismatchedUsageTimezones?: string[]
+}) {
+  if (!props.timezone) return null
+
+  return (
+    <>
+      <p class="mt-1 text-xs text-[var(--app-muted)]" data-dashboard-timezone="true">
+        「今日」按 {props.timezone}
+        {props.timezoneLabel ? `（${props.timezoneLabel}）` : ''} 的本地日历日统计。
+      </p>
+      <CollectorTimezoneMismatchWarning
+        timezone={props.timezone}
+        mismatchedUsageTimezones={props.mismatchedUsageTimezones}
+      />
+    </>
+  )
+}
+
+// The profile zone and the collector's zone are separate values: the collector freezes its zone
+// into its config at install time, and changing the profile here does not reach it. Once they
+// diverge the dashboard asks for one calendar day while the collector has written the other, so
+// today's figure reads zero with nothing to explain it — the month total still counts the rows,
+// which makes the zero look like a real quiet day rather than a mismatch. Saying which zone the
+// collector is still using, and where to fix it, is what makes that recoverable.
+function CollectorTimezoneMismatchWarning(props: { timezone: string; mismatchedUsageTimezones?: string[] }) {
+  const mismatched = props.mismatchedUsageTimezones ?? []
+  if (mismatched.length === 0) return null
+
+  return (
+    <p
+      class="app-surface-subtle mt-2 rounded-lg border border-amber-300/40 bg-amber-300/10 px-3 py-2 text-xs text-[var(--app-text)]"
+      data-dashboard-timezone-mismatch="true"
+    >
+      采集端仍在按 {mismatched.join('、')} 写入日期，与上面「今日」使用的 {props.timezone} 不一致，今日数据可能显示为
+      0。 请在{' '}
+      <a class="app-accent-link font-bold underline decoration-lime-300/50 underline-offset-4" href="/settings/install">
+        连接设备
+      </a>{' '}
+      页用新时区重新安装采集器。
+    </p>
   )
 }
 

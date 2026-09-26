@@ -1,7 +1,7 @@
 import { ApiError } from '../../../lib/errors'
 import { cacheReadRateFromTotals } from '../../../lib/usage-metrics'
 import { normalizeTimezone } from '../../../lib/timezone'
-import { localDateInTimezone } from '../../notifications/time'
+import { localIsoDate } from '../../../lib/time'
 import { canShowPublicProfile } from '../../settings/service'
 import { parsePublicCardConfig } from '../config'
 import { parseSourceSplit, parseTopModels } from './parse'
@@ -70,7 +70,7 @@ export async function getPublicUsageProfileCore(
   }
 
   const timezone = normalizeTimezone(profile.timezone)
-  const today = localDateInTimezone(now, timezone)
+  const today = localIsoDate(now, timezone)
   const monthStart = `${today.slice(0, 8)}01`
   const totals = await getPublicTotals({
     db,

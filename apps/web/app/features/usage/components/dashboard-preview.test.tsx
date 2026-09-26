@@ -24,6 +24,7 @@ describe('DashboardPreview', () => {
             { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 600, cacheReadRate: 200 / 800 },
             { source: 'codex', totalTokens: 400, totalTokensWithoutCacheRead: 300, cacheReadRate: 100 / 400 }
           ],
+          mismatchedUsageTimezones: [],
           dailyTrend: [
             {
               usageDate: '2026-04-27',
@@ -99,6 +100,12 @@ describe('DashboardPreview', () => {
     expect(html).toContain('300 不含缓存读 / 400 total / 缓存率 25%')
   })
 
+  // The bars used to express their size as inline `style` attributes. The CSP that ships
+  // with the app sets `style-src 'self'` with no inline allowance, and a style *attribute*
+  // cannot be allowlisted by hash the way an inline script can — the browser drops it and
+  // every bar collapses to zero. Sizes therefore have to travel as classes, which the
+  // stylesheet safelists. This test pins both halves: nothing inline may come back, and
+  // the classes the renderer emits must be the percent utilities that are safelisted.
   test('sizes the bars with percent classes instead of inline styles', async () => {
     const html = await renderToString(
       <DashboardPreview
@@ -119,6 +126,7 @@ describe('DashboardPreview', () => {
             { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 600, cacheReadRate: 0.25 },
             { source: 'codex', totalTokens: 200, totalTokensWithoutCacheRead: 100, cacheReadRate: 0.5 }
           ],
+          mismatchedUsageTimezones: [],
           dailyTrend: [
             {
               usageDate: '2026-04-27',
@@ -180,6 +188,7 @@ describe('DashboardPreview', () => {
           sourceSplit: [
             { source: 'antigravity-ide', totalTokens: 100, totalTokensWithoutCacheRead: 100, cacheReadRate: 0 }
           ],
+          mismatchedUsageTimezones: [],
           dailyTrend: []
         }}
       />
@@ -211,6 +220,7 @@ describe('DashboardPreview', () => {
             { source: 'antigravity', totalTokens: 100, totalTokensWithoutCacheRead: 100, cacheReadRate: 0.1 },
             { source: 'claude-code', totalTokens: 100, totalTokensWithoutCacheRead: 80, cacheReadRate: 0.2 }
           ],
+          mismatchedUsageTimezones: [],
           dailyTrend: []
         }}
       />
@@ -238,3 +248,98 @@ function metricCardHtml(html: string, label: string) {
   expect(start).toBeGreaterThanOrEqual(0)
   return html.slice(start, next > start ? next : undefined)
 }
+
+// "Today" is the user's local day, and the dashboard is the one place a user checks it. The
+// label said only "今日", so a user whose day boundary sits somewhere other than UTC had no way
+// to tell which midnight the number reset at — and after moving between zones, no way to see
+// that the boundary had moved with their profile.
+describe('DashboardPreview timezone caption', () => {
+  test('names the zone the today figures are measured in', async () => {
+    const html = await renderToString(
+      <DashboardPreview
+        summary={emptySummary()}
+        userName="Example User"
+        timezone="Asia/Shanghai"
+        timezoneLabel="UTC+8"
+      />
+    )
+
+    expect(html).toContain('data-dashboard-timezone="true"')
+    expect(html).toContain('Asia/Shanghai')
+    expect(html).toContain('UTC+8')
+  })
+
+  // The offset is what makes the boundary legible: `America/Los_Angeles` does not say whether
+  // the day turns over seven or eight hours behind UTC, and that difference is the whole point.
+  test('shows the offset alongside the zone name', async () => {
+    const html = await renderToString(
+      <DashboardPreview summary={emptySummary()} timezone="America/Los_Angeles" timezoneLabel="UTC-7" />
+    )
+
+    expect(html).toContain('UTC-7')
+  })
+})
+
+function emptySummary() {
+  return {
+    todayTokens: 0,
+    todayTokensWithoutCacheRead: 0,
+    todayCacheReadRate: 0,
+    todayCostUsd: 0,
+    todayCostAvailable: true,
+    monthTokens: 0,
+    monthTokensWithoutCacheRead: 0,
+    monthCacheReadRate: 0,
+    monthCostUsd: 0,
+    monthCostAvailable: true,
+    lastSyncedAt: null,
+    deviceCount: 0,
+    sourceSplit: [],
+    mismatchedUsageTimezones: [],
+    dailyTrend: []
+  }
+}
+
+// The dashboard attributes "today" by the profile zone while each collector stamps `usage_date`
+// in its own, frozen into the collector's config at install time. Nothing propagates a later
+// profile change back to an installed collector, so after a user moves and edits the setting the
+// two calendars diverge: the dashboard asks for the profile's today, the collector has written
+// the other zone's today, and the figure reads zero while the month total still counts the row.
+// The user sees a wrong number with no explanation, so the disagreement has to be stated.
+describe('DashboardPreview collector timezone warning', () => {
+  test('warns when a collector is still stamping another zone', async () => {
+    const html = await renderToString(
+      <DashboardPreview
+        summary={{ ...emptySummary(), mismatchedUsageTimezones: ['Asia/Shanghai'] }}
+        timezone="America/Los_Angeles"
+        timezoneLabel="UTC-7"
+      />
+    )
+
+    expect(html).toContain('data-dashboard-timezone-mismatch="true"')
+    expect(html).toContain('Asia/Shanghai')
+    // The fix is to reinstall with the right zone, so the warning has to lead there.
+    expect(html).toContain('/settings/install')
+  })
+
+  test('names every disagreeing collector zone', async () => {
+    const html = await renderToString(
+      <DashboardPreview
+        summary={{ ...emptySummary(), mismatchedUsageTimezones: ['Asia/Shanghai', 'UTC'] }}
+        timezone="America/Los_Angeles"
+        timezoneLabel="UTC-7"
+      />
+    )
+
+    expect(html).toContain('Asia/Shanghai')
+    expect(html).toContain('UTC')
+  })
+
+  test('stays silent when the collector and the profile agree', async () => {
+    const html = await renderToString(
+      <DashboardPreview summary={emptySummary()} timezone="America/Los_Angeles" timezoneLabel="UTC-7" />
+    )
+
+    expect(html).not.toContain('data-dashboard-timezone-mismatch="true"')
+  })
+})

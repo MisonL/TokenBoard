@@ -20,6 +20,20 @@ export type UsageCardInput = {
   todayCostUsd?: number
   todayCostAvailable?: boolean
   sourceSplit?: SourceSplitItem[]
+  /**
+   * The offset of the owner's zone right now, e.g. `UTC+8`.
+   *
+   * The card is read from anywhere — it is embedded in a README — while "今日" on it is the
+   * *owner's* local day, and a viewer several zones away cannot tell that from the number. The
+   * offset is what answers "which day": two zones at the same offset turn the day over at the
+   * same instant. The zone's name is deliberately not rendered — it is longer than the line
+   * allows, and a public card naming the owner's exact zone discloses where they are, which the
+   * offset does not. `/api/public/<slug>.json` still reports the name for anything that needs it.
+   *
+   * Left optional because cards rendered from older stored configs and the JSON fixtures carry
+   * none, and a guess would be worse than no note.
+   */
+  timezoneLabel?: string
 }
 
 export type Palette = {

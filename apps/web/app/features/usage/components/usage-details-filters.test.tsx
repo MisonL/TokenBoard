@@ -34,7 +34,14 @@ describe('UsageDetailsFiltersForm', () => {
     expect(html).toContain('data-submit-feedback="true"')
     expect(html).toContain('data-submitting-label="正在应用..."')
     expect(html).toContain('data-link-button="true"')
-    expect(html).toContain('href="/dashboard/details.csv?')
+    // Without `download` the client-side navigation guard treats this as an in-app link:
+    // it cancels the browser's download and fetches the CSV into `document.body`, so the
+    // export renders as CSV text on a broken page and pushes the `.csv` URL into history.
+    // The `download` attribute is what the guard checks for, and it matches the route's own
+    // `content-disposition: attachment`.
+    const csvLink = /<a[^>]*details\.csv[^>]*>/.exec(html)?.[0] ?? ''
+    expect(csvLink).toContain('href="/dashboard/details.csv?')
+    expect(csvLink).toContain('download')
     expect(html).toContain('Antigravity CLI (agy)')
     expect(html).toContain('MacBook Pro')
   })
