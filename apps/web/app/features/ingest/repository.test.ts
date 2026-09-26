@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
+import { createSqliteD1, runSql } from '../../test/sqlite-d1'
 import {
   backfillUsageSummaryCache,
   findExistingSnapshotHashes,
@@ -401,17 +405,21 @@ describe('upsertUsageSnapshots', () => {
 
     expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
     expect(sqlStatements[0]).toContain('last_used_at = ?')
+    expect(sqlStatements[0]).toContain('julianday(last_used_at) <= julianday(?)')
     expect(bindings[0]).toEqual(['2026-04-28T08:00:00.000Z', 'hash:upload-token', '2026-04-28T08:00:00.000Z'])
     expect(sqlStatements[1]).toContain('UPDATE devices')
     expect(sqlStatements[1]).toContain('last_synced_at = ?')
+    expect(sqlStatements[1]).toContain('julianday(last_synced_at) <= julianday(?)')
     expect(bindings[1]).toEqual([
       '2026-04-28T08:00:00.000Z',
       '2026-04-28T08:00:00.000Z',
       'dev_123',
-      '2026-04-28T08:00:00.000Z'
+      '2026-04-28T08:00:00.000Z',
+      'hash:upload-token'
     ])
     expect(sqlStatements[2]).toContain('UPDATE device_installations')
     expect(sqlStatements[2]).toContain('last_seen_at = ?')
+    expect(sqlStatements[2]).toContain('julianday(last_seen_at) <= julianday(?)')
     expect(bindings[2]).toEqual([
       '2026-04-28T08:00:00.000Z',
       '2026-04-28T08:00:00.000Z',
@@ -422,7 +430,153 @@ describe('upsertUsageSnapshots', () => {
     expect(runCount).toBe(0)
     expect(batches).toEqual([[expect.any(Object), expect.any(Object), expect.any(Object)]])
   })
+
+  test('updates sync timestamps only when the incoming time is newer', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-ingest-sync-'))
+    const dbPath = join(tempDir, 'sync.db')
+
+    try {
+      runSql(
+        dbPath,
+        `
+          CREATE TABLE users (id TEXT PRIMARY KEY);
+          CREATE TABLE upload_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            last_used_at TEXT
+          );
+          CREATE TABLE devices (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            last_synced_at TEXT,
+            updated_at TEXT
+          );
+          CREATE TABLE device_installations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            last_seen_at TEXT,
+            updated_at TEXT
+          );
+          INSERT INTO users (id) VALUES ('user_1');
+          INSERT INTO upload_tokens (token_hash, user_id, last_used_at)
+          VALUES ('token_hash', 'user_1', '2026-04-28T10:00:00.000Z');
+          INSERT INTO devices (id, user_id, last_synced_at, updated_at)
+          VALUES ('device_1', 'user_1', '2026-04-28T10:00:00.000Z', '2026-04-28T10:00:00.000Z');
+          INSERT INTO devices (id, user_id, last_synced_at, updated_at)
+          VALUES ('device_other', 'user_2', '2026-04-28T10:00:00.000Z', '2026-04-28T10:00:00.000Z');
+          INSERT INTO device_installations (id, user_id, last_seen_at, updated_at)
+          VALUES ('installation_1', 'user_1', '2026-04-28T10:00:00.000Z', '2026-04-28T10:00:00.000Z');
+        `
+      )
+      const db = createSqliteD1(dbPath)
+
+      await markIngestSynced(db, {
+        uploadTokenHash: 'token_hash',
+        deviceId: 'device_1',
+        installationId: 'installation_1',
+        syncedAt: '2026-04-28T09:00:00Z'
+      })
+
+      await expectSyncTimestamps(db, '2026-04-28T10:00:00.000Z')
+
+      await markIngestSynced(db, {
+        uploadTokenHash: 'token_hash',
+        deviceId: 'device_other',
+        installationId: null,
+        syncedAt: '2026-04-28T11:00:00Z'
+      })
+
+      const otherDevice = await db
+        .prepare('SELECT last_synced_at AS lastSyncedAt FROM devices WHERE id = ?')
+        .bind('device_other')
+        .first<{ lastSyncedAt: string }>()
+      expect(otherDevice?.lastSyncedAt).toBe('2026-04-28T10:00:00.000Z')
+
+      await markIngestSynced(db, {
+        uploadTokenHash: 'token_hash',
+        deviceId: 'device_1',
+        installationId: 'installation_1',
+        syncedAt: '2026-04-28 11:00:00+00:00'
+      })
+
+      await expectSyncTimestamps(db, '2026-04-28T11:00:00.000Z')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('repairs malformed stored timestamps and rejects malformed incoming timestamps', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-ingest-sync-'))
+    const dbPath = join(tempDir, 'sync.db')
+
+    try {
+      runSql(
+        dbPath,
+        `
+          CREATE TABLE upload_tokens (
+            token_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            last_used_at TEXT
+          );
+          CREATE TABLE devices (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            last_synced_at TEXT,
+            updated_at TEXT
+          );
+          CREATE TABLE device_installations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            last_seen_at TEXT,
+            updated_at TEXT
+          );
+          INSERT INTO upload_tokens (token_hash, user_id, last_used_at)
+          VALUES ('token_hash', 'user_1', 'not-a-timestamp');
+          INSERT INTO devices (id, user_id, last_synced_at, updated_at)
+          VALUES ('device_1', 'user_1', 'not-a-timestamp', 'not-a-timestamp');
+          INSERT INTO device_installations (id, user_id, last_seen_at, updated_at)
+          VALUES ('installation_1', 'user_1', 'not-a-timestamp', 'not-a-timestamp');
+        `
+      )
+      const db = createSqliteD1(dbPath)
+
+      await markIngestSynced(db, {
+        uploadTokenHash: 'token_hash',
+        deviceId: 'device_1',
+        installationId: 'installation_1',
+        syncedAt: '2026-04-28 11:00:00+00:00'
+      })
+
+      await expectSyncTimestamps(db, '2026-04-28T11:00:00.000Z')
+      await expect(
+        markIngestSynced(db, {
+          uploadTokenHash: 'token_hash',
+          deviceId: 'device_1',
+          installationId: 'installation_1',
+          syncedAt: 'not-a-timestamp'
+        })
+      ).rejects.toThrow('Invalid syncedAt timestamp')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
 })
+
+async function expectSyncTimestamps(db: D1Database, expected: string) {
+  const row = await db
+    .prepare(
+      `
+        SELECT
+          (SELECT last_used_at FROM upload_tokens WHERE token_hash = ?) AS token,
+          (SELECT last_synced_at FROM devices WHERE id = ?) AS device,
+          (SELECT last_seen_at FROM device_installations WHERE id = ?) AS installation
+      `
+    )
+    .bind('token_hash', 'device_1', 'installation_1')
+    .first<{ token: string; device: string; installation: string }>()
+
+  expect(row).toEqual({ token: expected, device: expected, installation: expected })
+}
 
 describe('backfillUsageSummaryCache', () => {
   test('refreshes summary keys with a bounded cursor before totals', async () => {

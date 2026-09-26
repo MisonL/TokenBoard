@@ -52,26 +52,26 @@ async function upsertUsageSnapshotBatch(db: D1Database, records: IngestRecord[])
 
 async function prepareUsageUpsert(db: D1Database, record: IngestRecord) {
   const correctionFlag = record.correction ? 1 : 0
-  return db
-    .prepare(upsertUsageSql)
-    .bind(
-      record.userId,
-      record.deviceId,
-      record.source,
-      record.usageDate,
-      record.timezone,
-      record.model,
-      record.inputTokens,
-      record.outputTokens,
-      record.cacheCreationTokens,
-      record.cacheReadTokens,
-      record.totalTokens,
-      record.costUsd,
-      record.sessionCount,
-      await snapshotHash(record),
-      record.collectedAt,
-      ...Array.from({ length: 7 }, () => correctionFlag)
-    )
+  return db.prepare(upsertUsageSql).bind(
+    record.userId,
+    record.deviceId,
+    record.source,
+    record.usageDate,
+    record.timezone,
+    record.model,
+    record.inputTokens,
+    record.outputTokens,
+    record.cacheCreationTokens,
+    record.cacheReadTokens,
+    record.totalTokens,
+    record.costUsd,
+    record.sessionCount,
+    await snapshotHash(record),
+    // This column is the last-writer-wins freshness marker for the snapshot;
+    // server receipt time is tracked separately by the device heartbeat rows.
+    record.collectedAt,
+    ...Array.from({ length: 7 }, () => correctionFlag)
+  )
 }
 
 const preserveCodexSessionOnlySql = `
@@ -146,5 +146,8 @@ const upsertUsageSql = `
       OR daily_usage.cost_usd > 0
     )
   )
-  AND julianday(excluded.synced_at) >= julianday(daily_usage.synced_at)
+  AND (
+    julianday(daily_usage.synced_at) IS NULL
+    OR julianday(excluded.synced_at) >= julianday(daily_usage.synced_at)
+  )
 `

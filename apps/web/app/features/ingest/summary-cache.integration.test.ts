@@ -916,6 +916,55 @@ describe('usage summary cache integration', () => {
     )
   })
 
+  test('repairs a malformed stored usage timestamp with the next valid snapshot', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-malformed-synced-at-'))
+    tempDirs.push(tempDir)
+    const dbPath = join(tempDir, 'tokenboard.db')
+    applyMigrations(dbPath)
+    const db = createSqliteD1(dbPath)
+    await seedProfile(db)
+
+    const existing = makeIngestRecord({
+      usageDate: toIsoDate(verificationDate),
+      totalTokens: 100,
+      inputTokens: 80,
+      outputTokens: 20,
+      collectedAt: '2026-06-02T10:00:00.000Z'
+    })
+    await expect(upsertUsageSnapshots(db, [existing])).resolves.toEqual({ upserted: 1 })
+    await db
+      .prepare(
+        `UPDATE daily_usage
+         SET synced_at = ?
+         WHERE user_id = ? AND device_id = ? AND source = ? AND usage_date = ? AND model = ?`
+      )
+      .bind('not-a-timestamp', existing.userId, existing.deviceId, existing.source, existing.usageDate, existing.model)
+      .run()
+
+    const replacement = {
+      ...existing,
+      totalTokens: 900,
+      inputTokens: 600,
+      outputTokens: 300,
+      collectedAt: '2026-06-02T09:00:00.000Z'
+    }
+    await expect(upsertUsageSnapshots(db, [replacement])).resolves.toEqual({ upserted: 1 })
+    await expectScalar(
+      db,
+      `SELECT total_tokens AS value FROM daily_usage
+       WHERE user_id = ? AND device_id = ? AND source = ? AND usage_date = ? AND model = ?`,
+      replacement.totalTokens,
+      [replacement.userId, replacement.deviceId, replacement.source, replacement.usageDate, replacement.model]
+    )
+    await expectScalar(
+      db,
+      `SELECT synced_at AS value FROM daily_usage
+       WHERE user_id = ? AND device_id = ? AND source = ? AND usage_date = ? AND model = ?`,
+      replacement.collectedAt,
+      [replacement.userId, replacement.deviceId, replacement.source, replacement.usageDate, replacement.model]
+    )
+  })
+
   test('orders snapshots by time when ISO fractional-second precision differs', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-mixed-precision-ingest-'))
     tempDirs.push(tempDir)

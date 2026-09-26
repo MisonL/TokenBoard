@@ -9,15 +9,20 @@ export async function markIngestSynced(
     syncedAt: string
   }
 ) {
+  const syncedAt = normalizeSyncedAt(input.syncedAt)
   const statements: D1PreparedStatement[] = [
     db
       .prepare(
         `UPDATE upload_tokens
        SET last_used_at = ?
        WHERE token_hash = ?
-         AND (last_used_at IS NULL OR last_used_at <= ?)`
+         AND (
+           last_used_at IS NULL
+           OR julianday(last_used_at) IS NULL
+           OR julianday(last_used_at) <= julianday(?)
+         )`
       )
-      .bind(input.syncedAt, input.uploadTokenHash, input.syncedAt)
+      .bind(syncedAt, input.uploadTokenHash, syncedAt)
   ]
 
   if (input.deviceId) {
@@ -27,9 +32,16 @@ export async function markIngestSynced(
           `UPDATE devices
          SET last_synced_at = ?, updated_at = ?
          WHERE id = ?
-           AND (last_synced_at IS NULL OR last_synced_at <= ?)`
+           AND (
+             last_synced_at IS NULL
+             OR julianday(last_synced_at) IS NULL
+             OR julianday(last_synced_at) <= julianday(?)
+           )
+           AND user_id = (
+             SELECT user_id FROM upload_tokens WHERE token_hash = ? LIMIT 1
+           )`
         )
-        .bind(input.syncedAt, input.syncedAt, input.deviceId, input.syncedAt)
+        .bind(syncedAt, syncedAt, input.deviceId, syncedAt, input.uploadTokenHash)
     )
   }
 
@@ -41,14 +53,26 @@ export async function markIngestSynced(
           UPDATE device_installations
           SET last_seen_at = ?, updated_at = ?
           WHERE id = ?
-            AND (last_seen_at IS NULL OR last_seen_at <= ?)
+            AND (
+              last_seen_at IS NULL
+              OR julianday(last_seen_at) IS NULL
+              OR julianday(last_seen_at) <= julianday(?)
+            )
             AND user_id = (
               SELECT user_id FROM upload_tokens WHERE token_hash = ? LIMIT 1
             )
         `
         )
-        .bind(input.syncedAt, input.syncedAt, input.installationId, input.syncedAt, input.uploadTokenHash)
+        .bind(syncedAt, syncedAt, input.installationId, syncedAt, input.uploadTokenHash)
     )
   }
   await runStatementBatches(db, statements)
+}
+
+export function normalizeSyncedAt(value: string) {
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) {
+    throw new Error('Invalid syncedAt timestamp')
+  }
+  return new Date(timestamp).toISOString()
 }
