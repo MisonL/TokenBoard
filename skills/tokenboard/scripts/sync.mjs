@@ -21,8 +21,9 @@ import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
 import { runUpgrade } from './upgrade.mjs'
 import { errorMessage } from './error-message.mjs'
 import { acquireLock, lockHasToken, releaseLock, waitForLock } from './coordinator-lock.mjs'
-import { runScheduledRetry } from './scheduled-retry.mjs'
+import { runScheduledRetry, transientSyncExitCode } from './scheduled-retry.mjs'
 import { currentProcessStartIdentity } from './process-liveness.mjs'
+import { writeScheduledSyncState } from './scheduled-sync-state.mjs'
 
 const defaultSyncLockTimeoutMs = 60_000
 
@@ -70,8 +71,35 @@ export function runSyncInvocation({
   logs,
   stateDir,
   runWithLock = runWithSyncLock,
-  runRetry = runScheduledRetry
+  runRetry = runScheduledRetry,
+  writeState = writeScheduledSyncState,
+  onStateError = (message) => console.error(message),
+  now = Date.now
 }) {
+  const scheduled = flags.scheduled === true
+  const source = invocation?.source || flags.source || 'all'
+  const startedAt = new Date(now()).toISOString()
+  const recordState = (status, details = {}) => {
+    if (!scheduled) return
+    try {
+      writeState({
+        stateDir,
+        source,
+        status,
+        startedAt,
+        updatedAt: now(),
+        ...(status === 'running' ? {} : { completedAt: now() }),
+        ...(Number.isSafeInteger(details.exitCode) ? { exitCode: recordableExitCode(details.exitCode) } : {}),
+        ...(details.error ? { error: errorMessage(details.error) } : {})
+      })
+    } catch (error) {
+      try {
+        onStateError(`TokenBoard scheduled sync state update failed: ${errorMessage(error)}`)
+      } catch {
+        // State reporting must never alter the sync result or mask its primary error.
+      }
+    }
+  }
   const run = (runFlags = flags) =>
     runWithLock({
       flags: runFlags,
@@ -79,23 +107,69 @@ export function runSyncInvocation({
       run: () => runSync({ flags: runFlags, invocation, logs })
     })
 
+  let deferredBy
   try {
-    return run()
+    recordState('running')
+    const result = run()
+    const exitCode = typeof result === 'number' ? result : 0
+    if (exitCode === transientSyncExitCode) {
+      if (!canDeferScheduledRun(flags)) {
+        // Nothing retries an unscheduled run, so report a plain failure instead
+        // of surfacing an internal deferral code the caller cannot act on.
+        recordState('failed', { exitCode: 1 })
+        return 1
+      }
+      deferredBy = new Error(`collector exited with transient code ${exitCode}`)
+    } else {
+      recordState(exitCode === 0 ? 'success' : 'failed', { exitCode })
+      return result
+    }
   } catch (error) {
-    if (!shouldDeferScheduledSync(flags, error)) throw error
-    const retryFlags = { ...flags, 'skip-upgrade': true }
-    const result = runRetry({
+    if (!shouldDeferScheduledSync(flags, error)) {
+      recordState('failed', { exitCode: 1, error })
+      throw error
+    }
+    deferredBy = error
+  }
+
+  // No exitCode here. `transientSyncExitCode` is an internal contract between the
+  // collector and the retry loop; the state file is user-visible through
+  // `status.mjs`, and the non-scheduled branch above already normalizes the same code
+  // to 1 precisely so it is not surfaced. A `deferred` row means "retrying", which the
+  // status field already says, so recording the number would only leak an internal
+  // code the reader cannot act on.
+  recordState('deferred', { error: deferredBy })
+  const retryFlags = { ...flags, 'skip-upgrade': true }
+  let result
+  try {
+    result = runRetry({
       stateDir,
-      source: invocation.source,
+      source,
       runAttempt: () => run(retryFlags)
     })
-    if (result.skipped) {
-      console.error('TokenBoard scheduled sync deferred because another scheduled retry is active.')
-    } else if (result.exhausted) {
-      console.error(`TokenBoard scheduled sync retry exhausted after ${result.attempts} lock-timeout attempts.`)
-    }
-    return result.exitCode
+  } catch (retryError) {
+    recordState('failed', { exitCode: 1, error: retryError })
+    throw retryError
   }
+  if (result.skipped) {
+    console.error('TokenBoard scheduled sync deferred because another scheduled retry is active.')
+  } else if (result.exhausted) {
+    console.error(`TokenBoard scheduled sync retry exhausted after ${result.attempts} attempts.`)
+  }
+  const exitCode = Number.isSafeInteger(result.exitCode) ? result.exitCode : 1
+  // `skipped` means another scheduled retry already holds the lock: this run handed the
+  // work off, which is the `deferred` state, not a failure. The old order tested
+  // `exitCode !== 0` first, and a skip reports no exit code at all, so the fallback 1
+  // made every handoff look like a failure — contradicting both the message printed just
+  // above and the `deferred` row the retry loop itself had written. A skip has no exit
+  // code to report, so none is recorded.
+  const skipped = result.skipped === true
+  const status = skipped ? 'deferred' : result.exhausted || exitCode !== 0 ? 'failed' : 'success'
+  recordState(status, {
+    ...(skipped ? {} : { exitCode }),
+    ...(result.error ? { error: result.error } : {})
+  })
+  return exitCode
 }
 
 function runSync({ flags, invocation, logs }) {
@@ -307,13 +381,14 @@ export function runWithSyncLock({ flags = {}, env = process.env, stateDir, runti
   return result
 }
 
+export { transientSyncExitCode }
+
+function canDeferScheduledRun(flags) {
+  return flags.scheduled === true && flags.hook !== true && (flags.mode || 'sync') === 'sync'
+}
+
 function shouldDeferScheduledSync(flags, error) {
-  return (
-    flags.scheduled === true &&
-    flags.hook !== true &&
-    (flags.mode || 'sync') === 'sync' &&
-    error?.code === 'TOKENBOARD_SYNC_LOCK_TIMEOUT'
-  )
+  return canDeferScheduledRun(flags) && error?.code === 'TOKENBOARD_SYNC_LOCK_TIMEOUT'
 }
 
 function syncLockTimeoutError(lockPath) {
@@ -395,4 +470,15 @@ function sleepSync(ms) {
 
 function isMain() {
   return process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+}
+
+// A process exit code is 0-255, but the value reaching `recordState` is not always one:
+// Windows reports the untruncated 32-bit status (`GetExitCodeProcess`), so an access
+// violation arrives as 3221225477 rather than a byte. `scheduled-sync-state.mjs` rejects
+// anything outside 0-255 by design, and that throw is swallowed by `recordState`'s catch —
+// which left the file on disk still reading `running`, making the failure indistinguishable
+// from a sync that never finished. Out-of-range codes are recorded as 1 (a generic failure)
+// rather than dropped, since a dropped code reads as "no exit code recorded".
+function recordableExitCode(exitCode) {
+  return exitCode >= 0 && exitCode <= 255 ? exitCode : 1
 }

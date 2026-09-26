@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildSyncInvocation, refreshBundledCcusageConfig } from './sync.mjs'
+import { buildSyncInvocation, refreshBundledCcusageConfig, runSyncInvocation } from './sync.mjs'
 import { buildDefaultSince, readSince } from './sync-options.mjs'
 import { normalizeMemoryPath } from './coordinator-test-helpers.mjs'
 
@@ -372,4 +372,156 @@ test('scheduled sync preserves an explicit source error policy override', () => 
   })
 
   assert.equal(invocation.env.TOKENBOARD_FAIL_ON_SOURCE_ERROR, '0')
+})
+
+test('scheduled sync records running and failed state without affecting manual sync', () => {
+  const states = []
+  const result = runSyncInvocation({
+    flags: { scheduled: true },
+    invocation: { source: 'all' },
+    stateDir: '/state',
+    now: () => Date.parse('2026-09-20T01:00:00.000Z'),
+    writeState: (state) => states.push(state),
+    runWithLock: () => 1,
+    runRetry: () => ({ exitCode: 1 })
+  })
+
+  assert.equal(result, 1)
+  assert.deepEqual(
+    states.map((state) => state.status),
+    ['running', 'failed']
+  )
+  assert.equal(states.at(-1).exitCode, 1)
+  assert.equal(states.at(-1).source, 'all')
+})
+
+// Windows reports the untruncated 32-bit process status, so a crashed child arrives as
+// something like 3221225477. The state writer only accepts 0-255 and throws otherwise, and
+// that throw is swallowed — the state file stayed on `running` forever, which reads exactly
+// like a sync still in progress. An out-of-range code must land as a recorded failure.
+test('a Windows crash exit code is recorded as a failure instead of being dropped', () => {
+  const states = []
+  const result = runSyncInvocation({
+    flags: { scheduled: true },
+    invocation: { source: 'all' },
+    stateDir: '/state',
+    now: () => Date.parse('2026-09-20T01:00:00.000Z'),
+    writeState: (state) => states.push(state),
+    // 75 is the transient code, so the run takes the retry path — which is where a real
+    // crash code arrives from (`runRetry`), not from the first attempt.
+    runWithLock: () => 75,
+    runRetry: () => ({ exitCode: 3221225477 })
+  })
+
+  // The return value stays the child's raw code — this test is about what reaches the
+  // state file, which is the value that got the run stuck on `running`.
+  assert.equal(states.at(-1).status, 'failed')
+  assert.equal(states.at(-1).exitCode, 1)
+  assert.equal(states.at(-1).completedAt !== undefined, true)
+})
+
+test('a deferred run never records the internal transient exit code', () => {
+  const states = []
+  runSyncInvocation({
+    flags: { scheduled: true },
+    invocation: { source: 'all' },
+    stateDir: '/state',
+    now: () => Date.parse('2026-09-20T01:00:00.000Z'),
+    writeState: (state) => states.push(state),
+    onStateError: () => {},
+    runWithLock: () => 75,
+    runRetry: () => ({ exitCode: 75 })
+  })
+
+  const deferred = states.find((state) => state.status === 'deferred')
+  assert.ok(deferred, 'the run should be recorded as deferred')
+  // 75 is an internal contract with the retry loop, not something the state file — which
+  // `status.mjs` prints verbatim — should carry. The non-scheduled branch normalizes the
+  // same code to 1 for the same reason.
+  assert.equal(deferred.exitCode, undefined)
+})
+
+test('a skipped retry is deferred rather than failed', () => {
+  const states = []
+  const result = runSyncInvocation({
+    flags: { scheduled: true },
+    invocation: { source: 'all' },
+    stateDir: '/state',
+    now: () => Date.parse('2026-09-20T01:00:00.000Z'),
+    writeState: (state) => states.push(state),
+    onStateError: () => {},
+    runWithLock: () => 75,
+    // The shape every `skipped` return in scheduled-retry.mjs uses: no exitCode at all.
+    runRetry: () => ({ skipped: true, skippedReason: 'active-retry' })
+  })
+
+  // Handing the work to the retry that already holds the lock is a deferral, not a
+  // failure. The old ordering read the absent exit code as the fallback 1 and recorded
+  // `failed`, contradicting both the message printed and the retry loop's own state row.
+  assert.equal(states.at(-1).status, 'deferred')
+  assert.equal(states.at(-1).exitCode, undefined)
+  assert.equal(result, 1)
+})
+
+test('scheduled retry uses the normalized source and fails closed on a missing retry exit code', () => {
+  const states = []
+  let retryOptions
+  const result = runSyncInvocation({
+    flags: { scheduled: true, source: 'codex' },
+    invocation: {},
+    stateDir: '/state',
+    now: () => Date.parse('2026-09-20T01:00:00.000Z'),
+    writeState: (state) => states.push(state),
+    runWithLock: () => {
+      const error = new Error('lock timeout')
+      error.code = 'TOKENBOARD_SYNC_LOCK_TIMEOUT'
+      throw error
+    },
+    runRetry: (options) => {
+      retryOptions = options
+      return {}
+    }
+  })
+
+  assert.equal(result, 1)
+  assert.equal(retryOptions.source, 'codex')
+  assert.equal(states.at(-1).status, 'failed')
+  assert.equal(states.at(-1).exitCode, 1)
+})
+
+test('scheduled state reporting cannot change the sync result or mask its primary error', () => {
+  const stateErrors = []
+  const stateFailure = new Error('state directory unavailable')
+  const success = runSyncInvocation({
+    flags: { scheduled: true },
+    invocation: { source: 'all' },
+    stateDir: '/state',
+    writeState: () => {
+      throw stateFailure
+    },
+    onStateError: (message) => stateErrors.push(message),
+    runWithLock: () => 0
+  })
+
+  assert.equal(success, 0)
+  assert.equal(stateErrors.length, 2)
+  assert.match(stateErrors[0], /state directory unavailable/)
+
+  const primaryError = new Error('collector failed')
+  assert.throws(
+    () =>
+      runSyncInvocation({
+        flags: { scheduled: true },
+        invocation: { source: 'all' },
+        stateDir: '/state',
+        writeState: () => {
+          throw stateFailure
+        },
+        onStateError: (message) => stateErrors.push(message),
+        runWithLock: () => {
+          throw primaryError
+        }
+      }),
+    (error) => error === primaryError
+  )
 })

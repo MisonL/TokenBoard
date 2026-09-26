@@ -6,6 +6,7 @@ import test from 'node:test'
 import { acquireLock, releaseLock } from './coordinator-lock.mjs'
 import {
   runScheduledRetry,
+  transientSyncExitCode,
   scheduledRetryLegacyLockPath,
   scheduledRetryLegacyStatePath,
   scheduledRetryLockPath,
@@ -802,6 +803,128 @@ test('sync invocation retries only scheduled lock timeouts and skips upgrade dur
   assert.equal(retries[0].source, 'all')
   assert.equal(retries[0].stateDir, '/state')
   assert.equal(initialFlags['skip-upgrade'], undefined)
+})
+
+test('scheduled retry re-attempts a transient collector exit code', () => {
+  const fs = memoryRuntime()
+  const attempts = []
+
+  const result = runScheduledRetry({
+    stateDir: '/state',
+    source: 'all',
+    runtime: fs.runtime,
+    maxAttempts: 3,
+    delayMs: 25,
+    runAttempt: ({ attempt }) => {
+      attempts.push(attempt)
+      return attempt < 3 ? transientSyncExitCode : 0
+    }
+  })
+
+  assert.deepEqual(result, { exitCode: 0, skipped: false, attempts: 3 })
+  assert.deepEqual(attempts, [1, 2, 3])
+  assert.deepEqual(fs.sleeps, [25, 25])
+  assert.equal(JSON.parse(fs.files.get(scheduledRetryStatePath('/state'))).status, 'completed')
+})
+
+test('scheduled retry reports exhaustion after the transient budget is spent', () => {
+  const fs = memoryRuntime()
+
+  const result = runScheduledRetry({
+    stateDir: '/state',
+    source: 'all',
+    runtime: fs.runtime,
+    maxAttempts: 2,
+    delayMs: 10,
+    runAttempt: () => transientSyncExitCode
+  })
+
+  assert.deepEqual(result, { exitCode: 1, skipped: false, attempts: 2, exhausted: true })
+  assert.deepEqual(fs.sleeps, [10])
+  const state = JSON.parse(fs.files.get(scheduledRetryStatePath('/state')))
+  assert.equal(state.status, 'exhausted')
+  assert.match(state.error, /transient code 75/)
+})
+
+test('scheduled retry still stops immediately on a non-transient collector failure', () => {
+  const fs = memoryRuntime()
+
+  const result = runScheduledRetry({
+    stateDir: '/state',
+    source: 'all',
+    runtime: fs.runtime,
+    maxAttempts: 3,
+    runAttempt: () => 1
+  })
+
+  assert.deepEqual(result, { exitCode: 1, skipped: false, attempts: 1 })
+  assert.deepEqual(fs.sleeps, [])
+})
+
+test('sync invocation defers a transient collector exit code and retries it', () => {
+  const retries = []
+  const attempts = []
+
+  const exitCode = runSyncInvocation({
+    flags: { mode: 'sync', scheduled: true },
+    invocation: { source: 'all', env: { TOKENBOARD_CONFIG_DIR: '/config' } },
+    stateDir: '/state',
+    runWithLock: ({ flags }) => {
+      attempts.push(flags['skip-upgrade'] === true)
+      return flags['skip-upgrade'] === true ? 0 : transientSyncExitCode
+    },
+    runRetry: (options) => {
+      retries.push(options)
+      return { exitCode: options.runAttempt({ attempt: 1 }), skipped: false, attempts: 1 }
+    }
+  })
+
+  assert.equal(exitCode, 0)
+  assert.deepEqual(attempts, [false, true])
+  assert.equal(retries.length, 1)
+  assert.equal(retries[0].stateDir, '/state')
+  assert.equal(retries[0].source, 'all')
+})
+
+test('sync invocation reports a plain failure when an unscheduled run exits transiently', () => {
+  for (const flags of [{ mode: 'sync' }, { mode: 'sync', scheduled: false }]) {
+    const exitCode = runSyncInvocation({
+      flags,
+      invocation: { source: 'all', env: {} },
+      stateDir: '/state',
+      runWithLock: () => transientSyncExitCode,
+      runRetry: () => {
+        throw new Error('an unscheduled run must not enter scheduled retry')
+      }
+    })
+
+    // Nothing retries an unscheduled run, so the internal deferral code must
+    // never reach the caller.
+    assert.equal(exitCode, 1)
+  }
+})
+
+test('sync invocation never defers a transient exit code for hook or non-sync runs', () => {
+  for (const flags of [
+    { mode: 'sync', scheduled: true, hook: true },
+    { mode: 'preview', scheduled: true },
+    { mode: 'sync' }
+  ]) {
+    const exitCode = runSyncInvocation({
+      flags,
+      invocation: { source: 'all', env: {} },
+      stateDir: '/state',
+      writeState: () => {},
+      runWithLock: () => transientSyncExitCode,
+      runRetry: () => {
+        throw new Error('this invocation must not enter scheduled retry')
+      }
+    })
+
+    // These runs are never retried, so the internal deferral code is normalized
+    // to a plain failure instead of leaking to the caller.
+    assert.equal(exitCode, 1)
+  }
 })
 
 test('sync invocation never retries a hook timeout or a non-sync mode', () => {

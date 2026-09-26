@@ -23,6 +23,13 @@ export const scheduledRetryStateFileName = 'scheduled-sync-retry.json'
 export const scheduledRetryLockFileName = 'scheduled-sync-retry.lock'
 export const defaultScheduledRetryMaxAttempts = 5
 export const defaultScheduledRetryDelayMs = 60_000
+// Mirrors `transientSyncExitCode` in packages/collector/src/cli.ts: the collector
+// reports a transient upload failure with this code instead of a plain failure,
+// because its snapshots stay pending in the cursor and a later run can send
+// them. This is the single definition the skill scripts share; a cross-language
+// constant cannot be imported from the TypeScript package, so the collector test
+// suite asserts both sides still agree.
+export const transientSyncExitCode = 75
 const scheduledRetryGuardSources = ['antigravity', 'antigravity-cli', 'antigravity-ide', 'claude-code', 'codex']
 const scheduledRetryTransitionLockFileName = 'scheduled-sync-retry.transition.lock'
 
@@ -150,18 +157,52 @@ function executeScheduledRetry({ source, maxAttempts, delayMs, runAttempt, runti
 
     try {
       const exitCode = readExitCode(runAttempt({ attempt }))
+      if (exitCode !== transientSyncExitCode) {
+        writeRetryState(
+          retryState({
+            source,
+            status: exitCode === 0 ? 'completed' : 'failed',
+            retryAttempt: attempt,
+            maxAttempts,
+            now: runtime.now(),
+            ...(exitCode === 0 ? {} : { error: `sync exited with code ${exitCode}` })
+          }),
+          runtime
+        )
+        return { exitCode, skipped: false, attempts: attempt }
+      }
+      if (attempt === maxAttempts) {
+        writeRetryState(
+          retryState({
+            source,
+            status: 'exhausted',
+            retryAttempt: attempt,
+            maxAttempts,
+            now: runtime.now(),
+            error: `sync exited with transient code ${exitCode}`
+          }),
+          runtime
+        )
+        return { exitCode: 1, skipped: false, attempts: attempt, exhausted: true }
+      }
+      const retryAt = runtime.now()
       writeRetryState(
         retryState({
           source,
-          status: exitCode === 0 ? 'completed' : 'failed',
+          status: 'deferred',
           retryAttempt: attempt,
           maxAttempts,
-          now: runtime.now(),
-          ...(exitCode === 0 ? {} : { error: `sync exited with code ${exitCode}` })
+          now: retryAt,
+          nextRetryAt: new Date(retryAt + delayMs).toISOString(),
+          error: `sync exited with transient code ${exitCode}`
         }),
         runtime
       )
-      return { exitCode, skipped: false, attempts: attempt }
+      // A failing sleep is not a lock timeout, so the catch below records it as a plain
+      // failure with the same shape this block used to write. Handling it here as well
+      // wrote the same state twice and, when the second write also failed, replaced the
+      // sleep error with the state-write error — losing the cause the operator needs.
+      runtime.sleep(delayMs)
     } catch (error) {
       if (!isSyncLockTimeout(error)) {
         writeRetryState(
