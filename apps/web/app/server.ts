@@ -3,7 +3,7 @@ import { createApp } from 'honox/server'
 import { backfillUsageSummaryCache, usageSummaryBackfillLimit } from './features/ingest/repository'
 import { runDueWebhookNotifications } from './features/notifications/service'
 import { modelPricingSyncEnabled, runModelPricingSync } from './features/model-pricing/service'
-import { createModelPricingResponse } from './features/model-pricing/http'
+import { createCachedModelPricingResponse } from './features/model-pricing/http'
 import {
   createPublicUsageResponse,
   parsePublicUsagePath,
@@ -11,7 +11,7 @@ import {
   PUBLIC_API_CLIENT_CACHE_CONTROL,
   PUBLIC_API_WORKER_CACHE_CONTROL
 } from './features/public-card/http'
-import { assertPublicUsageVisible, publicUsageSlugExists } from './features/public-card/service'
+import { assertPublicUsageVisible } from './features/public-card/service'
 import { usageSummaryStrictMode } from './features/usage/deduped-daily-usage'
 import type { Bindings } from './lib/db'
 import { pruneExpiredRateLimits } from './lib/rate-limit'
@@ -45,11 +45,12 @@ async function handlePublicApiRequest(request: Request, env: Bindings, ctx: Exec
 
   try {
     const url = new URL(request.url)
-    if (url.pathname === '/api/public/model-pricing' && !(await publicUsageSlugExists(env.DB, 'model-pricing'))) {
-      return createModelPricingResponse({
+    if (url.pathname === '/api/public/model-pricing') {
+      return createCachedModelPricingResponse({
         db: env.DB,
-        searchParams: url.searchParams,
-        requestHeaders: request.headers
+        url,
+        requestHeaders: request.headers,
+        waitUntil: ctx.waitUntil.bind(ctx)
       })
     }
     const route = parsePublicUsagePath(url.pathname)

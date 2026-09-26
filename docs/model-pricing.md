@@ -22,7 +22,7 @@ provider owns the linked domain.
 `models.dev` is a maintained registry, not a provider-owned API. It is used for discovery and
 change detection; the stored provider URL is the human verification path. The Worker refuses an
 unapproved source host, malformed provider/model IDs, missing provider documentation, unknown
-price value types, and responses larger than 8 MiB. A row is retained only when it has numeric
+price value types, and responses larger than 16 MiB. A row is retained only when it has numeric
 input and output token prices; modality-only rows without both token prices are omitted. Image,
 audio, embedding and other modality rows remain available when they also expose those numeric
 token prices. Missing or zero context limits are stored as `0` instead of inventing a context size.
@@ -40,16 +40,25 @@ Worker Cron trigger invokes the job, but the D1 state row enforces the interval 
 ownership lock. Concurrent Worker instances cannot overwrite each other's result. This is a
 server-side D1 update path; it does not create GitHub commits or pull requests.
 
-On first deployment, apply migrations `0030_model_pricing.sql` and
-`0031_model_pricing_staging.sql` before publishing the Worker. Migration 0030 creates the
-generation state column together with the sync state table; migration 0031 contains only
-idempotent staging-table and index creation so a retried deployment is safe. Subsequent price changes
-are written directly by the Worker Cron and do not require a repository checkout or review loop.
+On first deployment, apply migrations `0030_model_pricing.sql` through
+`0034_drop_api_rate_limits_reset_index.sql` in order before publishing the Worker. Migration 0030
+creates the generation state column together with the sync state table; migration 0031 contains only
+idempotent staging-table and index creation; migration 0032 repairs legacy ownership of the reserved
+public slug; migration 0033 adds the expression index used by rate-limit cleanup; and migration 0034
+removes the superseded reset-time index. All five migrations are safe to retry. Subsequent price
+changes are written directly by the Worker Cron and do not require a repository checkout or review
+loop.
 
 Current prices are available at the deployment's `/api/public/model-pricing` endpoint. The
-`model-pricing` slug is reserved for new profiles; an older profile that already owns that slug is
-grandfathered and keeps its legacy public-card response at that path. The catalogue remains
-available through `/api/v1/model-pricing` in either case. The default
+`model-pricing` slug is reserved and cannot be saved through profile settings. The included
+`0032_reserved_model_pricing_slug.sql` migration renames any legacy owner to
+`model-pricing-legacy`, or to the first available deterministic
+`model-pricing-legacy-<user-id-suffix><sequence>` slug when that target is occupied; rerunning the
+migration is idempotent. If the bounded numeric suffix space is exhausted, it first tries a
+fixed-width hexadecimal fallback and then continues through deterministic candidates until a free
+slug is found. The fixed catalogue route also
+takes precedence over the reserved endpoint.
+The catalogue remains available through `/api/v1/model-pricing` as a compatibility alias. The default
 response contains 100 active models; use `limit` and the returned cursor to page through the
 catalogue without requesting the full directory at once:
 
@@ -66,9 +75,18 @@ validated provider-id format; model IDs are stored exactly as published by the s
 contain characters such as `/` or `:`.
 The response contains `models` and `nextCursor`; when `nextCursor` is non-null, pass it unchanged
 as `cursor` to read the next page. `limit` is optional (default 100) and accepts an integer from
-1 to 10,000; pages contain at most that many rows, so inactive history is never silently
-truncated. The response also carries a generation-bound `ETag` and a short public cache policy;
+1 to 1,000; pages contain at most that many rows, so Worker and D1 reads remain bounded. Follow
+`nextCursor` for larger catalogues; inactive history is never silently truncated. The response also
+carries a generation-bound `ETag` and a short public cache policy;
 send `If-None-Match` to receive `304` when the active catalogue generation and page are unchanged.
+A Cache Rule on the deployed zone rewrites a short positive `max-age` under `/api/public/*`
+to the four-hour Browser Cache TTL, so the public route cannot express its policy as a
+`max-age` of 60 — it reached clients as `max-age=14400`. The public route therefore answers
+`public, max-age=0, must-revalidate`, which the zone passes through untouched (measured), and
+relies on the ETag to turn each revalidation into a `304`. Its Worker cache entry is written
+separately under `public, max-age=300` so an edge hit does not reach D1; `server.ts` splits the
+two the same way for the usage cards. The collector is unaffected either way: it reads
+`/api/v1/model-pricing`, which is not matched by the rule and keeps `max-age=60`.
 An invalid, expired, or filter-mismatched cursor or limit returns HTTP 400 with an explicit API
 error; discard that cursor and restart from the first page. Keep the same `provider`,
 `includeInactive`, and active generation (implicitly carried by the cursor) when following a
@@ -84,11 +102,16 @@ curl -X POST \
 ```
 
 The secret is not stored in Wrangler vars or committed files. The endpoint accepts a `Bearer`
-scheme followed by one non-whitespace token; authorization whitespace is parsed before both token
-verification and rate-limit key construction, so equivalent header formatting cannot create new
-rate-limit buckets. Invalid or missing credentials are rejected before rate limiting. Valid manual
-requests are limited to five requests per 15 minutes for the client IP and parsed token; this is a
-burst guard for the forced refresh path and does not replace the D1 ownership lock.
+scheme followed by one non-whitespace token. The endpoint first performs a read-only availability
+check for the invalid-credential shield, then verifies the token. Invalid credentials consume a
+separate 30-request-per-15-minute client-IP shield, while valid requests are limited to five requests
+per 15 minutes for the configured sync token. The valid limit is intentionally global for callers
+sharing that one Worker secret, so rotating source IPs
+cannot bypass the burst guard. This keeps invalid traffic from consuming the legitimate operator's
+refresh budget while still slowing credential guessing. The invalid shield trusts Cloudflare's
+`cf-connecting-ip`; requests through a non-Cloudflare proxy without that header share a fail-safe
+`unknown` bucket. The limit is a burst guard for the forced refresh path and does not replace the D1
+ownership lock. A rate-limited response is HTTP 429 and includes `Retry-After` in seconds.
 
 A manual request forces a refresh, but still uses the same due-check override, lock and atomic
 replacement path as the scheduled job. The protected manual response reports sync status, model

@@ -1,6 +1,7 @@
 import { ApiError } from '../../lib/errors'
 import { getCanonicalPublicOrigin } from '../settings/service'
 import { getPublicUsageCard, getPublicUsageJson } from './service'
+import { isReservedPublicSlug } from './service/slug'
 
 export type PublicUsageRoute = {
   slug: string
@@ -18,16 +19,24 @@ export function parsePublicUsagePath(pathname: string) {
 
 export function parsePublicUsageSegment(value: string): PublicUsageRoute {
   const rawSlug = decodePathSegment(value)
+  let slug = rawSlug
+  let format: PublicUsageRoute['format'] = 'json'
+
   if (rawSlug.endsWith('.svg')) {
-    return { slug: rawSlug.slice(0, -4), format: 'svg' }
+    slug = rawSlug.slice(0, -4)
+    format = 'svg'
+  } else if (rawSlug.endsWith('.json')) {
+    slug = rawSlug.slice(0, -5)
   }
-  if (rawSlug.endsWith('.json')) {
-    return { slug: rawSlug.slice(0, -5), format: 'json' }
-  }
-  if (rawSlug.includes('.')) {
+
+  if (slug.includes('.')) {
     throw new ApiError('NOT_FOUND', 'Public route not found', 404)
   }
-  return { slug: rawSlug, format: 'json' }
+
+  if (isReservedPublicSlug(slug)) {
+    throw new ApiError('NOT_FOUND', 'Public route not found', 404)
+  }
+  return { slug, format }
 }
 
 export async function createPublicUsageResponse(input: {
@@ -66,12 +75,22 @@ export async function createPublicUsageResponse(input: {
   })
 }
 
+// Errors carry `no-store`, matching `model-pricing/http.ts`. Two reasons: a failure is not a
+// representation of the resource, so nothing should hold on to it, and without a directive a
+// browser may cache the 404 heuristically — which would keep serving "not found" for a slug
+// after its owner made the profile public. A route that already set its own policy keeps it.
 export function publicApiErrorResponse(error: unknown) {
   if (error instanceof ApiError) {
-    return Response.json({ error: { code: error.code, message: error.message } }, { status: error.status })
+    return Response.json(
+      { error: { code: error.code, message: error.message } },
+      { status: error.status, headers: { 'cache-control': 'no-store', ...error.headers } }
+    )
   }
 
-  return Response.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Internal server error' } }, { status: 500 })
+  return Response.json(
+    { error: { code: 'INTERNAL_SERVER_ERROR', message: 'Internal server error' } },
+    { status: 500, headers: { 'cache-control': 'no-store' } }
+  )
 }
 
 function decodePathSegment(value: string) {

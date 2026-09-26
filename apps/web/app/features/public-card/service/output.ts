@@ -69,22 +69,3 @@ export async function getPublicUsageCard(
     profile.publicCardConfig
   )
 }
-
-export function getEmptyPublicCard() {
-  return renderUsageCardSvg({
-    displayName: 'TokenBoard',
-    publicUrl: 'TokenBoard',
-    totalTokens: 0,
-    totalTokensWithoutCacheRead: 0,
-    totalCacheReadRate: 0,
-    totalCostUsd: 0,
-    totalCostAvailable: true,
-    monthTokens: 0,
-    monthTokensWithoutCacheRead: 0,
-    monthCacheReadRate: 0,
-    monthCostUsd: 0,
-    monthCostAvailable: true,
-    todayCostAvailable: true,
-    sourceSplit: []
-  })
-}

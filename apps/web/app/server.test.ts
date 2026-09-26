@@ -47,7 +47,38 @@ describe('worker server', () => {
     })
   })
 
-  test('preserves an existing public model-pricing slug', async () => {
+  test('caches public model pricing and serves a conditional hit without rereading the catalogue', async () => {
+    const cache = createCache()
+    globalThis.caches = { default: cache } as unknown as CacheStorage
+    mockedGetModelPricing.mockResolvedValue({
+      state: { activeGeneration: 'generation-one' },
+      models: [],
+      nextCursor: null
+    } as never)
+    const env = createEnv()
+    const firstContext = createExecutionContext()
+    const url = 'https://tokenboard.example/api/public/model-pricing?limit=2'
+
+    const firstResponse = await worker.fetch(workerRequest(url), env, firstContext)
+    await Promise.all(firstContext.waitUntilPromises)
+    const etag = firstResponse.headers.get('etag')
+    const secondResponse = await worker.fetch(
+      workerRequest(url, { headers: { 'if-none-match': etag ?? '' } }),
+      env,
+      createExecutionContext()
+    )
+
+    expect(firstResponse.status).toBe(200)
+    expect(etag).toMatch(/^"[0-9a-f]{64}"$/)
+    expect(secondResponse.status).toBe(304)
+    expect(secondResponse.headers.get('etag')).toBe(etag)
+    expect(secondResponse.headers.get('x-cache-test')).toBe('hit')
+    expect(mockedGetModelPricing).toHaveBeenCalledOnce()
+    expect(cache.match).toHaveBeenCalledTimes(2)
+    expect(cache.put).toHaveBeenCalledOnce()
+  })
+
+  test('serves public model pricing even when a legacy slug is occupied', async () => {
     mockedGetModelPricing.mockResolvedValue({ state: null, models: [], nextCursor: null })
     const env = createEnv({ publicProfile: true, profileSlug: 'model-pricing' })
 
@@ -58,11 +89,14 @@ describe('worker server', () => {
     )
 
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toMatchObject({
-      slug: 'model-pricing',
-      displayName: 'Eve'
+    await expect(response.json()).resolves.toEqual({ models: [], nextCursor: null })
+    expect(mockedGetModelPricing).toHaveBeenCalledWith({
+      db: env.DB,
+      provider: undefined,
+      includeInactive: false,
+      limit: undefined,
+      cursor: undefined
     })
-    expect(mockedGetModelPricing).not.toHaveBeenCalled()
   })
 
   test('serves the versioned model-pricing alias when the legacy slug is occupied', async () => {
@@ -86,7 +120,7 @@ describe('worker server', () => {
     })
   })
 
-  test('does not expose pricing when an existing model-pricing profile is private', async () => {
+  test('serves public model pricing when an existing legacy profile is private', async () => {
     mockedGetModelPricing.mockResolvedValue({ state: null, models: [], nextCursor: null })
     const env = createEnv({ profileSlug: 'model-pricing', profileExists: true })
 
@@ -96,15 +130,38 @@ describe('worker server', () => {
       createExecutionContext()
     )
 
-    expect(response.status).toBe(404)
-    await expect(response.json()).resolves.toEqual({
-      error: {
-        code: 'NOT_FOUND',
-        message: 'Public profile not found'
-      }
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ models: [], nextCursor: null })
+    expect(mockedGetModelPricing).toHaveBeenCalledWith({
+      db: env.DB,
+      provider: undefined,
+      includeInactive: false,
+      limit: undefined,
+      cursor: undefined
     })
-    expect(mockedGetModelPricing).not.toHaveBeenCalled()
   })
+
+  test.each(['/api/public/model-pricing.json', '/api/public/model-pricing.svg', '/api/public/%6dodel-pricing'])(
+    'does not route reserved pricing slug variant %s through public profiles',
+    async (pathname) => {
+      const env = createEnv({ publicProfile: true, profileSlug: 'model-pricing' })
+
+      const response = await worker.fetch(
+        workerRequest(`https://tokenboard.example${pathname}`),
+        env,
+        createExecutionContext()
+      )
+
+      expect(response.status).toBe(404)
+      await expect(response.json()).resolves.toEqual({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Public route not found'
+        }
+      })
+      expect(mockedGetModelPricing).not.toHaveBeenCalled()
+    }
+  )
 
   test('serves public SVG cards through the worker entrypoint', async () => {
     const response = await worker.fetch(
@@ -517,7 +574,8 @@ describe('worker server', () => {
     expect(statements).toContain('GROUP BY user_id, usage_date, source, model')
     expect(statements).toContain('INSERT INTO daily_usage_summary')
     expect(statements).toContain('FROM webhook_subscriptions')
-    expect(statements).toContain('DELETE FROM api_rate_limits WHERE reset_at <= ?')
+    expect(statements).toContain('DELETE FROM api_rate_limits')
+    expect(statements).toContain('julianday(reset_at) IS NULL OR julianday(reset_at) <= julianday(?)')
     expect(statements).not.toContain('aggregate_usage AS')
     expect(env.boundValues).toContainEqual(['2026-04-29T10:00:00.000Z'])
     expect(env.boundValues.some((values) => values.at(-1) === 76)).toBe(true)

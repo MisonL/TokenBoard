@@ -236,8 +236,7 @@ export function endpointOriginFromEndpoint(endpoint: string | undefined) {
 }
 
 export function modelPricingUrl(endpointOrigin: string, cursor?: string) {
-  // The versioned alias remains available when a legacy public profile already
-  // owns the reserved `model-pricing` slug.
+  // Keep collector traffic on the stable versioned compatibility alias.
   const url = new URL('/api/v1/model-pricing', `${endpointOrigin}/`)
   url.searchParams.set('limit', String(modelPricingPageSize))
   if (cursor) url.searchParams.set('cursor', cursor)

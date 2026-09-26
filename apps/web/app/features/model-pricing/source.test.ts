@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   fetchModelPricingSource,
+  maxModelPricingEntries,
   maxModelPricingSourceBytes,
   maxModelPricingValueDepth,
   maxModelPricingValueNodes,
@@ -82,6 +83,22 @@ describe('model pricing source', () => {
     delete (payload.xai.models as Record<string, unknown>)['grok-4.5']
 
     expect(normalizeModelsDevPayload(payload).models.some((model) => model.provider === 'xai')).toBe(false)
+  })
+
+  test('rejects a source catalogue above the model entry limit', () => {
+    const models: Record<string, unknown> = {}
+    for (let index = 0; index <= maxModelPricingEntries; index += 1) {
+      models[`model-${index}`] = { cost: { input: 1, output: 2 } }
+    }
+
+    expect(() =>
+      normalizeModelsDevPayload({
+        openai: {
+          doc: 'https://developers.openai.com/api/docs/pricing',
+          models
+        }
+      })
+    ).toThrow(`refusing more than ${maxModelPricingEntries}`)
   })
 
   test('rejects impossible calendar dates in source metadata', () => {
@@ -207,6 +224,19 @@ describe('model pricing source', () => {
 
   test('rejects 6to4 documentation targets that encode private IPv4 addresses', () => {
     for (const officialDocsUrl of ['https://[2002:7f00:1::]/docs', 'https://[2002:c0a8:101::]/docs']) {
+      const payload = fixturePayload()
+      payload.openai.doc = officialDocsUrl
+      expect(() => normalizeModelsDevPayload(payload)).toThrow('unsafe official docs URL')
+    }
+  })
+
+  test('rejects NAT64 documentation targets that encode private IPv4 addresses', () => {
+    for (const officialDocsUrl of [
+      'https://[64:ff9b::10.0.0.1]/docs',
+      'https://[64:ff9b::192.168.1.1]/docs',
+      'https://[64:ff9b:1::100.64.0.1]/docs',
+      'https://[64:ff9b:1:c000:0201::]/docs'
+    ]) {
       const payload = fixturePayload()
       payload.openai.doc = officialDocsUrl
       expect(() => normalizeModelsDevPayload(payload)).toThrow('unsafe official docs URL')

@@ -1,7 +1,7 @@
 import { modelPricingProviderPattern } from './validation'
 
 export const defaultModelPricingSourceUrl = 'https://models.dev/api.json'
-export const maxModelPricingSourceBytes = 8 * 1024 * 1024
+export const maxModelPricingSourceBytes = 16 * 1024 * 1024
 export const maxModelPricingEntries = 10_000
 export const maxModelPricingValueDepth = 32
 export const maxModelPricingValueNodes = 2_048
@@ -361,12 +361,14 @@ function isUnsafeIpv6(segments: number[] | null) {
   const isLoopback = segments.slice(0, 7).every((segment) => segment === 0) && segments[7] === 1
   const isUniqueLocal = (first & 0xfe00) === 0xfc00
   const isLinkLocal = (first & 0xffc0) === 0xfe80
+  const isNat64LocalUse = isNat64LocalUsePrefix(segments)
   const embeddedIpv4 = ipv4FromUnsafeIpv6(segments)
   return (
     isUnspecified ||
     isLoopback ||
     isUniqueLocal ||
     isLinkLocal ||
+    isNat64LocalUse ||
     (embeddedIpv4 !== null && isPrivateIpv4(embeddedIpv4))
   )
 }
@@ -378,7 +380,16 @@ function ipv4FromUnsafeIpv6(segments: number[]) {
     const third = segments[2] ?? 0
     return `${second >> 8}.${second & 0xff}.${third >> 8}.${third & 0xff}`
   }
+  if (isNat64WellKnownPrefix(segments) || isNat64LocalUsePrefix(segments)) return ipv4FromIpv6(segments)
   return null
+}
+
+function isNat64WellKnownPrefix(segments: number[]) {
+  return segments[0] === 0x0064 && segments[1] === 0xff9b && segments.slice(2, 6).every((segment) => segment === 0)
+}
+
+function isNat64LocalUsePrefix(segments: number[]) {
+  return segments[0] === 0x0064 && segments[1] === 0xff9b && segments[2] === 0x0001
 }
 
 function isIpv4MappedOrCompatible(segments: number[]) {

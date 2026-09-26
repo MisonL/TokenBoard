@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { ApiError } from '../../../lib/errors'
 import { getPublicUsageCard, getPublicUsageJson } from '../../../features/public-card/service'
 import { GET } from './[slug]'
 
@@ -75,6 +76,59 @@ describe('public usage route', () => {
     })
     expect(mockedGetPublicUsageJson).not.toHaveBeenCalled()
     expect(mockedGetPublicUsageCard).not.toHaveBeenCalled()
+    // Without a directive a browser may cache the 404 heuristically, which would keep
+    // serving "not found" for a slug after its owner made the profile public.
+    expect(response.headers.get('cache-control')).toBe('no-store')
+  })
+
+  test.each(['eve-tokenboard.json.svg', 'eve-tokenboard.svg.json'])(
+    'rejects double public URL extensions: %s',
+    async (slug) => {
+      const response = (await GET[0](
+        contextFor(slug, `https://tokenboard.example/api/public/${slug}`) as never,
+        async () => undefined
+      )) as Response
+
+      expect(response.status).toBe(404)
+      expect(await response.json()).toEqual({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Public route not found'
+        }
+      })
+      expect(mockedGetPublicUsageJson).not.toHaveBeenCalled()
+      expect(mockedGetPublicUsageCard).not.toHaveBeenCalled()
+    }
+  )
+
+  test('rejects reserved public slugs case-insensitively', async () => {
+    const response = (await GET[0](
+      contextFor('Model-Pricing.json', 'https://tokenboard.example/api/public/Model-Pricing.json') as never,
+      async () => undefined
+    )) as Response
+
+    expect(response.status).toBe(404)
+    expect(await response.json()).toEqual({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'Public route not found'
+      }
+    })
+    expect(mockedGetPublicUsageJson).not.toHaveBeenCalled()
+    expect(mockedGetPublicUsageCard).not.toHaveBeenCalled()
+  })
+
+  test('preserves API error headers', async () => {
+    mockedGetPublicUsageJson.mockRejectedValue(
+      new ApiError('RATE_LIMITED', 'Too many requests', 429, { 'Retry-After': '30' })
+    )
+    const response = (await GET[0](
+      contextFor('eve-tokenboard', 'https://tokenboard.example/api/public/eve-tokenboard') as never,
+      async () => undefined
+    )) as Response
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get('Retry-After')).toBe('30')
   })
 })
 

@@ -396,11 +396,24 @@ describe('model pricing SQLite contract', () => {
     const dbPath = join(dir, 'pricing.db')
     runSql(dbPath, migrationSql())
     const db = createSqliteD1(dbPath)
-    await runModelPricingSync({
-      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
-      now: new Date('2026-08-07T00:00:00.000Z'),
-      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    // Completion is stamped from the injected `now` plus whatever wall clock has
+    // elapsed, so a fast run could land exactly on `now` and make the strict
+    // comparison below a race. Advance an injected clock instead of relying on the
+    // real one having ticked.
+    let clock = 0
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => {
+      clock += 1_000
+      return clock
     })
+    try {
+      await runModelPricingSync({
+        env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+        now: new Date('2026-08-07T00:00:00.000Z'),
+        fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+      })
+    } finally {
+      dateNow.mockRestore()
+    }
 
     runSql(
       dbPath,

@@ -1,18 +1,23 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { getModelPricing } from '../../../features/model-pricing/service'
 import { ModelPricingQueryError } from '../../../features/model-pricing/validation'
 import { GET } from './model-pricing'
 
 vi.mock('../../../features/model-pricing/service', () => ({
   getModelPricing: vi.fn(),
-  maxModelPricingPageSize: 10_000
+  maxModelPricingPageSize: 1_000
 }))
 
 const mockedGetModelPricing = vi.mocked(getModelPricing)
+const originalCaches = globalThis.caches
 
 describe('model pricing route', () => {
   beforeEach(() => {
     mockedGetModelPricing.mockReset()
+  })
+
+  afterEach(() => {
+    globalThis.caches = originalCaches
   })
 
   test('returns current prices without stale cache reuse', async () => {
@@ -33,6 +38,20 @@ describe('model pricing route', () => {
       limit: 25,
       cursor: 'opaque'
     })
+  })
+
+  test('does not read or populate the public Worker Cache API', async () => {
+    const match = vi.fn(async () => undefined)
+    const put = vi.fn(async () => undefined)
+    globalThis.caches = { default: { match, put } } as unknown as CacheStorage
+    mockedGetModelPricing.mockResolvedValue({ state: null, models: [], nextCursor: null })
+    const context = createContext('https://tokenboard.example/api/v1/model-pricing')
+
+    const response = (await GET[0](context as never, async () => undefined)) as Response
+
+    expect(response.status).toBe(200)
+    expect(match).not.toHaveBeenCalled()
+    expect(put).not.toHaveBeenCalled()
   })
 
   test('rejects includeInactive=true instead of silently changing scope', async () => {

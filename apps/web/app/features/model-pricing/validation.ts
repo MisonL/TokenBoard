@@ -1,7 +1,9 @@
 import { z } from 'zod'
 import { ApiError } from '../../lib/errors'
 
-export const maxModelPricingPageSize = 10_000
+// Keep each public request bounded so a caller cannot turn one page into a
+// catalogue-sized D1 read and response. Clients should follow nextCursor.
+export const maxModelPricingPageSize = 1_000
 export const defaultModelPricingPageSize = 100
 export const modelPricingProviderPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
