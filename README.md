@@ -194,7 +194,7 @@ Rotated logs are capped at 1 MiB and kept for 7 days.
 
 ## Development
 
-Node.js 22.12 or newer is required.
+Node.js 22.18 or newer is required.
 
 ```bash
 pnpm install
