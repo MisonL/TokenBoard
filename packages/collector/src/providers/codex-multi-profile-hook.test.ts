@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
 import { collectCodexHookProfiles, readCodexHookAcknowledgement } from './codex-hook-profiles'
+import { createSessionContentHasher, sessionContentHashAlgorithm } from './session-content-hash'
 import { clearPendingUploadCursors } from './session-cursor'
 import { cursorFileName } from './session-cursor-store'
 
@@ -483,6 +484,64 @@ describe('Codex multi-profile hook collection', () => {
           }
         })
       ).resolves.toEqual([expect.objectContaining({ totalTokens: 15, sessionCount: 1 })])
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // The content fingerprint moved from sha256 (64 hex) to blake2b512 (128 hex), recorded
+  // per entry as `contentHashAlgo`. The migration helpers still recognize only the old
+  // width: `isSha256` gates both `matchingPersistedLegacyEntries` and `matchingCodexHomes`,
+  // and `matchesLegacySessionContent` compares against a sha256 digest. A legacy cursor
+  // whose entries were written by the current collector therefore matches nothing, so the
+  // copy into the profile cursors never happens and the entries are dropped. Existing
+  // tests build their fixtures with createHash('sha256'), which is the old collector's
+  // output — this one uses the digest the collector writes today.
+  test('migrates a legacy cursor entry whose digest was written by the current collector', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-multi-hook-'))
+    const firstHome = join(root, 'first')
+    const secondHome = join(root, 'second')
+    const stateDir = join(root, 'state')
+    const relativeSessionPath = '2026/05/22/current-hash.jsonl'
+    const sessionFile = join(firstHome, 'sessions', relativeSessionPath)
+    const legacyCursorPath = join(stateDir, 'codex-cursor.json')
+    const profileCursorPath = join(stateDir, cursorFileName('codex', resolve(firstHome)))
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-22T01:00:00.000Z', 15)])
+      const [contents, details] = await Promise.all([readFile(sessionFile), stat(sessionFile)])
+      const hasher = createSessionContentHasher()
+      hasher.update(contents)
+      const digest = hasher.digest('hex')
+      expect(digest).toHaveLength(128)
+
+      await writeLegacyPendingCursor({
+        cursorPath: legacyCursorPath,
+        relativePath: relativeSessionPath,
+        totalTokens: 15,
+        size: details.size,
+        sha256: digest,
+        contentHashAlgo: sessionContentHashAlgorithm
+      })
+
+      // The migration runs because two homes force profile cursors. The entry names a file
+      // that exists in the first home with exactly the recorded content, so it must be
+      // copied into that home's profile cursor and cleared from the legacy cursor.
+      await collectCodexHookProfiles({
+        codexHomes: [firstHome, secondHome],
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z'
+      })
+
+      // The legacy entry is matched by content and then cleared, which is what proves the
+      // migration recognized it. A digest the migration cannot read leaves it in place.
+      const legacyCursor = JSON.parse(await readFile(legacyCursorPath, 'utf8'))
+      expect(Object.keys(legacyCursor.files)).not.toContain(relativeSessionPath)
     } finally {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
@@ -1137,6 +1196,7 @@ async function writeLegacyPendingCursor(input: {
   totalTokens: number
   size: number
   sha256: string
+  contentHashAlgo?: string
 }) {
   await mkdir(dirname(input.cursorPath), { recursive: true })
   await writeFile(
@@ -1150,6 +1210,7 @@ async function writeLegacyPendingCursor(input: {
             size: input.size,
             mtimeMs: Date.parse('2026-05-22T01:00:00.000Z'),
             sha256: input.sha256,
+            ...(input.contentHashAlgo ? { contentHashAlgo: input.contentHashAlgo } : {}),
             snapshots: [
               {
                 source: 'codex',

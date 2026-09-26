@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { UsageSnapshot, UsageSource } from '@tokenboard/usage-core'
-import { collectChangedSessionFiles, updateCursorFile } from './session-cursor'
+import { collectChangedSessionFiles, updateCursorFile, type ReusablePendingSessionFile } from './session-cursor'
 import { readCursor, withCursorLock, writeCursor, type CursorSnapshot } from './session-cursor-store'
 import { parseSessionJsonlLines } from './session-jsonl-parser'
 import { isUnresolvedCodexContextPricingSnapshot } from './codex-context-pricing'
@@ -21,6 +21,7 @@ type HookInput = {
   includeReconciliationFileEntries?: boolean
   skipSessionScan?: boolean
   allowedRootSymlinks?: readonly string[]
+  forcePendingUploadRescan?: boolean
 }
 
 export type HookPendingSnapshotEntry = {
@@ -41,6 +42,11 @@ export type HookIncrementalResult = {
   changedDates: string[]
   changedKeys: Array<{ usageDate: string; model: string }>
   cachedSnapshots: UsageSnapshot[]
+  // The subset of `cachedSnapshots` whose session file is still on disk. Only these can be
+  // covered by a ccusage scan of the same tree; a snapshot restored for a file that is gone
+  // can never be, so callers must not treat the two alike when deciding what ccusage already
+  // counted.
+  reusablePendingSnapshots?: UsageSnapshot[]
   unresolvedContextPricingSnapshots?: UsageSnapshot[]
   pendingSnapshotEntries?: HookPendingSnapshotEntry[]
   reconciliationFileEntries?: HookReconciliationFileEntry[]
@@ -107,7 +113,8 @@ async function collectHookIncrementalLocked(input: HookInput, cursorPath: string
     cursorPath,
     cursorProfileHash: input.cursorProfileHash,
     allowedRootSymlinks: input.allowedRootSymlinks,
-    scanSinceMs: input.scanSinceMs
+    scanSinceMs: input.scanSinceMs,
+    forcePendingUploadRescan: input.forcePendingUploadRescan
   })
 
   if (changed.hasUnreadableChangedFile) {
@@ -119,13 +126,16 @@ async function collectHookIncrementalLocked(input: HookInput, cursorPath: string
   }
 
   const restoredPendingSnapshots = restoreCachedPendingSnapshots(changed.missingPendingSnapshots, input.collectedAt)
-  const cachedSnapshots = restoredPendingSnapshots.map((entry) => entry.snapshot)
-  const unresolvedContextPricingSnapshots = restoredPendingSnapshots
+  const reusablePendingEntries = restoreReusablePendingSnapshotEntries(changed.reusablePendingFiles, input.collectedAt)
+  const restoredEntries = [
+    ...reusablePendingEntries,
+    ...restorePendingSnapshotEntries(changed.missingPendingSnapshotEntries, input.collectedAt)
+  ]
+  const cachedSnapshots = [...reusablePendingEntries, ...restoredPendingSnapshots].map((entry) => entry.snapshot)
+  const unresolvedContextPricingSnapshots = [...reusablePendingEntries, ...restoredPendingSnapshots]
     .filter((entry) => entry.contextPricingPending)
     .map((entry) => entry.snapshot)
-  const pendingSnapshotEntries = input.includePendingSnapshotEntries
-    ? restorePendingSnapshotEntries(changed.missingPendingSnapshotEntries, input.collectedAt)
-    : undefined
+  const pendingSnapshotEntries = input.includePendingSnapshotEntries ? restoredEntries : undefined
   if (changed.files.length === 0) {
     if (cachedSnapshots.length > 0) {
       if (hasCursorMaintenance(changed)) {
@@ -186,6 +196,9 @@ async function collectHookIncrementalLocked(input: HookInput, cursorPath: string
       changedDates: [...parsed.changedDates].sort(),
       changedKeys: [...parsed.changedKeys.values()].sort(compareSnapshotKeys),
       cachedSnapshots,
+      ...(reusablePendingEntries.length > 0
+        ? { reusablePendingSnapshots: reusablePendingEntries.map((entry) => entry.snapshot) }
+        : {}),
       ...(unresolvedContextPricingSnapshots.length > 0 ? { unresolvedContextPricingSnapshots } : {})
     },
     {
@@ -213,6 +226,23 @@ function restorePendingSnapshotEntries(
   collectedAt: string
 ): HookPendingSnapshotEntry[] {
   return missingPendingSnapshots.flatMap((entry) =>
+    entry.snapshots.map((snapshot) => {
+      const restored = restoreCursorSnapshot(snapshot, collectedAt)
+      return {
+        relativePath: entry.relativePath,
+        sha256: entry.sha256,
+        snapshot: restored.snapshot,
+        ...(restored.contextPricingPending ? { contextPricingPending: true as const } : {})
+      }
+    })
+  )
+}
+
+function restoreReusablePendingSnapshotEntries(
+  files: ReusablePendingSessionFile[],
+  collectedAt: string
+): HookPendingSnapshotEntry[] {
+  return files.flatMap((entry) =>
     entry.snapshots.map((snapshot) => {
       const restored = restoreCursorSnapshot(snapshot, collectedAt)
       return {

@@ -103,6 +103,62 @@ describe('Codex hook child-session race recovery', () => {
     }
   })
 
+  test('rescans all pending Codex rows when a race retry crosses a usage date', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-hook-race-cross-date-'))
+    const codexHome = join(root, 'codex')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(codexHome, 'sessions', '2026', '05', '22', 'session.jsonl')
+    const runner = vi.fn(async (_command: string, args: string[]) => {
+      if (args.includes('session')) {
+        return {
+          data: [
+            {
+              sessionId: 'session',
+              lastActivity: '2026-05-23T01:00:00.000Z',
+              models: { 'gpt-5': { inputTokens: 30, outputTokens: 15, totalTokens: 45 } }
+            }
+          ]
+        }
+      }
+      return {
+        data: [
+          { date: '2026-05-22', model: 'gpt-5', inputTokens: 10, outputTokens: 5, totalTokens: 15, costUSD: 0.03 },
+          { date: '2026-05-23', model: 'gpt-5', inputTokens: 20, outputTokens: 10, totalTokens: 30, costUSD: 0.06 }
+        ]
+      }
+    })
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    correction.mockImplementationOnce(async () => {
+      await writeFile(sessionFile, `${JSON.stringify(tokenCountEvent('2026-05-23T01:00:00.000Z', 20, 10, 0.06))}\n`, {
+        flag: 'a'
+      })
+      throw new Error('Codex child session changed while reading; retry the sync')
+    })
+    correction.mockImplementation(async (input: { snapshots: unknown[] }) => input.snapshots)
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-22T01:00:00.000Z', 10, 5, 0.03)])
+
+      await expect(
+        collectCodexUsage({
+          codexHome,
+          stateDir,
+          timezone: 'Asia/Shanghai',
+          collectedAt: '2026-05-23T10:00:00.000Z',
+          runner
+        })
+      ).resolves.toEqual([
+        expect.objectContaining({ usageDate: '2026-05-22', totalTokens: 15 }),
+        expect.objectContaining({ usageDate: '2026-05-23', totalTokens: 30 })
+      ])
+      expect(correction).toHaveBeenCalledTimes(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('does not retry a non-race correction failure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-hook-race-'))
     const codexHome = join(root, 'codex')
@@ -205,19 +261,19 @@ async function readPendingUpload(stateDir: string) {
   return cursor.files['2026/05/22/session.jsonl'].pendingUpload === true
 }
 
-function tokenCountEvent() {
+function tokenCountEvent(timestamp = '2026-05-22T01:00:00.000Z', inputTokens = 10, outputTokens = 5, costUsd = 0.03) {
   return {
     type: 'event_msg',
-    timestamp: '2026-05-22T01:00:00.000Z',
+    timestamp,
     payload: {
       type: 'token_count',
       info: {
         model: 'gpt-5',
         last_token_usage: {
-          input_tokens: 10,
-          output_tokens: 5,
-          total_tokens: 15,
-          cost_usd: 0.03
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          total_tokens: inputTokens + outputTokens,
+          cost_usd: costUsd
         }
       }
     }

@@ -21,6 +21,8 @@ import {
 import {
   fingerprintCodexSessionFile,
   withCodexSessionAttributionCache,
+  fingerprintCodexSessionFilePrefix,
+  sameCodexSessionFilePrefixFingerprint,
   type CodexSessionAttribution,
   type CodexSessionFileFingerprint
 } from './codex-session-attribution-cache'
@@ -288,7 +290,7 @@ async function collectCodexHookUsage(input: {
 }) {
   for (let attempt = 0; attempt < hookCodexCollectionAttempts; attempt += 1) {
     try {
-      return await collectCodexHookUsageAttempt(input)
+      return await collectCodexHookUsageAttempt(input, attempt > 0)
     } catch (error) {
       if (attempt + 1 < hookCodexCollectionAttempts && isCodexReconciliationChange(error)) {
         input.options.stderr?.('Codex child session changed; retrying hook reconciliation once')
@@ -301,12 +303,15 @@ async function collectCodexHookUsage(input: {
   throw new Error('Codex hook reconciliation retry loop ended unexpectedly')
 }
 
-async function collectCodexHookUsageAttempt(input: {
-  runner: CommandRunner
-  packageRunner: PackageRunner
-  options: CollectCodexUsageOptions
-  collectedAt: string
-}) {
+async function collectCodexHookUsageAttempt(
+  input: {
+    runner: CommandRunner
+    packageRunner: PackageRunner
+    options: CollectCodexUsageOptions
+    collectedAt: string
+  },
+  forcePendingUploadRescan = false
+) {
   const codexHomes = resolveCodexHomesFromOptions(input.options)
   const codexSymlinkRoots = resolveCodexSymlinkRootsFromOptions(input.options)
   const timezone = input.options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -316,7 +321,8 @@ async function collectCodexHookUsageAttempt(input: {
     stateDir: input.options.stateDir,
     stderr: input.options.stderr,
     timezone,
-    collectedAt: input.collectedAt
+    collectedAt: input.collectedAt,
+    forcePendingUploadRescan
   })
 
   if (!incremental.changed) {
@@ -349,9 +355,19 @@ async function collectCodexHookUsageAttempt(input: {
   const unresolvedContextPricingSnapshots = incremental.unresolvedContextPricingSnapshots ?? []
   reportUnrecoverablePendingCodexPricing(unresolvedContextPricingSnapshots, input.options.stderr)
   const unresolvedSnapshotKeys = new Set(unresolvedContextPricingSnapshots.map(codexSnapshotIdentity))
+  // A reused pending snapshot is a partial view of a (date, model) group, kept so usage is not
+  // lost when a sync could not upload it. ccusage scans the same tree independently and reports
+  // the group whole, so once it reports the group the cached copy is already inside that figure
+  // — and `mergeSnapshots` *adds* on a key collision rather than replacing, which double-counts
+  // it. Only the reusable copies are subject to this: a snapshot restored for a file that is
+  // gone is not in the tree ccusage scanned, so dropping it would lose real usage.
+  const coveredKeys = new Set(snapshots.map(codexSnapshotGroupKey))
+  const reusableIds = new Set((incremental.reusablePendingSnapshots ?? []).map(codexSnapshotIdentity))
   const cachedSnapshots = incremental.cachedSnapshots.filter(
     (snapshot) =>
-      !unresolvedSnapshotKeys.has(codexSnapshotIdentity(snapshot)) && !isUnresolvedCodexContextPricingSnapshot(snapshot)
+      !(reusableIds.has(codexSnapshotIdentity(snapshot)) && coveredKeys.has(codexSnapshotGroupKey(snapshot))) &&
+      !unresolvedSnapshotKeys.has(codexSnapshotIdentity(snapshot)) &&
+      !isUnresolvedCodexContextPricingSnapshot(snapshot)
   )
   const merged = mergeSnapshots([...snapshots, ...cachedSnapshots])
   return attachCodexHookAcknowledgement(merged, incremental.acknowledgedFilesByCursorScope)
@@ -365,6 +381,12 @@ function reportUnrecoverablePendingCodexPricing(snapshots: readonly UsageSnapsho
     .join(', ')
   const message = `Codex context pricing is unavailable for pending snapshots without source session files; keeping them pending: ${details}`
   stderr?.(message)
+}
+
+// The grouping `mergeSnapshots` uses, so "already covered" means the same thing here as it
+// does when the two lists are combined.
+function codexSnapshotGroupKey(snapshot: UsageSnapshot) {
+  return [snapshot.source, snapshot.usageDate, snapshot.timezone, snapshot.model].join('\0')
 }
 
 function codexSnapshotIdentity(snapshot: UsageSnapshot) {
@@ -839,6 +861,7 @@ async function readCachedCanonicalAttributions(input: {
     callback: async (cache) => {
       const attributions = new Map<string, CodexSessionAttribution>()
       for (const [sourceFile, fingerprint] of input.scope.sourceFileFingerprints) {
+        if (input.scope.projectedSourceFiles.has(sourceFile)) continue
         const attribution = cache.lookupByFingerprint({ filePath: sourceFile, fingerprint })
         if (attribution) attributions.set(sourceFile, attribution)
       }
@@ -1605,10 +1628,18 @@ async function warmCanonicalAttributionsFromScope(input: {
           throw new Error('Codex scoped session attribution lost its source-file fingerprint')
         }
         if (input.scope.projectedSourceFiles.has(sourceFile)) {
-          const currentSourceFingerprint = await fingerprintCodexSessionFile(sourceFile)
-          if (!sameCodexContextPricingFingerprint(currentSourceFingerprint, expectedFingerprint)) {
+          const expectedPrefix = input.scope.projectedSourceFilePrefixes.get(sourceFile)
+          if (!expectedPrefix) {
+            throw new Error('Codex projected session scope lost its source-file prefix fingerprint')
+          }
+          const currentSourceFingerprint = await fingerprintProjectedSourceFile(sourceFile, expectedPrefix)
+          if (
+            currentSourceFingerprint.capturedSize < expectedPrefix.capturedSize ||
+            !sameCodexSessionFilePrefixFingerprint(currentSourceFingerprint, expectedPrefix)
+          ) {
             throw new Error('Codex session changed during scoped collection; retry the sync')
           }
+          continue
         } else {
           const copiedFingerprint = await fingerprintCodexSessionFile(scopedFile)
           if (!sameFrozenScopeContent(copiedFingerprint, expectedFingerprint)) {
@@ -1785,15 +1816,31 @@ async function assertCodexScopeSourcesUnchanged(scope: CodexSessionScope) {
   // file, however, is read directly from the live source and must be checked
   // before its result is committed.
   for (const sourceFile of scope.projectedSourceFiles) {
-    const expected = scope.sourceFileFingerprints.get(sourceFile)
+    const expected = scope.projectedSourceFilePrefixes.get(sourceFile)
     if (!expected) {
-      throw new Error('Codex projected session scope lost its source-file fingerprint')
+      throw new Error('Codex projected session scope lost its source-file prefix fingerprint')
     }
-    const current = await fingerprintCodexSessionFile(sourceFile)
-    if (!sameCodexContextPricingFingerprint(expected, current)) {
+    const current = await fingerprintProjectedSourceFile(sourceFile, expected)
+    if (current.capturedSize < expected.capturedSize || !sameCodexSessionFilePrefixFingerprint(expected, current)) {
       throw new Error('Codex session changed during scoped collection; retry the sync')
     }
   }
+}
+
+async function fingerprintProjectedSourceFile(
+  sourceFile: string,
+  expected: { capturedSize: number; prefixSize: number; dev: number; ino: number; prefixTailSha256: string }
+) {
+  let current: Awaited<ReturnType<typeof fingerprintCodexSessionFilePrefix>>
+  try {
+    current = await fingerprintCodexSessionFilePrefix(sourceFile, expected.prefixSize)
+  } catch (error) {
+    throw new Error('Codex session changed during scoped collection; retry the sync', { cause: error })
+  }
+  if (current.capturedSize < expected.capturedSize || !sameCodexSessionFilePrefixFingerprint(expected, current)) {
+    throw new Error('Codex session changed during scoped collection; retry the sync')
+  }
+  return current
 }
 
 function cacheFilesForScope(scope: CodexSessionScope) {

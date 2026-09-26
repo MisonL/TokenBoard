@@ -11,6 +11,11 @@ import {
   type HookReconciliationFileEntry
 } from './hook-incremental'
 import { cursorFileName, readCursor, withCursorLock, writeCursor, type CursorEntry } from './session-cursor-store'
+import {
+  createSessionContentHasher,
+  isCurrentContentHashAlgorithm,
+  sessionContentHashAlgorithm
+} from './session-content-hash'
 import { resolveCodexSessionRoot } from './codex-symlink-policy'
 
 type CodexHookProfileInput = {
@@ -20,6 +25,7 @@ type CodexHookProfileInput = {
   stderr?: (line: string) => void
   timezone: string
   collectedAt: string
+  forcePendingUploadRescan?: boolean
 }
 
 export type CodexHookProfilesResult = {
@@ -28,6 +34,9 @@ export type CodexHookProfilesResult = {
   changedDates: string[]
   changedKeys: Array<{ usageDate: string; model: string }>
   cachedSnapshots: UsageSnapshot[]
+  // See `HookIncrementalResult.reusablePendingSnapshots`: the part of `cachedSnapshots` whose
+  // session file still exists, and which ccusage therefore already counted for that group.
+  reusablePendingSnapshots: UsageSnapshot[]
   acknowledgedFilesByCursorScope: CodexHookAcknowledgedFilesByCursorScope[]
   unresolvedContextPricingSnapshots?: UsageSnapshot[]
 }
@@ -121,7 +130,8 @@ export async function collectCodexHookProfiles(input: CodexHookProfileInput): Pr
         timezone: input.timezone,
         collectedAt: input.collectedAt,
         includePendingSnapshotEntries: true,
-        includeReconciliationFileEntries: true
+        includeReconciliationFileEntries: true,
+        forcePendingUploadRescan: input.forcePendingUploadRescan
       })
     )
   )
@@ -250,7 +260,7 @@ async function matchingPersistedLegacyEntries(input: {
     await withCursorLock(cursorPath, async () => {
       const cursor = await readCursor(cursorPath, 'codex')
       for (const [relativePath, legacyEntry] of Object.entries(input.legacy.files)) {
-        if (!isSha256(legacyEntry.sha256)) continue
+        if (!isComparableContentDigest(legacyEntry.sha256)) continue
         if (cursor.files[relativePath]?.sha256 === legacyEntry.sha256) {
           matches.add(relativePath)
         }
@@ -281,7 +291,7 @@ async function matchingCodexHomes(input: {
   entry: CursorEntry
   codexSymlinkRoots?: readonly string[]
 }) {
-  if (!isSha256(input.entry.sha256)) return []
+  if (!isComparableContentDigest(input.entry.sha256)) return []
   const matches = await Promise.all(
     input.codexHomes.map(async (codexHome) => {
       const sessionPaths = await resolveSessionPaths(codexHome, input.relativePath, input.codexSymlinkRoots)
@@ -336,7 +346,10 @@ async function matchesLegacySessionContent(sessionPath: string, entry: CursorEnt
   if (!details?.isFile() || details.size < entry.size || !Number.isSafeInteger(entry.size) || entry.size < 0) {
     return false
   }
-  const hash = createHash('sha256')
+  // Dispatch on the algorithm the entry records. An entry without the field predates it
+  // and holds a sha256 digest; one written by the current collector holds blake2b512.
+  // Hashing with sha256 regardless is what made a current entry's digest never match.
+  const hash = createSessionContentHasherFor(entry.contentHashAlgo)
   let handle
   try {
     handle = await open(sessionPath, 'r')
@@ -432,8 +445,22 @@ function isPathInside(parent: string, child: string) {
   return !isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`)
 }
 
-function isSha256(value: string) {
-  return /^[a-f0-9]{64}$/.test(value)
+// Content digests are either the legacy sha256 (64 hex) or blake2b512 (128 hex) that the
+// collector writes today. Both are hex of a known width; anything else is a value this
+// code cannot compare, and the callers below treat that as "not a candidate" rather than
+// guessing. Naming this after sha256 alone is what made a current-collector entry
+// unrecognizable to the legacy-cursor migration.
+function createSessionContentHasherFor(contentHashAlgo: string | undefined) {
+  // Only the current algorithm has a factory; anything else (including an absent field,
+  // which means the legacy sha256) goes through createHash by name. An unknown name would
+  // throw here, which is the right outcome: guessing an algorithm would compare two
+  // digests that were never meant to be equal and silently drop the entry.
+  if (isCurrentContentHashAlgorithm(contentHashAlgo)) return createSessionContentHasher()
+  return createHash(contentHashAlgo ?? 'sha256')
+}
+
+function isComparableContentDigest(value: string) {
+  return /^(?:[a-f0-9]{64}|[a-f0-9]{128})$/.test(value)
 }
 
 function mergeCodexHookIncrementals(incrementals: HookIncrementalResult[]): CodexHookProfilesResult {
@@ -441,7 +468,13 @@ function mergeCodexHookIncrementals(incrementals: HookIncrementalResult[]): Code
   const changedKeys = new Map<string, { usageDate: string; model: string }>()
   const pendingSnapshotEntries: HookPendingSnapshotEntry[] = []
   const reconciliationFileEntries = new Set<string>()
+  // The reusable subset is tracked by snapshot identity rather than by entry, because the
+  // merged `cachedSnapshots` below is deduplicated and re-sorted from the same entries.
+  const reusableSnapshotIds = new Set<string>()
   for (const incremental of incrementals) {
+    for (const snapshot of incremental.reusablePendingSnapshots ?? []) {
+      reusableSnapshotIds.add(cachedSnapshotIdentity(snapshot))
+    }
     for (const date of incremental.changedDates) changedDates.add(date)
     for (const key of incremental.changedKeys) {
       changedKeys.set(snapshotKey(key), key)
@@ -463,6 +496,9 @@ function mergeCodexHookIncrementals(incrementals: HookIncrementalResult[]): Code
     changedDates: dates,
     changedKeys: [...changedKeys.values()].sort(compareSnapshotKeys),
     cachedSnapshots: sortPendingSnapshots(deduplicatedEntries),
+    reusablePendingSnapshots: sortPendingSnapshots(deduplicatedEntries).filter((snapshot) =>
+      reusableSnapshotIds.has(cachedSnapshotIdentity(snapshot))
+    ),
     acknowledgedFilesByCursorScope: [],
     ...(unresolvedEntries.length > 0
       ? { unresolvedContextPricingSnapshots: sortPendingSnapshots(unresolvedEntries) }
@@ -513,6 +549,22 @@ function sortPendingSnapshots(entries: HookPendingSnapshotEntry[]) {
   return entries
     .map((entry) => entry.snapshot)
     .sort((left, right) => left.usageDate.localeCompare(right.usageDate) || left.model.localeCompare(right.model))
+}
+
+function cachedSnapshotIdentity(snapshot: UsageSnapshot) {
+  return JSON.stringify([
+    snapshot.source,
+    snapshot.usageDate,
+    snapshot.timezone,
+    snapshot.model,
+    snapshot.inputTokens,
+    snapshot.outputTokens,
+    snapshot.cacheCreationTokens,
+    snapshot.cacheReadTokens,
+    snapshot.totalTokens,
+    snapshot.costUsd,
+    snapshot.sessionCount
+  ])
 }
 
 function copiedPendingSnapshotKey(entry: HookPendingSnapshotEntry) {

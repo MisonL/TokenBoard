@@ -633,6 +633,44 @@ describe('hook sync collection', () => {
     }
   })
 
+  test('ignores Codex token_usage_record metadata during incremental hook parsing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-token-usage-record-'))
+    const sessionsDir = join(root, 'codex', 'sessions')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(sessionsDir, '2026', '09', '19', 'session.jsonl')
+    const input = {
+      source: 'codex' as const,
+      sessionsDir,
+      cursorName: 'codex-cursor.json',
+      stateDir,
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-09-19T10:00:00.000Z'
+    }
+
+    try {
+      await writeJsonl(sessionFile, [
+        {
+          type: 'token_usage_record',
+          timestamp: '2026-09-19T01:00:00.000Z',
+          payload: {
+            usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            turn_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            thread_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+          }
+        }
+      ])
+
+      await expect(collectHookIncremental(input)).resolves.toMatchObject({
+        changed: false,
+        changedDates: [],
+        cachedSnapshots: []
+      })
+      await expect(readFile(join(stateDir, 'codex-cursor.json'), 'utf8')).resolves.toContain('session.jsonl')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('does not mark metadata-only changed files as pending upload', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-sync-'))
     const codexHome = join(root, 'codex')
