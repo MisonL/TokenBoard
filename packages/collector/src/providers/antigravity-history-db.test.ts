@@ -39,6 +39,50 @@ describe('readAntigravityDbUsageEvents', () => {
     expect(listed).toBe(10_001)
   })
 
+  // This source used to call the `sqlite3` executable unconditionally, so a machine without
+  // it on PATH reported the whole source unavailable — and because that message is
+  // classified as an optional source, the collector skipped it without an error. It now goes
+  // through the shared reader, which prefers the runtime's own `node:sqlite`.
+  //
+  // The SQL renders its result set as text (`idx|hex` lines) rather than JSON, so the two
+  // readers have to agree byte for byte or a cursor would hash differently depending on which
+  // one ran. This drives a real database through both.
+  test('reads through node:sqlite and the executable identically', async () => {
+    let sqlite: typeof import('node:sqlite')
+    try {
+      sqlite = await import('node:sqlite')
+    } catch {
+      return // Runtime without node:sqlite; the executable path is covered elsewhere.
+    }
+
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-readers-'))
+    try {
+      const dir = join(root, 'conversations')
+      const cascadeId = '00000000-0000-0000-0000-000000000002'
+      await mkdir(dir, { recursive: true })
+      const dbPath = join(dir, `${cascadeId}.db`)
+      const seed = new sqlite.DatabaseSync(dbPath)
+      seed.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);')
+      // Empty and null blobs: both render as an empty field, which is the shape where the
+      // two readers are most likely to disagree, and neither needs a valid protobuf body
+      // for the row index to be read.
+      seed.exec("INSERT INTO gen_metadata VALUES (3, x''), (4, NULL), (5, x'');")
+      seed.close()
+
+      const builtin = await readAntigravityDbUsageEvents({ conversationDir: dir })
+      const external = await readAntigravityDbUsageEvents({
+        conversationDir: dir,
+        sqliteBin: process.env.TOKENBOARD_SQLITE_BIN ?? 'sqlite3'
+      })
+
+      // Both readers must land on the same high-water row index for the same database.
+      expect(builtin.lastReadRowIndexByCascade?.get(cascadeId)).toBe(5)
+      expect(builtin.lastReadRowIndexByCascade?.get(cascadeId)).toBe(external.lastReadRowIndexByCascade?.get(cascadeId))
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('does not mark cascades as covered when no usable events are parsed', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-antigravity-empty-db-'))
     try {

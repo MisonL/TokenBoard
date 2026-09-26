@@ -20,6 +20,12 @@ export type SqliteQueryOptions = {
   label: string
 }
 
+/** Options for {@link querySqliteText}, which returns the CLI's raw output. */
+export type SqliteTextQueryOptions = Pick<
+  SqliteQueryOptions,
+  'sqliteBin' | 'runQuery' | 'timeoutMs' | 'forceExternalSqlite' | 'label'
+>
+
 export function resolveSqliteBin(sqliteBin?: string) {
   return sqliteBin ?? process.env.TOKENBOARD_SQLITE_BIN ?? 'sqlite3'
 }
@@ -51,6 +57,93 @@ export async function querySqliteJsonRows(
 }
 
 /**
+ * Run one read-only query and return the CLI's own text output.
+ *
+ * For callers whose SQL formats its result set as text rather than JSON — the
+ * Antigravity sources project blobs with `hex(data)` and parse `idx|hex` lines —
+ * routing them through `node:sqlite` means reproducing that exact rendering here,
+ * so a row looks the same whichever reader produced it. Columns are joined with
+ * `|`, rows with `\n`, and `null` renders as empty, matching `sqlite3`'s default
+ * list mode. Only text and `null` columns are expected; a caller projecting a blob
+ * directly would get its JSON rendering, which no caller does.
+ */
+export async function querySqliteText(dbFile: string, sql: string, options: SqliteTextQueryOptions): Promise<string> {
+  if (options.runQuery) return options.runQuery(dbFile, sql)
+  if (!options.forceExternalSqlite && (await loadNodeSqlite())) {
+    return queryTextWithNodeSqlite(dbFile, sql, options)
+  }
+  return queryTextWithSqliteBinary(dbFile, sql, options)
+}
+
+async function queryTextWithNodeSqlite(dbFile: string, sql: string, options: SqliteTextQueryOptions): Promise<string> {
+  const sqlite = await loadNodeSqlite()
+  if (!sqlite) throw new Error(`${options.label} SQLite reader unavailable: node:sqlite missing`)
+  let database: { prepare: (sql: string) => { all: () => unknown[] }; close: () => void } | undefined
+  try {
+    database = new sqlite.DatabaseSync(dbFile, { readOnly: true })
+    const rows = database.prepare(sql).all()
+    assertWithinOutputBudget(rows, dbFile, options.label)
+    return rows.map(renderSqliteTextRow).join('\n') + (rows.length ? '\n' : '')
+  } catch (error) {
+    if (await isMissingDatabaseError(error, dbFile)) {
+      throw new Error(`${options.label} database not found: ${dbFile}`)
+    }
+    throw new Error(`Failed to read ${options.label} SQLite data from ${dbFile}: ${errorMessage(error)}`)
+  } finally {
+    try {
+      database?.close()
+    } catch {
+      // A close failure cannot invalidate rows already read.
+    }
+  }
+}
+
+/**
+ * Render one row the way `sqlite3`'s default list mode does: `|`-separated columns,
+ * `null` as an empty field. `node:sqlite` hands back `BigInt` for integer columns
+ * where the CLI would have printed a number, so those are narrowed the same way
+ * `normalizeNodeSqliteRow` does.
+ */
+function renderSqliteTextRow(row: unknown) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) {
+    throw new Error('Unexpected SQLite row')
+  }
+  return Object.values(row as Record<string, unknown>)
+    .map((value) => {
+      if (value === null || value === undefined) return ''
+      if (typeof value === 'bigint') return String(Number(value))
+      if (value instanceof Uint8Array) return Buffer.from(value).toString('hex')
+      return String(value)
+    })
+    .join('|')
+}
+
+async function queryTextWithSqliteBinary(
+  dbFile: string,
+  sql: string,
+  options: SqliteTextQueryOptions
+): Promise<string> {
+  const sqliteBin = resolveSqliteBin(options.sqliteBin)
+  try {
+    return (
+      await execFileAsync(sqliteBin, ['-readonly', '-batch', dbFile, sql], {
+        maxBuffer: maxSqliteOutputBytes,
+        timeout: options.timeoutMs ?? defaultTimeoutMs,
+        killSignal: 'SIGKILL'
+      })
+    ).stdout
+  } catch (error) {
+    if (isMissingBinaryError(error)) {
+      throw new Error(`${options.label} SQLite reader unavailable: ${sqliteBin} not found`)
+    }
+    if (await isMissingDatabaseError(error, dbFile)) {
+      throw new Error(`${options.label} database not found: ${dbFile}`)
+    }
+    throw new Error(`Failed to read ${options.label} SQLite data from ${dbFile}: ${errorMessage(error)}`)
+  }
+}
+
+/**
  * Read through `node:sqlite`, which ships with the runtime.
  *
  * Row values arrive already typed, so there is no text round-trip. `BigInt`
@@ -69,6 +162,7 @@ async function queryWithNodeSqlite(
   try {
     database = new sqlite.DatabaseSync(dbFile, { readOnly: true })
     const rows = database.prepare(sql).all()
+    assertWithinOutputBudget(rows, dbFile, options.label)
     return rows.map((row) => normalizeNodeSqliteRow(row, dbFile, options.label))
   } catch (error) {
     if (await isMissingDatabaseError(error, dbFile)) {
@@ -80,6 +174,32 @@ async function queryWithNodeSqlite(
       database?.close()
     } catch {
       // A close failure cannot invalidate rows already read.
+    }
+  }
+}
+
+/**
+ * Apply the same size ceiling to `node:sqlite` that `maxBuffer` applies to the executable.
+ *
+ * Without this the two readers disagree at the top of the range: the executable path fails
+ * once its output exceeds `maxSqliteOutputBytes`, while the in-process path would happily
+ * build the same result set. That makes `TOKENBOARD_SQLITE_BIN` — which is documented as
+ * forcing the external reader, not as changing behaviour — turn a working collection into a
+ * failing one. The rows are measured as they would be serialised, which is the closest
+ * in-process equivalent of the child process's stdout.
+ */
+export function assertWithinOutputBudget(rows: unknown[], dbFile: string, label: string) {
+  let bytes = 0
+  for (const row of rows) {
+    try {
+      bytes += Buffer.byteLength(JSON.stringify(row) ?? '', 'utf8')
+    } catch {
+      // A value that cannot be serialised is not something this budget can measure; the
+      // row is passed on and rejected by the caller's own validation.
+      continue
+    }
+    if (bytes > maxSqliteOutputBytes) {
+      throw new Error(`${label} SQLite result exceeded ${maxSqliteOutputBytes} bytes`)
     }
   }
 }

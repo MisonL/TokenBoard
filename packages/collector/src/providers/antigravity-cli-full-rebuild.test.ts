@@ -8,7 +8,16 @@ import { clearPendingUploadCursors } from './session-cursor'
 
 const cascadeHash = 'a'.repeat(64)
 const eventHash = 'b'.repeat(64)
-const createdAt = '2026-07-20T10:00:00.000Z'
+// Antigravity cursor retention prunes acknowledged identities older than 90
+// days, after which replaying the same history event correctly fails closed and
+// demands `--since all`. Anchoring these fixtures to the current clock keeps the
+// acknowledge-then-rebuild tests inside that window instead of expiring on a
+// fixed calendar date.
+const fixtureBaseMs = Date.now() - 5 * 24 * 60 * 60 * 1000
+const fixtureDay = new Date(fixtureBaseMs).toISOString().slice(0, 10)
+const fixtureSince = fixtureDay.replaceAll('-', '')
+const createdAt = `${fixtureDay}T10:00:00.000Z`
+const rebuiltAt = `${fixtureDay}T11:00:00.000Z`
 
 describe('Antigravity CLI full history rebuild', () => {
   test('rebuilds acknowledged bounded history without adding the retained daily total', async () => {
@@ -18,7 +27,7 @@ describe('Antigravity CLI full history rebuild', () => {
       const bounded = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260720',
+        since: fixtureSince,
         collectedAt: createdAt,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set(['cascade-a']),
@@ -32,7 +41,7 @@ describe('Antigravity CLI full history rebuild', () => {
         stateDir: root,
         timezone: 'UTC',
         since: 'all',
-        collectedAt: '2026-07-20T11:00:00.000Z',
+        collectedAt: rebuiltAt,
         readDbUsageEvents: async ({ lastSeenRowIndexByCascadeHash, requireCompleteDirectoryScan }) => {
           expect(lastSeenRowIndexByCascadeHash).toEqual(new Map())
           expect(requireCompleteDirectoryScan).toBe(true)
@@ -70,7 +79,7 @@ describe('Antigravity CLI full history rebuild', () => {
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260720',
+        since: fixtureSince,
         collectedAt: createdAt,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set(['cascade-a']),
@@ -84,7 +93,7 @@ describe('Antigravity CLI full history rebuild', () => {
         stateDir: root,
         timezone: 'UTC',
         since: 'all',
-        collectedAt: '2026-07-20T11:00:00.000Z',
+        collectedAt: rebuiltAt,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set<string>(),
           events: [],
@@ -95,7 +104,7 @@ describe('Antigravity CLI full history rebuild', () => {
       expect(correction).toEqual([
         expect.objectContaining({
           source: 'antigravity-cli',
-          usageDate: '2026-07-20',
+          usageDate: fixtureDay,
           timezone: 'UTC',
           model: 'gemini-3-flash-a',
           inputTokens: 0,
@@ -160,7 +169,7 @@ describe('Antigravity CLI full history rebuild', () => {
         stateDir: root,
         timezone: 'UTC',
         since: 'all',
-        collectedAt: '2026-07-20T11:00:00.000Z',
+        collectedAt: rebuiltAt,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set<string>(),
           events: [],
@@ -187,13 +196,13 @@ describe('Antigravity CLI full history rebuild', () => {
 
   test('retains pending usage when an acknowledged group also has an unacknowledged entry', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-pending-missing-history-'))
-    const acknowledgedEvent = historyEvent('2026-07-20T10:00:00.000Z', eventHash, 10)
-    const pendingEvent = historyEvent('2026-07-20T10:01:00.000Z', 'c'.repeat(64), 20)
+    const acknowledgedEvent = historyEvent(createdAt, eventHash, 10)
+    const pendingEvent = historyEvent(`${fixtureDay}T10:01:00.000Z`, 'c'.repeat(64), 20)
     try {
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260720',
+        since: fixtureSince,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set(['cascade-a']),
           events: [acknowledgedEvent],
@@ -205,7 +214,7 @@ describe('Antigravity CLI full history rebuild', () => {
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260720',
+        since: fixtureSince,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set(['cascade-a']),
           events: [acknowledgedEvent, pendingEvent],
@@ -227,7 +236,7 @@ describe('Antigravity CLI full history rebuild', () => {
       expect(rebuilt).toEqual([
         expect.objectContaining({
           source: 'antigravity-cli',
-          usageDate: '2026-07-20',
+          usageDate: fixtureDay,
           timezone: 'UTC',
           model: 'gemini-3-flash-a',
           inputTokens: 30,
@@ -368,11 +377,11 @@ describe('Antigravity CLI full history rebuild', () => {
   })
 })
 
-function historyEvent(createdAt = '2026-07-20T10:00:00.000Z', hash = eventHash, inputTokens = 10) {
+function historyEvent(timestamp = createdAt, hash = eventHash, inputTokens = 10) {
   return {
     cascadeHash,
     eventHash: hash,
-    createdAt,
+    createdAt: timestamp,
     model: 'gemini-3-flash-a',
     inputTokens,
     outputTokens: 0,

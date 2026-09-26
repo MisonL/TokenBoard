@@ -7,6 +7,28 @@ import { clearPendingUploadCursors } from './session-cursor'
 
 const cascadeHash = 'a'.repeat(64)
 
+// Antigravity cursor retention prunes acknowledged identities older than 90
+// days, after which replaying the same history event correctly fails closed and
+// demands `--since all`. Anchoring these fixtures to the current clock keeps the
+// baseline-then-increment tests inside that window instead of expiring on a
+// fixed calendar date.
+const fixtureDayMs = Date.parse(
+  new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10) + 'T12:00:00.000Z'
+)
+
+function fixtureDay(offsetDays: number, timeOfDay = 'T12:00:00.000Z') {
+  const day = new Date(fixtureDayMs + offsetDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  return `${day}${timeOfDay}`
+}
+
+function fixtureDate(offsetDays: number) {
+  return new Date(fixtureDayMs + offsetDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
+function fixtureSince(offsetDays: number) {
+  return fixtureDate(offsetDays).replaceAll('-', '')
+}
+
 describe('collectAntigravityCliUsage since ranges', () => {
   test('excludes SQLite history before the configured local date', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-'))
@@ -14,12 +36,12 @@ describe('collectAntigravityCliUsage since ranges', () => {
       const snapshots = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'Asia/Shanghai',
-        since: '20260624',
+        since: fixtureSince(1),
         readDbUsageEvents: async () =>
           dbUsage(
             [
-              historyEvent('b', '2026-06-23T15:59:59.000Z', 'gemini-old', 30),
-              historyEvent('c', '2026-06-23T16:00:00.000Z', 'gemini-new', 40)
+              historyEvent('b', fixtureDay(0, 'T15:59:59.000Z'), 'gemini-old', 30),
+              historyEvent('c', fixtureDay(0, 'T16:00:00.000Z'), 'gemini-new', 40)
             ],
             2
           )
@@ -38,9 +60,9 @@ describe('collectAntigravityCliUsage since ranges', () => {
         collectAntigravityCliUsage({
           stateDir: root,
           timezone: 'UTC',
-          since: '20260630',
+          since: fixtureSince(0),
           readDbUsageEvents: async () => ({
-            ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini', 10)], 1),
+            ...dbUsage([historyEvent('b', fixtureDay(0), 'gemini', 10)], 1),
             completeDirectoryScan: false
           })
         })
@@ -61,7 +83,7 @@ describe('collectAntigravityCliUsage since ranges', () => {
           timezone: 'UTC',
           since: 'all',
           readDbUsageEvents: async () => ({
-            ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini', 10)], 1),
+            ...dbUsage([historyEvent('b', fixtureDay(0), 'gemini', 10)], 1),
             completeDirectoryScan: false
           })
         })
@@ -80,7 +102,7 @@ describe('collectAntigravityCliUsage since ranges', () => {
         collectAntigravityCliUsage({
           stateDir: root,
           timezone: 'UTC',
-          since: '20260630',
+          since: fixtureSince(0),
           readDbUsageEvents: async () => ({
             ...dbUsage([], 0),
             completeDirectoryScan: false
@@ -100,10 +122,10 @@ describe('collectAntigravityCliUsage since ranges', () => {
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260630',
+        since: fixtureSince(0),
         maxDbFiles: null,
         readDbUsageEvents: async () => ({
-          ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini', 10)], 1),
+          ...dbUsage([historyEvent('b', fixtureDay(0), 'gemini', 10)], 1),
           completeDirectoryScan: true
         })
       })
@@ -114,7 +136,7 @@ describe('collectAntigravityCliUsage since ranges', () => {
         collectAntigravityCliUsage({
           stateDir: root,
           timezone: 'UTC',
-          since: '20260630',
+          since: fixtureSince(0),
           readDbUsageEvents: async () => ({
             ...dbUsage([], 1),
             completeDirectoryScan: false
@@ -136,7 +158,7 @@ describe('collectAntigravityCliUsage since ranges', () => {
         timezone: 'UTC',
         since: 'all',
         readDbUsageEvents: async () => ({
-          ...dbUsage([historyEvent('b', '2026-06-30T12:00:00.000Z', 'gemini-old', 10)], 1),
+          ...dbUsage([historyEvent('b', fixtureDay(0), 'gemini-old', 10)], 1),
           completeDirectoryScan: true
         })
       })
@@ -145,16 +167,16 @@ describe('collectAntigravityCliUsage since ranges', () => {
       const snapshots = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260630',
+        since: fixtureSince(0),
         readDbUsageEvents: async () => ({
-          ...dbUsage([historyEvent('c', '2026-07-01T12:00:00.000Z', 'gemini-new', 20)], 1),
+          ...dbUsage([historyEvent('c', fixtureDay(1), 'gemini-new', 20)], 1),
           completeDirectoryScan: false
         })
       })
 
       expect(snapshots).toEqual([
         expect.objectContaining({
-          usageDate: '2026-07-01',
+          usageDate: fixtureDate(1),
           model: 'gemini-new',
           inputTokens: 20
         })
@@ -166,7 +188,7 @@ describe('collectAntigravityCliUsage since ranges', () => {
 
   test('retries a pending SQLite group outside the active bounded range', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-pending-'))
-    const old = historyEvent('b', '2026-06-23T16:00:00.000Z', 'gemini', 10)
+    const old = historyEvent('b', fixtureDay(0, 'T16:00:00.000Z'), 'gemini', 10)
     try {
       await collectAntigravityCliUsage({
         stateDir: root,
@@ -177,14 +199,14 @@ describe('collectAntigravityCliUsage since ranges', () => {
       await clearPendingUploadCursors({
         stateDir: root,
         source: 'antigravity-cli',
-        since: '20260625',
+        since: fixtureSince(2),
         timezone: 'Asia/Shanghai'
       })
 
       const retry = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'Asia/Shanghai',
-        since: '20260625',
+        since: fixtureSince(2),
         readDbUsageEvents: async () => dbUsage([], 1)
       })
 
@@ -198,14 +220,14 @@ describe('collectAntigravityCliUsage since ranges', () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-since-full-'))
     const cursorSizes: number[] = []
     const events = [
-      historyEvent('b', '2026-06-23T15:59:59.000Z', 'gemini', 10),
-      historyEvent('c', '2026-06-23T16:00:00.000Z', 'gemini', 20)
+      historyEvent('b', fixtureDay(0, 'T15:59:59.000Z'), 'gemini', 10),
+      historyEvent('c', fixtureDay(0, 'T16:00:00.000Z'), 'gemini', 20)
     ]
     try {
       const bounded = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'Asia/Shanghai',
-        since: '20260624',
+        since: fixtureSince(1),
         readDbUsageEvents: async ({ lastSeenRowIndexByCascadeHash }) => {
           cursorSizes.push(lastSeenRowIndexByCascadeHash.size)
           return dbUsage(events, 2)
@@ -230,8 +252,8 @@ describe('collectAntigravityCliUsage since ranges', () => {
       expect(bounded).toEqual([expect.objectContaining({ inputTokens: 20 })])
       expect(full).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ usageDate: '2026-06-23', inputTokens: 10, sessionCount: 1 }),
-          expect.objectContaining({ usageDate: '2026-06-24', inputTokens: 20, sessionCount: 1 })
+          expect.objectContaining({ usageDate: fixtureDate(0), inputTokens: 10, sessionCount: 1 }),
+          expect.objectContaining({ usageDate: fixtureDate(1), inputTokens: 20, sessionCount: 1 })
         ])
       )
     } finally {

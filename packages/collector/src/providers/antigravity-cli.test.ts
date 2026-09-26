@@ -17,12 +17,12 @@ describe('collectAntigravityCliUsage', () => {
       const snapshots = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'Asia/Shanghai',
-        collectedAt: '2026-06-24T02:00:00.000Z',
+        collectedAt: fixtureNextDayEarlyUtc,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set(['cascade-a']),
           events: [
             historyEvent({
-              createdAt: '2026-06-23T16:30:00.000Z',
+              createdAt: fixtureEveningUtc,
               model: 'gemini-3-flash-a',
               inputTokens: 100,
               outputTokens: 12,
@@ -36,7 +36,7 @@ describe('collectAntigravityCliUsage', () => {
       expect(snapshots).toEqual([
         {
           source: 'antigravity-cli',
-          usageDate: '2026-06-24',
+          usageDate: fixtureNextDay,
           timezone: 'Asia/Shanghai',
           model: 'gemini-3-flash-a',
           inputTokens: 100,
@@ -46,7 +46,7 @@ describe('collectAntigravityCliUsage', () => {
           totalTokens: 162,
           costUsd: 0,
           sessionCount: 1,
-          collectedAt: '2026-06-24T02:00:00.000Z'
+          collectedAt: fixtureNextDayEarlyUtc
         }
       ])
     } finally {
@@ -60,14 +60,14 @@ describe('collectAntigravityCliUsage', () => {
       const snapshots = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        collectedAt: '2026-06-24T02:00:00.000Z',
+        collectedAt: fixtureNextDayEarlyUtc,
         readDbUsageEvents: async () => ({
           cascadeIds: new Set(['cascade-a']),
           events: [
             historyEvent({ eventHash: 'e'.repeat(64), inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 }),
             historyEvent({
               eventHash: 'f'.repeat(64),
-              createdAt: '2026-06-23T16:31:00.000Z',
+              createdAt: `${fixtureDay}T16:31:00.000Z`,
               inputTokens: 100,
               outputTokens: 12,
               cacheReadTokens: 50
@@ -118,35 +118,37 @@ describe('collectAntigravityCliUsage', () => {
 
   test('retries pending history snapshots until they are acknowledged', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-pending-history-'))
-    const event = historyEvent({ inputTokens: 10, outputTokens: 2 })
+    const event = historyEvent({ inputTokens: 10, outputTokens: 2, createdAt: fixtureIso() })
     const readDbUsageEvents = async () => ({
       cascadeIds: new Set(['cascade-a']),
       events: [event],
       lastReadRowIndexByCascade: new Map([['cascade-a', 1]])
     })
+    const firstCollectedAt = fixtureIso(60_000)
+    const secondCollectedAt = fixtureIso(120_000)
     try {
       const first = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        collectedAt: '2026-06-23T10:00:00.000Z',
+        collectedAt: firstCollectedAt,
         readDbUsageEvents
       })
       const second = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        collectedAt: '2026-06-23T10:05:00.000Z',
+        collectedAt: secondCollectedAt,
         readDbUsageEvents
       })
       await clearPendingUploadCursors({ stateDir: root, source: 'antigravity-cli', timezone: 'UTC' })
       const third = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        collectedAt: '2026-06-23T10:10:00.000Z',
+        collectedAt: fixtureIso(180_000),
         readDbUsageEvents
       })
 
       expect(first).toHaveLength(1)
-      expect(second).toEqual([{ ...first[0], collectedAt: '2026-06-23T10:05:00.000Z' }])
+      expect(second).toEqual([{ ...first[0], collectedAt: secondCollectedAt }])
       expect(third).toEqual([])
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -168,7 +170,7 @@ describe('collectAntigravityCliUsage', () => {
         stateDir: root,
         timezone: 'UTC',
         cursorScope: serverA,
-        collectedAt: '2026-06-23T10:00:00.000Z',
+        collectedAt: fixtureIso(60_000),
         readDbUsageEvents
       })
       await clearPendingUploadCursors({
@@ -181,12 +183,12 @@ describe('collectAntigravityCliUsage', () => {
         stateDir: root,
         timezone: 'UTC',
         cursorScope: serverB,
-        collectedAt: '2026-06-23T10:05:00.000Z',
+        collectedAt: fixtureIso(120_000),
         readDbUsageEvents
       })
 
       expect(first).toHaveLength(1)
-      expect(second).toEqual([{ ...first[0], collectedAt: '2026-06-23T10:05:00.000Z' }])
+      expect(second).toEqual([{ ...first[0], collectedAt: fixtureIso(120_000) }])
       const cursorFiles = (await readdir(root)).filter((name) => name.includes('cursor'))
       expect(cursorFiles).toHaveLength(2)
       expect(cursorFiles.join('\n')).not.toContain('prod.example.com')
@@ -204,12 +206,12 @@ describe('collectAntigravityCliUsage', () => {
         timezone: 'Asia/Shanghai',
         readDbUsageEvents: async () => ({
           cascadeIds: new Set(['cascade-a']),
-          events: [historyEvent({ createdAt: '2026-06-23T16:30:00.000Z' })],
+          events: [historyEvent({ createdAt: fixtureEveningUtc })],
           lastReadRowIndexByCascade: new Map([['cascade-a', 1]])
         })
       })
 
-      expect(snapshots[0]?.usageDate).toBe('2026-06-24')
+      expect(snapshots[0]?.usageDate).toBe(fixtureNextDay)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -244,10 +246,15 @@ describe('collectAntigravityCliUsage', () => {
 
   test('passes DB row cursors and uploads complete daily snapshots after acknowledgement', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-history-cursor-'))
-    const firstEvent = historyEvent({ inputTokens: 100, outputTokens: 12, cacheReadTokens: 50 })
+    const firstEvent = historyEvent({
+      inputTokens: 100,
+      outputTokens: 12,
+      cacheReadTokens: 50,
+      createdAt: fixtureIso()
+    })
     const secondEvent = historyEvent({
       eventHash: 'f'.repeat(64),
-      createdAt: '2026-06-23T16:31:00.000Z',
+      createdAt: fixtureIso(60_000),
       inputTokens: 25,
       outputTokens: 3,
       cacheReadTokens: 10
@@ -257,7 +264,7 @@ describe('collectAntigravityCliUsage', () => {
       const first = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        collectedAt: '2026-06-24T02:00:00.000Z',
+        collectedAt: fixtureIso(120_000),
         readDbUsageEvents: async ({ lastSeenRowIndexByCascadeHash }) => {
           dbCursorReads.push(lastSeenRowIndexByCascadeHash)
           return {
@@ -271,7 +278,7 @@ describe('collectAntigravityCliUsage', () => {
       const second = await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        collectedAt: '2026-06-24T02:05:00.000Z',
+        collectedAt: fixtureIso(180_000),
         readDbUsageEvents: async ({ lastSeenRowIndexByCascadeHash }) => {
           dbCursorReads.push(lastSeenRowIndexByCascadeHash)
           return {
@@ -310,13 +317,13 @@ describe('collectAntigravityCliUsage', () => {
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260624',
+        since: fixtureSince,
         readDbUsageEvents
       })
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260624',
+        since: fixtureSince,
         maxDbFiles: null,
         readDbUsageEvents
       })
@@ -330,7 +337,7 @@ describe('collectAntigravityCliUsage', () => {
       expect(reads).toEqual([
         {
           maxDbFiles: undefined,
-          sinceDate: '2026-06-24',
+          sinceDate: fixtureNextDay,
           timezone: 'UTC',
           detectRowCursorReset: false,
           lastSeenRowIndexByCascadeHash: new Map(),
@@ -338,7 +345,7 @@ describe('collectAntigravityCliUsage', () => {
         },
         {
           maxDbFiles: null,
-          sinceDate: '2026-06-24',
+          sinceDate: fixtureNextDay,
           timezone: 'UTC',
           detectRowCursorReset: false,
           lastSeenRowIndexByCascadeHash: new Map(),
@@ -379,13 +386,13 @@ describe('collectAntigravityCliUsage', () => {
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260624',
+        since: fixtureSince,
         readDbUsageEvents
       })
       await collectAntigravityCliUsage({
         stateDir: root,
         timezone: 'UTC',
-        since: '20260624',
+        since: fixtureSince,
         readDbUsageEvents
       })
 
@@ -397,11 +404,36 @@ describe('collectAntigravityCliUsage', () => {
   })
 })
 
+// Antigravity cursor retention prunes acknowledged identities older than 90
+// days, after which replaying the same history event correctly fails closed and
+// demands `--since all`. Anchoring these fixtures to the current clock keeps the
+// acknowledgement-and-replay tests inside that window instead of silently
+// expiring on a fixed calendar date.
+//
+// The fixtures keep their original shape: an event in the late UTC evening lands
+// on the following calendar day in Asia/Shanghai, which is what the timezone
+// assertions below depend on.
+const fixtureBaseMs = Date.parse(
+  `${new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)}T00:00:00.000Z`
+)
+const fixtureDay = new Date(fixtureBaseMs).toISOString().slice(0, 10)
+const fixtureNextDay = new Date(fixtureBaseMs + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+const fixtureSince = fixtureNextDay.replaceAll('-', '')
+
+function fixtureIso(offsetMs = 0) {
+  return new Date(fixtureBaseMs + offsetMs).toISOString()
+}
+
+// Late-evening UTC event: still the previous day in UTC, already the next day in
+// Asia/Shanghai (+08:00).
+const fixtureEveningUtc = `${fixtureDay}T16:30:00.000Z`
+const fixtureNextDayEarlyUtc = `${fixtureNextDay}T02:00:00.000Z`
+
 function historyEvent(overrides: Partial<AntigravityUsageEvent> = {}): AntigravityUsageEvent {
   return {
     cascadeHash: conversationA,
     eventHash: 'e'.repeat(64),
-    createdAt: '2026-06-23T16:30:00.000Z',
+    createdAt: fixtureEveningUtc,
     model: 'gemini-3-flash-a',
     inputTokens: 10,
     outputTokens: 1,

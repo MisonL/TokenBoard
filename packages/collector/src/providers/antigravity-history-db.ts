@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
-import { promisify } from 'node:util'
 import { errorMessage } from '../error-message'
+import { querySqliteText } from './sqlite-reader'
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseAntigravityGeneratorMetadataBlobEvents } from './antigravity-history-protobuf'
 import { formatDate } from './session-jsonl-parser-utils'
@@ -20,8 +19,6 @@ import {
   type AntigravityFileScanState
 } from './antigravity-file-scan'
 
-const execFileAsync = promisify(execFile)
-const maxSqliteOutputBytes = 128 * 1024 * 1024
 const sqliteTimeoutMs = 15_000
 const defaultMaxDbFiles = 64
 const generatorMetadataRowsPageSize = 500
@@ -576,22 +573,32 @@ async function readHighestGeneratorMetadataRowIndex(dbFile: string, sqliteBin: s
   return index
 }
 
+// Reads through the shared reader (`sqlite-reader.ts`), which prefers Node's built-in
+// `node:sqlite` and only falls back to the `sqlite3` executable. This path used to call the
+// executable directly and unconditionally, so a machine without `sqlite3` on PATH reported
+// the whole source as unavailable — silently, since that message is classified as an
+// optional source — even though the runtime could have read the database itself. It was
+// also the one call site in the repo missing `-readonly`.
+//
+// The SQL here renders its result set as text (`hex(data)` parsed as `idx|hex` lines), not
+// JSON, so `querySqliteText` reproduces the CLI's list-mode rendering exactly instead of
+// returning parsed rows. The error strings keep their original shape because the collector
+// classifies sources by prefix (`isUnavailableDbError`, `isOptionalSourceUnavailable`).
 async function readSqliteOutput(dbFile: string, sqliteBin: string, sql: string, readSqlite?: ReadSqlite) {
   try {
-    return readSqlite
-      ? await readSqlite(dbFile, sql)
-      : (
-          await execFileAsync(sqliteBin, ['-batch', dbFile, sql], {
-            maxBuffer: maxSqliteOutputBytes,
-            timeout: sqliteTimeoutMs,
-            killSignal: 'SIGKILL'
-          })
-        ).stdout
+    return await querySqliteText(dbFile, sql, {
+      sqliteBin,
+      runQuery: readSqlite,
+      timeoutMs: sqliteTimeoutMs,
+      forceExternalSqlite: readSqlite ? true : process.env.TOKENBOARD_SQLITE_BIN !== undefined,
+      label: 'Antigravity'
+    })
   } catch (error) {
-    if (!readSqlite && isMissingFileError(error)) {
+    const message = errorMessage(error)
+    if (message.includes('SQLite reader unavailable')) {
       throw new Error(`Antigravity SQLite reader unavailable: ${sqliteBin} not found`)
     }
-    throw new Error(`Failed to read Antigravity SQLite metadata from ${dbFile}: ${errorMessage(error)}`)
+    throw new Error(`Failed to read Antigravity SQLite metadata from ${dbFile}: ${message}`)
   }
 }
 
