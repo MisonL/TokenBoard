@@ -66,12 +66,26 @@ export function buildSpawnInvocation({ command, args, platform = process.platfor
 export function buildCollectorEnv({
   env = process.env,
   configPath = resolve(packageDir, 'ccusage.json'),
-  fileExists = existsSync
+  fileExists = existsSync,
+  platform = process.platform
 } = {}) {
-  const result = { ...env }
-  if (!result.TOKENBOARD_CCUSAGE_CONFIG && fileExists(configPath)) {
+  const result = normalizeCaseInsensitiveEnvKey(env, 'TOKENBOARD_CCUSAGE_CONFIG', platform)
+  if (!result.TOKENBOARD_CCUSAGE_CONFIG?.trim() && fileExists(configPath)) {
     result.TOKENBOARD_CCUSAGE_CONFIG = configPath
   }
+  return result
+}
+
+function normalizeCaseInsensitiveEnvKey(env, key, platform) {
+  if (platform !== 'win32') return { ...env }
+
+  const keyLower = key.toLowerCase()
+  const entries = Object.entries(env).filter(([name]) => name.toLowerCase() === keyLower)
+  const exact = entries.find(([name, value]) => name === key && typeof value === 'string' && value.trim())
+  const nonEmpty = exact ?? entries.find(([, value]) => typeof value === 'string' && value.trim())
+  const result = { ...env }
+  for (const [name] of entries) delete result[name]
+  if (nonEmpty) result[key] = nonEmpty[1]
   return result
 }
 

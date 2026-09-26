@@ -41,6 +41,34 @@ test('passes the bundled ccusage pricing config through the binary entrypoint', 
   ).toBe('/custom/pricing.json')
 })
 
+test('normalizes the ccusage configuration key on Windows without overriding a user value', () => {
+  const result = buildCollectorEnv({
+    env: {
+      tokenboard_ccusage_config: '/custom/lowercase.json',
+      TOKENBOARD_CCUSAGE_CONFIG: ''
+    },
+    configPath: '/repo/packages/collector/ccusage.json',
+    fileExists: () => true,
+    platform: 'win32'
+  })
+
+  expect(result.TOKENBOARD_CCUSAGE_CONFIG).toBe('/custom/lowercase.json')
+  expect(result.tokenboard_ccusage_config).toBeUndefined()
+})
+
+test('removes a duplicate Windows ccusage configuration key', () => {
+  const result = buildCollectorEnv({
+    env: {
+      TOKENBOARD_CCUSAGE_CONFIG: '/custom/pricing.json',
+      tokenboard_ccusage_config: '/duplicate/pricing.json'
+    },
+    platform: 'win32'
+  })
+
+  expect(result).toMatchObject({ TOKENBOARD_CCUSAGE_CONFIG: '/custom/pricing.json' })
+  expect(result.tokenboard_ccusage_config).toBeUndefined()
+})
+
 test('uses bun.exe on Windows', () => {
   expect(buildInvocation({ packageManager: 'bun', platform: 'win32', passthroughArgs: ['sync'] })).toEqual({
     command: 'bun.exe',
