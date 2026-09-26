@@ -1,17 +1,15 @@
+import { localClockTime, localDateTimeParts, localIsoDate } from '../../lib/time'
+
 export const defaultWebhookScheduleTime = '18:00'
 export const defaultWebhookScheduleWeekdays = [0, 1, 2, 3, 4, 5, 6]
 
 const scheduleTimePattern = /^([01]\d|2[0-3]):[0-5]\d$/
 
-export function localDateInTimezone(date: Date, timezone: string) {
-  const parts = localDateTimeParts(date, timezone)
-  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`
-}
-
-export function localTimeInTimezone(date: Date, timezone: string) {
-  const parts = localDateTimeParts(date, timezone)
-  return `${pad2(parts.hour)}:${pad2(parts.minute)}`
-}
+// The date/time primitives live in `lib/time` because the dashboard, the leaderboard and the
+// public card all attribute dates by the user's zone, not just this feature. These names are
+// kept as the scheduling-facing aliases so the rest of this module reads the same as before.
+export const localDateInTimezone = localIsoDate
+export const localTimeInTimezone = localClockTime
 
 export function nextScheduledRunAt(input: {
   now: Date
@@ -72,6 +70,26 @@ export function zonedTimeToUtc(localDate: string, time: string, timezone: string
     utc += targetLocalAsUtc - currentLocalAsUtc
   }
 
+  // The iteration converges for every local time that exists. It cannot for one inside a
+  // spring-forward gap — 02:30 in a zone that jumps 02:00 to 03:00 is not a real instant — and
+  // the loop then settles on a time before the transition, which is the *wrong* instant and
+  // reads back as a different wall clock. Such a schedule has no exact answer, so the run is
+  // placed at the start of the gap instead: that is the first instant on or after the requested
+  // wall-clock time, it is what a scheduler is expected to do with a skipped slot, and it keeps
+  // the result a real instant rather than a silently shifted one.
+  const settled = localDateTimeParts(new Date(utc), timezone)
+  const settledLocalAsUtc = Date.UTC(
+    settled.year,
+    settled.month - 1,
+    settled.day,
+    settled.hour,
+    settled.minute,
+    settled.second
+  )
+  if (settledLocalAsUtc < targetLocalAsUtc) {
+    return new Date(utc + (targetLocalAsUtc - settledLocalAsUtc))
+  }
+
   return new Date(utc)
 }
 
@@ -79,29 +97,6 @@ export function addIsoDays(date: string, days: number) {
   const value = new Date(`${date}T00:00:00.000Z`)
   value.setUTCDate(value.getUTCDate() + days)
   return value.toISOString().slice(0, 10)
-}
-
-function localDateTimeParts(date: Date, timezone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23'
-  }).formatToParts(date)
-
-  const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value)
-  return {
-    year: value('year'),
-    month: value('month'),
-    day: value('day'),
-    hour: value('hour'),
-    minute: value('minute'),
-    second: value('second')
-  }
 }
 
 function flattenScheduleValues(input: unknown): string[] {
@@ -120,8 +115,4 @@ function localWeekday(localDate: string) {
 function parseWeekday(value: string) {
   if (!/^[0-6]$/.test(value)) return Number.NaN
   return Number(value)
-}
-
-function pad2(value: number) {
-  return String(value).padStart(2, '0')
 }

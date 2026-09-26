@@ -20,7 +20,11 @@ export function normalizeSecretRow(row: WebhookSubscriptionSecretDbRow): Webhook
 }
 
 export function normalizeSubscriptionSummary(row: WebhookSubscriptionRow): WebhookSubscriptionSummary {
-  const scheduleTimesLocal = normalizeScheduleTimes(row.scheduleTimesLocal ?? row.scheduleTimeLocal)
+  // Damaged stored values degrade to the defaults rather than raising. This normalizer is used
+  // by the cron path too, where a throw happens inside `listDueWebhookSubscriptions` — before
+  // the per-subscription try/catch — so one bad row would stop every user's daily report. The
+  // settings path already repaired such rows; the two must not disagree.
+  const scheduleTimesLocal = normalizeSettingsScheduleTimes(row).values
   return {
     ...row,
     provider: row.provider as WebhookProvider,
