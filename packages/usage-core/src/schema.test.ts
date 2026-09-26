@@ -3,6 +3,8 @@ import {
   costUnavailableSources,
   isCostUnavailableSource,
   isValidTimezone,
+  maxSnapshotCostUsd,
+  maxSnapshotTokens,
   timezoneValidationCacheSize,
   usageSnapshotSchema,
   usageSourceSchema,
@@ -54,6 +56,36 @@ describe('usage snapshot schema', () => {
     for (const source of ['opencode', 'pi'] as const) {
       expect(usageSourceSchema.parse(source)).toBe(source)
       expect(usageSnapshotSchema.parse({ ...baseSnapshot, source }).costUsd).toBe(0.01)
+    }
+  })
+
+  // Cost is the only snapshot field the aggregation layer sums across rows. An unbounded
+  // value makes that sum overflow to Infinity, which persists into the summary tables and
+  // then serialises to `null` in the public JSON — where readers treat it as zero.
+  test('bounds cost so the aggregate sum cannot overflow to Infinity', () => {
+    expect(usageSnapshotSchema.parse({ ...baseSnapshot, costUsd: maxSnapshotCostUsd }).costUsd).toBe(maxSnapshotCostUsd)
+    expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, costUsd: maxSnapshotCostUsd + 1 })).toThrow()
+    expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, costUsd: Number.MAX_VALUE })).toThrow()
+  })
+
+  // The token fields are summed by the aggregation layer exactly like cost is, and they were
+  // the fields left unbounded. `SUM()` over int64 raises `integer overflow` and aborts the
+  // whole statement — which, in the leaderboard query, takes down the endpoint for every
+  // tenant, not just the one whose rows overflowed.
+  test('bounds token counts so an aggregate sum cannot overflow int64', () => {
+    // `cacheReadTokens` may not exceed `totalTokens`, so the pair moves together; the other
+    // four are independent.
+    for (const field of ['inputTokens', 'outputTokens', 'cacheCreationTokens', 'sessionCount'] as const) {
+      expect(usageSnapshotSchema.parse({ ...baseSnapshot, [field]: maxSnapshotTokens })[field]).toBe(maxSnapshotTokens)
+      expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, [field]: maxSnapshotTokens + 1 })).toThrow()
+      expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, [field]: Number.MAX_SAFE_INTEGER })).toThrow()
+    }
+
+    const capped = { totalTokens: maxSnapshotTokens, cacheReadTokens: maxSnapshotTokens }
+    expect(usageSnapshotSchema.parse({ ...baseSnapshot, ...capped }).totalTokens).toBe(maxSnapshotTokens)
+    for (const field of ['totalTokens', 'cacheReadTokens'] as const) {
+      expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, ...capped, [field]: maxSnapshotTokens + 1 })).toThrow()
+      expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, [field]: Number.MAX_SAFE_INTEGER })).toThrow()
     }
   })
 
