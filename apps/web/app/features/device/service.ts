@@ -298,21 +298,30 @@ export async function listUserDevices(db: D1Database, userId: string): Promise<U
   }
 
   const uploadTokensByDevice = new Map<string, UserDeviceUploadToken[]>()
+  // Tokens created before upload tokens were bound to a device have no `device_id`, but they
+  // still authenticate: `verifyUploadToken` checks only the hash, and ingest files their usage
+  // under the legacy device. Skipping them here left a live credential that this page — whose
+  // whole purpose is to show and revoke credentials — did not list at all. They are collected
+  // under a synthetic device so they can be seen and revoked like any other.
+  const legacyTokens: UserDeviceUploadToken[] = []
   for (const row of uploadTokenRows.results ?? []) {
-    if (!row.deviceId) continue
     const token = {
       id: row.id,
-      deviceId: row.deviceId,
+      deviceId: row.deviceId ?? legacyDeviceGroupId,
       installationId: row.installationId ?? null,
       name: row.name,
       lastUsedAt: row.lastUsedAt ?? null,
       createdAt: row.createdAt,
       revokedAt: row.revokedAt ?? null
     }
+    if (!row.deviceId) {
+      legacyTokens.push(token)
+      continue
+    }
     uploadTokensByDevice.set(row.deviceId, [...(uploadTokensByDevice.get(row.deviceId) ?? []), token])
   }
 
-  return (deviceRows.results ?? []).map((row) => ({
+  const devices = (deviceRows.results ?? []).map((row) => ({
     id: row.id,
     name: row.name,
     platform: row.platform,
@@ -322,6 +331,27 @@ export async function listUserDevices(db: D1Database, userId: string): Promise<U
     installations: installationsByDevice.get(row.id) ?? [],
     uploadTokens: uploadTokensByDevice.get(row.id) ?? []
   }))
+
+  return legacyTokens.length > 0 ? [...devices, legacyDeviceGroup(legacyTokens)] : devices
+}
+
+// The id the ingest path already files unbound tokens' usage under, so the grouping label and
+// the data agree.
+export const legacyDeviceGroupId = 'legacy'
+
+// A device row that exists only to carry unbound credentials, so the page can list and revoke
+// them. It is derived, never stored, and carries no installations or sync time.
+function legacyDeviceGroup(uploadTokens: UserDeviceUploadToken[]): UserDevice {
+  return {
+    id: legacyDeviceGroupId,
+    name: '未关联设备',
+    platform: 'legacy',
+    lastSyncedAt: null,
+    createdAt: uploadTokens.map((token) => token.createdAt).sort()[0],
+    activeTokenCount: uploadTokens.filter((token) => !token.revokedAt).length,
+    installations: [],
+    uploadTokens
+  }
 }
 
 export async function listDeviceAuditLogs(
@@ -519,15 +549,19 @@ export async function revokeDevice(
   }
 ) {
   const now = input.now ?? new Date().toISOString()
+  // Both the touch and the audit are guarded on "something is still revocable", so both must
+  // run before the revocations clear it — the touch reports whether the device was there, the
+  // audit decides whether to record. The touch also has to precede the audit, because the audit
+  // reads the `updated_at` the touch stamps.
   const results = await db.batch([
-    createDeviceTokenRevokeStatement(db, { ...input, now }),
-    createDeviceInstallationRevokeStatement(db, { ...input, now }),
     createDeviceTouchStatement(db, { ...input, now }),
-    createDeviceRevokeAuditStatement(db, { ...input, now })
+    createDeviceRevokeAuditStatement(db, { ...input, now }),
+    createDeviceTokenRevokeStatement(db, { ...input, now }),
+    createDeviceInstallationRevokeStatement(db, { ...input, now })
   ])
   assertDeviceBatchSucceeded(results)
-  assertChangedResult(results[2], 'Device not found')
-  assertChangedResult(results[3], 'Device revocation was not recorded')
+  assertChangedResult(results[0], 'Device not found')
+  assertChangedResult(results[1], 'Device revocation was not recorded')
 }
 
 export async function revokeInstallation(
@@ -574,10 +608,32 @@ function createDeviceInstallationRevokeStatement(
     .bind(input.now, input.now, input.userId, input.deviceId)
 }
 
+// Guarded on "something is still revocable", which the caller cannot supply. The earlier
+// `updated_at = ?` guard was not: the touch itself writes that column from the request's own
+// `now`, so a replay matched the row it had just written and the guard held. This is the same
+// caller-independent test the installation and upload-token revocations already use, and it is
+// what makes `changes` report whether the device was actually there to revoke.
 function createDeviceTouchStatement(db: D1Database, input: { userId: string; deviceId: string; now: string }) {
   return db
-    .prepare('UPDATE devices SET updated_at = ? WHERE id = ? AND user_id = ?')
-    .bind(input.now, input.deviceId, input.userId)
+    .prepare(
+      `
+    UPDATE devices SET updated_at = ?
+    WHERE id = ? AND user_id = ?
+      AND (
+        EXISTS (
+          SELECT 1 FROM upload_tokens
+          WHERE upload_tokens.user_id = ? AND upload_tokens.device_id = ?
+            AND upload_tokens.revoked_at IS NULL
+        )
+        OR EXISTS (
+          SELECT 1 FROM device_installations
+          WHERE device_installations.user_id = ? AND device_installations.device_id = ?
+            AND device_installations.revoked_at IS NULL
+        )
+      )
+  `
+    )
+    .bind(input.now, input.deviceId, input.userId, input.userId, input.deviceId, input.userId, input.deviceId)
 }
 
 function createDeviceRevokeAuditStatement(db: D1Database, input: { userId: string; deviceId: string; now: string }) {
@@ -589,7 +645,20 @@ function createDeviceRevokeAuditStatement(db: D1Database, input: { userId: strin
     )
     SELECT ?, ?, 'user', 'device.revoke', 'device', ?, ?, ?
     WHERE EXISTS (
-      SELECT 1 FROM devices WHERE id = ? AND user_id = ? AND updated_at = ?
+      SELECT 1 FROM devices
+      WHERE id = ? AND user_id = ?
+        AND (
+          EXISTS (
+            SELECT 1 FROM upload_tokens
+            WHERE upload_tokens.user_id = ? AND upload_tokens.device_id = ?
+              AND upload_tokens.revoked_at IS NULL
+          )
+          OR EXISTS (
+            SELECT 1 FROM device_installations
+            WHERE device_installations.user_id = ? AND device_installations.device_id = ?
+              AND device_installations.revoked_at IS NULL
+          )
+        )
     )
   `
     )
@@ -601,7 +670,10 @@ function createDeviceRevokeAuditStatement(db: D1Database, input: { userId: strin
       input.now,
       input.deviceId,
       input.userId,
-      input.now
+      input.userId,
+      input.deviceId,
+      input.userId,
+      input.deviceId
     )
 }
 

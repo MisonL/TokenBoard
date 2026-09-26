@@ -1187,25 +1187,34 @@ describe('device management', () => {
       now: '2026-04-29T09:00:00.000Z'
     })
 
-    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
+    // The touch and the audit both ask "is anything still revocable?", so they have to run
+    // before the revocations clear that. The touch also precedes the audit, which reads the
+    // `updated_at` it stamps.
+    expect(sqlStatements[0]).toContain('UPDATE devices')
     expect(sqlStatements[0]).toContain('revoked_at IS NULL')
-    expect(sqlStatements[1]).toContain('UPDATE device_installations')
-    expect(sqlStatements[2]).toContain('UPDATE devices')
-    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
-    expect(sqlStatements[3]).toContain('device.revoke')
+    expect(sqlStatements[1]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[1]).toContain('device.revoke')
+    expect(sqlStatements[2]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[2]).toContain('revoked_at IS NULL')
+    expect(sqlStatements[3]).toContain('UPDATE device_installations')
     expect(batchStatements).toHaveLength(4)
-    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
-    expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', '2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
-    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
-    expect(bindings[3]?.slice(1)).toEqual([
+    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1', 'user_1', 'dev_1', 'user_1', 'dev_1'])
+    expect(bindings[1]?.slice(1)).toEqual([
       'user_1',
       'dev_1',
       '{"deviceId":"dev_1"}',
       '2026-04-29T09:00:00.000Z',
       'dev_1',
       'user_1',
-      '2026-04-29T09:00:00.000Z'
+      // The two EXISTS probes that decide whether anything was still revocable. The audit no
+      // longer reads `updated_at`, so a replayed revoke cannot satisfy it.
+      'user_1',
+      'dev_1',
+      'user_1',
+      'dev_1'
     ])
+    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
+    expect(bindings[3]).toEqual(['2026-04-29T09:00:00.000Z', '2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
   })
 
   test('revokes active upload tokens for one installation', async () => {

@@ -6,7 +6,14 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../test/sqlite-d1'
 import { D1DevicePairingRepository } from './repository'
-import { pairDevice, renameDevice, revokeDevice, revokeInstallation, revokeUploadToken } from './service'
+import {
+  listUserDevices,
+  pairDevice,
+  renameDevice,
+  revokeDevice,
+  revokeInstallation,
+  revokeUploadToken
+} from './service'
 
 const crashFixturePath = fileURLToPath(new URL('../../test/fixtures/device-pairing-crash.ts', import.meta.url))
 
@@ -382,6 +389,54 @@ describe('device revocation sqlite contract', () => {
     await expect(revokeInstallation(db, input)).rejects.toThrow('Installation not found')
 
     expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE action = 'installation.revoke'")).toBe(1)
+  })
+
+  // `upload_tokens.device_id` is nullable and was not always set, but an unbound token still
+  // authenticates — `verifyUploadToken` only checks the hash, and ingest files its usage under
+  // the legacy device. The page whose purpose is to list and revoke credentials must not hide
+  // one, or the user cannot stop an upload channel they cannot see.
+  test('lists an unbound upload token instead of hiding it', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    runSql(
+      dbPath,
+      `
+      INSERT INTO upload_tokens (id, user_id, name, token_hash, device_id, installation_id, created_at)
+      VALUES ('ut_legacy', 'user_1', 'Legacy credential', 'hash:legacy', NULL, NULL, '2026-07-01T00:00:00.000Z');
+    `
+    )
+
+    const devices = await listUserDevices(db, 'user_1')
+    const legacy = devices.find((device) => device.id === 'legacy')
+
+    expect(legacy?.uploadTokens.map((token) => token.id)).toEqual(['ut_legacy'])
+    expect(legacy?.activeTokenCount).toBe(1)
+    expect(legacy?.installations).toEqual([])
+    // The credential stays revocable, which is the point of surfacing it.
+    await revokeUploadToken(db, { userId: 'user_1', uploadTokenId: 'ut_legacy', now: '2026-07-11T01:00:00.000Z' })
+    expect(
+      readCount(dbPath, "SELECT COUNT(*) FROM upload_tokens WHERE id = 'ut_legacy' AND revoked_at IS NOT NULL")
+    ).toBe(1)
+  })
+
+  // The device revoke writes its audit only when a preceding statement reported a change, but
+  // the statement it keys off is the `updated_at` touch, whose value comes from the caller. A
+  // replay passes the same `now`, so the touch matches the row it just wrote, the guard holds,
+  // and a second `device.revoke` audit is recorded for a device that was already revoked. The
+  // sibling revocations below reject a replay; this one must too.
+  test('does not record a second device audit when a revoke is replayed', async () => {
+    const { db, dbPath } = createDeviceDb(tempDirs)
+    seedRevocationTarget(dbPath)
+    const input = {
+      userId: 'user_1',
+      deviceId: 'dev_1',
+      now: '2026-07-11T01:00:00.000Z'
+    }
+
+    await revokeDevice(db, input)
+    await expect(revokeDevice(db, input)).rejects.toThrow('Device not found')
+
+    expect(readCount(dbPath, "SELECT COUNT(*) FROM audit_logs WHERE action = 'device.revoke'")).toBe(1)
   })
 
   test('does not record a second token audit when the state change loses a race', async () => {
