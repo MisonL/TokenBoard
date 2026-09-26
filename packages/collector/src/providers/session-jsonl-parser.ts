@@ -142,7 +142,26 @@ function readCodexMetric(record: UnknownRecord, timezone: string): MetricRow | n
 }
 
 function isKnownCodexTokenMetadata(source: UsageSource, record: UnknownRecord) {
-  if (source !== 'codex' || record.type !== 'event_msg') return false
+  if (source !== 'codex') return false
+  if (record.type === 'token_usage_record' || record.type === 'compacted') {
+    // Codex writes this request-level record alongside event_msg/token_count.
+    // Its usage fields are cumulative/duplicate metadata, not another billable
+    // event, so leave it out of the snapshot and out of the unparsed-row guard.
+    const payload = readRecord(record.payload)
+    const latest = readRecord(payload?.latest_token_usage_record)
+    return Boolean(
+      readRecord(record.usage) ||
+      readRecord(record.turn_token_usage) ||
+      readRecord(record.thread_token_usage) ||
+      readRecord(payload?.usage) ||
+      readRecord(payload?.turn_token_usage) ||
+      readRecord(payload?.thread_token_usage) ||
+      readRecord(latest?.usage) ||
+      readRecord(latest?.turn_token_usage) ||
+      readRecord(latest?.thread_token_usage)
+    )
+  }
+  if (record.type !== 'event_msg') return false
   const payload = readRecord(record.payload)
   if (payload?.type !== 'token_count') return false
 

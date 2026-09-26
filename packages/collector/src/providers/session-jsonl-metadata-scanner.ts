@@ -6,6 +6,7 @@ type MetadataScope =
   | 'root-payload'
   | 'root-payload-metadata'
   | 'root-payload-info'
+  | 'root-payload-source'
   | 'claude-usage'
   | 'codex-usage'
   | 'other'
@@ -36,6 +37,7 @@ export type SessionJsonlMetadataScanner = {
   additionalRelevantKey: boolean
   additionalRelevantKeys: ReadonlySet<string>
   claudeUsageObject: boolean
+  codexUsageOnly: boolean
   codexTokenMetricKey: boolean
   codexUsageObject: boolean
   invalid: boolean
@@ -76,12 +78,14 @@ const tokenMetricKeys = new Set([
 export function createSessionJsonlMetadataScanner(
   input: {
     additionalRelevantKeys?: readonly string[]
+    codexUsageOnly?: boolean
   } = {}
 ): SessionJsonlMetadataScanner {
   return {
     additionalRelevantKey: false,
     additionalRelevantKeys: new Set(input.additionalRelevantKeys ?? []),
     claudeUsageObject: false,
+    codexUsageOnly: input.codexUsageOnly === true,
     codexTokenMetricKey: false,
     codexUsageObject: false,
     invalid: false,
@@ -94,12 +98,13 @@ export function createSessionJsonlMetadataScanner(
 export function scanSessionJsonlMetadata(
   segments: readonly Buffer[],
   scanner: SessionJsonlMetadataScanner,
-  source?: UsageSource
+  source?: UsageSource,
+  stopOnRelevant = true
 ) {
   for (const segment of segments) {
     for (const byte of segment) {
       scanJsonByte(byte, scanner)
-      if (scanner.invalid || hasRelevantSessionJsonlMetadata(scanner, source)) return
+      if (scanner.invalid || (stopOnRelevant && hasRelevantSessionJsonlMetadata(scanner, source))) return
     }
   }
 }
@@ -361,8 +366,15 @@ function scanJsonStringByte(byte: number, scanner: SessionJsonlMetadataScanner) 
     string.container.currentKey = value
     string.container.phase = 'colon'
     if (string.container.scope === 'root' && value === 'type') scanner.rootType = undefined
-    if (tokenMetricKeys.has(value)) scanner.codexTokenMetricKey = true
-    if (scanner.additionalRelevantKeys.has(value)) scanner.additionalRelevantKey = true
+    if (tokenMetricKeys.has(value) && (!scanner.codexUsageOnly || string.container.scope === 'codex-usage')) {
+      scanner.codexTokenMetricKey = true
+    }
+    if (
+      scanner.additionalRelevantKeys.has(value) &&
+      (!scanner.codexUsageOnly || isStrictCodexRelevantKey(string.container.scope, value))
+    ) {
+      scanner.additionalRelevantKey = true
+    }
     return
   }
   if (string.container) {
@@ -456,10 +468,24 @@ function childScope(container: JsonContainer, kind: JsonContainer['kind']): Meta
   if (container.scope === 'root' && container.currentKey === 'usage') return 'claude-usage'
   if (container.scope === 'root-message' && container.currentKey === 'usage') return 'claude-usage'
   if (container.scope === 'root-payload' && container.currentKey === 'info') return 'root-payload-info'
+  if (container.scope === 'root-payload' && container.currentKey === 'source') return 'root-payload-source'
   if (container.scope === 'root-payload' && container.currentKey === 'metadata') return 'root-payload-metadata'
   if (container.scope === 'root-payload' && container.currentKey === 'usage') return 'codex-usage'
-  if (container.scope === 'root-payload-info' && container.currentKey === 'last_token_usage') return 'codex-usage'
+  if (
+    container.scope === 'root-payload-info' &&
+    (container.currentKey === 'total_token_usage' || container.currentKey === 'last_token_usage')
+  ) {
+    return 'codex-usage'
+  }
   return 'other'
+}
+
+function isStrictCodexRelevantKey(scope: MetadataScope, key: string) {
+  if (key === 'subagent') return scope === 'root-payload-source'
+  return (
+    (key === 'total_token_usage' || key === 'last_token_usage') &&
+    (scope === 'root-payload' || scope === 'root-payload-info')
+  )
 }
 
 function recordUsageObject(scanner: SessionJsonlMetadataScanner, scope: MetadataScope) {

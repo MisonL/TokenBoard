@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   cursorTasklistCommand,
   probeCursorProcessLiveness,
+  probeCursorProcessStartIdentity,
   supportsReliableCursorSignalZero,
   tasklistContainsCursorPid
 } from './cursor-process-liveness'
@@ -81,5 +82,56 @@ describe('cursor process liveness', () => {
         }
       })
     ).toBe('dead')
+  })
+
+  test('reads Linux process start identity from boot id and start ticks', () => {
+    const values = new Map([
+      ['/proc/123/stat', `123 (node) S ${Array.from({ length: 18 }, () => '0').join(' ')} 456`],
+      ['/proc/sys/kernel/random/boot_id', 'boot-a\n']
+    ])
+
+    expect(
+      probeCursorProcessStartIdentity(123, {
+        platform: 'linux',
+        readFile: (path) =>
+          values.get(path) ??
+          (() => {
+            throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+          })()
+      })
+    ).toEqual({ status: 'known', value: 'linux:boot-a:456' })
+  })
+
+  test('treats an unavailable Linux process identity as unknown instead of stale', () => {
+    expect(
+      probeCursorProcessStartIdentity(123, {
+        platform: 'linux',
+        readFile: () => {
+          throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+        }
+      })
+    ).toEqual({ status: 'unknown' })
+  })
+
+  test('reads Windows process start identity without relying on signal zero', () => {
+    let command = ''
+    expect(
+      probeCursorProcessStartIdentity(123, {
+        platform: 'win32',
+        env: { SystemRoot: 'D:\\Windows' },
+        runProcessIdentity: ((candidate: string) => {
+          command = candidate
+          return {
+            pid: 1,
+            output: [],
+            stdout: '638000000000000000',
+            stderr: '',
+            status: 0,
+            signal: null
+          }
+        }) as never
+      })
+    ).toEqual({ status: 'known', value: 'windows:638000000000000000' })
+    expect(command).toBe('D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
   })
 })

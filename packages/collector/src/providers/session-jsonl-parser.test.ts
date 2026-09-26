@@ -344,6 +344,50 @@ describe('parseSessionJsonl', () => {
     expect(parsed.unparsedTokenLikeRows).toBe(0)
   })
 
+  test('ignores Codex request-level token_usage_record metadata duplicated by token_count', () => {
+    const parsed = parseSessionJsonl({
+      source: 'codex',
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-09-19T00:00:00.000Z',
+      sessionId: 'session',
+      content: JSON.stringify({
+        type: 'token_usage_record',
+        timestamp: '2026-09-18T12:00:00.000Z',
+        payload: {
+          usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+          turn_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+          thread_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+        }
+      })
+    })
+
+    expect(parsed.snapshots).toEqual([])
+    expect(parsed.unparsedTokenLikeRows).toBe(0)
+  })
+
+  test('ignores compacted Codex latest token usage metadata', () => {
+    const parsed = parseSessionJsonl({
+      source: 'codex',
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-09-19T00:00:00.000Z',
+      sessionId: 'session',
+      content: JSON.stringify({
+        type: 'compacted',
+        timestamp: '2026-09-18T12:00:00.000Z',
+        payload: {
+          latest_token_usage_record: {
+            usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            turn_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            thread_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+          }
+        }
+      })
+    })
+
+    expect(parsed.snapshots).toEqual([])
+    expect(parsed.unparsedTokenLikeRows).toBe(0)
+  })
+
   test('reports token-like rows that are not parsed into snapshots', () => {
     const parsed = parseSessionJsonl({
       source: 'codex',

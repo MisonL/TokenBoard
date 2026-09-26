@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { lstat, open, type FileHandle } from 'node:fs/promises'
 import { TextDecoder } from 'node:util'
 import type { UsageSource } from '@tokenboard/usage-core'
+import { createSessionContentHasher } from './session-content-hash'
 import {
   createSessionJsonlMetadataScanner,
   finishSessionJsonlMetadataScan,
@@ -25,6 +25,7 @@ type ReadSessionJsonlLinesInput = {
   endOffsetBytes?: number
   maxLineBytes: number
   maxDiscardedLineBytes?: number
+  codexUsageOnly?: boolean
   source?: UsageSource
   expectedFingerprint?: SessionJsonlFileFingerprint
 }
@@ -62,6 +63,7 @@ const discardableSessionRecordTypes = new Set([
 ])
 
 export async function* readSessionJsonlLines(input: ReadSessionJsonlLinesInput): AsyncIterable<SessionJsonlLine> {
+  const codexUsageOnly = input.codexUsageOnly ?? input.source === 'codex'
   const verifiedFile = input.expectedFingerprint
     ? await openVerifiedSessionJsonlFile(input.filePath, input.expectedFingerprint)
     : undefined
@@ -89,7 +91,7 @@ export async function* readSessionJsonlLines(input: ReadSessionJsonlLinesInput):
       ...(expectedEndOffsetBytes === undefined ? {} : { end: expectedEndOffsetBytes - 1 })
     })
     const maxDiscardedLineBytes = input.maxDiscardedLineBytes ?? maxDiscardedSessionJsonlLineBytes
-    let line = emptyLineState()
+    let line = emptyLineState(codexUsageOnly)
     let skipLeadingLineFeed = await startsAfterCarriageReturn({
       fileHandle: verifiedFile,
       filePath: input.filePath,
@@ -118,7 +120,7 @@ export async function* readSessionJsonlLines(input: ReadSessionJsonlLinesInput):
           })
           if (terminator === -1) break
           yield finishLine(line, input.source)
-          line = emptyLineState()
+          line = emptyLineState(codexUsageOnly)
           const terminatorByte = chunk[terminator]
           offset = terminator + 1
           if (terminatorByte === 0x0d) {
@@ -206,9 +208,16 @@ async function openVerifiedSessionJsonlFile(filePath: string, expected: SessionJ
   }
 }
 
+// Prefix verification re-hashes from byte 0, so its throughput decides how long a
+// hook sync takes on large session files. A 64 KiB buffer spent most of that time
+// in per-chunk overhead rather than in SHA-256 itself: measured on a 1.2 GB codex
+// session, 64 KiB reached 0.10 GB/s while 4 MiB reached 0.25 GB/s. The buffer is
+// still clamped to the range being verified so tiny files do not allocate 4 MiB.
+export const sessionJsonlHashBufferBytes = 4 * 1024 * 1024
+
 async function hashSessionJsonlPrefix(fileHandle: FileHandle, endOffsetBytes: number, filePath: string) {
-  const hash = createHash('sha256')
-  const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, endOffsetBytes)))
+  const hash = createSessionContentHasher()
+  const buffer = Buffer.allocUnsafe(Math.min(sessionJsonlHashBufferBytes, Math.max(1, endOffsetBytes)))
   let position = 0
   while (position < endOffsetBytes) {
     const length = Math.min(buffer.length, endOffsetBytes - position)
@@ -226,7 +235,7 @@ function assertVerifiedSessionJsonlContent(input: {
   bytesRead: number
   expected: SessionJsonlFileFingerprint | undefined
   filePath: string
-  hash: ReturnType<typeof createHash> | undefined
+  hash: ReturnType<typeof createSessionContentHasher> | undefined
 }) {
   if (
     input.expected &&
@@ -247,12 +256,15 @@ export function isSkippedOversizedSessionJsonlLine(line: SessionJsonlLine): line
   return typeof line !== 'string'
 }
 
-function emptyLineState(): LineState {
+function emptyLineState(codexUsageOnly = false): LineState {
   return {
     chunks: [],
     byteLength: 0,
     skipping: false,
-    metadataScanner: createSessionJsonlMetadataScanner()
+    metadataScanner: createSessionJsonlMetadataScanner({
+      codexUsageOnly,
+      additionalRelevantKeys: codexUsageOnly ? ['total_token_usage', 'last_token_usage'] : undefined
+    })
   }
 }
 

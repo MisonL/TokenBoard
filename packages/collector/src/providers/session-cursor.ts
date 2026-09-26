@@ -14,6 +14,11 @@ import {
   type CursorSnapshot,
   type CursorState
 } from './session-cursor-store'
+import {
+  createSessionContentHasher,
+  isCurrentContentHashAlgorithm,
+  sessionContentHashAlgorithm
+} from './session-content-hash'
 import { normalizeSessionRelativePath, resolveSessionJsonlFiles } from './session-file-walk'
 import { resolveAntigravityCollectionRange } from './antigravity-since'
 import {
@@ -24,6 +29,7 @@ import {
 } from './antigravity-cli-cursor'
 import {
   readSessionJsonlLines,
+  sessionJsonlHashBufferBytes,
   type SessionJsonlFileFingerprint,
   type SessionJsonlLine
 } from './session-jsonl-line-reader'
@@ -43,6 +49,12 @@ export type ChangedSessionFile = {
   readLines: () => AsyncIterable<SessionJsonlLine>
 }
 
+export type ReusablePendingSessionFile = {
+  relativePath: string
+  sha256: string
+  snapshots: CursorSnapshot[]
+}
+
 type CollectInput = {
   source: UsageSource
   sessionsDir: string
@@ -53,6 +65,7 @@ type CollectInput = {
   scanSafetyMs?: number
   maxLineBytes?: number
   allowedRootSymlinks?: readonly string[]
+  forcePendingUploadRescan?: boolean
 }
 
 const defaultSessionLineBytes = 1024 * 1024
@@ -88,6 +101,7 @@ export async function collectChangedSessionFiles(input: CollectInput) {
     hasUnreadablePendingUpload: scan.hasUnreadablePendingUpload || missing.hasUnreadablePendingUpload,
     missingPendingSnapshots: missing.missingPendingSnapshots,
     missingPendingSnapshotEntries: missing.missingPendingSnapshotEntries,
+    reusablePendingFiles: scan.reusablePendingFiles,
     markPendingUpload: (relativePaths?: Iterable<string>) => {
       const allowed = relativePaths ? new Set(relativePaths) : null
       for (const file of scan.files) {
@@ -147,7 +161,8 @@ function emptyScanResult(current: CursorState) {
     hasUnreadablePendingUpload: false,
     hasCursorMetadataUpdate: false,
     hasReadFailure: false,
-    unreadChangedFiles: new Set<string>()
+    unreadChangedFiles: new Set<string>(),
+    reusablePendingFiles: [] as ReusablePendingSessionFile[]
   }
 }
 
@@ -167,7 +182,13 @@ async function collectSessionFile(
     throw new Error(`Unable to read ${input.source} session file ${absolutePath}: symbolic links are not supported`)
   }
   if (!fileStat?.isFile()) return
-  result.highWaterMs = Math.max(result.highWaterMs, fileStat.mtimeMs)
+  // Clamped to the present. The mark becomes the cutoff the next scan subtracts its safety
+  // window from, and `skipByMetadata` drops anything older *before reading it*, so a single
+  // file dated in the future — a clock step, a restored backup, `touch -d` — would raise the
+  // cutoff above files that were never read and hide them from every later scan. The mark only
+  // grows, so removing the offending file does not recover them. A file cannot legitimately be
+  // newer than now, so clamping costs nothing and keeps the mark honest about what it covers.
+  result.highWaterMs = Math.max(result.highWaterMs, Math.min(fileStat.mtimeMs, Date.now()))
   result.seen.add(relativePath)
 
   const fingerprint = sessionJsonlFingerprint(fileStat)
@@ -184,6 +205,22 @@ async function collectSessionFile(
       result.hasCursorMetadataUpdate = true
       return
     }
+  }
+  if (
+    input.source === 'codex' &&
+    !input.forcePendingUploadRescan &&
+    prior?.pendingUpload &&
+    sameMetadata(prior, entry) &&
+    prior.snapshots.length > 0 &&
+    !prior.snapshots.some((snapshot) => snapshot.codexContextPricingPending === true)
+  ) {
+    next.files[relativePath] = prior
+    result.reusablePendingFiles.push({
+      relativePath,
+      sha256: prior.sha256,
+      snapshots: prior.snapshots.map((snapshot) => ({ ...snapshot }))
+    })
+    return
   }
   if (skipByMetadata({ prior, entry, scanSinceMs, next, relativePath })) return
 
@@ -213,6 +250,7 @@ async function collectSessionFile(
             startOffsetBytes: prior.size,
             endOffsetBytes: entry.size,
             maxLineBytes,
+            codexUsageOnly: input.source === 'codex',
             source: input.source,
             expectedFingerprint: { ...fingerprint, sha256: entry.sha256 }
           })
@@ -235,6 +273,7 @@ async function collectSessionFile(
           startOffsetBytes: 0,
           endOffsetBytes: entry.size,
           maxLineBytes,
+          codexUsageOnly: input.source === 'codex',
           source: input.source,
           expectedFingerprint: { ...fingerprint, sha256: entry.sha256 }
         })
@@ -271,6 +310,7 @@ async function collectSessionFile(
         startOffsetBytes: 0,
         endOffsetBytes: entry.size,
         maxLineBytes,
+        codexUsageOnly: input.source === 'codex',
         source: input.source,
         expectedFingerprint: { ...fingerprint, sha256: entry.sha256 }
       })
@@ -325,6 +365,7 @@ function newCursorEntry(
 ): CursorEntry {
   return {
     ...entry,
+    contentHashAlgo: sessionContentHashAlgorithm,
     ...(endsWithNewline !== undefined ? { endsWithNewline } : {}),
     snapshots: [],
     missingCost: false,
@@ -396,6 +437,7 @@ export function updateCursorFile(
     size: file.size,
     mtimeMs: file.mtimeMs,
     sha256: file.sha256,
+    contentHashAlgo: sessionContentHashAlgorithm,
     endsWithNewline: file.endsWithNewline,
     snapshots:
       cursor.source === 'codex'
@@ -433,6 +475,12 @@ export async function clearPendingUploadCursors(input: {
   acknowledgedSnapshotGroups?: string[]
   acknowledgedSnapshotFiles?: ReadonlyArray<{ relativePath: string; sha256: string }>
 }) {
+  if (input.acknowledgedSnapshotFiles !== undefined && input.source !== 'codex') {
+    throw new Error('Acknowledged snapshot files are only supported for Codex cursors')
+  }
+  if (input.acknowledgedSnapshotFiles !== undefined && input.acknowledgedSnapshotGroups !== undefined) {
+    throw new Error('Acknowledged snapshot files and groups cannot be supplied together')
+  }
   const isAntigravity = input.source.startsWith('antigravity')
   if (isAntigravity && !input.timezone) {
     throw new Error('Antigravity cursor acknowledgement requires an explicit timezone')
@@ -896,7 +944,9 @@ export async function warmHookCursorHighWater(input: {
   const cursorPath = join(input.stateDir, cursorFileName(input.source, input.cursorScope))
   await withCursorLock(cursorPath, async () => {
     const cursor = await readCursor(cursorPath, input.source)
-    const highWaterMs = Math.max(cursor.lastScanHighWaterMs ?? 0, input.highWaterMs)
+    // Clamped for the same reason as the per-file mark: this value becomes a scan cutoff, and a
+    // caller-supplied time ahead of the clock would hide files the next scan has not read yet.
+    const highWaterMs = Math.max(cursor.lastScanHighWaterMs ?? 0, Math.min(input.highWaterMs, Date.now()))
     if (highWaterMs === cursor.lastScanHighWaterMs) return
     cursor.lastScanHighWaterMs = highWaterMs
     await writeCursor(cursorPath, cursor)
@@ -945,10 +995,11 @@ function sameMetadata(left: CursorEntry, right: CursorFileMetadata) {
 }
 
 async function hashFile(filePath: string, endOffsetBytes?: number) {
-  const hash = createHash('sha256')
+  const hash = createSessionContentHasher()
   if (endOffsetBytes !== undefined && endOffsetBytes <= 0) return hash.digest('hex')
   let bytesRead = 0
   for await (const chunk of createReadStream(filePath, {
+    highWaterMark: sessionJsonlHashBufferBytes,
     ...(endOffsetBytes === undefined ? {} : { end: endOffsetBytes - 1 })
   })) {
     hash.update(chunk)
@@ -964,10 +1015,11 @@ async function hashFileAndPrefix(filePath: string, prefixEndOffsetBytes: number,
   if (prefixEndOffsetBytes < 0 || prefixEndOffsetBytes > endOffsetBytes) {
     throw new Error(`Invalid session hash range: ${filePath}`)
   }
-  const prefixHash = createHash('sha256')
-  const hash = createHash('sha256')
+  const prefixHash = createSessionContentHasher()
+  const hash = createSessionContentHasher()
   let bytesRead = 0
   for await (const chunk of createReadStream(filePath, {
+    highWaterMark: sessionJsonlHashBufferBytes,
     end: endOffsetBytes - 1
   })) {
     const prefixLength = Math.max(0, Math.min(chunk.length, prefixEndOffsetBytes - bytesRead))
@@ -984,6 +1036,11 @@ async function hashFileAndPrefix(filePath: string, prefixEndOffsetBytes: number,
 function isAppendOnlyUpdate(prior: CursorEntry, entry: CursorFileMetadata) {
   return (
     !prior.pendingUpload &&
+    // A prefix digest is only comparable against one made by the same algorithm, so
+    // an entry written before the algorithm was recorded cannot take the fast path.
+    // Falling through re-reads the file once and stores a current-algorithm digest,
+    // after which the fast path applies again.
+    isCurrentContentHashAlgorithm(prior.contentHashAlgo) &&
     typeof prior.sha256 === 'string' &&
     prior.sha256.length > 0 &&
     Number.isSafeInteger(prior.size) &&

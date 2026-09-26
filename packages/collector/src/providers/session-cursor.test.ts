@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
@@ -813,6 +813,68 @@ describe('collectChangedSessionFiles', () => {
     }
   })
 
+  test('reuses unchanged Codex pending snapshots without reopening the full session file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-pending-reuse-'))
+    const sessionsDir = join(root, 'sessions')
+    const cursorPath = join(root, 'codex-cursor.json')
+    const file = join(sessionsDir, '2026', '05', '22', 'session.jsonl')
+    const snapshot = {
+      source: 'codex' as const,
+      usageDate: '2026-05-22',
+      timezone: 'Asia/Shanghai',
+      model: 'gpt-5',
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 15,
+      costUsd: 0.03,
+      sessionCount: 1
+    }
+
+    try {
+      await writeSession(file, 'unchanged', '2026-05-22T01:00:00.000Z')
+      await mkdir(dirname(cursorPath), { recursive: true })
+      const fileStat = await stat(file)
+      await writeFile(
+        cursorPath,
+        `${JSON.stringify({
+          version: 1,
+          source: 'codex',
+          files: {
+            '2026/05/22/session.jsonl': {
+              size: fileStat.size,
+              mtimeMs: fileStat.mtimeMs,
+              sha256: 'a'.repeat(64),
+              endsWithNewline: true,
+              snapshots: [snapshot],
+              missingCost: false,
+              pendingUpload: true,
+              updatedAt: '2026-05-22T10:00:00.000Z'
+            }
+          }
+        })}\n`
+      )
+
+      const result = await collectChangedSessionFiles({
+        source: 'codex',
+        sessionsDir,
+        cursorPath
+      })
+
+      expect(result.files).toEqual([])
+      expect(result.reusablePendingFiles).toEqual([
+        expect.objectContaining({
+          relativePath: '2026/05/22/session.jsonl',
+          snapshots: [snapshot]
+        })
+      ])
+      expect(result.hasPendingUpload).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('acknowledges Codex pending files by path and hash instead of a shared snapshot group', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-file-ack-'))
     const cursorPath = join(root, 'codex-cursor.json')
@@ -872,6 +934,31 @@ describe('collectChangedSessionFiles', () => {
       const cursor = JSON.parse(await readFile(cursorPath, 'utf8'))
       expect(cursor.files['missing.jsonl'].pendingUpload).toBe(true)
       expect(cursor.files['current.jsonl'].pendingUpload).toBe(false)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects file acknowledgements for non-Codex sources and mixed acknowledgement modes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-ack-validation-'))
+
+    try {
+      await expect(
+        clearPendingUploadCursors({
+          stateDir: root,
+          source: 'claude-code',
+          acknowledgedSnapshotFiles: [{ relativePath: 'session.jsonl', sha256: 'a'.repeat(64) }]
+        })
+      ).rejects.toThrow('only supported for Codex')
+
+      await expect(
+        clearPendingUploadCursors({
+          stateDir: root,
+          source: 'codex',
+          acknowledgedSnapshotFiles: [{ relativePath: 'session.jsonl', sha256: 'a'.repeat(64) }],
+          acknowledgedSnapshotGroups: ['codex\u00002026-06-24\u0000UTC\u0000gpt-5']
+        })
+      ).rejects.toThrow('cannot be supplied together')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

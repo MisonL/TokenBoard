@@ -4,7 +4,7 @@ import { link, mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node
 import { dirname } from 'node:path'
 import { usageSources, type UsageSnapshot, type UsageSource } from '@tokenboard/usage-core'
 import { isValidAntigravityFileScanState, type AntigravityFileScanState } from './antigravity-file-scan'
-import { probeCursorProcessLiveness } from './cursor-process-liveness'
+import { probeCursorProcessLiveness, probeCursorProcessStartIdentity } from './cursor-process-liveness'
 
 export type CursorSnapshot = Omit<UsageSnapshot, 'collectedAt'> & {
   codexContextPricingPending?: true
@@ -14,6 +14,10 @@ export type CursorEntry = {
   size: number
   mtimeMs: number
   sha256: string
+  // Which algorithm produced `sha256`. Absent means the entry predates this field
+  // and holds a legacy sha256 digest; see session-content-hash.ts. Kept optional so
+  // cursors written by older collectors stay valid and are upgraded in place.
+  contentHashAlgo?: string
   endsWithNewline?: boolean
   snapshots: CursorSnapshot[]
   missingCost: boolean
@@ -56,6 +60,7 @@ const cursorLockTimeoutMs = 35_000
 const cursorLockStaleMs = 30_000
 const cursorLockHeartbeatMs = 5_000
 const cursorLockContext = new AsyncLocalStorage<CursorLockLease>()
+let cachedCursorProcessStartIdentity: string | null | undefined
 
 export async function readCursor(cursorPath: string, source: UsageSource): Promise<CursorState> {
   const empty: CursorState = { version: 1, source, files: {} }
@@ -98,7 +103,12 @@ export async function withCursorLock<T>(
 ) {
   await mkdir(dirname(cursorPath), { recursive: true })
   const lockPath = `${cursorPath}.lock`
-  const owner = { pid: process.pid, token: randomBytes(16).toString('hex') }
+  const processStartIdentity = currentCursorProcessStartIdentity()
+  const owner = {
+    pid: process.pid,
+    token: randomBytes(16).toString('hex'),
+    ...(processStartIdentity ? { processStartIdentity } : {})
+  }
   await acquireCursorLock(lockPath, owner)
   const stopHeartbeat = startCursorLockHeartbeat(
     () => (options.refreshCursorLock ?? refreshCursorLock)(lockPath, owner),
@@ -177,7 +187,7 @@ async function recoverStaleCursorLock(lockPath: string) {
   const lockStat = await stat(lockPath).catch(() => null)
   if (!lockStat || Date.now() - lockStat.mtimeMs < cursorLockStaleMs) return
   const owner = await readCursorLockOwner(lockPath)
-  if (owner && probeCursorProcessLiveness(owner.pid) !== 'dead') return
+  if (owner && !isCursorLockOwnerDead(owner)) return
   if (!(await sameCursorLockSnapshot(lockPath, lockStat, owner))) return
   const quarantinePath = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
@@ -253,7 +263,28 @@ async function releaseCursorLock(lockPath: string, owner: CursorLockOwner) {
 
 async function sameCursorLockOwner(lockPath: string, expected: CursorLockOwner) {
   const current = await readCursorLockOwner(lockPath)
-  return current?.pid === expected.pid && current.token === expected.token
+  return (
+    current?.pid === expected.pid &&
+    current.token === expected.token &&
+    (current.processStartIdentity === undefined ||
+      expected.processStartIdentity === undefined ||
+      current.processStartIdentity === expected.processStartIdentity)
+  )
+}
+
+function isCursorLockOwnerDead(owner: CursorLockOwner) {
+  if (!owner.processStartIdentity) return probeCursorProcessLiveness(owner.pid) === 'dead'
+  const identity = probeCursorProcessStartIdentity(owner.pid)
+  if (identity.status === 'dead') return true
+  if (identity.status === 'known') return identity.value !== owner.processStartIdentity
+  return false
+}
+
+function currentCursorProcessStartIdentity() {
+  if (cachedCursorProcessStartIdentity !== undefined) return cachedCursorProcessStartIdentity || undefined
+  const identity = probeCursorProcessStartIdentity(process.pid)
+  cachedCursorProcessStartIdentity = identity.status === 'known' ? identity.value : null
+  return cachedCursorProcessStartIdentity || undefined
 }
 
 export async function assertCursorWriteOwnership(cursorPath: string) {
@@ -269,7 +300,19 @@ async function readCursorLockOwner(lockPath: string): Promise<CursorLockOwner | 
     const value = JSON.parse(await readFile(lockPath, 'utf8')) as Partial<CursorLockOwner>
     if (!Number.isSafeInteger(value.pid) || Number(value.pid) <= 0) return null
     if (typeof value.token !== 'string' || !value.token) return null
-    return { pid: Number(value.pid), token: value.token }
+    if (
+      value.processStartIdentity !== undefined &&
+      (typeof value.processStartIdentity !== 'string' ||
+        !value.processStartIdentity ||
+        value.processStartIdentity.length > 256)
+    ) {
+      return null
+    }
+    return {
+      pid: Number(value.pid),
+      token: value.token,
+      ...(value.processStartIdentity ? { processStartIdentity: value.processStartIdentity } : {})
+    }
   } catch {
     return null
   }
@@ -283,7 +326,7 @@ function delay(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-type CursorLockOwner = { pid: number; token: string }
+type CursorLockOwner = { pid: number; token: string; processStartIdentity?: string }
 type CursorLockLease = { cursorPath: string; lockPath: string; owner: CursorLockOwner }
 type CursorLockHeartbeatOptions = {
   heartbeatIntervalMs?: number
@@ -381,6 +424,7 @@ function isValidCursorEntry(value: unknown): value is CursorEntry {
     isFiniteNumber(candidate.size) &&
     isFiniteNumber(candidate.mtimeMs) &&
     typeof candidate.sha256 === 'string' &&
+    (candidate.contentHashAlgo === undefined || typeof candidate.contentHashAlgo === 'string') &&
     (candidate.endsWithNewline === undefined || typeof candidate.endsWithNewline === 'boolean') &&
     Array.isArray(candidate.snapshots) &&
     candidate.snapshots.every(isValidCursorSnapshot) &&

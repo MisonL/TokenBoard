@@ -314,7 +314,7 @@ describe('readSessionJsonlLines', () => {
     }
   })
 
-  test('fails for an oversized Codex row with token fields outside the usage object', async () => {
+  test('skips an oversized Codex row with token fields outside the usage object', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-session-jsonl-lines-'))
     const filePath = join(root, 'sessions', 'unparsed-token.jsonl')
     const oversized = JSON.stringify({
@@ -323,6 +323,40 @@ describe('readSessionJsonlLines', () => {
         type: 'token_count',
         padding: 'x'.repeat(128 * 1024),
         unrelated: { input_tokens: 1 }
+      }
+    })
+
+    try {
+      await mkdir(dirname(filePath), { recursive: true })
+      await writeFile(filePath, `${oversized}\n`)
+
+      const lines = []
+      for await (const line of readSessionJsonlLines({
+        filePath,
+        startOffsetBytes: 0,
+        maxLineBytes: 64,
+        maxDiscardedLineBytes: 256 * 1024,
+        source: 'codex'
+      })) {
+        lines.push(line)
+      }
+
+      expect(lines).toHaveLength(1)
+      expect(isSkippedOversizedSessionJsonlLine(lines[0])).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('fails for an oversized Codex row with payload-level total usage metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-session-jsonl-lines-'))
+    const filePath = join(root, 'sessions', 'payload-total-usage.jsonl')
+    const oversized = JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        total_token_usage: { input_tokens: 1, total_tokens: 1 },
+        padding: 'x'.repeat(128 * 1024)
       }
     })
 
