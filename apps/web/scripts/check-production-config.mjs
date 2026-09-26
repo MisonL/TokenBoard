@@ -75,6 +75,20 @@ validateOptionalIntegerString(
 validateModelPricingSourceUrl(config.vars?.TOKENBOARD_MODEL_PRICING_SOURCE_URL ?? DEFAULT_MODEL_PRICING_SOURCE_URL)
 validateRequiredCronTrigger(config)
 validateWorkerFirstAssetRoutes(config)
+validateNoInlineAuthSecret(config)
+
+// `BETTER_AUTH_SECRET` must come from `wrangler secret put`, never from `vars`, which is
+// committed to the repository in plain text. The runtime refuses to sign sessions without
+// it (see `features/auth/auth.ts`), so a deploy that forgot the secret would fail on its
+// first request; this catches the same mistake before anything ships.
+function validateNoInlineAuthSecret(config) {
+  const inline = config.vars?.BETTER_AUTH_SECRET
+  if (typeof inline === 'string' && inline.trim()) {
+    fail(
+      `${CONFIG_FILE} sets vars.BETTER_AUTH_SECRET. Configure it as a Worker secret instead (\`wrangler secret put BETTER_AUTH_SECRET\`), so the value is not committed.`
+    )
+  }
+}
 
 function parseJsoncConfig(value) {
   try {

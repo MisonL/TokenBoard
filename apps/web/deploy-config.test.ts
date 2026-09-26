@@ -13,6 +13,7 @@ import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
+import { runSqliteScript } from './app/test/sqlite-script'
 
 const packageDir = dirname(fileURLToPath(import.meta.url))
 
@@ -90,17 +91,26 @@ describe('Wrangler deploy config', () => {
 
   test('manual production deploy helper verifies migrated schema before Worker deploy', () => {
     const deployScript = readPackageFile('scripts/deploy.mjs')
+    const routeCheckScript = readPackageFile('scripts/check-production-route.mjs')
     const schemaCheckCommand = /runPnpm\(\[\s*'exec',\s*'wrangler',\s*'d1',\s*'execute'/
     const schemaCheckIndex = deployScript.search(schemaCheckCommand)
 
     expect(deployScript).toContain('wrangler.production.ci.jsonc')
     expect(deployScript).toContain('scripts/write-production-config.mjs')
     expect(deployScript).toContain('scripts/check-production-config.mjs')
+    expect(deployScript).toContain('scripts/check-production-route.mjs')
+    expect(deployScript).toContain("'deploy', '--dry-run', '--config', configPath")
     expect(deployScript).toContain("runPnpm(['run', 'build'])")
     expect(deployScript).toContain("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
     expect(schemaCheckIndex).toBeGreaterThan(-1)
     expect(deployScript).toContain("'deploy', '--config', configPath")
     expect(deployScript.indexOf("runPnpm(['run', 'build'])")).toBeLessThan(
+      deployScript.indexOf("'deploy', '--dry-run', '--config', configPath")
+    )
+    expect(deployScript.indexOf("'deploy', '--dry-run', '--config', configPath")).toBeLessThan(
+      deployScript.indexOf('scripts/check-production-route.mjs')
+    )
+    expect(deployScript.indexOf('scripts/check-production-route.mjs')).toBeLessThan(
       deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
     )
     expect(deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")).toBeLessThan(
@@ -108,6 +118,9 @@ describe('Wrangler deploy config', () => {
     )
     expect(schemaCheckIndex).toBeLessThan(deployScript.indexOf("'deploy', '--config', configPath"))
     expect(deployScript).not.toContain('--config wrangler.jsonc')
+    expect(routeCheckScript).toContain('Cloudflare zone preflight')
+    expect(routeCheckScript).toContain('oauth_token')
+    expect(routeCheckScript).toContain('CLOUDFLARE_API_TOKEN')
   })
 
   test('critical production schema check covers device identity and legacy upload tokens', () => {
@@ -161,6 +174,15 @@ describe('Wrangler deploy config', () => {
     const migrationsDir = resolve(packageDir, 'db/migrations')
     const baseMigration = readFileSync(join(migrationsDir, '0030_model_pricing.sql'), 'utf8')
     const stagingMigration = readFileSync(join(migrationsDir, '0031_model_pricing_staging.sql'), 'utf8')
+    const reservedSlugMigrationName = '0032_reserved_model_pricing_slug.sql'
+    const migrationNames = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+    expect(migrationNames.indexOf('0031_model_pricing_staging.sql')).toBeGreaterThanOrEqual(0)
+    expect(migrationNames.indexOf(reservedSlugMigrationName)).toBe(
+      migrationNames.indexOf('0031_model_pricing_staging.sql') + 1
+    )
+    const reservedSlugMigration = readFileSync(join(migrationsDir, reservedSlugMigrationName), 'utf8')
     const schemaCheck = readPackageFile('db/verify-critical-schema.sql')
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-migration-gate-'))
     const dbPath = join(tempDir, 'pricing.db')
@@ -184,6 +206,9 @@ describe('Wrangler deploy config', () => {
       // The staging migration contains only CREATE IF NOT EXISTS statements,
       // so a retry after an interrupted deployment must remain safe.
       expect(() => runSqlite(dbPath, stagingMigration)).not.toThrow()
+
+      runSqlite(dbPath, reservedSlugMigration)
+      expect(() => runSqlite(dbPath, reservedSlugMigration)).not.toThrow()
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
@@ -310,6 +335,46 @@ describe('Wrangler deploy config', () => {
     expect(migration).toContain('updated_at TEXT NOT NULL')
     expect(migration).toContain('CREATE INDEX api_rate_limits_reset_idx')
   })
+
+  test('rate limit maintenance migrations replace the legacy reset index', () => {
+    const expressionIndexMigration = readPackageFile('db/migrations/0033_rate_limit_reset_julianday_index.sql')
+    const dropLegacyIndexMigration = readPackageFile('db/migrations/0034_drop_api_rate_limits_reset_index.sql')
+    const schema = readDrizzleSchema()
+
+    expect(expressionIndexMigration).toContain('CREATE INDEX IF NOT EXISTS api_rate_limits_reset_julianday_idx')
+    expect(expressionIndexMigration).toContain('ON api_rate_limits(julianday(reset_at))')
+    expect(dropLegacyIndexMigration).toContain('DROP INDEX IF EXISTS api_rate_limits_reset_idx')
+    expect(schema).toContain("index('api_rate_limits_reset_julianday_idx').on(sql`julianday(")
+  })
+
+  // The migration files are read as text elsewhere, which cannot tell whether the index
+  // that ends up in the database actually covers the expression the prune query needs.
+  // This runs the real migrations and then asserts against sqlite_master.
+  test('the rate limit expression index survives the migration pair', () => {
+    const schemaCheck = readPackageFile('db/verify-rate-limit-index.sql')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-rate-limit-index-gate-'))
+    const dbPath = join(tempDir, 'index.db')
+
+    try {
+      for (const migration of readdirSync(migrationsDir)
+        .filter((name) => name.endsWith('.sql'))
+        .sort()) {
+        runSqlite(dbPath, readFileSync(join(migrationsDir, migration), 'utf8'))
+      }
+
+      const check = runSqlite(dbPath, schemaCheck, false)
+      expect(check.status).toBe(0)
+      expect(check.stderr).toBe('')
+
+      // Dropping it has to make the check fail, or the assertion proves nothing.
+      runSqlite(dbPath, 'DROP INDEX api_rate_limits_reset_julianday_idx;')
+      const afterDrop = runSqlite(dbPath, schemaCheck, false)
+      expect(afterDrop.status).not.toBe(0)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 30_000)
 
   test('device token rotation migration prevents duplicate active successors', () => {
     const schema = readDrizzleSchema()
@@ -669,6 +734,7 @@ describe('Wrangler deploy config', () => {
         resolve(packageDir, 'scripts/write-production-config.mjs'),
         join(scriptDir, 'write-production-config.mjs')
       )
+      writeFileSync(join(scriptDir, 'check-production-route.mjs'), 'process.exit(0)\n')
       copyFileSync(
         resolve(packageDir, 'wrangler.production.example.jsonc'),
         join(tempDir, 'wrangler.production.example.jsonc')
@@ -711,7 +777,7 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 15_000)
 
   test('production config checker defaults to the private production config path', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-empty-config-'))
@@ -960,7 +1026,7 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 15_000)
 
   test('production config checker rejects configured route values that are not bare hosts', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-bad-route-config-'))
@@ -1078,12 +1144,9 @@ function resourceControlDefault(name: string) {
 }
 
 function runSqlite(dbPath: string, sql: string, requireSuccess = true) {
-  const result = spawnSync('sqlite3', [dbPath], {
-    encoding: 'utf8',
-    input: sql
-  })
+  const result = runSqliteScript(dbPath, sql)
   if (requireSuccess && result.status !== 0) {
-    throw new Error(result.stderr || `sqlite3 exited with status ${result.status}`)
+    throw new Error(result.stderr || `sqlite exited with status ${result.status}`)
   }
   return result
 }

@@ -124,7 +124,8 @@ describe('requireUser', () => {
           return raw.headers.get('cookie')
         },
         raw
-      }
+      },
+      header() {}
     } as never)
 
     expect(bindings[0][3]).toBe('Asia/Shanghai')
@@ -289,5 +290,55 @@ describe('ensureProfile', () => {
       expect.any(String),
       expect.any(String)
     ])
+  })
+})
+
+describe('requireUser response caching', () => {
+  beforeEach(() => {
+    mockedCreateAuth.mockReset()
+    mockedCreateAuth.mockReturnValue({
+      api: {
+        getSession: vi.fn(async () => ({
+          user: { id: 'user_12345678', email: 'user@example.com', name: 'Token User', image: null }
+        }))
+      }
+    } as never)
+  })
+
+  // Every page behind a session renders the signed-in user's email in the nav, and the browser
+  // may keep a heuristically-cached copy or restore one from the back/forward cache. On a shared
+  // machine that shows the previous user's account after they sign out. Five authenticated pages
+  // — the dashboard, usage details, device details, notifications and profile — were relying on
+  // a per-route header that each of them had forgotten, while the routes that remembered said so
+  // in a comment claiming the rest of the app did too. Setting it at the auth boundary is what
+  // makes that claim true: a new page behind `requireUser` cannot ship without it.
+  test('marks a session-gated response uncacheable', async () => {
+    const headers = new Map<string, string>()
+    const context = {
+      env: {
+        DB: {
+          prepare() {
+            return {
+              bind() {
+                return {
+                  async run() {
+                    return { success: true }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      req: {
+        header: (name: string) => (name === 'cookie' ? 'better-auth-session_token=abc' : undefined),
+        raw: new Request('https://tokenboard.example/dashboard')
+      },
+      header: (name: string, value: string) => headers.set(name, value)
+    }
+
+    await requireUser(context as never)
+
+    expect(headers.get('Cache-Control')).toBe('no-store')
   })
 })

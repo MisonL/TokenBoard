@@ -20,6 +20,14 @@ export type AuthenticatedUser = {
 }
 
 export async function requireUser(c: Context): Promise<SessionUser> {
+  // Set at the auth boundary rather than per route. Every page behind this renders the signed-in
+  // user's email in the nav, and a browser may keep a heuristically-cached copy or restore one
+  // from the back/forward cache — on a shared machine that shows the previous user's account
+  // after they sign out. Five authenticated pages had each forgotten the header while the routes
+  // that remembered carried a comment claiming the rest of the app set it too. One boundary is
+  // what makes that true: a new page behind `requireUser` cannot ship without it.
+  c.header('Cache-Control', 'no-store')
+
   const session = await requireSessionUser(c)
 
   await ensureProfile(c.env.DB, session, readTimezoneCookie(c.req.header('cookie')))

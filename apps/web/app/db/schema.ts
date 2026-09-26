@@ -219,7 +219,7 @@ export const apiRateLimits = sqliteTable(
     resetAt: text('reset_at').notNull(),
     updatedAt: text('updated_at').notNull()
   },
-  (table) => [index('api_rate_limits_reset_idx').on(table.resetAt)]
+  (table) => [index('api_rate_limits_reset_julianday_idx').on(sql`julianday(${table.resetAt})`)]
 )
 
 export const modelPricing = sqliteTable(

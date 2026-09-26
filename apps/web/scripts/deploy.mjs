@@ -9,6 +9,14 @@ runNode(['scripts/check-production-config.mjs'], {
 })
 
 runPnpm(['run', 'build'])
+runPnpm(['exec', 'wrangler', 'deploy', '--dry-run', '--config', configPath])
+if (!process.env.CLOUDFLARE_API_TOKEN?.trim() && !process.env.CF_API_TOKEN?.trim()) {
+  runPnpm(['exec', 'wrangler', 'whoami'])
+}
+runNode(['scripts/check-production-route.mjs'], {
+  ...process.env,
+  TOKENBOARD_WRANGLER_CONFIG: configPath
+})
 runPnpm(['exec', 'wrangler', 'd1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath])
 runPnpm([
   'exec',
@@ -19,6 +27,18 @@ runPnpm([
   '--remote',
   '--file',
   'db/verify-critical-schema.sql',
+  '--config',
+  configPath
+])
+runPnpm([
+  'exec',
+  'wrangler',
+  'd1',
+  'execute',
+  'DB',
+  '--remote',
+  '--file',
+  'db/verify-rate-limit-index.sql',
   '--config',
   configPath
 ])
