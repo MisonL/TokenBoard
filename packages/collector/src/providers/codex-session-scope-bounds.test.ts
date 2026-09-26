@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -223,7 +223,7 @@ describe('Codex session scope bounds', () => {
     }
   })
 
-  test('fails if an oversized session changes while it is being projected', async () => {
+  test('allows an oversized session to append after its bounded prefix is captured', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-bounds-'))
     const session = join(codexHome, 'sessions', '2026', '07', 'changing.jsonl')
     try {
@@ -231,6 +231,33 @@ describe('Codex session scope bounds', () => {
       await writeFile(session, oversizedRows().join('\n') + '\n')
 
       let changed = false
+      const scope = await createCodexSessionScope({
+        codexHome,
+        since: 'all',
+        maxFileBytes: 128,
+        maxBatchBytes: 4096,
+        onProjectionDiagnostic: () => {
+          if (changed) return
+          changed = true
+          appendFileSync(session, `${JSON.stringify({ type: 'response_item', payload: 'changed' })}\n`)
+        }
+      })
+      expect(scope).not.toBeNull()
+      await scope?.cleanup()
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('fails if an oversized session is replaced while it is being projected', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-bounds-'))
+    const session = join(codexHome, 'sessions', '2026', '07', 'replaced.jsonl')
+    const replacement = join(codexHome, 'sessions', '2026', '07', 'replacement.jsonl')
+    let changed = false
+    try {
+      await mkdir(dirname(session), { recursive: true })
+      await writeFile(session, oversizedRows().join('\n') + '\n')
+
       await expect(
         createCodexSessionScope({
           codexHome,
@@ -240,8 +267,30 @@ describe('Codex session scope bounds', () => {
           onProjectionDiagnostic: () => {
             if (changed) return
             changed = true
-            appendFileSync(session, `${JSON.stringify({ type: 'response_item', payload: 'changed' })}\n`)
+            writeFileSync(replacement, oversizedRows().join('\n') + '\n')
+            renameSync(replacement, session)
           }
+        })
+      ).rejects.toThrow(/session changed during scoped collection/i)
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  test('fails if an oversized session is truncated while it is being projected', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-bounds-'))
+    const session = join(codexHome, 'sessions', '2026', '07', 'truncated.jsonl')
+    try {
+      await mkdir(dirname(session), { recursive: true })
+      await writeFile(session, oversizedRows().join('\n') + '\n')
+
+      await expect(
+        createCodexSessionScope({
+          codexHome,
+          since: 'all',
+          maxFileBytes: 128,
+          maxBatchBytes: 4096,
+          onProjectionDiagnostic: () => truncateSync(session, 64)
         })
       ).rejects.toThrow(/session changed during scoped collection/i)
     } finally {

@@ -558,6 +558,33 @@ describe('Codex context pricing', () => {
     }
   })
 
+  test('uses the stable session_id when Codex emits a per-record id', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-context-session-id-'))
+    const file = join(root, 'sessions', 'session.jsonl')
+    try {
+      await writeJsonl(file, [
+        {
+          type: 'session_meta',
+          payload: { session_id: 'stable-session', id: 'subagent-record' }
+        },
+        {
+          type: 'session_meta',
+          payload: { session_id: 'stable-session', id: 'root-record' }
+        },
+        tokenCount('2026-05-01T00:00:00.000Z', { last_token_usage: usage(10) })
+      ])
+
+      await expect(
+        collectCodexContextPricingCostsFromFiles({
+          filePaths: [file],
+          timezone: 'UTC'
+        })
+      ).resolves.toEqual([{ usageDate: '2026-05-01', model: 'gpt-5.6-sol', costUsd: (10 * 5) / 1_000_000 }])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('skips context pricing models outside the ccusage daily model scope', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-context-scope-'))
     const file = join(root, 'sessions', 'excluded.jsonl')
@@ -861,6 +888,44 @@ describe('Codex context pricing', () => {
         expect.stringContaining(
           'Retained bounded turn_context metadata from 1 oversized Codex context pricing JSONL row'
         )
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('aggregates oversized irrelevant rows across context pricing scans', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-context-oversized-summary-'))
+    const first = join(root, 'sessions', 'first.jsonl')
+    const second = join(root, 'sessions', 'second.jsonl')
+    const diagnostics: string[] = []
+    const oversized = {
+      type: 'event_msg',
+      payload: { type: 'progress', text: 'x'.repeat(maxCodexChildSessionLineBytes + 1) }
+    }
+    try {
+      await Promise.all([
+        writeJsonl(first, [
+          turnContext('gpt-5.6-sol'),
+          oversized,
+          tokenCount('2026-08-12T00:00:00.000Z', { last_token_usage: usage(10) })
+        ]),
+        writeJsonl(second, [
+          turnContext('gpt-5.6-sol'),
+          oversized,
+          tokenCount('2026-08-12T00:01:00.000Z', { last_token_usage: usage(10) })
+        ])
+      ])
+
+      await expect(
+        collectCodexContextPricingCostsFromFiles({
+          filePaths: [first, second],
+          timezone: 'UTC',
+          stderr: (line) => diagnostics.push(line)
+        })
+      ).resolves.toEqual([{ usageDate: '2026-08-12', model: 'gpt-5.6-sol', costUsd: (20 * 5) / 1_000_000 }])
+      expect(diagnostics).toEqual([
+        `Skipped 2 oversized Codex context pricing JSONL rows without usage or subagent metadata across 2 scans (largest ${Buffer.byteLength(JSON.stringify(oversized))} bytes)`
       ])
     } finally {
       await rm(root, { recursive: true, force: true })

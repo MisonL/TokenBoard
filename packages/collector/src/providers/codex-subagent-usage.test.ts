@@ -1543,6 +1543,79 @@ describe('Codex subagent usage correction', () => {
     }
   })
 
+  // A child reporting more usage than the row it would be subtracted from is abandoned, and the
+  // row keeps its uncorrected — therefore too high — value. That is a deliberate refusal, but it
+  // was the only refusal in this module that reported nothing: the sibling case below emits a
+  // diagnostic, and this branch returns before `buildSessionAdjustments` runs, so nothing
+  // downstream could tell it apart from "there was nothing to correct".
+  test('reports a child whose usage exceeds the session row instead of skipping quietly', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const errors: string[] = []
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(join(codexHome, 'sessions', '2026', '05', '25', 'rollout-child-thread.jsonl'), [
+        subagentSessionMeta('child-thread', 'parent-thread', '2026-05-25T01:00:00.000Z'),
+        totalUsageEvent(
+          '2026-05-25T01:10:00.000Z',
+          { inputTokens: 999999, cacheReadTokens: 0, outputTokens: 0 },
+          { lastUsage: { inputTokens: 999999, cacheReadTokens: 0, outputTokens: 0 } }
+        )
+      ])
+
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-25T01:20:00.000Z',
+        stderr: (line) => errors.push(line),
+        async runner(_command, args) {
+          return args.includes('session')
+            ? {
+                sessions: [
+                  {
+                    sessionId: '2026/05/25/rollout-child-thread',
+                    lastActivity: '2026-05-25T01:10:00.000Z',
+                    totalTokens: 100,
+                    costUSD: 0.1,
+                    models: {
+                      'gpt-5': {
+                        inputTokens: 100,
+                        cachedInputTokens: 0,
+                        outputTokens: 0,
+                        totalTokens: 100,
+                        costUSD: 0.1
+                      }
+                    }
+                  }
+                ]
+              }
+            : {
+                daily: [
+                  {
+                    date: '2026-05-25',
+                    models: {
+                      'gpt-5': { inputTokens: 100, cachedInputTokens: 0, outputTokens: 0, totalTokens: 100 }
+                    },
+                    totalTokens: 100,
+                    costUSD: 0.1
+                  }
+                ]
+              }
+        }
+      })
+
+      // The row is left as it was, which is why the refusal has to be visible.
+      expect(snapshots).toHaveLength(1)
+      expect(snapshots[0]).toMatchObject({ totalTokens: 100 })
+      expect(errors).toContain(
+        'Skipping Codex subagent usage correction for 2026-05-25/gpt-5: child usage 999999 exceeds session row 100'
+      )
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
   test('ignores malformed subagent JSONL rows without aborting Codex collection', async () => {
     const codexHome = await createEmptyCodexHome()
     const errors: string[] = []

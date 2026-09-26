@@ -29,6 +29,14 @@ export type CodexSessionFileFingerprint = CodexSessionFileMetadata & {
   tailSha256: string
 }
 
+export type CodexSessionFilePrefixFingerprint = {
+  dev: number
+  ino: number
+  capturedSize: number
+  prefixSize: number
+  prefixTailSha256: string
+}
+
 type ComparableCodexSessionFileFingerprint = CodexSessionFileMetadata & {
   dev?: number
   ino?: number
@@ -192,7 +200,7 @@ export async function fingerprintCodexSessionFile(filePath: string): Promise<Cod
         throw new Error('Codex session changed while fingerprinting; retry the sync')
       }
 
-      const tailSha256 = await hashOpenFileTail(handle, opened.size)
+      const tailSha256 = await hashOpenFileRange(handle, opened.size)
       const [after, pathAfterRead] = await Promise.all([handle.stat(), lstat(filePath)])
       assertCodexSessionFileAtPath(pathAfterRead)
       if (!sameCodexSessionFileIdentity(opened, after) || !sameCodexSessionFileIdentity(pathAfterRead, opened)) {
@@ -219,6 +227,77 @@ export async function fingerprintCodexSessionFile(filePath: string): Promise<Cod
     }
     throw new Error('Unable to inspect Codex session file', { cause: error })
   }
+}
+
+/**
+ * Capture a bounded prefix identity for a session that may still be appended to.
+ * The prefix is immutable for this collection, while later bytes are allowed to grow.
+ */
+export async function fingerprintCodexSessionFilePrefix(
+  filePath: string,
+  prefixSize?: number
+): Promise<CodexSessionFilePrefixFingerprint> {
+  try {
+    const pathBefore = await lstat(filePath)
+    assertCodexSessionFileAtPath(pathBefore)
+    const handle = await open(filePath, 'r')
+    try {
+      const [opened, pathAfterOpen] = await Promise.all([handle.stat(), lstat(filePath)])
+      assertCodexSessionFileAtPath(pathAfterOpen)
+      if (
+        !sameCodexSessionFileIdentityOnly(pathBefore, opened) ||
+        !sameCodexSessionFileIdentityOnly(pathAfterOpen, opened)
+      ) {
+        throw new Error('Codex session changed while fingerprinting; retry the sync')
+      }
+      const capturedSize = opened.size
+      const size = prefixSize ?? capturedSize
+      if (!Number.isSafeInteger(size) || size < 0 || capturedSize < size) {
+        throw new Error('Codex session was truncated while fingerprinting; retry the sync')
+      }
+      const prefixTailSha256 = await hashOpenFileRange(handle, size)
+      const [after, pathAfterRead] = await Promise.all([handle.stat(), lstat(filePath)])
+      assertCodexSessionFileAtPath(pathAfterRead)
+      if (
+        !sameCodexSessionFileIdentityOnly(opened, after) ||
+        !sameCodexSessionFileIdentityOnly(pathAfterRead, opened) ||
+        pathAfterRead.size < capturedSize
+      ) {
+        throw new Error('Codex session changed while fingerprinting; retry the sync')
+      }
+      return {
+        dev: opened.dev,
+        ino: opened.ino,
+        capturedSize,
+        prefixSize: size,
+        prefixTailSha256
+      }
+    } finally {
+      await handle.close()
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith('Unable to inspect Codex session file:') ||
+        error.message.startsWith('Codex session changed while fingerprinting;') ||
+        error.message.startsWith('Codex session was truncated while fingerprinting;'))
+    ) {
+      throw error
+    }
+    throw new Error('Unable to inspect Codex session file', { cause: error })
+  }
+}
+
+export function sameCodexSessionFilePrefixFingerprint(
+  left: CodexSessionFilePrefixFingerprint,
+  right: CodexSessionFilePrefixFingerprint
+) {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.prefixSize === right.prefixSize &&
+    left.prefixTailSha256 === right.prefixTailSha256
+  )
 }
 
 export function sameCodexSessionFileMetadata(left: CodexSessionFileMetadata, right: CodexSessionFileMetadata) {
@@ -259,7 +338,11 @@ function sameCodexSessionFileIdentity(
   )
 }
 
-async function hashOpenFileTail(handle: Awaited<ReturnType<typeof open>>, size: number) {
+function sameCodexSessionFileIdentityOnly(left: { dev: number; ino: number }, right: { dev: number; ino: number }) {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+async function hashOpenFileRange(handle: Awaited<ReturnType<typeof open>>, size: number) {
   const length = Math.min(size, tailBytes)
   const buffer = Buffer.alloc(length)
   const start = Math.max(0, size - length)

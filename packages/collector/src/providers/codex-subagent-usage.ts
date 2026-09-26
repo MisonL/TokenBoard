@@ -324,7 +324,17 @@ async function readCorrectedSubagentMetrics(
   // copied parent context again, that charged input remains in this child total.
   if (usageByDate.length === 0) return []
   const totalUsage = sumDatedUsage(usageByDate)
-  if (totalUsage.totalTokens <= 0 || totalUsage.totalTokens > original.totalTokens) return []
+  if (totalUsage.totalTokens <= 0 || totalUsage.totalTokens > original.totalTokens) {
+    // The correction is abandoned and the session row keeps its uncorrected — and therefore too
+    // high — value, because the child reports more usage than the row it would be subtracted
+    // from. Returning quietly here left the only abandonment path with no signal at all: the
+    // sibling path below reports its own, and `buildSessionAdjustments` never sees this case, so
+    // nothing downstream can tell it apart from "there was nothing to correct".
+    stderr?.(
+      `Skipping Codex subagent usage correction for ${original.usageDate}/${original.model}: child usage ${totalUsage.totalTokens} exceeds session row ${original.totalTokens}`
+    )
+    return []
+  }
   return usageByDate.map((usage) => ({
     usageDate: usage.usageDate,
     model: original.model,

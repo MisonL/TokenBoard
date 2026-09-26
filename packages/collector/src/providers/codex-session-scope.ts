@@ -2,7 +2,13 @@ import { createReadStream } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, rm, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { fingerprintCodexSessionFile, type CodexSessionFileFingerprint } from './codex-session-attribution-cache'
+import {
+  fingerprintCodexSessionFile,
+  fingerprintCodexSessionFilePrefix,
+  sameCodexSessionFilePrefixFingerprint,
+  type CodexSessionFileFingerprint,
+  type CodexSessionFilePrefixFingerprint
+} from './codex-session-attribution-cache'
 import {
   CODEX_SESSION_COPY_FALLBACK_MESSAGE,
   createCodexSessionCloner,
@@ -31,6 +37,7 @@ const DEFAULT_CODEX_SESSION_PREFILTER_BYTES = 8 * 1024 * 1024
 const DEFAULT_CODEX_SESSION_PREFILTER_LINE_BYTES = 1024 * 1024
 const CODEX_SESSION_READ_CHUNK_BYTES = 64 * 1024
 const CODEX_SESSION_PROJECTION_READ_CHUNK_BYTES = 1024 * 1024
+const CODEX_SESSION_PREFIX_FINGERPRINT_BYTES = 64 * 1024
 type CodexSessionRootName = (typeof codexSessionRoots)[number]
 
 type CodexSessionScopeOptions = {
@@ -103,6 +110,7 @@ export type CodexSessionScope = {
   sourceFileHomeIndexes: Map<string, number>
   sourceFileFingerprints: Map<string, CodexSessionFileFingerprint>
   projectedSourceFiles: Set<string>
+  projectedSourceFilePrefixes: Map<string, CodexSessionFilePrefixFingerprint>
 }
 
 export type CodexSessionScopeFile = {
@@ -473,6 +481,18 @@ async function copySessionCandidate(
       if (maxScopeBytes <= copiedBytes) {
         throw new Error(`Codex scoped collection batch exceeds byte limit (${copiedBytes} >= ${maxScopeBytes})`)
       }
+      let sourcePrefix: CodexSessionFilePrefixFingerprint
+      try {
+        sourcePrefix = await fingerprintCodexSessionFilePrefix(
+          candidate.file,
+          Math.min(source.size, CODEX_SESSION_PREFIX_FINGERPRINT_BYTES)
+        )
+      } catch (error) {
+        throw normalizeProjectedSourceChange(error)
+      }
+      if (sourcePrefix.capturedSize < source.size) {
+        throw new Error('Codex session changed during scoped collection; retry the sync')
+      }
       onProjectionDiagnostic?.(
         `Codex session file exceeds the ${limits.maxFileBytes}-byte scoped file limit; using bounded metadata projection`
       )
@@ -480,6 +500,7 @@ async function copySessionCandidate(
         sourceFile: candidate.file,
         targetFile: target,
         maxBytes: maxScopeBytes - copiedBytes,
+        maxSourceBytes: sourcePrefix.capturedSize,
         stderr: onProjectionDiagnostic
       })
       if (projectedBytes === null) return null
@@ -488,14 +509,30 @@ async function copySessionCandidate(
         await rm(target, { force: true }).catch(() => undefined)
         throw new Error(`Unable to read Codex session file ${candidate.file}: projected path is not a file`)
       }
-      const sourceAfterProjection = await inspectSessionFile(candidate.file, limits.maxFileBytes, true)
-      if (!sourceAfterProjection || !sameFileMetadata(source, sourceAfterProjection)) {
+      let sourceAfterProjection: CodexSessionFilePrefixFingerprint
+      try {
+        sourceAfterProjection = await fingerprintCodexSessionFilePrefix(candidate.file, sourcePrefix.prefixSize)
+      } catch (error) {
+        throw normalizeProjectedSourceChange(error)
+      }
+      if (
+        sourceAfterProjection.capturedSize < sourcePrefix.capturedSize ||
+        !sameCodexSessionFilePrefixFingerprint(sourcePrefix, sourceAfterProjection)
+      ) {
         throw new Error(`Codex session changed during scoped collection; retry the sync`)
       }
       scope.sourceFiles.set(target, candidate.sourceFile)
       scope.sourceFileHomeIndexes.set(candidate.sourceFile, candidate.homeIndex)
-      scope.sourceFileFingerprints.set(candidate.sourceFile, await fingerprintCodexSessionFile(candidate.file))
+      scope.sourceFileFingerprints.set(candidate.sourceFile, {
+        dev: sourcePrefix.dev,
+        ino: sourcePrefix.ino,
+        size: sourcePrefix.capturedSize,
+        mtimeMs: source.mtimeMs,
+        ctimeMs: source.ctimeMs,
+        tailSha256: sourcePrefix.prefixTailSha256
+      })
       scope.projectedSourceFiles.add(candidate.sourceFile)
+      scope.projectedSourceFilePrefixes.set(candidate.sourceFile, sourcePrefix)
       return projectedBytes
     }
 
@@ -551,12 +588,12 @@ async function projectOversizedSessionFile(input: {
   sourceFile: string
   targetFile: string
   maxBytes: number
+  maxSourceBytes: number
   stderr?: (message: string) => void
 }): Promise<number | null> {
-  const target = await open(input.targetFile, 'wx', 0o600)
-  const sourceStream = createReadStream(input.sourceFile, {
-    highWaterMark: CODEX_SESSION_PROJECTION_READ_CHUNK_BYTES
-  })
+  const sourceHandle = await open(input.sourceFile, 'r')
+  let target: FileHandle | undefined
+  let sourceStream: ReturnType<FileHandle['createReadStream']> | undefined
   let projectedBytes = 0
   let projectedRecords = 0
   let malformedRows = 0
@@ -567,11 +604,23 @@ async function projectOversizedSessionFile(input: {
   }
 
   try {
+    target = await open(input.targetFile, 'wx', 0o600)
+    sourceStream = sourceHandle.createReadStream({
+      end: Math.max(0, input.maxSourceBytes - 1),
+      highWaterMark: CODEX_SESSION_PROJECTION_READ_CHUNK_BYTES,
+      autoClose: false
+    })
     for await (const record of readJsonlRecordsFromStream(sourceStream, report, {
       maxLineBytes: maxCodexChildSessionLineBytes,
       maxDiscardedLineBytes: maxDiscardedCodexChildSessionLineBytes,
       relevantMetadataKeys: codexChildSessionReadLimits.relevantMetadataKeys,
+      codexUsageOnly: codexChildSessionReadLimits.codexUsageOnly,
       discardableLineTypes: codexChildSessionReadLimits.discardableLineTypes,
+      allowIncompleteFinalLine: true,
+      onIncompleteFinalLine: (byteLength) =>
+        input.stderr?.(
+          `Codex oversized session projection deferred ${byteLength}-byte incomplete final line; it may contain usage metadata and will be retried after the session is complete`
+        ),
       label: 'Codex oversized session projection'
     })) {
       if (!isProjectionRecord(record)) continue
@@ -598,8 +647,9 @@ async function projectOversizedSessionFile(input: {
     }
     return projectedBytes
   } finally {
-    sourceStream.destroy()
-    await closeFileHandle(target)
+    sourceStream?.destroy()
+    await closeFileHandle(sourceHandle)
+    if (target) await closeFileHandle(target)
     if (!completed) await rm(input.targetFile, { force: true }).catch(() => undefined)
   }
 }
@@ -718,6 +768,17 @@ function sameFileMetadata(
 
 function sameCopiedFileContent(source: CodexSessionFileFingerprint, copied: CodexSessionFileFingerprint) {
   return source.size === copied.size && source.tailSha256 === copied.tailSha256
+}
+
+function normalizeProjectedSourceChange(error: unknown) {
+  if (
+    error instanceof Error &&
+    (error.message.startsWith('Codex session changed while fingerprinting;') ||
+      error.message.startsWith('Codex session was truncated while fingerprinting;'))
+  ) {
+    return new Error('Codex session changed during scoped collection; retry the sync', { cause: error })
+  }
+  return error
 }
 
 function readByteLimit(value: number | undefined, fallback: number, label: string) {
@@ -959,6 +1020,7 @@ async function createEmptyScope(homeCount: number): Promise<CodexSessionScope> {
   const sourceFileHomeIndexes = new Map<string, number>()
   const sourceFileFingerprints = new Map<string, CodexSessionFileFingerprint>()
   const projectedSourceFiles = new Set<string>()
+  const projectedSourceFilePrefixes = new Map<string, CodexSessionFilePrefixFingerprint>()
   return {
     codexHome: codexHomes.join(','),
     codexHomes,
@@ -968,7 +1030,8 @@ async function createEmptyScope(homeCount: number): Promise<CodexSessionScope> {
     sourceFiles,
     sourceFileHomeIndexes,
     sourceFileFingerprints,
-    projectedSourceFiles
+    projectedSourceFiles,
+    projectedSourceFilePrefixes
   }
 }
 

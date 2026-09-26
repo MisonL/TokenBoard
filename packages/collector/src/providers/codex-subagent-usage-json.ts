@@ -23,7 +23,10 @@ export type JsonlReadLimits = {
   maxLineBytes?: number
   maxDiscardedLineBytes?: number
   relevantMetadataKeys?: readonly string[]
+  codexUsageOnly?: boolean
   discardableLineTypes?: readonly string[]
+  allowIncompleteFinalLine?: boolean
+  onIncompleteFinalLine?: (byteLength: number) => void
   label?: string
 }
 
@@ -180,7 +183,14 @@ async function* readJsonlLines(
       }
     }
 
-    if (line.bytes > 0) yield finishLine(line, limits)
+    if (line.bytes > 0) {
+      if (limits.allowIncompleteFinalLine) {
+        const finalLine = finishIncompleteFinalLine(line, limits)
+        if (finalLine !== null) yield finalLine
+      } else {
+        yield finishLine(line, limits)
+      }
+    }
     completed = true
   } finally {
     if (!completed && destroyOnIncomplete) stream.destroy()
@@ -194,7 +204,8 @@ function emptyLineState(limits: JsonlReadRuntimeLimits): JsonlLineState {
     skipping: false,
     startsAsObject: undefined,
     metadataScanner: createSessionJsonlMetadataScanner({
-      additionalRelevantKeys: limits.relevantMetadataKeys
+      additionalRelevantKeys: limits.relevantMetadataKeys,
+      codexUsageOnly: limits.codexUsageOnly
     })
   }
 }
@@ -210,11 +221,18 @@ function appendLineSegment(segment: Buffer, line: JsonlLineState, limits: JsonlR
   }
 
   if (!line.skipping && line.startsAsObject !== true) throw lineLimitError(limits)
-  scanSessionJsonlMetadata(line.skipping ? [segment] : [...line.chunks, segment], line.metadataScanner, codexSource)
+  scanSessionJsonlMetadata(
+    line.skipping ? [segment] : [...line.chunks, segment],
+    line.metadataScanner,
+    codexSource,
+    limits.allowIncompleteFinalLine !== true
+  )
   if (line.metadataScanner.invalid) {
     throw malformedOversizedLineError(limits)
   }
-  if (hasRelevantSessionJsonlMetadata(line.metadataScanner, codexSource)) throw oversizedRelevantLineError(limits)
+  if (limits.allowIncompleteFinalLine !== true && hasRelevantSessionJsonlMetadata(line.metadataScanner, codexSource)) {
+    throw oversizedRelevantLineError(limits)
+  }
   line.bytes = nextBytes
   if (!line.skipping) {
     if (limits.maxDiscardedLineBytes === undefined) throw lineLimitError(limits)
@@ -240,6 +258,44 @@ function finishLine(line: JsonlLineState, limits: JsonlReadRuntimeLimits) {
     return projection
   }
   return decodeJsonlLine(Buffer.concat(line.chunks, line.bytes), limits)
+}
+
+function finishIncompleteFinalLine(line: JsonlLineState, limits: JsonlReadRuntimeLimits) {
+  if (line.skipping) {
+    if (line.metadataScanner.invalid) return finishLine(line, limits)
+    if (!finishSessionJsonlMetadataScan(line.metadataScanner)) {
+      limits.onIncompleteFinalLine?.(line.bytes)
+      return null
+    }
+    return finishLine(line, limits)
+  }
+
+  const value = Buffer.concat(line.chunks, line.bytes)
+  const withoutCarriageReturn = value.length > 0 && value[value.length - 1] === 0x0d ? value.subarray(0, -1) : value
+  // This line never reached a terminator, so it is still being written. A tail that
+  // stops inside a multi-byte character is unfinished rather than corrupt, and this
+  // is the branch that exists to defer exactly that: decoding it here would throw
+  // before the defer below is reachable, failing the sync until the file stops
+  // growing. Only a tail that ends mid-character is deferred — bytes that are
+  // already invalid UTF-8 despite ending on a character boundary stay fail-closed.
+  if (limits.allowIncompleteFinalLine && endsWithinMultiByteCharacter(withoutCarriageReturn)) {
+    limits.onIncompleteFinalLine?.(line.bytes)
+    return null
+  }
+  const decoded = decodeJsonlLine(withoutCarriageReturn, limits)
+  scanSessionJsonlMetadata([withoutCarriageReturn], line.metadataScanner, codexSource, false)
+  if (line.metadataScanner.invalid) return decoded
+  if (!line.metadataScanner.invalid && !finishSessionJsonlMetadataScan(line.metadataScanner)) {
+    limits.onIncompleteFinalLine?.(line.bytes)
+    return null
+  }
+  try {
+    JSON.parse(decoded)
+    return decoded
+  } catch {
+    limits.onIncompleteFinalLine?.(line.bytes)
+    return null
+  }
 }
 
 function findLineTerminator(buffer: Buffer, offset: number) {
@@ -294,6 +350,56 @@ function malformedOversizedLineError(limits: JsonlReadRuntimeLimits) {
 function unknownOversizedLineTypeError(limits: JsonlReadRuntimeLimits) {
   const label = limits.label ?? 'Codex JSONL input'
   return new Error(`${label} contains an oversized line with an unknown record type`)
+}
+
+// True only when the buffer ends partway through a multi-byte UTF-8 sequence, which
+// is what a writer interrupted mid-character leaves behind. Bytes that are invalid
+// for any other reason — an isolated continuation byte, an overlong encoding — are a
+// real corruption and must keep failing closed, so this checks the trailing sequence
+// specifically rather than whether the buffer decodes.
+function endsWithinMultiByteCharacter(value: Buffer) {
+  if (value.length === 0) return false
+  let index = value.length - 1
+  let continuationBytes = 0
+  while (index >= 0 && (value[index] & 0xc0) === 0x80) {
+    continuationBytes += 1
+    index -= 1
+    if (continuationBytes > 3) return false
+  }
+  if (index < 0) return false
+  const lead = value[index]
+  const expected =
+    (lead & 0x80) === 0x00
+      ? 1
+      : // 0xC2-0xDF is the only legal two-byte lead range. 0xC0 and 0xC1 would encode
+        // an overlong sequence, so they are corruption even when the tail looks short.
+        lead >= 0xc2 && lead <= 0xdf
+        ? 2
+        : lead >= 0xe0 && lead <= 0xef
+          ? 3
+          : // 0xF0-0xF4 is the only legal four-byte lead range. 0xF5-0xF7 would encode
+            // a code point past U+10FFFF, which is never a valid writer state.
+            lead >= 0xf0 && lead <= 0xf4
+            ? 4
+            : 0
+  // A lead byte whose sequence is longer than what is present is a truncated tail.
+  // An illegal lead byte yields 0 here and therefore fails closed, as the contract above
+  // requires: only a genuinely incomplete sequence is deferred.
+  if (!(expected > 1 && continuationBytes + 1 < expected)) return false
+  // The lead byte alone does not pin the second byte: 0xE0 requires >= 0xA0 and 0xED
+  // requires <= 0x9F, or the sequence is overlong or encodes a surrogate. Those are
+  // corruption, not a writer caught mid-character, so they fail closed like any other
+  // invalid byte — which is what the contract above promises and what the lead-byte
+  // check alone did not deliver.
+  if (continuationBytes === 0) return true
+  const second = value[index + 1]
+  if (lead === 0xe0 && second < 0xa0) return false
+  if (lead === 0xed && second > 0x9f) return false
+  // 0xF0 requires >= 0x90 and 0xF4 requires <= 0x8F, for the same reason: below that the
+  // sequence is overlong, above it the code point exceeds U+10FFFF.
+  if (lead === 0xf0 && second < 0x90) return false
+  if (lead === 0xf4 && second > 0x8f) return false
+  return true
 }
 
 function decodeJsonlLine(value: Buffer, limits: JsonlReadRuntimeLimits) {

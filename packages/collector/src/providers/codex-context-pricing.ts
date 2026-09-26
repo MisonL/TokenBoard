@@ -61,6 +61,15 @@ export type CodexContextPricingUsage = {
   contextTier: 'standard' | 'long'
 }
 
+type OversizedContextPricingRowSummary = {
+  rows: number
+  scans: number
+  largestBytes: number
+}
+
+const oversizedContextPricingRowPattern =
+  /^Skipped ([1-9][0-9]*) oversized Codex context pricing JSONL rows? without usage or subagent metadata \(largest ([1-9][0-9]*) bytes\)$/
+
 export type CodexContextPricingModelHints = ReadonlyMap<string, ReadonlySet<string>>
 export type CodexContextPricingFileModelHints = ReadonlyMap<string, string>
 
@@ -437,6 +446,7 @@ export async function collectCodexContextPricingUsagesFromFiles(input: {
   const totals = new Map<string, CodexContextPricingUsage>()
   const seen = new Set<string>()
   const sessionIdentitiesByAlias = new Map<string, string>()
+  const oversizedDiagnostics: OversizedContextPricingRowSummary = { rows: 0, scans: 0, largestBytes: 0 }
   for (const filePath of input.filePaths) {
     const diagnostics: string[] = []
     const absolutePath = resolve(filePath)
@@ -470,10 +480,35 @@ export async function collectCodexContextPricingUsagesFromFiles(input: {
       canonicalModelsByDate: allowMixedModelPricing ? undefined : input.canonicalModelsByDate
     })
     if (relevant) {
-      for (const line of diagnostics) input.stderr?.(line)
+      for (const line of diagnostics) {
+        const summary = parseOversizedContextPricingRowSummary(line)
+        if (summary) {
+          oversizedDiagnostics.rows += summary.rows
+          oversizedDiagnostics.scans += 1
+          oversizedDiagnostics.largestBytes = Math.max(oversizedDiagnostics.largestBytes, summary.largestBytes)
+          continue
+        }
+        input.stderr?.(line)
+      }
     }
   }
+  if (oversizedDiagnostics.rows > 0) {
+    const rowLabel = oversizedDiagnostics.rows === 1 ? 'row' : 'rows'
+    const scanLabel = oversizedDiagnostics.scans === 1 ? 'scan' : 'scans'
+    input.stderr?.(
+      `Skipped ${oversizedDiagnostics.rows} oversized Codex context pricing JSONL ${rowLabel} without usage or subagent metadata across ${oversizedDiagnostics.scans} ${scanLabel} (largest ${oversizedDiagnostics.largestBytes} bytes)`
+    )
+  }
   return [...totals.values()]
+}
+
+function parseOversizedContextPricingRowSummary(line: string): { rows: number; largestBytes: number } | null {
+  const match = oversizedContextPricingRowPattern.exec(line)
+  if (!match) return null
+  const rows = Number(match[1])
+  const largestBytes = Number(match[2])
+  if (!Number.isSafeInteger(rows) || !Number.isSafeInteger(largestBytes)) return null
+  return { rows, largestBytes }
 }
 
 export async function collectCodexContextPricingCostsFromHomes(input: {
@@ -1404,8 +1439,8 @@ function sessionProfileRoot(filePath: string) {
 
 function readSessionIdentity(record: UnknownRecord) {
   return (
-    readString(record, ['id', 'session_id', 'sessionId', 'thread_id', 'threadId']) ||
-    readString(readRecord(record.payload), ['id', 'session_id', 'sessionId', 'thread_id', 'threadId']) ||
+    readString(record, ['session_id', 'sessionId', 'thread_id', 'threadId', 'id']) ||
+    readString(readRecord(record.payload), ['session_id', 'sessionId', 'thread_id', 'threadId', 'id']) ||
     null
   )
 }

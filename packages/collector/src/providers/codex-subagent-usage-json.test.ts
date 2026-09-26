@@ -218,6 +218,185 @@ describe('Codex JSONL reader', () => {
     expect(records).toEqual([{ type: 'session_meta' }, { type: 'event_msg' }])
   })
 
+  test('defers an incomplete final JSONL row when projecting an active session', async () => {
+    const pending: number[] = []
+    const records: unknown[] = []
+    const stream = Readable.from([Buffer.from('{"type":"session_meta"}\n{"type":"event_msg","payload":{"info":')])
+
+    for await (const record of readJsonlRecordsFromStream(stream, undefined, {
+      allowIncompleteFinalLine: true,
+      onIncompleteFinalLine: (byteLength) => pending.push(byteLength),
+      maxLineBytes: 1024
+    })) {
+      records.push(record)
+    }
+
+    expect(records).toEqual([{ type: 'session_meta' }])
+    expect(pending).toEqual([Buffer.byteLength('{"type":"event_msg","payload":{"info":')])
+  })
+
+  // A session file is written incrementally, so the last line is routinely caught
+  // mid-write. When the bytes stop inside a multi-byte character the tail is not
+  // valid UTF-8 yet, but it is not corrupt either — it is simply unfinished, which
+  // is exactly what defer is for. Rejecting it here fails the whole sync until the
+  // file stops growing, and the message is not in any retry set.
+  test('defers an incomplete final row whose tail splits a multi-byte character', async () => {
+    const pending: number[] = []
+    const records: unknown[] = []
+    // '{"type":"event_msg","payload":"' then the first two bytes of U+4F60 (你),
+    // which is what a writer interrupted mid-character leaves behind.
+    const tail = Buffer.concat([
+      Buffer.from('{"type":"session_meta"}\n{"type":"event_msg","payload":"'),
+      Buffer.from([0xe4, 0xbd])
+    ])
+    const stream = Readable.from([tail])
+
+    for await (const record of readJsonlRecordsFromStream(stream, undefined, {
+      allowIncompleteFinalLine: true,
+      onIncompleteFinalLine: (byteLength) => pending.push(byteLength),
+      maxLineBytes: 1024
+    })) {
+      records.push(record)
+    }
+
+    expect(records).toEqual([{ type: 'session_meta' }])
+    expect(pending).toEqual([tail.byteLength - Buffer.byteLength('{"type":"session_meta"}\n')])
+  })
+
+  // The defer branch exists for a tail that a live writer has not finished. Only a
+  // genuinely incomplete sequence qualifies. 0xC0/0xC1 would encode an overlong form and
+  // 0xF5-0xF7 would encode a code point past U+10FFFF: neither is a state any correct
+  // writer can produce, so both are corruption and must stay fail-closed. Judging the
+  // tail by its trailing continuation bytes alone let all five through, and a corrupt
+  // row was then silently deferred instead of reported.
+  //
+  // The contract on this path is to throw, not to warn: `decodeJsonlLine` decodes with
+  // `fatal: true`, so genuinely invalid UTF-8 surfaces as a hard failure and fails the
+  // sync. That is deliberate — a corrupt session file must not be mistaken for one that
+  // is merely still being written.
+  test.each([
+    [0xc0, 'an overlong two-byte lead'],
+    [0xc1, 'an overlong two-byte lead'],
+    [0xf5, 'a four-byte lead past U+10FFFF'],
+    [0xf6, 'a four-byte lead past U+10FFFF'],
+    [0xf7, 'a four-byte lead past U+10FFFF']
+  ])('fails closed on lead byte %i (%s) instead of deferring the row', async (lead) => {
+    // A well-formed first row, then a final row that ends on an illegal lead byte.
+    const tail = Buffer.concat([
+      Buffer.from('{"type":"session_meta"}\n{"type":"event_msg","payload":"'),
+      Buffer.from([lead])
+    ])
+
+    await expect(
+      (async () => {
+        for await (const _record of readJsonlRecordsFromStream(Readable.from([tail]), undefined, {
+          allowIncompleteFinalLine: true,
+          maxLineBytes: 1024
+        })) {
+        }
+      })()
+    ).rejects.toThrow(/contains invalid UTF-8/)
+  })
+
+  // A legal lead byte does not make the sequence legal: the second byte is constrained by
+  // the lead, and violating that constraint yields an overlong encoding or a surrogate —
+  // bytes no correct writer can produce. Those must fail closed like any other corruption,
+  // even though the sequence is also "incomplete". Checking only the lead byte missed this.
+  test.each([
+    [0xe0, 0x80, 'an overlong three-byte lead (0xE0 needs a second byte >= 0xA0)'],
+    [0xed, 0xa0, 'a surrogate three-byte lead (0xED needs a second byte <= 0x9F)'],
+    [0xf0, 0x8f, 'an overlong four-byte lead (0xF0 needs a second byte >= 0x90)'],
+    [0xf4, 0x90, 'a four-byte lead past U+10FFFF (0xF4 needs a second byte <= 0x8F)']
+  ])('fails closed on %s instead of deferring the row', async (lead, second) => {
+    const tail = Buffer.concat([
+      Buffer.from('{"type":"session_meta"}\n{"type":"event_msg","payload":"'),
+      Buffer.from([lead, second])
+    ])
+
+    await expect(
+      (async () => {
+        for await (const _record of readJsonlRecordsFromStream(Readable.from([tail]), undefined, {
+          allowIncompleteFinalLine: true,
+          maxLineBytes: 1024
+        })) {
+        }
+      })()
+    ).rejects.toThrow(/contains invalid UTF-8/)
+  })
+
+  // The mirror of the case above: a legal lead byte with too few continuation bytes is a
+  // writer caught mid-character, and has to keep being deferred rather than reported.
+  // The second byte has to be legal for its lead (0xE0 needs >= 0xA0, 0xF0 needs >= 0x90),
+  // or the sequence is overlong and belongs in the fail-closed group above.
+  test.each([
+    [0xc3, [], 'a two-byte lead with no continuation'],
+    [0xdf, [], 'the last two-byte lead'],
+    [0xe4, [], 'a three-byte lead with no continuation'],
+    [0xe4, [0x80], 'a three-byte lead with one continuation'],
+    [0xef, [0x80], 'the last three-byte lead'],
+    [0xf0, [0x90, 0x80], 'a four-byte lead with two continuations'],
+    [0xf4, [0x80, 0x80], 'the last four-byte lead']
+  ])(
+    'still defers an unfinished tail at lead %i with %i continuation byte(s) (%s)',
+    async (lead, continuations: number[]) => {
+      const pending: number[] = []
+      let deferredWarnings = 0
+      const bytes = [lead, ...continuations]
+      const tail = Buffer.concat([
+        Buffer.from('{"type":"session_meta"}\n{"type":"event_msg","payload":"'),
+        Buffer.from(bytes)
+      ])
+
+      for await (const _record of readJsonlRecordsFromStream(
+        Readable.from([tail]),
+        () => {
+          deferredWarnings += 1
+        },
+        {
+          allowIncompleteFinalLine: true,
+          onIncompleteFinalLine: (byteLength) => pending.push(byteLength),
+          maxLineBytes: 1024
+        }
+      )) {
+      }
+
+      expect(deferredWarnings).toBe(0)
+      expect(pending).toEqual([tail.byteLength - Buffer.byteLength('{"type":"session_meta"}\n')])
+    }
+  )
+
+  test('keeps a complete final JSONL row without a newline', async () => {
+    const records: unknown[] = []
+    for await (const record of readJsonlRecordsFromStream(
+      Readable.from([Buffer.from('{"type":"session_meta"}')]),
+      undefined,
+      {
+        allowIncompleteFinalLine: true,
+        maxLineBytes: 1024
+      }
+    )) {
+      records.push(record)
+    }
+
+    expect(records).toEqual([{ type: 'session_meta' }])
+  })
+
+  test('does not defer a complete malformed final JSONL row', async () => {
+    const warnings: string[] = []
+    for await (const _record of readJsonlRecordsFromStream(
+      Readable.from([Buffer.from('{"type":}')]),
+      (line) => {
+        warnings.push(line)
+      },
+      {
+        allowIncompleteFinalLine: true,
+        maxLineBytes: 1024
+      }
+    )) {
+    }
+    expect(warnings).toEqual(['Skipping malformed Codex subagent JSONL row at line 1'])
+  })
+
   test('rejects invalid UTF-8 before a short child row can be decoded with replacement characters', async () => {
     const malformed = Buffer.concat([
       Buffer.from('{"type":"event_msg","payload":"'),
@@ -469,6 +648,42 @@ describe('Codex JSONL reader', () => {
         expect.objectContaining({
           usageDate: '2026-05-25',
           totalTokens: 1
+        })
+      ])
+      expect(warnings).toEqual([
+        `Skipped 1 oversized Codex child session JSONL row without usage or subagent metadata (largest ${Buffer.byteLength(oversized)} bytes)`
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('skips oversized compacted rows with embedded non-billable token history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-child-compacted-line-'))
+    const filePath = join(root, 'child.jsonl')
+    const usage = { input_tokens: 1, cached_input_tokens: 2, output_tokens: 3, total_tokens: 4 }
+    const oversized = JSON.stringify({
+      type: 'compacted',
+      payload: {
+        latest_token_usage_record: {
+          usage,
+          turn_token_usage: usage,
+          thread_token_usage: usage
+        },
+        padding: 'x'.repeat(maxCodexChildSessionLineBytes + 1)
+      }
+    })
+    const warnings: string[] = []
+
+    try {
+      await writeFile(filePath, `${oversized}\n${JSON.stringify(childUsageEvent(2))}\n`)
+
+      await expect(
+        readChildLastUsageEvents(filePath, '2026-05-25T01:00:00.000Z', 'UTC', (line) => warnings.push(line))
+      ).resolves.toEqual([
+        expect.objectContaining({
+          usageDate: '2026-05-25',
+          totalTokens: 2
         })
       ])
       expect(warnings).toEqual([

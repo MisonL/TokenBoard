@@ -25,6 +25,7 @@ export const codexChildSessionReadLimits = {
   maxLineBytes: maxCodexChildSessionLineBytes,
   maxDiscardedLineBytes: maxDiscardedCodexChildSessionLineBytes,
   relevantMetadataKeys: ['total_token_usage', 'last_token_usage', 'subagent'],
+  codexUsageOnly: true,
   discardableLineTypes: ['compacted', 'event_msg', 'response_item', 'turn_context'],
   label: 'Codex child session'
 } as const
