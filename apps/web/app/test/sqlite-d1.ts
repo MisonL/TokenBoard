@@ -1,5 +1,5 @@
-import { Buffer } from 'node:buffer'
-import { spawnSync } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
+import { runSqliteScript } from './sqlite-script'
 
 type SqliteRow = Record<string, unknown>
 
@@ -26,9 +26,12 @@ export function createSqliteD1(dbPath: string): D1Database {
               return { results: runPreparedSql(dbPath, sql, values) as T[] }
             },
             run: async () => {
-              const rows = runPreparedSql(dbPath, `${sql}; SELECT changes() AS changes`, values)
-              const changes = Number(rows.at(-1)?.changes ?? 0)
-              return { success: true, meta: { changes } }
+              const database = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false })
+              try {
+                return runPreparedStatement(database, sql, values)
+              } finally {
+                database.close()
+              }
             }
           } as SqlitePreparedStatement
         }
@@ -41,58 +44,62 @@ export function createSqliteD1(dbPath: string): D1Database {
 }
 
 export function runSql(dbPath: string, input: string) {
-  const result = spawnSync('sqlite3', [dbPath], {
-    input,
-    encoding: 'utf8'
-  })
-  if (result.error) {
-    throw new Error(`sqlite3 failed to start: ${result.error.message}\nSQL:\n${input}`)
-  }
+  const result = runSqliteScript(dbPath, input)
   if (result.status !== 0) {
-    throw new Error(`sqlite3 failed: ${result.stderr}\nSQL:\n${input}`)
+    throw new Error(`sqlite failed: ${result.stderr}\nSQL:\n${input}`)
   }
   return result.stdout
 }
 
 function runPreparedSql(dbPath: string, sql: string, bindings: unknown[]) {
-  const parameterCommands = bindings.map((value, index) => parameterInsertSql(index, value))
-  const output = runSql(
-    dbPath,
-    ['.mode json', '.parameter init', 'DELETE FROM temp.sqlite_parameters;', ...parameterCommands, sql].join('\n')
-  )
-
-  if (!output.trim()) return []
-  return parseRows(parseSqliteJsonRows(output))
+  const database = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false, readBigInts: true })
+  try {
+    return parseRows(database.prepare(sql).all(...(normalizeBindings(bindings) as never[])))
+  } finally {
+    database.close()
+  }
 }
 
 function runPreparedSqlBatch(dbPath: string, statements: SqlitePreparedStatement[]) {
-  const commands = statements.flatMap((statement) => [
-    'DELETE FROM temp.sqlite_parameters;',
-    ...statement.bindings.map((value, index) => parameterInsertSql(index, value)),
-    `${statement.sql};`,
-    'SELECT changes() AS changes;'
-  ])
-  const output = runSql(
-    dbPath,
-    ['.bail on', '.mode json', '.parameter init', 'BEGIN IMMEDIATE;', ...commands, 'COMMIT;'].join('\n')
-  )
-  const resultSets = sqliteJsonResultSets(output)
-    .map((json) => JSON.parse(json) as SqliteRow[])
-    .filter((rows) => rows.length === 1 && 'changes' in rows[0])
+  const database = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false, readBigInts: true })
+  try {
+    database.exec('BEGIN IMMEDIATE;')
+    const results = statements.map((statement) => {
+      return runPreparedStatement(database, statement.sql, statement.bindings)
+    })
+    database.exec('COMMIT;')
+    return results
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK;')
+    } catch {
+      // Preserve the original batch error when rollback is already complete.
+    }
+    throw error
+  } finally {
+    database.close()
+  }
+}
 
-  if (resultSets.length !== statements.length) {
-    throw new Error(`sqlite batch returned ${resultSets.length} results for ${statements.length} statements`)
+function runPreparedStatement(database: DatabaseSync, sql: string, bindings: unknown[]) {
+  const normalizedBindings = normalizeBindings(bindings) as never[]
+  const statement = database.prepare(sql)
+  if (statementReturnsRows(sql)) {
+    const rows = parseRows(statement.all(...normalizedBindings))
+    return {
+      success: true,
+      results: rows,
+      meta: { changes: hasReturningClause(sql) ? rows.length : 0 }
+    } as D1Result
   }
 
-  return resultSets.map((rows) => ({
-    success: true,
-    meta: { changes: Number(rows[0]?.changes ?? 0) }
-  })) as D1Result[]
+  const result = statement.run(...normalizedBindings)
+  return { success: true, meta: { changes: Number(result.changes) } } as D1Result
 }
 
 function wrapFirstQuery(sql: string) {
   if (/\bRETURNING\b/i.test(sql)) return sql
-  return `SELECT * FROM (${sql}) LIMIT 1`
+  return `SELECT * FROM (${sql.trim().replace(/;\s*$/, '')}) LIMIT 1`
 }
 
 function parseRows(rows: SqliteRow[]) {
@@ -100,73 +107,46 @@ function parseRows(rows: SqliteRow[]) {
     const parsed: SqliteRow = {}
     const entries = Object.entries(row)
     if (entries.length === 1 && entries[0]?.[0].startsWith('COUNT(')) {
-      parsed.value = entries[0][1]
+      parsed.value = normalizeSqliteValue(entries[0][1])
       return parsed
     }
     for (const [key, value] of entries) {
-      parsed[key] = value
+      parsed[key] = normalizeSqliteValue(value)
     }
     return parsed
   })
 }
 
-function parseSqliteJsonRows(output: string) {
-  return sqliteJsonResultSets(output).flatMap((json) => JSON.parse(json) as SqliteRow[])
+function statementReturnsRows(sql: string) {
+  const normalized = sql.trim()
+  return /^(?:SELECT|VALUES|PRAGMA|EXPLAIN)\b/i.test(normalized) || hasReturningClause(sql)
 }
 
-function sqliteJsonResultSets(output: string) {
-  const resultSets: string[] = []
-  let start = -1
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let index = 0; index < output.length; index += 1) {
-    const char = output[index]
-    if (escaped) {
-      escaped = false
-      continue
-    }
-    if (char === '\\' && inString) {
-      escaped = true
-      continue
-    }
-    if (char === '"') {
-      inString = !inString
-      continue
-    }
-    if (inString) continue
-    if (char === '[') {
-      if (depth === 0) start = index
-      depth += 1
-    }
-    if (char === ']') {
-      depth -= 1
-      if (depth === 0 && start >= 0) {
-        resultSets.push(output.slice(start, index + 1))
-        start = -1
-      }
-    }
-  }
-  return resultSets
+function hasReturningClause(sql: string) {
+  return /\bRETURNING\b/i.test(sql)
 }
 
-function parameterInsertSql(index: number, value: unknown) {
-  return [
-    'INSERT INTO temp.sqlite_parameters(key, value)',
-    `VALUES('?${index + 1}', ${formatSqliteParameter(value)});`
-  ].join(' ')
+function normalizeSqliteValue(value: unknown) {
+  if (typeof value !== 'bigint') return value
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(value) : value
 }
 
-function formatSqliteParameter(value: unknown) {
-  if (value === null) return 'null'
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null'
-  if (typeof value === 'boolean') return value ? '1' : '0'
-  if (typeof value !== 'string') {
+function normalizeBindings(values: unknown[]) {
+  return values.map((value) => {
+    if (value === undefined) {
+      throw new Error('Unsupported sqlite test binding type: undefined')
+    }
+    if (typeof value === 'boolean') return value ? 1 : 0
+    if (typeof value === 'number' && !Number.isFinite(value)) return null
+    if (
+      value === null ||
+      typeof value === 'number' ||
+      typeof value === 'bigint' ||
+      typeof value === 'string' ||
+      value instanceof Uint8Array
+    ) {
+      return value
+    }
     throw new Error(`Unsupported sqlite test binding type: ${typeof value}`)
-  }
-  return sqlParameterStringLiteral(value)
-}
-
-function sqlParameterStringLiteral(value: string) {
-  return `CAST(X'${Buffer.from(value, 'utf8').toString('hex')}' AS TEXT)`
+  })
 }
