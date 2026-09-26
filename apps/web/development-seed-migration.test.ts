@@ -1,8 +1,8 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { describe, expect, test } from 'vitest'
+import { runSqliteScript } from './app/test/sqlite-script'
 
 const migrationsDir = resolve(import.meta.dirname, 'db/migrations')
 
@@ -292,14 +292,9 @@ function expectFullSeedDataRemoved(dbPath: string) {
 }
 
 function runSqlite(dbPath: string, sql: string, options: { foreignKeys?: boolean; deferForeignKeys?: boolean } = {}) {
-  const foreignKeys = options.foreignKeys !== false ? 'ON' : 'OFF'
-  const deferForeignKeys = options.deferForeignKeys ? 'PRAGMA defer_foreign_keys = ON;\n' : ''
-  const result = spawnSync('sqlite3', [dbPath], {
-    encoding: 'utf8',
-    input: `PRAGMA foreign_keys = ${foreignKeys};\n${deferForeignKeys}${sql}`
-  })
+  const result = runSqliteScript(dbPath, sql, { ...options, foreignKeys: options.foreignKeys !== false })
   if (result.status !== 0) {
-    throw new Error(result.stderr || `sqlite3 exited with status ${result.status}`)
+    throw new Error(result.stderr || `sqlite exited with status ${result.status}`)
   }
   return result
 }

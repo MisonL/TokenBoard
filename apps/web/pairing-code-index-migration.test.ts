@@ -1,8 +1,8 @@
-import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, test } from 'vitest'
+import { runSqliteScript } from './app/test/sqlite-script'
 
 const migrationsDir = resolve(import.meta.dirname, 'db/migrations')
 
@@ -75,12 +75,9 @@ function migrationsBeforeTarget() {
 }
 
 function runSqlite(dbPath: string, sql: string, requireSuccess = true) {
-  const result = spawnSync('sqlite3', [dbPath], {
-    encoding: 'utf8',
-    input: `PRAGMA foreign_keys = ON;\n${sql}`
-  })
+  const result = runSqliteScript(dbPath, sql, { foreignKeys: true })
   if (requireSuccess && result.status !== 0) {
-    throw new Error(result.stderr || `sqlite3 exited with status ${result.status}`)
+    throw new Error(result.stderr || `sqlite exited with status ${result.status}`)
   }
   return result
 }
