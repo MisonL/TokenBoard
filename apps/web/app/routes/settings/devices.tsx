@@ -27,6 +27,11 @@ import { cn } from '../../lib/cn'
 
 export const GET = createRoute(async (c) => {
   const user = await requireUser(c)
+  // The page renders the signed-in user's devices and credentials, so nothing may hold on to
+  // it: without a directive a browser may cache it heuristically and show it to the next person
+  // at the same machine. The POST branch already set this for the rotation response, which is
+  // the same page rendered from the same data; the GET was the one surface left out.
+  c.header('Cache-Control', 'no-store')
   const devices = await listUserDevices(c.env.DB, user.id)
   const view = c.req.query('view') === 'cards' ? 'cards' : 'list'
   const query = c.req.query('query') ?? ''
@@ -106,7 +111,6 @@ export const POST = createRoute(async (c) => {
         userId: user.id,
         uploadTokenId: String(form.uploadTokenId ?? '')
       })
-      c.header('Cache-Control', 'no-store')
       return renderDevicesPage(c, user, {
         rotatedCredentials: result,
         serverOrigin: publicOrigin,
@@ -166,6 +170,7 @@ type DevicesRenderContext = {
   env: {
     DB: D1Database
   }
+  header: (name: string, value: string) => void
   render: (element: ReturnType<typeof DevicesPage>) => Response | Promise<Response>
 }
 
@@ -188,6 +193,10 @@ async function renderDevicesPage(
     ...device,
     auditLogs: auditLogsByDevice.get(device.id) ?? []
   }))
+  // Set here as well as on the GET, because this is the renderer the rotation response uses and
+  // that response carries one-time credentials: a cached copy would hand them to the next
+  // reader of the same browser.
+  c.header('Cache-Control', 'no-store')
   return c.render(
     <DevicesPage
       devices={devicesWithAudit}

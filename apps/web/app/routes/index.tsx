@@ -48,9 +48,9 @@ export default createRoute(async (c) => {
               <span class="text-[var(--app-muted)]">最近 30 天</span>
             </div>
             <div class="flex h-4 overflow-hidden rounded-full bg-[var(--app-border)]">
-              <div class="h-full bg-lime-300" style="width:55%" />
-              <div class="h-full bg-lime-200" style="width:28%" />
-              <div class="h-full bg-lime-500" style="width:17%" />
+              <div class="h-full w-[55%] bg-lime-300" />
+              <div class="h-full w-[28%] bg-lime-200" />
+              <div class="h-full w-[17%] bg-lime-500" />
             </div>
             <div class="mt-3 flex flex-wrap justify-between gap-2 text-xs text-[var(--app-muted)]">
               <span>Claude Code 55%</span>
