@@ -16,10 +16,23 @@ const skippableMagicMax = 0x184d2a5f
  * mid-append while a scan runs. Its bytes are dropped and the frames before it
  * are still returned.
  */
-export function decompressZstdFrames(buffer: Buffer): Buffer {
+export function decompressZstdFrames(buffer: Buffer, options?: { maxOutputLength?: number }): Buffer {
+  const maxOutputLength = options?.maxOutputLength
   const decoded: Buffer[] = []
+  let decodedBytes = 0
   for (const frame of scanZstdFrames(buffer)) {
-    decoded.push(decompressZstdFrame(buffer, frame))
+    const frameBuffer = decompressZstdFrame(
+      buffer,
+      frame,
+      maxOutputLength === undefined ? undefined : { maxOutputLength }
+    )
+    decodedBytes += frameBuffer.length
+    // A per-frame cap is not a total cap: a stream of many small frames each under the limit
+    // would still accumulate past it. The running total is what actually bounds the result.
+    if (maxOutputLength !== undefined && decodedBytes > maxOutputLength) {
+      throw new Error(`Decompressed Zstandard stream exceeds ${maxOutputLength} bytes`)
+    }
+    decoded.push(frameBuffer)
   }
   return Buffer.concat(decoded)
 }

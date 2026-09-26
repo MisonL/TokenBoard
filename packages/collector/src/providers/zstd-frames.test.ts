@@ -93,3 +93,30 @@ describe('zstd frames', () => {
     expect(isZstdBuffer(Buffer.alloc(2))).toBe(false)
   })
 })
+
+// `decompressZstdFrames` is the shape a caller reaches for first — it is the exported,
+// whole-buffer helper — but it passed no `maxOutputLength`, so it would happily expand a
+// compressed log into unbounded memory. The production path (deepseek-harness) does not use it;
+// it walks the frames itself and caps each one. Leaving the helper unbounded made the bounded
+// implementation the less obvious choice, so the limit now lives on the helper too.
+describe('decompressZstdFrames output bound', () => {
+  test('enforces the caller limit instead of expanding without bound', () => {
+    const stream = frame('0123456789')
+
+    expect(() => decompressZstdFrames(stream, { maxOutputLength: 5 })).toThrow(/larger than 5 bytes/)
+  })
+
+  test('accepts output within the limit', () => {
+    const stream = Buffer.concat([frame('one\n'), frame('two\n')])
+
+    expect(decompressZstdFrames(stream, { maxOutputLength: 64 }).toString()).toBe('one\ntwo\n')
+  })
+
+  // The per-frame limit alone is not a total bound: a stream of many small frames each under the
+  // cap would still accumulate past it. The cumulative total is what actually bounds the result.
+  test('bounds the total across frames, not just each frame', () => {
+    const stream = Buffer.concat([frame('aaaa\n'), frame('bbbb\n'), frame('cccc\n')])
+
+    expect(() => decompressZstdFrames(stream, { maxOutputLength: 10 })).toThrow(/exceeds 10 bytes/)
+  })
+})
