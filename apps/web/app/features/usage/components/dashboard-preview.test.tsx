@@ -99,6 +99,60 @@ describe('DashboardPreview', () => {
     expect(html).toContain('300 不含缓存读 / 400 total / 缓存率 25%')
   })
 
+  test('sizes the bars with percent classes instead of inline styles', async () => {
+    const html = await renderToString(
+      <DashboardPreview
+        summary={{
+          todayTokens: 100,
+          todayTokensWithoutCacheRead: 100,
+          todayCacheReadRate: 0,
+          todayCostUsd: 0,
+          todayCostAvailable: true,
+          monthTokens: 100,
+          monthTokensWithoutCacheRead: 100,
+          monthCacheReadRate: 0,
+          monthCostUsd: 0,
+          monthCostAvailable: true,
+          lastSyncedAt: null,
+          deviceCount: 1,
+          sourceSplit: [
+            { source: 'claude-code', totalTokens: 800, totalTokensWithoutCacheRead: 600, cacheReadRate: 0.25 },
+            { source: 'codex', totalTokens: 200, totalTokensWithoutCacheRead: 100, cacheReadRate: 0.5 }
+          ],
+          dailyTrend: [
+            {
+              usageDate: '2026-04-27',
+              totalTokens: 100,
+              totalTokensWithoutCacheRead: 50,
+              cacheReadRate: 0.5,
+              costUsd: 0.1,
+              costAvailable: true
+            },
+            {
+              usageDate: '2026-04-28',
+              totalTokens: 40,
+              totalTokensWithoutCacheRead: 20,
+              cacheReadRate: 0.5,
+              costUsd: 0.04,
+              costAvailable: true
+            }
+          ]
+        }}
+      />
+    )
+
+    // No inline style may survive: under `style-src 'self'` the browser discards it, so a
+    // silent reintroduction would look fine in the HTML and render as a flat chart.
+    expect(html).not.toContain('style=')
+    // Trend bars scale against the 100-token max: 100 -> 100%, 40 -> 40%. The contained
+    // overlay scales against its own bar: 50/100 -> 50%. The source split is measured in
+    // 不含缓存读 tokens, so it is 600/700 -> 86%, not 600/800.
+    expect(html).toContain('h-[100%]')
+    expect(html).toContain('h-[40%]')
+    expect(html).toContain('h-[50%]')
+    expect(html).toContain('w-[86%]')
+  })
+
   test('clamps contained trend heights for edge cases', () => {
     expect(dashboardPreviewTestUtils.containedBarHeight(0, 100)).toBe(0)
     expect(dashboardPreviewTestUtils.containedBarHeight(30, 0)).toBe(0)

@@ -117,12 +117,10 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
                   data-trend-without-cache-read={formatInteger(item.totalTokensWithoutCacheRead)}
                 >
                   <div
-                    class={`relative w-full max-w-3 overflow-hidden rounded-t transition ${item.totalTokens > 0 ? 'bg-[var(--app-border)] group-hover:bg-[var(--app-muted)]' : 'bg-[var(--app-border)]'}`}
-                    style={`height:${trendBarHeight(item.totalTokens, trendMaxTokens)}%`}
+                    class={`relative w-full max-w-3 overflow-hidden rounded-t transition ${item.totalTokens > 0 ? 'bg-[var(--app-border)] group-hover:bg-[var(--app-muted)]' : 'bg-[var(--app-border)]'} h-[${trendBarHeight(item.totalTokens, trendMaxTokens)}%]`}
                   >
                     <div
-                      class="absolute inset-x-0 bottom-0 rounded-t bg-lime-300/90 transition group-hover:bg-lime-200"
-                      style={`height:${containedBarHeight(item.totalTokensWithoutCacheRead, item.totalTokens)}%`}
+                      class={`absolute inset-x-0 bottom-0 rounded-t bg-lime-300/90 transition group-hover:bg-lime-200 h-[${containedBarHeight(item.totalTokensWithoutCacheRead, item.totalTokens)}%]`}
                     />
                   </div>
                 </div>
@@ -156,8 +154,7 @@ export function DashboardPreview(props: { summary: DashboardSummary; userName?: 
                   </p>
                   <div class="mt-2 h-2 overflow-hidden rounded-full bg-[var(--app-border)]">
                     <div
-                      class="h-full rounded-full bg-lime-300"
-                      style={`width:${formatPercent(item.totalTokensWithoutCacheRead, totalSourceTokensWithoutCacheRead)}`}
+                      class={`h-full rounded-full bg-lime-300 w-[${formatPercent(item.totalTokensWithoutCacheRead, totalSourceTokensWithoutCacheRead)}]`}
                       title={`Total 占比：${formatPercent(item.totalTokens, totalSourceTokens)}`}
                     />
                   </div>

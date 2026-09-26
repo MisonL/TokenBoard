@@ -1,5 +1,14 @@
 @import 'tailwindcss' source('../app');
 
+/* The dashboard's trend and source-split bars size themselves from the data, so their
+   `h-[N%]` / `w-[N%]` classes are built at render time and the scanner cannot see them
+   in the source text. They are enumerated here instead. This matters beyond styling:
+   the bars used to carry the same values as inline `style` attributes, which the
+   `style-src 'self'` policy drops — a hash or 'unsafe-inline' cannot allow a style
+   attribute, so the only fix is for these to be real classes. */
+@source inline('h-[{0..100}%]');
+@source inline('w-[{0..100}%]');
+
 :root {
   color-scheme: dark;
   --app-bg: #10130f;

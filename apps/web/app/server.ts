@@ -15,6 +15,7 @@ import { assertPublicUsageVisible, publicUsageSlugExists } from './features/publ
 import { usageSummaryStrictMode } from './features/usage/deduped-daily-usage'
 import type { Bindings } from './lib/db'
 import { pruneExpiredRateLimits } from './lib/rate-limit'
+import { securityHeaders } from './lib/security-headers'
 
 const app = createApp()
 
@@ -22,14 +23,16 @@ showRoutes(app)
 
 export default {
   async fetch(request, env, ctx) {
+    const headers = await securityHeaders()
+
     const publicResponse = await handlePublicApiRequest(request, env, ctx)
-    if (publicResponse) return publicResponse
+    if (publicResponse) return withSecurityHeaders(publicResponse, headers)
 
     const response = await app.fetch(request, env, ctx)
     if (response.status === 404 && shouldFetchStaticAsset(request)) {
-      return env.ASSETS?.fetch(request) ?? response
+      return withSecurityHeaders((await env.ASSETS?.fetch(request)) ?? response, headers)
     }
-    return response
+    return withSecurityHeaders(response, headers)
   },
   scheduled(controller, env, ctx) {
     const now = new Date(controller.scheduledTime)
@@ -195,4 +198,19 @@ async function runRateLimitPrune(env: Bindings, now: Date) {
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message
   return String(error)
+}
+
+// Applied at the single response boundary rather than per route, so a new route cannot
+// ship without them. Existing headers win: a route that sets its own Cache-Control or
+// Content-Type must not have it clobbered by a blanket default.
+function withSecurityHeaders(response: Response, headers: Record<string, string>): Response {
+  const merged = new Headers(response.headers)
+  for (const [name, value] of Object.entries(headers)) {
+    if (!merged.has(name)) merged.set(name, value)
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: merged
+  })
 }
