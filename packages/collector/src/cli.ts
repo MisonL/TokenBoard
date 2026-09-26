@@ -21,6 +21,7 @@ import { readCodexHookAcknowledgement, resolveCodexHookCursorPlan } from './prov
 import { normalizeCodexSymlinkRoots } from './providers/codex-symlink-policy'
 import { clearPendingUploadCursors, cursorSnapshotGroupKey, warmHookCursorHighWater } from './providers/session-cursor'
 import { withCursorLock } from './providers/session-cursor-store'
+import { isTransientNetworkError } from './transient-error'
 import { uploadSnapshots } from './upload'
 import { assertValidTimeZone } from './timezone'
 import { isAllDateFilter } from './iso-calendar-date'
@@ -112,13 +113,24 @@ const defaultDeps: CliDeps = {
   withCursorLock
 }
 
+// Exit code the scheduled runner treats as "retry this later". A transient
+// upload failure (DNS, TLS, reset connection, 5xx from the edge) is not a
+// collector defect: the snapshots are still pending in the cursor and the next
+// attempt can succeed, so the run reports itself as deferrable rather than
+// failed. Only the scheduled runner defers, and it never runs in hook mode, so
+// hook syncs keep reporting a plain failure. The skill scripts mirror this
+// literal; keep them in sync.
+export const transientSyncExitCode = 75
+
 export async function runCollectorCli(
   args: string[],
   env: CliEnv = process.env,
   deps: CliDeps = defaultDeps
 ): Promise<number> {
+  let command: CliCommand | undefined
   try {
     const options = parseArgs(args, env)
+    command = options.command
     if (deps.withCursorLock && env.TOKENBOARD_COLLECTOR_LOCK_HELD !== '1') {
       return await deps.withCursorLock(join(resolveStateDir(env), 'collector-run'), () =>
         runCollectorCli(args, { ...env, TOKENBOARD_COLLECTOR_LOCK_HELD: '1' }, deps)
@@ -195,6 +207,11 @@ export async function runCollectorCli(
     return 0
   } catch (error) {
     deps.stderr(errorMessage(error))
+    // Only a non-hook sync run can be deferred: preview and warm-hooks report a
+    // plain failure, and hook syncs are never retried by the scheduler.
+    if (command === 'sync' && env.TOKENBOARD_HOOK_MODE !== '1' && isTransientNetworkError(error)) {
+      return transientSyncExitCode
+    }
     return 1
   }
 }

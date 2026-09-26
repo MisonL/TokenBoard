@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
-import { runCollectorCli } from './cli'
+import { runCollectorCli, transientSyncExitCode } from './cli'
 import { attachCodexHookAcknowledgement } from './providers/codex-hook-profiles'
 import { cursorSnapshotGroupKey } from './providers/session-cursor'
 
@@ -453,6 +453,132 @@ describe('runCollectorCli', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual(['Error'])
+  })
+
+  test('keeps the deferrable exit code in sync with the skill scripts', async () => {
+    // The skill scripts cannot import this TypeScript constant, so assert the
+    // literal they declare still matches. A drift here would silently disable
+    // the scheduled retry fallback for transient network failures.
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const scriptPath = join(__dirname, '..', '..', '..', 'skills', 'tokenboard', 'scripts', 'scheduled-retry.mjs')
+    const source = readFileSync(scriptPath, 'utf8')
+    const match = /export const transientSyncExitCode = (\d+)/.exec(source)
+
+    expect(match).not.toBeNull()
+    expect(Number(match?.[1])).toBe(transientSyncExitCode)
+  })
+
+  test('reports a transient upload failure as a deferrable sync exit code', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('fetch failed')
+        }
+      }
+    )
+
+    expect(result).toBe(transientSyncExitCode)
+    expect(stderr).toEqual(['fetch failed'])
+  })
+
+  test('reports a retryable gateway status as a deferrable sync exit code', async () => {
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('Upload failed with status 503')
+        }
+      }
+    )
+
+    expect(result).toBe(transientSyncExitCode)
+  })
+
+  test('keeps a non-transient upload rejection a plain failure', async () => {
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('Upload failed with status 401')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+  })
+
+  test('hook sync never reports the deferrable exit code', async () => {
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_HOOK_MODE: '1'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('fetch failed')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+  })
+
+  test('preview never reports the deferrable exit code for a transient failure', async () => {
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => {
+          throw new Error('fetch failed')
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
   })
 
   test('warms hook cursor high-water after a non-hook sync succeeds', async () => {

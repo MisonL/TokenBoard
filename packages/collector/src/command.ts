@@ -1,24 +1,11 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { errorMessage } from './error-message'
+import { isTransientNetworkError } from './transient-error'
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000
 const DEFAULT_RETRY_DELAY_MS = 5_000
-
-const RETRYABLE_ERROR_PATTERNS = [
-  'fetch failed',
-  'unknown_certificate_verification_error',
-  'cert_',
-  'econnreset',
-  'econnrefused',
-  'etimedout',
-  'eai_again',
-  'enotfound',
-  'network',
-  'socket hang up',
-  'tls'
-]
 
 export type CommandRunnerOptions = {
   env?: NodeJS.ProcessEnv
@@ -118,8 +105,7 @@ function readRetryDelayMs() {
 }
 
 function isRetryableCommandError(error: unknown) {
-  const message = errorMessage(error).toLowerCase()
-  return RETRYABLE_ERROR_PATTERNS.some((pattern) => message.includes(pattern))
+  return isTransientNetworkError(error)
 }
 
 function wait(delayMs: number) {
