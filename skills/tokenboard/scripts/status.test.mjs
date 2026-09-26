@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { buildStatus } from './status.mjs'
 import { scheduledRetryLegacyStatePath, scheduledRetryStatePath } from './scheduled-retry.mjs'
+import { scheduledSyncStatePath } from './scheduled-sync-state.mjs'
 
 test('status reports health without exposing local configuration identities or paths', () => {
   const status = buildStatus({
@@ -93,6 +94,75 @@ test('status exposes scheduled retry progress without the private error detail',
     nextRetryAt: '2026-07-29T09:01:00.000Z'
   })
   assert.equal(JSON.stringify(status).includes('/home/user/.tokenboard'), false)
+})
+
+test('status exposes scheduled sync progress without private error details', () => {
+  const status = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: {},
+    hooks: {},
+    deviceLink: {},
+    scheduledSync: {
+      schemaVersion: 'tokenboard-scheduled-sync/v1',
+      source: 'all',
+      status: 'failed',
+      startedAt: '2026-09-20T01:00:00.000Z',
+      updatedAt: '2026-09-20T01:05:00.000Z',
+      completedAt: '2026-09-20T01:05:00.000Z',
+      exitCode: 1,
+      error: '/home/user/.tokenboard/private-error'
+    }
+  })
+
+  assert.deepEqual(status.scheduledSync, {
+    status: 'failed',
+    source: 'all',
+    startedAt: '2026-09-20T01:00:00.000Z',
+    updatedAt: '2026-09-20T01:05:00.000Z',
+    completedAt: '2026-09-20T01:05:00.000Z',
+    exitCode: 1
+  })
+  assert.equal(JSON.stringify(status).includes('private-error'), false)
+})
+
+test('status reads the source-specific scheduled sync state file', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-status-scheduled-source-'))
+  try {
+    writeFileSync(join(root, 'config.json'), JSON.stringify({ source: 'codex' }))
+    writeFileSync(
+      scheduledSyncStatePath(root, 'codex'),
+      JSON.stringify({
+        schemaVersion: 'tokenboard-scheduled-sync/v1',
+        source: 'codex',
+        status: 'success',
+        startedAt: '2026-09-20T01:00:00.000Z',
+        updatedAt: '2026-09-20T01:05:00.000Z',
+        completedAt: '2026-09-20T01:05:00.000Z',
+        exitCode: 0
+      })
+    )
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./status.mjs', import.meta.url))], {
+      env: {
+        ...process.env,
+        TOKENBOARD_CONFIG_DIR: root,
+        TOKENBOARD_STATE_DIR: root
+      },
+      encoding: 'utf8'
+    })
+
+    assert.equal(result.status, 0)
+    assert.deepEqual(JSON.parse(result.stdout).scheduledSync, {
+      status: 'success',
+      source: 'codex',
+      startedAt: '2026-09-20T01:00:00.000Z',
+      updatedAt: '2026-09-20T01:05:00.000Z',
+      completedAt: '2026-09-20T01:05:00.000Z',
+      exitCode: 0
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('status rejects non-canonical scheduled retry timestamps instead of normalizing them', () => {
@@ -244,6 +314,89 @@ test('status falls back to a legacy retry state only when its source matches', (
 
     assert.equal(result.status, 0)
     assert.equal(JSON.parse(result.stdout).scheduledRetry.status, 'deferred')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// The unsuffixed state file is written by a `--source all` install, so a per-source
+// configuration has to fall back to it. The previous comparison required the stored
+// source to equal the configured one, which a file that always says 'all' can never
+// satisfy — the fallback was unreachable and the sync state simply went missing.
+test('status exposes a legacy all-source sync state for a configured source', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-status-sync-legacy-all-'))
+  try {
+    writeFileSync(join(root, 'config.json'), JSON.stringify({ source: 'codex' }))
+    writeFileSync(
+      scheduledSyncStatePath(root),
+      JSON.stringify({
+        schemaVersion: 'tokenboard-scheduled-sync/v1',
+        source: 'all',
+        status: 'success',
+        startedAt: '2026-07-29T09:00:00.000Z',
+        updatedAt: '2026-07-29T09:01:00.000Z',
+        completedAt: '2026-07-29T09:01:00.000Z',
+        exitCode: 0
+      })
+    )
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./status.mjs', import.meta.url))], {
+      env: { ...process.env, TOKENBOARD_CONFIG_DIR: root, TOKENBOARD_STATE_DIR: root },
+      encoding: 'utf8'
+    })
+
+    assert.equal(result.status, 0)
+    assert.deepEqual(JSON.parse(result.stdout).scheduledSync, {
+      status: 'success',
+      source: 'all',
+      startedAt: '2026-07-29T09:00:00.000Z',
+      updatedAt: '2026-07-29T09:01:00.000Z',
+      completedAt: '2026-07-29T09:01:00.000Z',
+      exitCode: 0
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// A per-source file still wins, and a legacy file for a *different* named source is not
+// silently adopted — only the 'all' fallback is shared.
+test('status prefers a per-source sync state over the legacy all-source one', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-status-sync-source-wins-'))
+  try {
+    writeFileSync(join(root, 'config.json'), JSON.stringify({ source: 'codex' }))
+    writeFileSync(
+      scheduledSyncStatePath(root),
+      JSON.stringify({
+        schemaVersion: 'tokenboard-scheduled-sync/v1',
+        source: 'all',
+        status: 'failed',
+        startedAt: '2026-07-29T08:00:00.000Z',
+        updatedAt: '2026-07-29T08:01:00.000Z',
+        exitCode: 1
+      })
+    )
+    writeFileSync(
+      scheduledSyncStatePath(root, 'codex'),
+      JSON.stringify({
+        schemaVersion: 'tokenboard-scheduled-sync/v1',
+        source: 'codex',
+        status: 'success',
+        startedAt: '2026-07-29T09:00:00.000Z',
+        updatedAt: '2026-07-29T09:01:00.000Z',
+        completedAt: '2026-07-29T09:01:00.000Z',
+        exitCode: 0
+      })
+    )
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./status.mjs', import.meta.url))], {
+      env: { ...process.env, TOKENBOARD_CONFIG_DIR: root, TOKENBOARD_STATE_DIR: root },
+      encoding: 'utf8'
+    })
+
+    assert.equal(result.status, 0)
+    assert.equal(JSON.parse(result.stdout).scheduledSync.source, 'codex')
+    assert.equal(JSON.parse(result.stdout).scheduledSync.status, 'success')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

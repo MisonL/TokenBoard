@@ -272,7 +272,7 @@ for (const failure of [
             maxFollowUps: 1,
             process: fakeProcess(210),
             writeFile: (path, value, options) => {
-              if (sameMemoryPath(path, '/state/last-success.json')) throw failure.value
+              if (memoryPathStartsWith(path, '/state/last-success.json')) throw failure.value
               fs.writeFile(path, value, options)
             },
             executeSync: (trigger) => {
@@ -313,7 +313,7 @@ test('coordinator preserves sync evidence when checkpoint and lock release both 
         maxFollowUps: 1,
         process: fakeProcess(211),
         writeFile: (path, value, options) => {
-          if (sameMemoryPath(path, '/state/last-success.json')) throw new Error('checkpoint write failed')
+          if (memoryPathStartsWith(path, '/state/last-success.json')) throw new Error('checkpoint write failed')
           fs.writeFile(path, value, options)
         },
         unlink: (path) => {

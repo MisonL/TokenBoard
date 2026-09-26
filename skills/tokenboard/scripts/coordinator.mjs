@@ -8,16 +8,40 @@ import {
   unlinkSync,
   writeFileSync
 } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import { acknowledgeSignalSource, appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
 import { errorMessage } from './error-message.mjs'
-import { currentProcessStartIdentity } from './process-liveness.mjs'
+import { currentProcessStartIdentity, probeProcessStartIdentity } from './process-liveness.mjs'
 
 const defaultLockTimeoutMs = 60_000
 const defaultLockTimeoutRetryDelayMs = 60_000
 const defaultMaxFollowUps = 0
 const defaultMaxRunLogs = 1_024
+
+// The cooldown exists to stop a burst of triggers from turning into a burst of syncs.
+// Its input is a checkpoint another process wrote, so it can be missing, truncated, or
+// otherwise unreadable. Treating that as "no cooldown" silently disables debouncing
+// exactly when the state directory is already suspect, and the run then syncs on every
+// trigger. Every other unreadable-state path here (lock release, checkpoint write,
+// state directory symlink) raises, so this one does too rather than degrading quietly.
+class UnreadableCooldownCheckpointError extends Error {
+  constructor(cause, path) {
+    super(errorMessage(cause))
+    this.name = 'UnreadableCooldownCheckpointError'
+    this.cause = cause
+    this.path = path
+  }
+
+  withCleanupFailure(cleanupError) {
+    const combined = new AggregateError(
+      [this.cause, cleanupError],
+      `${this.message}; sync lock release failed: ${errorMessage(cleanupError)}`
+    )
+    return new UnreadableCooldownCheckpointError(combined, this.path)
+  }
+}
 
 class SuccessfulSyncCheckpointError extends Error {
   constructor(cause, completedResult) {
@@ -66,7 +90,12 @@ export function coordinatedSync(trigger, options) {
   const runtime = buildRuntime(options)
   const startedAtMs = runtime.now()
   const result = baseResult(trigger, startedAtMs)
-  runtime.mkdir(runtime.stateDir, { recursive: true })
+  // Private from the start. The mode is pinned rather than left to the umask: the hook path
+  // runs from an interactive shell, where the umask is normally 022, and everything written
+  // below here — the run logs, the sync checkpoint, the lock — belongs to this user alone.
+  // (`sync.mjs` also chmods this directory, but only once a sync actually runs, which is too
+  // late for a run that fails before reaching it.)
+  runtime.mkdir(runtime.stateDir, { recursive: true, mode: 0o700 })
 
   let completed
   let checkpointError
@@ -79,7 +108,7 @@ export function coordinatedSync(trigger, options) {
         ? error.completedResult
         : result
     completed = { ...failedResult, error: errorMessage(error) }
-    if (error instanceof SuccessfulSyncCheckpointError) {
+    if (error instanceof SuccessfulSyncCheckpointError || error instanceof UnreadableCooldownCheckpointError) {
       hasCheckpointError = true
       checkpointError = error.cause instanceof Error ? error.cause : error
     }
@@ -129,17 +158,32 @@ function runCoordinator(trigger, runtime, result) {
       try {
         releaseLock(lockPath, runtime, lock.owner)
       } catch (error) {
-        if (coordinatorError instanceof SuccessfulSyncCheckpointError) {
-          throw coordinatorError.withCleanupFailure(error)
-        }
-        if (coordinatorError instanceof CompletedSyncPostProcessError) {
-          throw coordinatorError.withCleanupFailure(error)
-        }
+        // The release runs on the way out of *every* failure, so a cleanup error here is a
+        // secondary symptom and must never displace the primary one. It must not change the
+        // outcome either: `coordinatedSync` decides whether to rethrow the hook's fail-closed
+        // error by testing the thrown error's class, so replacing an
+        // `UnreadableCooldownCheckpointError` with a bare cleanup error turned a failing hook
+        // into a successful one — fail-closed became fail-open.
+        if (coordinatorError) throw withCleanupFailure(coordinatorError, error)
+        // Reached only when the run itself returned: the sync succeeded and only the release
+        // failed, so there is no primary error to keep.
         if (completedResult) throw new CompletedSyncCleanupError(error, completedResult)
         throw error
       }
     }
   }
+}
+
+// Errors that carry a completed result — and the cooldown checkpoint error, whose class is
+// what `coordinatedSync` tests — have their own `withCleanupFailure`, which rebuilds the same
+// type. Anything else is combined generically; the message leads with the primary so a log
+// line still says what actually failed.
+function withCleanupFailure(primary, cleanupError) {
+  if (typeof primary.withCleanupFailure === 'function') return primary.withCleanupFailure(cleanupError)
+  return new AggregateError(
+    [primary, cleanupError],
+    `${errorMessage(primary)}; sync lock release failed: ${errorMessage(cleanupError)}`
+  )
 }
 
 function acquireCoordinatorLock(lockPath, trigger, runtime, result) {
@@ -344,7 +388,18 @@ function buildRuntime(options = {}) {
     process: processValue,
     processStartIdentity: configuredProcessStartIdentity,
     getProcessStartIdentity,
-    readProcessStartIdentity,
+    // Tests inject their own reader; in production this falls back to the real probe so
+    // the orphan scan can tell a reused pid from the writer it was named for. The probe is
+    // only reached for a pid that is already alive, which keeps it off the common path.
+    readProcessStartIdentity:
+      readProcessStartIdentity ||
+      ((pid) =>
+        probeProcessStartIdentity(pid, {
+          platform,
+          nodeVersion,
+          readFile: options.readFile,
+          runProcessIdentity
+        })),
     runProcessIdentity,
     scheduleTrailing: options.scheduleTrailing || (() => false),
     mkdir: options.mkdir || mkdirSync,
@@ -395,10 +450,33 @@ function readTimestamp(path, runtime) {
 function cooldownRemainingMs(runtime) {
   if (runtime.cooldownMs <= 0) return 0
   const path = join(runtime.stateDir, 'last-success.json')
+  // No checkpoint yet means the very first run: nothing to debounce against.
   if (!runtime.exists(path)) return 0
-  const timestamp = new Date(readTimestamp(path, runtime)).getTime()
+  let raw
+  try {
+    raw = readTimestamp(path, runtime)
+  } catch (error) {
+    throw new UnreadableCooldownCheckpointError(error, path)
+  }
+  const timestamp = new Date(raw).getTime()
+  // A checkpoint with no parseable timestamp is damaged, but it must not fail closed.
+  // This value only decides whether to debounce, and the sync itself is what rewrites the
+  // checkpoint — so refusing to run leaves the damaged file in place forever, with no way
+  // out but deleting it by hand. Treating it like an absent checkpoint costs at most one
+  // extra sync, after which a successful run has replaced it. (A read *error* is different
+  // and still propagates: that is an environment problem a sync cannot repair, and it was
+  // already fatal before this branch existed.)
   if (Number.isNaN(timestamp)) return 0
-  return Math.max(0, runtime.cooldownMs - (runtime.now() - timestamp))
+  // A checkpoint in the future is as unusable as an unparseable one, and worse: it makes the
+  // remaining cooldown larger than the cooldown itself, without bound. The value is handed
+  // to `notify.mjs` as the continuation delay, and a delay past `setTimeout`'s 32-bit range
+  // is silently clamped to 1ms there — so the continuation loop would re-run the coordinator
+  // every millisecond, holding the lock and rewriting its run log, until the clock caught
+  // up. Treating it like a damaged checkpoint costs at most one extra sync, which is what
+  // rewrites the file.
+  const elapsedMs = runtime.now() - timestamp
+  if (elapsedMs < 0) return 0
+  return Math.max(0, runtime.cooldownMs - elapsedMs)
 }
 
 function scheduleTrailingSources(trigger, sources, runtime, remainingMs) {
@@ -424,10 +502,35 @@ function scheduleDeferredFollowUps(trigger, runtime, result) {
   }
 }
 
+// Written atomically — to a temp file, then renamed into place. A direct overwrite leaves
+// a truncated or empty file if the process dies mid-write, and an empty checkpoint is not
+// merely stale: `cooldownRemainingMs` treats an unparseable timestamp as damage and throws,
+// which stops the sync before it can rewrite the checkpoint. That deadlock has no way out
+// short of deleting the file by hand, so the write must never be observable half-done.
+// `rename` is not available under the custom file-op runtimes some tests inject; there the
+// direct write is the only option, and those runtimes do not crash mid-write.
 function writeSuccessfulSyncCheckpoint(result, runtime) {
   if (deriveStatus(result) !== 'success') return
+  const path = join(runtime.stateDir, 'last-success.json')
+  const value = new Date(runtime.now()).toISOString()
   try {
-    runtime.writeFile(join(runtime.stateDir, 'last-success.json'), new Date(runtime.now()).toISOString())
+    if (typeof runtime.rename !== 'function') {
+      runtime.writeFile(path, value, { mode: 0o600 })
+      return
+    }
+    const temporaryPath = `${path}.tmp-${randomBytes(8).toString('hex')}`
+    try {
+      runtime.writeFile(temporaryPath, value, { flag: 'wx', mode: 0o600 })
+      runtime.rename(temporaryPath, path)
+    } catch (error) {
+      try {
+        runtime.unlink(temporaryPath)
+      } catch {
+        // The temp file may not exist yet, or cleanup may itself fail; the original error
+        // is the one worth reporting.
+      }
+      throw error
+    }
   } catch (error) {
     throw new SuccessfulSyncCheckpointError(error, result)
   }
@@ -481,9 +584,9 @@ function writeRunLogEntry(result, startedAtMs, runtime) {
   }
   const runsDir = prepareRunLogDirectory(result.runId, runtime)
   const json = `${JSON.stringify(entry, null, 2)}\n`
-  runtime.writeFile(join(runsDir, `${result.runId}.json`), json)
+  runtime.writeFile(join(runsDir, `${result.runId}.json`), json, { mode: 0o600 })
   pruneRunLogs(runsDir, runtime)
-  runtime.writeFile(join(runtime.stateDir, 'last-run.json'), json)
+  runtime.writeFile(join(runtime.stateDir, 'last-run.json'), json, { mode: 0o600 })
 }
 
 function prepareRunLogDirectory(runId, runtime) {
@@ -496,9 +599,14 @@ function prepareRunLogDirectory(runId, runtime) {
       if (error.code !== 'ENOENT') throw error
     }
   }
-  runtime.mkdir(runsDir, { recursive: true })
+  // Mode is pinned rather than left to the umask. The run logs carry absolute local paths
+  // and collector diagnostics, and the hook path runs from an interactive shell, where the
+  // umask is normally 022 — so the default here would publish them to every local user. The
+  // rest of the state directory is already private (`sync.mjs` chmods the parent to 0700);
+  // this is the one directory the coordinator creates itself.
+  runtime.mkdir(runsDir, { recursive: true, mode: 0o700 })
   if (!runtime.exists(markerPath)) {
-    runtime.writeFile(markerPath, 'TokenBoard bounded run logs v1\n')
+    runtime.writeFile(markerPath, 'TokenBoard bounded run logs v1\n', { mode: 0o600 })
   }
   return runsDir
 }

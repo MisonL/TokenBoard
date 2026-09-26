@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -115,6 +115,153 @@ test('coordinator skips within cooldown without running sync', () => {
   assert.equal(result.cooldownRemainingMs, 240000)
   assert.equal(result.trailingScheduled, true)
   assert.deepEqual(trailing, [{ trigger: { kind: 'notify', source: 'codex' }, delayMs: 240000 }])
+})
+
+// A damaged checkpoint must not wedge the coordinator. The checkpoint only decides whether
+// to debounce, and the sync is what rewrites it — so refusing to run on unreadable content
+// leaves the damage in place permanently, with no recovery but deleting the file by hand.
+// Running costs one extra sync and then a successful run has replaced the file.
+test('coordinator recovers from an unparseable cooldown checkpoint instead of wedging', () => {
+  const fs = memoryRuntime({
+    '/state/last-success.json': '{not-a-timestamp'
+  })
+  let runs = 0
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+      process: fakeProcess(311),
+      executeSync: () => {
+        runs += 1
+        return {}
+      }
+    }
+  )
+
+  assert.equal(runs, 1, 'a damaged checkpoint must not stop the sync that repairs it')
+  assert.notEqual(result.skippedReason, 'cooldown')
+})
+
+// A checkpoint dated in the future (a clock that jumped and was later corrected, or a
+// restored snapshot) is as unusable as a damaged one, and worse: the remaining cooldown
+// grows with the distance into the future. That value becomes `notify.mjs`'s continuation
+// delay, where anything past setTimeout's 32-bit range is silently clamped to 1ms — turning
+// the continuation loop into a 1ms spin that holds the lock and rewrites its run log.
+// The delay must never exceed the cooldown it came from.
+test('coordinator does not report a future checkpoint as a longer-than-cooldown delay', () => {
+  const checkpoint = '2026-05-22T10:05:00.000Z'
+  const fs = memoryRuntime({ '/state/last-success.json': checkpoint })
+  const now = Date.parse('2026-05-22T10:00:00.000Z')
+  const cooldownMs = 300_000
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      // The checkpoint is a minute in the future, so the naive remainder would be
+      // cooldownMs + 60s.
+      now: () => now,
+      process: fakeProcess(312),
+      cooldownMs,
+      executeSync: () => ({})
+    }
+  )
+
+  assert.notEqual(result.skippedReason, 'cooldown', 'a future checkpoint must not debounce')
+  assert.ok(
+    result.cooldownRemainingMs === undefined || result.cooldownRemainingMs <= cooldownMs,
+    `cooldown remaining ${result.cooldownRemainingMs} must not exceed the cooldown ${cooldownMs}`
+  )
+})
+
+// An empty checkpoint is the shape a write killed mid-flight leaves behind, which is why
+// the checkpoint is now written through a temp file and a rename. If one is found anyway
+// (an older collector wrote it), it must recover the same way a malformed one does.
+test('coordinator recovers from an empty cooldown checkpoint', () => {
+  const fs = memoryRuntime({ '/state/last-success.json': '' })
+  let runs = 0
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+      process: fakeProcess(312),
+      executeSync: () => {
+        runs += 1
+        return {}
+      }
+    }
+  )
+
+  assert.equal(runs, 1)
+  assert.notEqual(result.skippedReason, 'cooldown')
+})
+
+// A missing checkpoint is the first run, not damage: it must keep syncing immediately.
+test('coordinator still runs when no cooldown checkpoint exists yet', () => {
+  const fs = memoryRuntime({})
+  let runs = 0
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+      process: fakeProcess(313),
+      executeSync: () => {
+        runs += 1
+        return {}
+      }
+    }
+  )
+
+  assert.equal(runs, 1)
+  assert.notEqual(result.skippedReason, 'cooldown')
+})
+
+// A read failure is damage too, and must not be mistaken for an absent checkpoint.
+// The override has to be passed as an option rather than patched onto the fixture
+// afterwards: buildRuntime captures `options.readFile` by value, so a later assignment
+// on the returned object never reaches it.
+test('coordinator fails loudly when the cooldown checkpoint cannot be read', () => {
+  const fs = memoryRuntime({ '/state/last-success.json': '2026-05-22T10:00:00.000Z' })
+  let runs = 0
+
+  assert.throws(
+    () =>
+      coordinatedSync(
+        { kind: 'notify', source: 'codex' },
+        {
+          ...fs,
+          // Fall through to the fixture's own reader for every other path: the lock
+          // files are read before the cooldown, and returning undefined for them fails
+          // the run long before this assertion could mean anything.
+          readFile: (path) => {
+            if (String(path).endsWith('last-success.json')) {
+              const error = new Error('EACCES: permission denied')
+              error.code = 'EACCES'
+              throw error
+            }
+            return fs.readFile(path)
+          },
+          stateDir: '/state',
+          now: () => Date.parse('2026-05-22T10:01:00.000Z'),
+          process: fakeProcess(314),
+          executeSync: () => {
+            runs += 1
+            return {}
+          }
+        }
+      ),
+    /EACCES/
+  )
+  assert.equal(runs, 0)
 })
 
 test('coordinator reads JSON encoded last success timestamp for cooldown', () => {
@@ -1094,4 +1241,131 @@ test('trailing process keeps its trigger when another source is already pending 
     { trigger: { kind: 'notify', source: 'codex' }, delayMs: 240000 },
     { trigger: { kind: 'notify', source: 'claude-code' }, delayMs: 240000 }
   ])
+})
+
+// The lock release in `runCoordinator`'s `finally` runs on the way out of *every* failure,
+// so it is the one place where a cleanup error can overwrite an unrelated primary one. Both
+// halves of that matter: the operator loses the reason the run actually failed, and — when
+// the primary is the cooldown checkpoint error, which is rethrown to fail the hook — a
+// cleanup failure changes the outcome from a thrown error to a normal return, so the
+// fail-closed path silently becomes fail-open.
+test('coordinator keeps the primary error when lock release also fails', () => {
+  const fs = memoryRuntime({ '/state/last-success.json': '2026-05-22T10:00:00.000Z' })
+  const rename = fs.rename
+  let thrown
+
+  try {
+    coordinatedSync(
+      { kind: 'notify', source: 'codex' },
+      {
+        ...fs,
+        stateDir: '/state',
+        cooldownMs: 60_000,
+        process: fakeProcess(227),
+        readFile: (path) => {
+          if (sameMemoryPath(path, '/state/last-success.json')) throw new Error('EACCES')
+          return fs.readFile(path)
+        },
+        rename: (source, target) => {
+          if (String(source).includes('sync.lock')) {
+            const error = new Error('EPERM')
+            error.code = 'EPERM'
+            throw error
+          }
+          return rename(source, target)
+        },
+        executeSync: () => {
+          throw new Error('should not run')
+        }
+      }
+    )
+  } catch (error) {
+    thrown = error
+  }
+
+  // Both are reported, primary first — the same shape the sibling checkpoint errors use.
+  assert.match(thrown?.message ?? '', /^EACCES; sync lock release failed: EPERM$/)
+  assert.equal(
+    fs.files.get('/state/last-run.json').includes('EACCES'),
+    true,
+    'the run log must record the error the run failed on'
+  )
+})
+
+// The class is what `coordinatedSync` tests to decide whether to rethrow the hook's
+// fail-closed error, so a cleanup failure must not change it.
+test('coordinator still fails closed when lock release fails after a checkpoint error', () => {
+  const fs = memoryRuntime({ '/state/last-success.json': '2026-05-22T10:00:00.000Z' })
+  const rename = fs.rename
+  let thrown
+
+  try {
+    coordinatedSync(
+      { kind: 'notify', source: 'codex' },
+      {
+        ...fs,
+        stateDir: '/state',
+        cooldownMs: 60_000,
+        process: fakeProcess(228),
+        readFile: (path) => {
+          if (sameMemoryPath(path, '/state/last-success.json')) throw new Error('EACCES')
+          return fs.readFile(path)
+        },
+        rename: (source, target) => {
+          if (String(source).includes('sync.lock')) {
+            const error = new Error('EPERM')
+            error.code = 'EPERM'
+            throw error
+          }
+          return rename(source, target)
+        },
+        executeSync: () => {
+          throw new Error('should not run')
+        }
+      }
+    )
+  } catch (error) {
+    thrown = error
+  }
+
+  // The point is that it throws at all: before the fix this path returned normally.
+  assert.match(thrown?.message ?? '', /sync lock release failed/)
+})
+
+// Every other module that writes under the state directory pins the mode explicitly
+// (`sync.mjs` and `scheduled-sync-state.mjs` chmod the state dir to 0700, `hooks.mjs` and
+// `antigravity-statusline-log.mjs` create their directories 0700 and their files 0600).
+// The run logs are the exception: they are written with no mode, so on a machine whose
+// umask is the usual 022 they land world-readable. Their content is not inert — it carries
+// absolute local paths and collector diagnostics. The scheduled path happens to be shielded
+// by the plist's `Umask 63`, which is a property of that launcher rather than of this code,
+// and the hook path runs from an interactive shell where the umask is typically 022.
+test('coordinator writes its run logs private regardless of umask', () => {
+  // A directory that does not exist yet, so this exercises the modes the coordinator
+  // chooses. `mkdtempSync` would hand back an already-private directory and hide them.
+  const parent = mkdtempSync(join(tmpdir(), 'tokenboard-run-log-mode-'))
+  const stateDir = join(parent, 'state')
+  const previousUmask = process.umask(0o022)
+  const mode = (path) => statSync(path).mode & 0o777
+
+  try {
+    coordinatedSync(
+      { kind: 'notify', source: 'codex' },
+      {
+        stateDir,
+        cooldownMs: 0,
+        executeSync: () => ({ ok: true })
+      }
+    )
+
+    assert.equal(mode(stateDir), 0o700, 'state directory')
+    assert.equal(mode(join(stateDir, 'runs')), 0o700, 'run log directory')
+    assert.equal(mode(join(stateDir, 'last-run.json')), 0o600, 'last-run pointer')
+    const runLog = readdirSync(join(stateDir, 'runs')).find((name) => name.endsWith('.json'))
+    assert.equal(mode(join(stateDir, 'runs', runLog)), 0o600, 'run log')
+    assert.equal(mode(join(stateDir, 'last-success.json')), 0o600, 'sync checkpoint')
+  } finally {
+    process.umask(previousUmask)
+    rmSync(parent, { recursive: true, force: true })
+  }
 })

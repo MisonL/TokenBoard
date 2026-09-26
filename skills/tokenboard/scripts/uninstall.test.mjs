@@ -120,6 +120,34 @@ test('removes collector and config directory with all flag', () => {
   assert.deepEqual(harness.removedPaths, ['/home/tokenboard/.tokenboard/TokenBoard', '/home/tokenboard/.tokenboard'])
 })
 
+// `TOKENBOARD_CONFIG_DIR` is unvalidated and the removal is recursive, so a value like
+// `$HOME` or `/` used to delete that whole tree with no prompt. A TokenBoard config
+// directory is always a dot-directory the tool created for itself.
+for (const unsafe of ['/home/tokenboard', '/', '/tmp', '/home', 'relative-config', '/Users/example']) {
+  test(`refuses to remove an unsafe config directory: ${unsafe}`, () => {
+    const harness = createHarness()
+
+    // The harness only reports its seeded paths as existing, so the unsafe directory has
+    // to be seeded too — otherwise the handler skips the branch before the guard runs.
+    harness.options.exists = (p) => p === unsafe || p.startsWith('/home/tokenboard/.tokenboard')
+
+    assert.throws(
+      () => uninstallClient({ ...harness.options, configDir: unsafe, argv: ['--remove-config-dir'] }),
+      /Refusing to remove/
+    )
+    assert.deepEqual(harness.removedPaths, [])
+  })
+}
+
+test('still removes a dedicated dot-directory config dir', () => {
+  const harness = createHarness()
+
+  const removed = uninstallClient({ ...harness.options, argv: ['--remove-config-dir'] })
+
+  assert.equal(removed.configDir, true)
+  assert.deepEqual(harness.removedPaths, ['/home/tokenboard/.tokenboard'])
+})
+
 for (const flag of ['--all', '--remove-config-dir', '--remove-collector', '--remove-config', '--remove-hooks']) {
   test(`does not remove recovery state after an incomplete Antigravity uninstall with ${flag}`, () => {
     const harness = createHarness()

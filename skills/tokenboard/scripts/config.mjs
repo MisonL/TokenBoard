@@ -56,7 +56,27 @@ function readRawConfig() {
     throw new Error(`TokenBoard config not found: ${file}`)
   }
 
-  return JSON.parse(stripUtf8Bom(readFileSync(file, 'utf8')))
+  const raw = stripUtf8Bom(readFileSync(file, 'utf8'))
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    // `JSON.parse` embeds the offending source text in its message, and Node prints that
+    // message (and, for a syntax error, the source line itself) when it reaches an
+    // uncaught handler. The config file holds the upload token, so a truncated or
+    // hand-edited file would put the token on stderr — exactly what SKILL.md forbids.
+    // Re-throwing without the parse detail keeps the diagnosis useful and the secret out.
+    throw new Error(
+      `TokenBoard config is not valid JSON: ${file}. Fix or remove it, then retry. (${jsonErrorLocation(error)})`
+    )
+  }
+}
+
+// Only the position is carried over: `SyntaxError.message` also contains a snippet of the
+// offending text, which is the part that can hold a secret.
+function jsonErrorLocation(error) {
+  if (!(error instanceof SyntaxError)) return 'unparseable'
+  const match = /position (\d+)/.exec(error.message)
+  return match ? `parse error at position ${match[1]}` : 'parse error'
 }
 
 export function writeConfig(config) {

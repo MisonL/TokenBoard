@@ -3,16 +3,19 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configPath, readConfig } from './config.mjs'
+import { errorMessage } from './error-message.mjs'
 import { deviceLinkStatus } from './device-link.mjs'
 import { hookStatus } from './hooks.mjs'
 import { scheduledRetryLegacyStatePath, scheduledRetryStatePath } from './scheduled-retry.mjs'
+import { readScheduledSyncState, scheduledSyncStatePath } from './scheduled-sync-state.mjs'
 
 export function buildStatus({
   configPath,
   config,
   hooks = hookStatus(),
   deviceLink = deviceLinkStatus(),
-  scheduledRetry
+  scheduledRetry,
+  scheduledSync
 }) {
   return {
     configured: true,
@@ -25,7 +28,20 @@ export function buildStatus({
     packageManager: config.packageManager || 'pnpm',
     scheduleTimes: Array.isArray(config.scheduleTimes) ? config.scheduleTimes : [],
     hooks: publicHookStatus(hooks),
-    ...(scheduledRetry ? { scheduledRetry: publicScheduledRetry(scheduledRetry) } : {})
+    ...(scheduledRetry ? { scheduledRetry: publicScheduledRetry(scheduledRetry) } : {}),
+    ...(scheduledSync ? { scheduledSync: publicScheduledSync(scheduledSync) } : {})
+  }
+}
+
+function publicScheduledSync(value) {
+  if (value.status === 'invalid') return { status: 'invalid' }
+  return {
+    status: value.status,
+    source: value.source,
+    startedAt: value.startedAt,
+    updatedAt: value.updatedAt,
+    ...(value.completedAt ? { completedAt: value.completedAt } : {}),
+    ...(Number.isSafeInteger(value.exitCode) ? { exitCode: value.exitCode } : {})
   }
 }
 
@@ -70,17 +86,31 @@ function runCli() {
 
   const config = readConfig()
   const source = typeof config.source === 'string' && config.source.trim() ? config.source : 'all'
+  const stateDir = process.env.TOKENBOARD_STATE_DIR || dirname(file)
   console.log(
     JSON.stringify(
       buildStatus({
         configPath: file,
         config,
-        scheduledRetry: readScheduledRetry(file, source)
+        scheduledRetry: readScheduledRetry(file, source),
+        scheduledSync: readScheduledSync(source, stateDir)
       }),
       null,
       2
     )
   )
+}
+
+function readScheduledSync(source, stateDir) {
+  const current = readScheduledSyncState(scheduledSyncStatePath(stateDir, source))
+  if (current || source === 'all') return current
+
+  // The unsuffixed file is what a `--source all` install writes, so its `source` is
+  // always 'all'. Comparing it against a per-source value could never match, which made
+  // this fallback dead code and hid the sync state for every non-'all' configuration.
+  const legacy = readScheduledSyncState(scheduledSyncStatePath(stateDir))
+  if (!legacy || legacy.status === 'invalid') return legacy
+  return legacy.source === 'all' || legacy.source === source ? legacy : null
 }
 
 function readScheduledRetry(configFile, source = 'all') {
@@ -154,5 +184,13 @@ function isIsoTimestamp(value) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  runCli()
+  try {
+    runCli()
+  } catch (error) {
+    // Node's uncaught-exception handler prints the throwing source line, and for this
+    // script that line can be the config file's contents — including the upload token.
+    // Printing only the message keeps the diagnosis and the secret apart.
+    console.error(errorMessage(error))
+    process.exit(1)
+  }
 }

@@ -42,6 +42,7 @@ export function uninstallClient(options = {}) {
   }
 
   if (plan.removeConfigDir && runtime.exists(runtime.configDir)) {
+    assertRemovableConfigDir(runtime)
     const deviceLinkWasPresent = runtime.exists(runtime.deviceLinkPath)
     removePath(runtime, runtime.configDir)
     removed.configDir = true
@@ -141,4 +142,28 @@ function runCli() {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   runCli()
+}
+
+// `TOKENBOARD_CONFIG_DIR` is a plain environment variable and the config directory is
+// removed recursively, so pointing it at `$HOME` or `/` made `--remove-config-dir` — and
+// `--all`, which the skill documents — delete that whole tree, `~/.ssh` and all, silently,
+// with no dry run and no prompt. The other installers already refuse a suspicious config
+// directory; this applies the same guard where the deletion happens.
+//
+// A TokenBoard config directory is always a *dot-directory* the tool created for itself
+// (`.tokenboard`, or a `.tokenboard-*` variant for a second install). Requiring a leading
+// dot and at least three path segments rejects a home directory (`/home/user`, `/Users/x`),
+// a filesystem root, `/tmp`, a project directory, and a bare relative name — every shape
+// where a recursive delete would destroy something the user did not hand over.
+function assertRemovableConfigDir(runtime) {
+  const target = String(runtime.configDir)
+  const trimmed = target.replace(/[\\/]+$/, '')
+  const segments = trimmed.split(/[\\/]+/).filter(Boolean)
+  const basename = segments.at(-1) ?? ''
+  const isDedicatedName = basename.startsWith('.') && basename.length > 1
+  if (!isDedicatedName || segments.length < 3) {
+    throw new Error(
+      `Refusing to remove ${target}: the TokenBoard config directory must be a dedicated dot-directory the tool created (for example ~/.tokenboard), not a home directory, filesystem root, or shared path. Remove it by hand if that is really what you want.`
+    )
+  }
 }
