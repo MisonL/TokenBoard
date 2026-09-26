@@ -28,6 +28,16 @@ describe('error route', () => {
     })
   })
 
+  test('preserves API error headers in the global JSON handler', async () => {
+    const response = await handler(
+      new ApiError('RATE_LIMITED', 'Too many requests', 429, { 'Retry-After': '30' }),
+      createContext('/api/v1/me', 'application/json')
+    )
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get('Retry-After')).toBe('30')
+  })
+
   test('preserves Hono HTTPException responses', async () => {
     const original = new Response('not found', { status: 404 })
     const response = await handler(
@@ -45,13 +55,14 @@ function createContext(path: string, accept = 'text/html') {
       path,
       header: (name: string) => (name.toLowerCase() === 'accept' ? accept : null)
     },
-    json: (body: unknown, status: number) => Response.json(body, { status }),
+    json: (body: unknown, status: number, headers?: Record<string, string>) => Response.json(body, { status, headers }),
     redirect: (location: string) =>
       new Response(null, {
         status: 302,
         headers: { location }
       }),
     status() {},
+    header() {},
     render: (body: string) => new Response(body)
   } as never
 }

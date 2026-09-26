@@ -49,6 +49,10 @@ type LinkButtonProps = VariantProps<typeof buttonVariants> & {
   class?: string
   href: string
   children?: Child
+  // A download link is not an in-app navigation, and `client-navigation.ts` tells the two
+  // apart by exactly this attribute. Without it the guard cancels the browser's download
+  // and fetches the file into `document.body`.
+  download?: string | boolean
 }
 
 export function LinkButton(props: LinkButtonProps) {

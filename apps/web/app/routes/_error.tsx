@@ -7,11 +7,15 @@ const handler: ErrorHandler = (e, c) => {
   }
   if (e instanceof ApiError && e.code === 'UNAUTHORIZED') {
     if (expectsJson(c)) {
-      return c.json({ error: { code: e.code, message: e.message } }, e.status)
+      return c.json({ error: { code: e.code, message: e.message } }, e.status, e.headers)
     }
     return c.redirect('/auth/sign-in')
   }
   if (e instanceof ApiError) {
+    if (expectsJson(c)) {
+      return c.json({ error: { code: e.code, message: e.message } }, e.status, e.headers)
+    }
+    for (const [name, value] of Object.entries(e.headers ?? {})) c.header(name, value)
     c.status(e.status)
     return c.render(e.message)
   }

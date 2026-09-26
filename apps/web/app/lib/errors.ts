@@ -13,7 +13,8 @@ export class ApiError extends Error {
   constructor(
     readonly code: ApiErrorCode,
     message: string,
-    readonly status: ContentfulStatusCode = 400
+    readonly status: ContentfulStatusCode = 400,
+    readonly headers?: Record<string, string>
   ) {
     super(message)
   }
