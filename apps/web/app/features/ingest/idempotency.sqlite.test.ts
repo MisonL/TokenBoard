@@ -110,11 +110,112 @@ describe('ingest idempotency', () => {
   test('the same day on two devices stays separate', async () => {
     const { db, path } = createDb(tempDirs)
 
-    await upsertUsageSnapshots(db, [makeRecord({ deviceId: 'dev_a', totalTokens: 100 })])
-    await upsertUsageSnapshots(db, [makeRecord({ deviceId: 'dev_b', totalTokens: 50 })])
+    await upsertUsageSnapshots(db, [
+      makeRecord({ deviceId: 'dev_a', totalTokens: 100 }),
+      makeRecord({ deviceId: 'dev_b', totalTokens: 50 })
+    ])
 
     expect(rowCount(path)).toBe(2)
     expect(totalTokens(path)).toBe(150)
+  })
+
+  // Cost is the price at the moment of measurement, not the price now. A scheduled sync re-scans
+  // its lookback window every run, so when models.dev adjusts a price the same day is re-derived
+  // with a new cost but identical token counts. Adopting that cost would silently rewrite spend
+  // the user already saw; the stored value must survive an unchanged measurement.
+  test('an unchanged token measurement keeps the stored cost when the price moved', async () => {
+    const { db, path } = createDb(tempDirs)
+
+    await upsertUsageSnapshots(db, [makeRecord({ costUsd: 0.12 })])
+    await upsertUsageSnapshots(db, [makeRecord({ costUsd: 0.34 })])
+
+    expect(scalarText(path, 'SELECT cost_usd FROM daily_usage')).toBe('0.12')
+  })
+
+  // The other half of the rule: a real re-measurement moves the token counts, so it is a new
+  // measurement and its cost is the right one — otherwise a day that genuinely grew could never
+  // report the spend it grew by.
+  test('a changed token measurement adopts the incoming cost', async () => {
+    const { db, path } = createDb(tempDirs)
+
+    await upsertUsageSnapshots(db, [makeRecord({ totalTokens: 165, inputTokens: 100, costUsd: 0.12 })])
+    await upsertUsageSnapshots(db, [makeRecord({ totalTokens: 200, inputTokens: 135, costUsd: 0.34 })])
+
+    expect(scalarText(path, 'SELECT cost_usd FROM daily_usage')).toBe('0.34')
+  })
+
+  // A correction row's tokens are always zero — that is what makes it a correction — so the
+  // "unchanged measurement" test is trivially true on every re-derive. Its cost is not zero:
+  // it is what the context-priced split left behind, and when the day grows or the split
+  // changes, the corrected remainder moves. Freezing it would strand the row on the first
+  // correction forever, so corrections are exempted from the unchanged-measurement rule the
+  // same way they are exempted from the session-only preservation above.
+  test('a second correction adopts the newly derived cost', async () => {
+    const { db, path } = createDb(tempDirs)
+
+    await upsertUsageSnapshots(db, [
+      makeRecord({
+        correction: 'codex-context-pricing',
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        costUsd: 0.05
+      })
+    ])
+    await upsertUsageSnapshots(db, [
+      makeRecord({
+        correction: 'codex-context-pricing',
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        costUsd: 0.03
+      })
+    ])
+
+    expect(scalarText(path, 'SELECT cost_usd FROM daily_usage')).toBe('0.03')
+  })
+
+  // The exemption composes with a real re-measurement in one sequence: after the normal row
+  // is replaced, the first correction re-derives the remainder, and the second must too — the
+  // unchanged-measurement arm compares all-zero tokens against all-zero stored tokens here,
+  // so without the `? = 0` guard the row would freeze at 0.05 forever. The correction's zero
+  // tokens replacing the re-measured counts is its defined shape: the split moved those
+  // tokens to the context model's row, and the canonical row keeps only the cost remainder.
+  test('a correction after a re-measured row still adopts each new cost', async () => {
+    const { db, path } = createDb(tempDirs)
+
+    await upsertUsageSnapshots(db, [makeRecord({ costUsd: 0.12 })])
+    await upsertUsageSnapshots(db, [makeRecord({ totalTokens: 200, inputTokens: 135, costUsd: 0.08 })])
+    await upsertUsageSnapshots(db, [
+      makeRecord({
+        correction: 'codex-context-pricing',
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        costUsd: 0.05
+      })
+    ])
+    await upsertUsageSnapshots(db, [
+      makeRecord({
+        correction: 'codex-context-pricing',
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        costUsd: 0.03
+      })
+    ])
+
+    expect(scalarText(path, 'SELECT cost_usd FROM daily_usage')).toBe('0.03')
+    expect(scalarText(path, 'SELECT total_tokens FROM daily_usage')).toBe('0')
+    expect(scalarText(path, 'SELECT input_tokens FROM daily_usage')).toBe('0')
   })
 })
 

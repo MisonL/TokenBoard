@@ -1,5 +1,5 @@
 import { snapshotHashPayload } from '@tokenboard/usage-core'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -121,7 +121,7 @@ describe('usage summary cache integration', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-summary-cache-'))
     tempDirs.push(tempDir)
     const dbPath = join(tempDir, 'tokenboard.db')
-    applyMigrations(dbPath, false)
+    applyMigrations(dbPath)
     const db = createSqliteD1(dbPath)
     const today = toIsoDate(verificationDate)
     const monthStart = `${today.slice(0, 8)}01`
@@ -131,7 +131,6 @@ describe('usage summary cache integration', () => {
     const expectedTodayCostUsd = todayIncludesBothRows ? 2.5 : 1.25
 
     await seedLegacyUsage(db, { today, monthStart })
-    applySummaryCacheMigration(dbPath)
 
     await expectScalar(db, 'SELECT COUNT(*) FROM daily_usage_summary', 0)
     await expectScalar(db, 'SELECT COUNT(*) FROM user_usage_totals', 0)
@@ -183,13 +182,12 @@ describe('usage summary cache integration', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-summary-cache-'))
     tempDirs.push(tempDir)
     const dbPath = join(tempDir, 'tokenboard.db')
-    applyMigrations(dbPath, false)
+    applyMigrations(dbPath)
     const db = createSqliteD1(dbPath)
     const today = toIsoDate(verificationDate)
     const monthStart = `${today.slice(0, 8)}01`
 
     await seedLegacyUsage(db, { today, monthStart })
-    applySummaryCacheMigration(dbPath)
     await expectScalar(db, 'SELECT COUNT(*) FROM daily_usage_summary', 0)
 
     const beforeBackfill = await worker.fetch(
@@ -1431,12 +1429,12 @@ describe('usage summary cache integration', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-active-successor-cleanup-'))
     tempDirs.push(tempDir)
     const dbPath = join(tempDir, 'tokenboard.db')
-    applyMigrations(dbPath)
+    // Stop at 0023 so the duplicate active successors below land in a pre-0024 schema, then
+    // replay 0024 against them: that is the state the migration exists to clean up.
+    applyMigrations(dbPath, '0023_device_install_claim.sql')
     runSql(
       dbPath,
       [
-        `.read ${quoteSqlitePath(join(migrationsDir, '0022_device_installations.sql'))}`,
-        `.read ${quoteSqlitePath(join(migrationsDir, '0023_device_install_claim.sql'))}`,
         `
         INSERT INTO users (id, email, name, image, created_at, updated_at)
         VALUES ('rotate-user', 'rotate@example.com', 'Rotate User', null, '2026-06-03T10:00:00.000Z', '2026-06-03T10:00:00.000Z');
@@ -1481,59 +1479,24 @@ describe('usage summary cache integration', () => {
   })
 })
 
-function applyMigrations(dbPath: string, includeSummaryCache = true) {
-  const migrations = [
-    `.read ${quoteSqlitePath(join(migrationsDir, '0000_initial.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0001_devices.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0002_upload_token_device.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0003_better_auth.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0004_daily_usage_device.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0005_leaderboard_public_profiles.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0006_default_public_leaderboards.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0007_daily_usage_snapshot_hash.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0008_dedupe_legacy_daily_usage.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0009_profile_timezone_source.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0010_default_utc_timezone_source.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0011_preserve_legacy_utc_timezone.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0012_public_card_config.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0013_webhook_notifications.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0014_webhook_schedule_rules.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0015_daily_report_history.sql'))}`
-  ]
-  if (includeSummaryCache) {
-    migrations.push(summaryCacheMigrationCommand())
-    migrations.push(refreshSummaryCacheMigrationCommand())
-    migrations.push(summaryBackfillStateMigrationCommand())
-  }
-  migrations.push(
-    `.read ${quoteSqlitePath(join(migrationsDir, '0019_backfill_webhook_pending_schedule_slots.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0020_daily_report_share_controls.sql'))}`,
-    `.read ${quoteSqlitePath(join(migrationsDir, '0021_api_rate_limits.sql'))}`
-  )
-  runSql(dbPath, migrations.join('\n'))
-}
+// Read the chain from disk rather than listing it here: the scheduled handler runs every cron
+// task, including the device retention prune, so a fixture that stops short of head turns a
+// newly added scheduled task (or a migration touching an existing table) into a `no such table`
+// failure instead of a test of the task itself.
+const migrationFiles = readdirSync(migrationsDir)
+  .filter((file) => file.endsWith('.sql'))
+  .sort()
 
-function applySummaryCacheMigration(dbPath: string) {
+function applyMigrations(dbPath: string, throughMigration = migrationFiles[migrationFiles.length - 1]) {
+  const lastIndex = migrationFiles.indexOf(throughMigration)
+  if (lastIndex < 0) throw new Error(`Unknown migration fixture boundary: ${throughMigration}`)
   runSql(
     dbPath,
-    [
-      summaryCacheMigrationCommand(),
-      refreshSummaryCacheMigrationCommand(),
-      summaryBackfillStateMigrationCommand()
-    ].join('\n')
+    migrationFiles
+      .slice(0, lastIndex + 1)
+      .map((file) => `.read ${quoteSqlitePath(join(migrationsDir, file))}`)
+      .join('\n')
   )
-}
-
-function summaryCacheMigrationCommand() {
-  return `.read ${quoteSqlitePath(join(migrationsDir, '0016_usage_summary_cache.sql'))}`
-}
-
-function refreshSummaryCacheMigrationCommand() {
-  return `.read ${quoteSqlitePath(join(migrationsDir, '0017_refresh_usage_summary_cache.sql'))}`
-}
-
-function summaryBackfillStateMigrationCommand() {
-  return `.read ${quoteSqlitePath(join(migrationsDir, '0018_usage_summary_backfill_state.sql'))}`
 }
 
 async function seedLegacyUsage(

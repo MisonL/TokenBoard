@@ -70,9 +70,35 @@ async function prepareUsageUpsert(db: D1Database, record: IngestRecord) {
     // This column is the last-writer-wins freshness marker for the snapshot;
     // server receipt time is tracked separately by the device heartbeat rows.
     record.collectedAt,
-    ...Array.from({ length: 7 }, () => correctionFlag)
+    // One correction-flag bind per `?` that guards a correction exemption: six in the
+    // token/cost CASE arms, one in the cost CASE's unchanged-measurement arm, one in the
+    // WHERE clause.
+    ...Array.from({ length: 8 }, () => correctionFlag)
   )
 }
+
+/**
+ * True when the stored row and the incoming snapshot measured the same tokens.
+ *
+ * Cost is a function of the price catalogue *at the moment of measurement*, not of the
+ * catalogue now, so a re-scan that finds identical token counts is not a new measurement —
+ * it is the old one re-derived. Adopting its cost would silently rewrite already-reported
+ * spend whenever models.dev adjusts a price, with nothing in the data to show it happened.
+ * A real re-measurement (more turns, a different model) changes the counts and takes the
+ * incoming cost with it.
+ *
+ * Callers must pair this with `? = 0` (see the cost CASE): a correction row's tokens are
+ * structurally always zero, so the comparison is trivially true for it on every re-derive.
+ * Its cost is a derived remainder that moves when the day grows, and freezing it would
+ * strand the row on its first correction.
+ */
+const unchangedTokenMeasurementSql = `
+  daily_usage.input_tokens = excluded.input_tokens
+  AND daily_usage.output_tokens = excluded.output_tokens
+  AND daily_usage.cache_creation_tokens = excluded.cache_creation_tokens
+  AND daily_usage.cache_read_tokens = excluded.cache_read_tokens
+  AND daily_usage.total_tokens = excluded.total_tokens
+`
 
 const preserveCodexSessionOnlySql = `
   ? = 0
@@ -119,7 +145,11 @@ const upsertUsageSql = `
     cache_creation_tokens = CASE WHEN ${preserveCodexSessionOnlySql} THEN daily_usage.cache_creation_tokens ELSE excluded.cache_creation_tokens END,
     cache_read_tokens = CASE WHEN ${preserveCodexSessionOnlySql} THEN daily_usage.cache_read_tokens ELSE excluded.cache_read_tokens END,
     total_tokens = CASE WHEN ${preserveCodexSessionOnlySql} THEN daily_usage.total_tokens ELSE excluded.total_tokens END,
-    cost_usd = CASE WHEN ${preserveCodexSessionOnlySql} THEN daily_usage.cost_usd ELSE excluded.cost_usd END,
+    cost_usd = CASE
+      WHEN ${preserveCodexSessionOnlySql} THEN daily_usage.cost_usd
+      WHEN ? = 0 AND ${unchangedTokenMeasurementSql} THEN daily_usage.cost_usd
+      ELSE excluded.cost_usd
+    END,
     session_count = excluded.session_count,
     snapshot_hash = excluded.snapshot_hash,
     synced_at = excluded.synced_at
