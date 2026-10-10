@@ -1,4 +1,5 @@
 import { ApiError } from '../../lib/errors'
+import { FormError } from '../../lib/form-error'
 import { randomId, randomToken, sha256Hex } from '../../lib/crypto'
 import { defaultTimezone, parseTimezone } from '../../lib/timezone'
 import type { DevicePairRequest } from './schema'
@@ -481,7 +482,7 @@ async function queryLatestDeviceAuditLogs(
 export function parseDeviceNameForm(form: Record<string, unknown>) {
   const name = String(form.name ?? '').trim()
   if (name.length < 1 || name.length > 80) {
-    throw new ApiError('BAD_REQUEST', 'Device name must be 1-80 characters', 400)
+    throw new FormError('device-name-invalid', 'Device name must be 1-80 characters')
   }
   return name
 }
