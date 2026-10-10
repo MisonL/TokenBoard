@@ -57,10 +57,42 @@ describe('leaderboard fragment route', () => {
 
     expect(mockedGetLeaderboard.mock.calls[0][4]).toBe('America/Los_Angeles')
   })
+
+  // The rendered board depends on the viewer's zone, so a shared browser cache must not
+  // replay one viewer's day to the next person.
+  test('does not let the fragment be cached', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    const response = (await GET[0](context('') as never, async () => undefined)) as Response
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+  })
+
+  // The panel marks the viewer's own row, so the fragment must resolve the highlight from the
+  // same session read the full page used. Reading it from the cookie would drop the marker the
+  // moment a signed-in user clicked a tab, and the page and the fragment would disagree about
+  // the same board.
+  test('passes the signed-in viewer so their own row stays marked after a tab click', async () => {
+    mockedGetOptionalUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedTimezone.mockResolvedValue({ timezone: 'Asia/Shanghai' } as never)
+
+    await GET[0](context('') as never, async () => undefined)
+
+    expect(mockedGetLeaderboard.mock.calls[0][1]).toMatchObject({ viewerUserId: 'user_1' })
+  })
+
+  test('passes no viewer for an anonymous visitor', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    await GET[0](context('') as never, async () => undefined)
+
+    expect(mockedGetLeaderboard.mock.calls[0][1]).toMatchObject({ viewerUserId: null })
+  })
 })
 
 function context(cookie: string) {
   const request = new Request('https://tokenboard.example/leaderboards/fragment?period=daily')
+  const headers = new Headers()
   return {
     env: { DB: {} },
     req: {
@@ -69,7 +101,10 @@ function context(cookie: string) {
       query: (name: string) => new URL(request.url).searchParams.get(name),
       header: (name: string) => (name === 'cookie' ? cookie : undefined)
     },
-    html: (body: unknown, status = 200) => new Response(String(body), { status }),
+    header: (name: string, value: string) => {
+      headers.set(name, value)
+    },
+    html: (body: unknown, status = 200) => new Response(String(body), { status, headers }),
     json: (body: unknown, status = 200) => Response.json(body, { status })
   }
 }

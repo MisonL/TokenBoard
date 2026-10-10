@@ -1,6 +1,24 @@
 import { renderToString } from 'hono/jsx/dom/server'
 import { describe, expect, test } from 'vitest'
 import { LeaderboardPanel } from './leaderboard-panel'
+import type { LeaderboardEntry } from '../queries'
+
+function entry(overrides: Partial<LeaderboardEntry> = {}): LeaderboardEntry {
+  return {
+    rank: 1,
+    slug: 'example-user',
+    displayName: 'Example User',
+    totalTokens: 123456,
+    totalTokensWithoutCacheRead: 100000,
+    cacheReadRate: 23456 / 123456,
+    costUsd: 42.31,
+    costAvailable: true,
+    primaryModel: null,
+    sourceBreakdown: [],
+    isCurrentViewer: false,
+    ...overrides
+  }
+}
 
 describe('LeaderboardPanel', () => {
   test('renders leaderboard entries with a mobile list and a desktop table', async () => {
@@ -11,18 +29,7 @@ describe('LeaderboardPanel', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
-        entries={[
-          {
-            rank: 1,
-            slug: 'example-user',
-            displayName: 'Example User',
-            totalTokens: 123456,
-            totalTokensWithoutCacheRead: 100000,
-            cacheReadRate: 23456 / 123456,
-            costUsd: 42.31,
-            costAvailable: true
-          }
-        ]}
+        entries={[entry()]}
       />
     )
 
@@ -61,8 +68,7 @@ describe('LeaderboardPanel', () => {
     const html = await renderToString(
       <LeaderboardPanel
         entries={[
-          {
-            rank: 1,
+          entry({
             slug: 'agy-user',
             displayName: 'Agy User',
             totalTokens: 100,
@@ -70,7 +76,7 @@ describe('LeaderboardPanel', () => {
             cacheReadRate: 0,
             costUsd: 0,
             costAvailable: false
-          }
+          })
         ]}
         period="daily"
         metric="cost"
@@ -83,6 +89,108 @@ describe('LeaderboardPanel', () => {
     expect(html).toContain('Antigravity、Grok Build、DeepSeek Harness 费用不可用，费用列和费用排名不包含这些来源成本。')
     expect(html).toContain('费用不可用')
     expect(html).not.toContain('$0.00')
+  })
+})
+
+// The board shows who is ahead, but not what they run — a viewer could see a total and nothing
+// about where it came from. The model column and the source split come straight off the entry,
+// and the split names its sources rather than showing bare ids.
+describe('LeaderboardPanel model and source columns', () => {
+  test('names the primary model and the leading sources with their share', async () => {
+    const html = await renderToString(
+      <LeaderboardPanel
+        entries={[
+          entry({
+            primaryModel: 'claude-opus-4-1',
+            sourceBreakdown: [
+              { source: 'claude-code', share: 0.62 },
+              { source: 'codex', share: 0.3 },
+              { source: 'opencode', share: 0.08 }
+            ]
+          })
+        ]}
+        period="daily"
+        metric="tokens"
+        rangeLabel="2026-04-29"
+        timezone="UTC"
+        timezoneLabel="UTC+0"
+      />
+    )
+
+    expect(html).toContain('主要模型')
+    expect(html).toContain('claude-opus-4-1')
+    expect(html).toContain('data-leaderboard-source-share="true"')
+    expect(html).toContain('Claude Code')
+    expect(html).toContain('62%')
+    expect(html).toContain('Codex')
+    expect(html).toContain('30%')
+    // Only the two leading sources are named; the tail collapses into one remainder so a user
+    // running many sources cannot push the rest of the row out of the cell.
+    expect(html).toContain('其他 1 个来源')
+    expect(html).toContain('8%')
+    expect(html).toContain('title="Claude Code 62% / Codex 30% / OpenCode 8%"')
+    expect(html).not.toContain('>OpenCode<')
+  })
+
+  test('falls back to placeholders when a user has no model or source data', async () => {
+    const html = await renderToString(
+      <LeaderboardPanel
+        entries={[entry({ primaryModel: null, sourceBreakdown: [] })]}
+        period="daily"
+        metric="tokens"
+        rangeLabel="2026-04-29"
+        timezone="UTC"
+        timezoneLabel="UTC+0"
+      />
+    )
+
+    expect(html).not.toContain('data-leaderboard-source-share="true"')
+    expect(html.match(/—/g)?.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// The board is a page of strangers, and the viewer's own row is the one they came to find. The
+// marker is the query's boolean, so it must not appear for anyone else, and must not appear at
+// all for an anonymous viewer.
+describe('LeaderboardPanel current viewer highlight', () => {
+  test('marks only the viewer row', async () => {
+    const html = await renderToString(
+      <LeaderboardPanel
+        entries={[
+          entry({ rank: 1, slug: 'other-user', displayName: 'Other User' }),
+          entry({ rank: 2, slug: 'viewer', displayName: 'Viewer', isCurrentViewer: true })
+        ]}
+        period="daily"
+        metric="tokens"
+        rangeLabel="2026-04-29"
+        timezone="UTC"
+        timezoneLabel="UTC+0"
+      />
+    )
+
+    // One marker in the mobile list and one in the desktop table, and no more.
+    expect(html.match(/data-leaderboard-current-user="true"/g)).toHaveLength(2)
+    expect(html.match(/data-leaderboard-current-user-badge="true"/g)).toHaveLength(2)
+    expect(html).toContain('bg-lime-300/10')
+    expect(html).toContain('border-l-2 border-lime-400')
+    expect(html).toContain('border-r-2 border-lime-400')
+  })
+
+  test('marks nobody for an anonymous viewer', async () => {
+    const html = await renderToString(
+      <LeaderboardPanel
+        entries={[entry({ slug: 'other-user', displayName: 'Other User' })]}
+        period="daily"
+        metric="tokens"
+        rangeLabel="2026-04-29"
+        timezone="UTC"
+        timezoneLabel="UTC+0"
+      />
+    )
+
+    expect(html).not.toContain('data-leaderboard-current-user="true"')
+    expect(html).not.toContain('data-leaderboard-current-user-badge="true"')
+    expect(html).not.toContain('border-lime-400')
   })
 })
 

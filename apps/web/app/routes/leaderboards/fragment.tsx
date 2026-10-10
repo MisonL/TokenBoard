@@ -7,6 +7,11 @@ import { getOptionalUser } from '../../features/auth/middleware'
 import { jsonError } from '../../lib/http'
 
 export const GET = createRoute(async (c) => {
+  // The panel's day boundaries depend on the viewer's zone, so the rendered board is
+  // viewer-specific even though it carries no identity. A shared browser cache replaying it
+  // would show the next person another viewer's day — the full page route sets `no-store` for
+  // its own reasons, and the fragment must not be the cached way around it.
+  c.header('Cache-Control', 'no-store')
   try {
     const period = leaderboardPeriodSchema.catch('daily').parse(c.req.query('period'))
     const metric = leaderboardMetricSchema.catch('tokens').parse(c.req.query('metric'))
@@ -19,7 +24,16 @@ export const GET = createRoute(async (c) => {
       userId: user?.id ?? null,
       cookieHeader: c.req.header('cookie')
     })
-    const view = await getLeaderboard(c.env.DB, { period, metric }, new Date(), c.env, timezone)
+    // Same session read as the full page, so the fragment flags the viewer's own row exactly as
+    // the panel it replaces did. Resolving the highlight from the cookie instead would drop it
+    // the moment a signed-in user clicked a tab.
+    const view = await getLeaderboard(
+      c.env.DB,
+      { period, metric, viewerUserId: user?.id ?? null },
+      new Date(),
+      c.env,
+      timezone
+    )
 
     return c.html(
       <LeaderboardPanel

@@ -1,4 +1,4 @@
-import { listDailyLeaderboard, listLeaderboard, type LeaderboardEntry, type LeaderboardQuery } from './queries'
+import { listLeaderboard, type LeaderboardEntry, type LeaderboardQuery } from './queries'
 import { leaderboardMetricSchema, leaderboardPeriodSchema } from './schema'
 import { usageSummaryStrictMode } from '../usage/deduped-daily-usage'
 import { localIsoDate, timezoneOffsetLabel } from '../../lib/time'
@@ -8,6 +8,12 @@ import type { Bindings } from '../../lib/db'
 export type LeaderboardOptions = {
   period?: unknown
   metric?: unknown
+  /**
+   * The signed-in viewer's user id, used only to flag their own row. It is resolved to a
+   * boolean inside the query and never carried into the view, so no internal id reaches a
+   * response. `null`/omitted for an anonymous viewer, which flags nobody.
+   */
+  viewerUserId?: string | null
 }
 
 /**
@@ -28,10 +34,6 @@ export type LeaderboardView = {
   timezone: string
   /** `UTC+8`, `UTC-7`, `UTC+5:30` — the offset at this instant, not a fixed one. */
   timezoneLabel: string
-}
-
-export async function getDailyLeaderboard(db: D1Database, today = new Date(), timezone = defaultTimezone) {
-  return listDailyLeaderboard(db, localIsoDate(today, timezone))
 }
 
 export async function getLeaderboard(
@@ -57,7 +59,8 @@ export async function getLeaderboard(
     startDate: range.startDate,
     endDateExclusive: range.endDateExclusive,
     limit: 50,
-    summaryStrict: usageSummaryStrictMode(env)
+    summaryStrict: usageSummaryStrictMode(env),
+    viewerUserId: options.viewerUserId ?? null
   })
 
   return {

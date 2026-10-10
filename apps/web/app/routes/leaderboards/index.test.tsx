@@ -64,10 +64,43 @@ describe('leaderboard page route', () => {
     expect(response.status).toBe(200)
     expect(mockedGetLeaderboard.mock.calls[0][4]).toBe('Asia/Tokyo')
   })
+
+  // The nav renders the viewer's email, and this route reads the session with `getOptionalUser`
+  // rather than `requireUser`, so it is outside the boundary that sets `no-store` for gated
+  // pages. Without its own directive a browser could serve a cached copy to the next person.
+  test('does not let the page be cached', async () => {
+    mockedGetOptionalUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedTimezone.mockResolvedValue({ timezone: 'Asia/Shanghai' } as never)
+
+    const response = (await route[0](context('') as never, async () => undefined)) as Response
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+  })
+
+  // The panel marks the viewer's own row, and the id that decides it comes from the session
+  // this route already read. The fragment that replaces the panel reads the same session the
+  // same way; its test asserts the other half of that contract.
+  test('passes the signed-in viewer to the board so their own row is marked', async () => {
+    mockedGetOptionalUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedTimezone.mockResolvedValue({ timezone: 'Asia/Shanghai' } as never)
+
+    await route[0](context('') as never, async () => undefined)
+
+    expect(mockedGetLeaderboard.mock.calls[0][1]).toMatchObject({ viewerUserId: 'user_1' })
+  })
+
+  test('passes no viewer for an anonymous visitor', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    await route[0](context('') as never, async () => undefined)
+
+    expect(mockedGetLeaderboard.mock.calls[0][1]).toMatchObject({ viewerUserId: null })
+  })
 })
 
 function context(cookie: string) {
   const request = new Request('https://tokenboard.example/leaderboards?period=daily')
+  const headers = new Headers()
   return {
     env: { DB: {} },
     req: {
@@ -76,6 +109,9 @@ function context(cookie: string) {
       query: (name: string) => new URL(request.url).searchParams.get(name),
       header: (name: string) => (name === 'cookie' ? cookie : undefined)
     },
-    render: async (body: unknown) => new Response(String(body), { status: 200 })
+    header: (name: string, value: string) => {
+      headers.set(name, value)
+    },
+    render: async (body: unknown) => new Response(String(body), { status: 200, headers })
   }
 }

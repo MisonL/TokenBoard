@@ -4,8 +4,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { cn } from '../../../lib/cn'
 import { formatUsd } from '../../../lib/money'
 import { formatPercentRate } from '../../../lib/usage-metrics'
-import type { LeaderboardEntry } from '../queries'
-import { costUnavailableSourceNames } from '../../usage/source-format'
+import type { LeaderboardEntry, LeaderboardSourceBreakdown } from '../queries'
+import { costUnavailableSourceNames, formatSource } from '../../usage/source-format'
 
 type LeaderboardMetric = 'tokens' | 'tokens-without-cache-read' | 'cost'
 
@@ -61,7 +61,8 @@ function LeaderboardPanelHeader(props: {
           timezoneLabel={props.timezoneLabel}
         />
         <p class="mt-2 max-w-2xl text-sm text-[var(--app-muted)]">
-          {costUnavailableSourceNames().join('、')} 费用不可用，费用列和费用排名不包含这些来源成本。
+          {costUnavailableSourceNames().join('、')} 费用不可用，费用列和费用排名不包含这些来源成本。主要模型和来源占比按
+          total token 计算。
         </p>
       </div>
       <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
@@ -144,14 +145,24 @@ function metricItems(period: 'daily' | 'monthly', metric: LeaderboardMetric) {
 
 function LeaderboardMobileItem(props: { entry: LeaderboardEntry }) {
   return (
-    <article class="app-surface-raised rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4">
+    <article
+      class={cn(
+        'app-surface-raised rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-4',
+        props.entry.isCurrentViewer && 'border-lime-400/70 ring-1 ring-lime-400/70'
+      )}
+      data-leaderboard-entry="true"
+      data-leaderboard-current-user={props.entry.isCurrentViewer ? 'true' : undefined}
+    >
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
-          <RankBadge rank={props.entry.rank} />
+          <div class="flex flex-wrap items-center gap-2">
+            <RankBadge rank={props.entry.rank} />
+            <CurrentViewerBadge isCurrentViewer={props.entry.isCurrentViewer} />
+          </div>
           <h2 class="mt-1 truncate text-lg font-black">{props.entry.displayName}</h2>
         </div>
         <p class="shrink-0 text-sm font-bold text-[var(--app-muted)]">{formatLeaderboardCost(props.entry)}</p>
-      </div>
+      </div>{' '}
       <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
         <div class="min-w-0">
           <dt class="text-xs font-bold uppercase text-[var(--app-muted)]">Tokens</dt>
@@ -172,6 +183,20 @@ function LeaderboardMobileItem(props: { entry: LeaderboardEntry }) {
           <dd class="mt-1 break-words font-black tabular-nums">{formatPercentRate(props.entry.cacheReadRate)}</dd>
         </div>
       </dl>
+      <dl class="mt-3 grid grid-cols-1 gap-3 text-sm">
+        <div class="min-w-0">
+          <dt class="text-xs font-bold uppercase text-[var(--app-muted)]">主要模型</dt>
+          <dd class="mt-1 break-words font-bold [overflow-wrap:anywhere]">
+            {formatPrimaryModel(props.entry.primaryModel)}
+          </dd>
+        </div>
+        <div class="min-w-0">
+          <dt class="text-xs font-bold uppercase text-[var(--app-muted)]">来源占比</dt>
+          <dd class="mt-1">
+            <LeaderboardSourceShare breakdown={props.entry.sourceBreakdown} />
+          </dd>
+        </div>
+      </dl>
     </article>
   )
 }
@@ -179,11 +204,13 @@ function LeaderboardMobileItem(props: { entry: LeaderboardEntry }) {
 function LeaderboardTable(props: { entries: LeaderboardEntry[] }) {
   return (
     <div class="hidden overflow-x-auto md:block" data-leaderboard-desktop-table="true">
-      <Table class="min-w-[620px] border-separate border-spacing-y-2">
+      <Table class="min-w-[860px] border-separate border-spacing-y-2">
         <TableHeader>
           <TableRow class="border-0">
             <TableHead>排名</TableHead>
             <TableHead>用户</TableHead>
+            <TableHead>主要模型</TableHead>
+            <TableHead>来源占比</TableHead>
             <TableHead>Tokens</TableHead>
             <TableHead>不含缓存读</TableHead>
             <TableHead>缓存率</TableHead>
@@ -192,21 +219,103 @@ function LeaderboardTable(props: { entries: LeaderboardEntry[] }) {
         </TableHeader>
         <TableBody>
           {props.entries.map((entry) => (
-            <TableRow class="border-0 bg-[var(--app-bg-soft)]">
-              <TableCell class="rounded-l-xl">
-                <RankBadge rank={entry.rank} />
+            <TableRow class={cn('border-0 bg-[var(--app-bg-soft)]', entry.isCurrentViewer && 'bg-lime-300/10')}>
+              <TableCell class={cn('rounded-l-xl', entry.isCurrentViewer && 'border-l-2 border-lime-400')}>
+                <div
+                  class="flex flex-wrap items-center gap-2"
+                  data-leaderboard-entry="true"
+                  data-leaderboard-current-user={entry.isCurrentViewer ? 'true' : undefined}
+                >
+                  <RankBadge rank={entry.rank} />
+                  <CurrentViewerBadge isCurrentViewer={entry.isCurrentViewer} />
+                </div>
               </TableCell>
               <TableCell>{entry.displayName}</TableCell>
+              <TableCell class="max-w-[18rem]">
+                <span class="block break-words font-bold [overflow-wrap:anywhere]" title={entry.primaryModel ?? ''}>
+                  {formatPrimaryModel(entry.primaryModel)}
+                </span>
+              </TableCell>
+              <TableCell class="align-top">
+                <LeaderboardSourceShare breakdown={entry.sourceBreakdown} />
+              </TableCell>
               <TableCell class="font-bold">{formatInteger(entry.totalTokens)}</TableCell>
               <TableCell class="font-bold">{formatInteger(entry.totalTokensWithoutCacheRead)}</TableCell>
               <TableCell class="font-bold">{formatPercentRate(entry.cacheReadRate)}</TableCell>
-              <TableCell class="rounded-r-xl text-[var(--app-muted)]">{formatLeaderboardCost(entry)}</TableCell>
+              <TableCell
+                class={cn(
+                  'rounded-r-xl text-[var(--app-muted)]',
+                  entry.isCurrentViewer && 'border-r-2 border-lime-400'
+                )}
+              >
+                {formatLeaderboardCost(entry)}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
     </div>
   )
+}
+
+// The viewer's own row is the one row on a page of strangers they care about, and the board is
+// long enough that finding it by name is work. The marker is a plain boolean from the query —
+// the row never carries an id — so an anonymous viewer (or a signed-in one whose row is not on
+// this page) simply gets no marker.
+function CurrentViewerBadge(props: { isCurrentViewer: boolean }) {
+  if (!props.isCurrentViewer) return null
+
+  return (
+    <span
+      class="rounded-full bg-lime-300 px-2 py-0.5 text-[11px] font-black text-stone-950"
+      data-leaderboard-current-user-badge="true"
+    >
+      我
+    </span>
+  )
+}
+
+// Up to two sources are named; the rest collapse into one remainder so a user running many
+// sources still fits the cell. The full breakdown stays available as the element's title.
+function LeaderboardSourceShare(props: { breakdown: LeaderboardSourceBreakdown[] }) {
+  if (props.breakdown.length === 0) return <span class="text-[var(--app-muted)]">—</span>
+
+  const named = props.breakdown.slice(0, 2)
+  const rest = props.breakdown.slice(2)
+  const restShare = rest.reduce((total, item) => total + item.share, 0)
+
+  return (
+    <div class="min-w-0 space-y-1" data-leaderboard-source-share="true" title={sourceShareTitle(props.breakdown)}>
+      {named.map((item) => (
+        <div class="flex items-baseline justify-between gap-2 text-xs">
+          <span class="min-w-0 truncate">{formatSource(item.source)}</span>
+          <span class="shrink-0 font-bold text-[var(--app-text)] tabular-nums">{formatShare(item.share)}</span>
+        </div>
+      ))}
+      {rest.length > 0 ? (
+        <div class="flex items-baseline justify-between gap-2 text-xs text-[var(--app-muted)]">
+          <span class="min-w-0 truncate">其他 {rest.length} 个来源</span>
+          <span class="shrink-0 font-bold tabular-nums">{formatShare(restShare)}</span>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function sourceShareTitle(breakdown: LeaderboardSourceBreakdown[]) {
+  return breakdown.map((item) => `${formatSource(item.source)} ${formatShare(item.share)}`).join(' / ')
+}
+
+// Rounded to whole percent like every other share on the site, but never to `0%`: a source that
+// is listed at all put tokens on the board, and "0%" would read as a display bug rather than a
+// small contribution.
+function formatShare(share: number) {
+  if (!(share > 0)) return '0%'
+  return `${Math.max(1, Math.round(share * 100))}%`
+}
+
+function formatPrimaryModel(model: string | null) {
+  return model ?? '—'
 }
 
 function RankBadge(props: { rank: number }) {
