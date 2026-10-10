@@ -18,24 +18,22 @@ describe('notification time helpers', () => {
 
   // A local time inside a spring-forward gap does not exist, so there is no exact instant to
   // return. The iteration used to settle on a time *before* the transition, which reads back as
-  // a different wall clock — 02:30 in New York came back as 01:30, an hour early. Placing the
-  // run at the start of the gap (the requested time plus the gap) is the conventional handling
-  // and keeps the result a real instant in the requested zone.
+  // a different wall clock — 02:30 in New York came back as 01:30, an hour early. Shifting the
+  // run forward by the gap keeps the requested time's distance from the transition, so 02:30 in
+  // a one-hour gap lands at 03:30; that is the conventional handling and keeps the result a real
+  // instant in the requested zone.
   test.each([
     ['2026-03-08', '02:30', 'America/New_York', '2026-03-08T07:30:00.000Z', '03:30'],
     ['2026-03-29', '01:30', 'Europe/London', '2026-03-29T01:30:00.000Z', '02:30'],
     ['2026-03-29', '02:30', 'Europe/Berlin', '2026-03-29T01:30:00.000Z', '03:30']
-  ])(
-    'places a %s %s schedule in %s at the start of the DST gap',
-    (date, time, timezone, expectedIso, expectedLocalTime) => {
-      const utc = zonedTimeToUtc(date, time, timezone)
+  ])('shifts a %s %s schedule in %s forward by the DST gap', (date, time, timezone, expectedIso, expectedLocalTime) => {
+    const utc = zonedTimeToUtc(date, time, timezone)
 
-      expect(utc.toISOString()).toBe(expectedIso)
-      // The result must read back as a real wall-clock time in that zone, never one that the
-      // clock skipped.
-      expect(localWallClock(utc, timezone)).toBe(`${date} ${expectedLocalTime}`)
-    }
-  )
+    expect(utc.toISOString()).toBe(expectedIso)
+    // The result must read back as a real wall-clock time in that zone, never one that the
+    // clock skipped.
+    expect(localWallClock(utc, timezone)).toBe(`${date} ${expectedLocalTime}`)
+  })
 
   test('moves next run to tomorrow after the configured local time has passed', () => {
     expect(

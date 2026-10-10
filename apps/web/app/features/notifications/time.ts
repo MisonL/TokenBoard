@@ -74,9 +74,11 @@ export function zonedTimeToUtc(localDate: string, time: string, timezone: string
   // spring-forward gap — 02:30 in a zone that jumps 02:00 to 03:00 is not a real instant — and
   // the loop then settles on a time before the transition, which is the *wrong* instant and
   // reads back as a different wall clock. Such a schedule has no exact answer, so the run is
-  // placed at the start of the gap instead: that is the first instant on or after the requested
-  // wall-clock time, it is what a scheduler is expected to do with a skipped slot, and it keeps
-  // the result a real instant rather than a silently shifted one.
+  // shifted forward by the length of the gap: the requested wall-clock time is preserved as an
+  // offset from the gap's start, so 02:30 in a one-hour gap lands at 03:30, the first real
+  // instant that keeps the same distance from the transition. That is what a scheduler is
+  // expected to do with a skipped slot, and it keeps the result a real instant rather than a
+  // silently shifted one.
   const settled = localDateTimeParts(new Date(utc), timezone)
   const settledLocalAsUtc = Date.UTC(
     settled.year,

@@ -169,6 +169,34 @@ describe('webhook client', () => {
     expect(error.message).not.toContain(tailMarker)
   })
 
+  // A body whose length lands exactly on the 4096-byte cap is complete; the suffix must not be
+  // appended, or the log would claim text was dropped when none was.
+  test('does not mark a response that ends exactly on the cap as truncated', async () => {
+    const encryptedUrl = await encryptSecret(
+      'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test',
+      testEncryptionKey
+    )
+    const body = 'y'.repeat(4096)
+    const response = new Response(body, { status: 500 })
+
+    let error: Error | null = null
+    try {
+      await sendWebhookRequest({
+        env: { DB: {} as D1Database, WEBHOOK_ENCRYPTION_KEY: testEncryptionKey },
+        subscription: subscriptionRow(encryptedUrl, 'wecom'),
+        report: dailyReport(),
+        now: new Date('2026-04-29T01:30:00.000Z'),
+        fetcher: async () => response
+      })
+    } catch (caught) {
+      if (caught instanceof Error) error = caught
+    }
+
+    if (!error) throw new Error('Expected webhook request to fail')
+    expect(error.message).toBe(`Webhook returned 500: ${body}`)
+    expect(error.message).not.toContain('[truncated]')
+  })
+
   test('rejects decrypted webhook URLs outside the selected provider allowlist before fetch', async () => {
     const encryptedUrl = await encryptSecret('https://example.com/webhook', testEncryptionKey)
     let called = false

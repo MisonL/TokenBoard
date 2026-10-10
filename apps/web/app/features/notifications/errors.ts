@@ -21,5 +21,9 @@ export class NotificationFormError extends ApiError {
 
 export function notificationFormErrorMessage(code: string | undefined) {
   if (!code) return undefined
+  // A `?error=` query is user-controlled. Bracket lookup would walk the prototype chain, so
+  // `?error=constructor` would resolve to `Object`'s own function instead of a message; ownership
+  // is required to reach one, matching `settingsFormErrorMessage` and `deviceFormErrorMessage`.
+  if (!Object.prototype.hasOwnProperty.call(notificationFormErrorMessages, code)) return undefined
   return notificationFormErrorMessages[code as NotificationFormErrorCode]
 }

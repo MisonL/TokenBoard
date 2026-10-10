@@ -1352,6 +1352,56 @@ describe('notification service', () => {
     expect(pruneBindings).toEqual([['2026-04-22T00:00:00.000Z']])
   })
 
+  // The sweep runs at 00:00 UTC, when west-of-UTC users are still on the previous local day.
+  // Anchoring it to the UTC day would push their cutoff one day ahead of the per-delivery prune
+  // and drop the oldest report a day early, so it must anchor to the day behind.
+  test('anchors the report-history sweep to the previous UTC day', async () => {
+    const secret = testEncryptionKey
+    const encryptedUrl = await encryptSecret('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcdef', secret)
+    const reportHistoryBindings: unknown[][] = []
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            if (sql.includes('DELETE FROM daily_report_history')) reportHistoryBindings.push(values)
+            return {
+              async all() {
+                if (sql.includes('FROM webhook_subscriptions')) {
+                  return { results: [dueSubscriptionRow(encryptedUrl)] }
+                }
+                return { results: [] }
+              },
+              async first() {
+                if (sql.includes('FROM webhook_delivery_logs')) return null
+                if (sql.includes('sessionCount')) {
+                  return { totalTokens: 0, totalTokensWithoutCacheRead: 0, costUsd: 0, sessionCount: 0 }
+                }
+                return null
+              },
+              async run() {
+                return { meta: { changes: 1 } }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await runDueWebhookNotifications({
+      env: {
+        DB: db,
+        WEBHOOK_ENCRYPTION_KEY: secret,
+        BETTER_AUTH_URL: 'https://tokenboard.example.com',
+        TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: '7'
+      },
+      now: new Date('2026-04-29T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 })
+    })
+
+    // referenceDate 2026-04-28, retention 7 → cutoff 2026-04-22.
+    expect(reportHistoryBindings).toEqual([['2026-04-22']])
+  })
+
   test('skips webhook delivery log pruning outside the daily prune window', async () => {
     const secret = testEncryptionKey
     const pruneBindings: unknown[][] = []

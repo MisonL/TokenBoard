@@ -1,4 +1,4 @@
-import type { WebhookEnv } from './config'
+import { webhookDiagnostic, type WebhookEnv } from './config'
 import { markSubscriptionSkipped } from './delivery-state'
 import { claimWebhookSubscription, hasSuccessfulDailyDelivery, type DueWebhookSubscription } from './queries'
 import { localDateInTimezone, localTimeInTimezone } from './time'
@@ -92,8 +92,11 @@ export function incrementCounts(counts: { sent: number; failed: number; skipped:
   if (status === 'skipped') counts.skipped += 1
 }
 
+// Log-path formatting: the webhook configuration error carries a generic user-facing message
+// plus the operator detail, so the diagnostic is preferred here while `safeWebhookErrorMessage`
+// (what lands in the user-visible delivery log) stays on the generic message.
 export function errorMessage(error: unknown) {
-  return rawErrorMessage(error).slice(0, 500)
+  return (webhookDiagnostic(error) ?? rawErrorMessage(error)).slice(0, 500)
 }
 
 export function safeWebhookErrorMessage(error: unknown) {

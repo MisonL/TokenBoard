@@ -135,8 +135,14 @@ async function readBoundedResponseText(response: Response) {
       text += decoder.decode(value, { stream: true })
       bytesRead += value.byteLength
       if (bytesRead === webhookResponseTextMaxBytes) {
-        truncated = true
-        await reader.cancel()
+        // Reaching the cap exactly is only a truncation if the body continues: a response whose
+        // last byte lands on the cap is complete, and appending the suffix there would claim
+        // text was dropped when none was. One more read decides it.
+        const next = await reader.read()
+        if (!next.done) {
+          truncated = true
+          await reader.cancel()
+        }
         break
       }
     }

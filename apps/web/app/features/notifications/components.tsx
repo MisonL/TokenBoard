@@ -72,7 +72,7 @@ function NotificationFlash(props: {
     <>
       {!props.encryptionConfigured ? (
         <p class="app-flash-error p-3 text-sm">
-          当前 Worker 未正确配置 WEBHOOK_ENCRYPTION_KEY，必须使用 32 字节 base64 key 才能保存或发送 webhook。
+          当前 Worker 未正确配置 Webhook 加密密钥，必须使用 32 字节 base64 key 才能保存或发送 webhook。
         </p>
       ) : null}
       {props.saved ? <p class="app-flash-success p-3 text-sm">通知设置已保存。</p> : null}

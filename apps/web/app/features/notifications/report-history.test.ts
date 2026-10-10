@@ -4,6 +4,7 @@ import {
   dailyReportHistoryRetentionDays,
   listDailyReportHistory,
   pruneExpiredDailyReportHistory,
+  pruneExpiredDailyReportHistoryForAllUsers,
   retentionCutoffDate
 } from './report-history'
 
@@ -133,6 +134,23 @@ describe('daily report history', () => {
 
     expect(statements[0]).toContain('DELETE FROM daily_report_history WHERE user_id = ? AND report_date < ?')
     expect(bindings[0]).toEqual(['user_1', '2026-04-23'])
+  })
+
+  // The per-delivery prune never runs for a user who turned their webhook off, so the scheduled
+  // sweep has to cover every user without a user filter.
+  test('sweeps expired rows for every user regardless of delivery', async () => {
+    const statements: string[] = []
+    const bindings: unknown[][] = []
+    const db = statementDb({ statements, bindings })
+
+    await pruneExpiredDailyReportHistoryForAllUsers({
+      db,
+      referenceDate: '2026-04-29',
+      retentionDays: 7
+    })
+
+    expect(statements[0]).toBe('DELETE FROM daily_report_history WHERE report_date < ?')
+    expect(bindings[0]).toEqual(['2026-04-23'])
   })
 })
 

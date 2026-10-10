@@ -277,6 +277,23 @@ export async function pruneExpiredDailyReportHistory(input: {
     .run()
 }
 
+/**
+ * Sweeps expired report history for every user, independent of delivery.
+ *
+ * The per-delivery prune only runs when a webhook is enabled and a delivery succeeds, so a user
+ * who turns their webhook off (or deletes it) would keep rows past the retention the settings card
+ * promises. `referenceDate` is the caller's "today"; callers pass a date no user is ahead of, so a
+ * row still inside the window in any timezone is never dropped.
+ */
+export async function pruneExpiredDailyReportHistoryForAllUsers(input: {
+  db: D1Database
+  referenceDate: string
+  retentionDays: number
+}) {
+  const cutoffDate = retentionCutoffDate(input.referenceDate, input.retentionDays)
+  await input.db.prepare('DELETE FROM daily_report_history WHERE report_date < ?').bind(cutoffDate).run()
+}
+
 export function retentionCutoffDate(reportDate: string, retentionDays: number) {
   const cutoff = new Date(`${reportDate}T00:00:00.000Z`)
   cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays + 1)
