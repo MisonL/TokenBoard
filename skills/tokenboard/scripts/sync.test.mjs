@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { buildSyncInvocation, createUpgradeLogger, refreshBundledCcusageConfig, runSyncInvocation } from './sync.mjs'
@@ -597,4 +599,63 @@ test('scheduled state reporting cannot change the sync result or mask its primar
       }),
     (error) => error === primaryError
   )
+})
+
+// The entry guard runs `runCli()` at module top level, so every `const` the scheduled path
+// reads must be initialized before the guard — a declaration further down the file is still in
+// its temporal dead zone. This slipped through once: the collector-output buffer was declared
+// below the guard, `--mode preview` took the no-log early return and never touched it, and only
+// `--scheduled` threw `Cannot access '…' before initialization`. Every other sync test imports
+// the module (fully evaluated by then) or injects its own `run`, so none of them executes the
+// real top-level entry — the regression has to be caught by running the CLI as a subprocess.
+test('scheduled sync runs the real top-level entry without a temporal dead zone', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-sync-entry-'))
+  try {
+    const collectorDir = join(root, 'collector')
+    // The logged branch is only reached once the collector checkout exists; an absent one
+    // returns early and would pass even with the broken declaration order.
+    mkdirSync(join(collectorDir, 'packages', 'collector'), { recursive: true })
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({
+        endpoint: 'http://127.0.0.1:1',
+        uploadToken: 'entry-guard-token',
+        timezone: 'Asia/Shanghai',
+        source: 'claude-code',
+        packageManager: 'pnpm',
+        collectorDir
+      })
+    )
+
+    const result = spawnSync(
+      process.execPath,
+      [new URL('./sync.mjs', import.meta.url).pathname, '--scheduled', '--source', 'claude-code', '--skip-upgrade'],
+      {
+        encoding: 'utf8',
+        timeout: 60_000,
+        env: {
+          PATH: process.env.PATH,
+          HOME: root,
+          TMPDIR: root,
+          TOKENBOARD_CONFIG_DIR: root,
+          TOKENBOARD_COLLECTOR_DIR: collectorDir,
+          TOKENBOARD_LOG_DIR: join(root, 'logs'),
+          TOKENBOARD_SKIP_UPGRADE: '1'
+        }
+      }
+    )
+
+    // The scheduled path writes through the log runtime, not to the inherited stdio, so the
+    // evidence is in the log files. A TDZ failure would surface on the parent's stderr too
+    // (runCli catches and prints it), which is why both are checked.
+    const errLog = readFileSync(join(root, 'logs', 'daily-sync.err.log'), 'utf8')
+    const combined = `${result.stdout}${result.stderr}${errLog}`
+    assert.doesNotMatch(combined, /before initialization/)
+    assert.doesNotMatch(combined, /ReferenceError/)
+    // The collector cannot actually run here (the checkout is a stub), so a non-zero exit is
+    // expected; what matters is that the entry got far enough to reach it at all.
+    assert.match(errLog, /collector/i)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

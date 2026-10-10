@@ -30,6 +30,13 @@ import { redactUrlCredentials } from './redact-credentials.mjs'
 
 const defaultSyncLockTimeoutMs = 60_000
 
+// Declared above the entry guard on purpose: the guard runs `runCli()` at module top level, so
+// a `const` placed further down the file is still in its temporal dead zone when a scheduled run
+// reads it. Only the logged branch of `runCollectorProcess` references this, and `--mode preview`
+// returns before that — so the failure appears only under `--scheduled`, which is how it once
+// slipped through. See `runCollectorProcess` for what the value is for.
+const collectorOutputMaxBuffer = 64 * 1024 * 1024
+
 if (isMain()) {
   process.exit(runCli())
 }
@@ -220,9 +227,7 @@ function runSync({ flags, invocation, logs }) {
 // error echoing `tb_upload_…` or `https://user:token@host/…` would land there intact. Capture
 // instead and forward each line through `redactUrlCredentials`, the way `upgrade-utils` already
 // does for the git steps. The child still inherits the real terminal when there is no log file,
-// so interactive runs keep their live output.
-const collectorOutputMaxBuffer = 64 * 1024 * 1024
-
+// so interactive runs keep their live output. `collectorOutputMaxBuffer` bounds the capture.
 function runCollectorProcess(invocation, logs) {
   if (!logs) {
     return spawnSync(invocation.command, invocation.args, {
