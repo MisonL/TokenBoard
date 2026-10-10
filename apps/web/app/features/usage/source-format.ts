@@ -1,4 +1,4 @@
-import { costUnavailableSources } from '@tokenboard/usage-core'
+import { costUnavailableSources, isAntigravityUsageSource, type UsageSource } from '@tokenboard/usage-core'
 import { formatUsd } from '../../lib/money'
 
 const costUnavailableLabels: Record<string, string> = {
@@ -113,6 +113,9 @@ function costUnavailableLabel(source: string) {
   return costUnavailableLabels[source] ?? `${formatSource(source)} 费用不可用`
 }
 
+// Sources reach this module as plain strings (they are read back from stored split rows), so the
+// shared predicate is handed a cast rather than keeping a second, string-typed copy of the same
+// membership check. A new Antigravity variant is declared once, in `usage-core`.
 function isAntigravitySource(source: string) {
-  return source === 'antigravity' || source.startsWith('antigravity-')
+  return isAntigravityUsageSource(source as UsageSource)
 }

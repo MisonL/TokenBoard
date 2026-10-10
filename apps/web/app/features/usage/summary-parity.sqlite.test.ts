@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../test/sqlite-d1'
 import { upsertUsageSnapshots, type IngestRecord } from '../ingest/repository'
+import { usageSummaryBackfillStateId } from '../ingest/repository/types'
 import { getUsageSummary } from './queries/summary'
+import { getUsageDetails } from './queries/details'
 
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../db/migrations')
 
@@ -98,6 +100,37 @@ describe('summary cache parity', () => {
 
     expect(cached).toEqual(uncached)
   })
+
+  // The details page reads `daily_usage` directly instead of the summary cache: the cache has no
+  // device dimension, so a per-device filter could not use it, and reading one table is what
+  // keeps the page and its CSV export consistent with each other. That bypass is only safe while
+  // the two agree, so this pins them together on the same rows the other cases use.
+  test('details reads the same totals as the summary once the cache is populated', async () => {
+    const { db } = createDb(tempDirs)
+    await refreshSummary(db, [
+      row({ model: 'claude-sonnet-4-5', totalTokens: 100, cacheReadTokens: 20, costUsd: 1.5, sessionCount: 2 }),
+      row({ model: 'gpt-5.4', totalTokens: 50, cacheReadTokens: 10, costUsd: 0.5, sessionCount: 1 })
+    ])
+
+    const summary = await getUsageSummary(db, summaryInput())
+    const details = await getUsageDetails(db, {
+      userId: 'seed-user',
+      startDate: '2026-04-01',
+      endDate: today,
+      source: 'all',
+      deviceId: 'all'
+    })
+
+    // Every shared scalar of the two read paths, not just the headline number: a field neither
+    // side asserts could drift between `daily_usage` and the cache without any test noticing.
+    expect(details.summary.totalTokens).toBe(summary.monthTokens)
+    expect(details.summary.totalTokensWithoutCacheRead).toBe(summary.monthTokensWithoutCacheRead)
+    expect(details.summary.cacheReadRate).toBe(summary.monthCacheReadRate)
+    expect(details.summary.costUsd).toBe(summary.monthCostUsd)
+    expect(details.summary.sessionCount).toBe(3)
+    // Both fixture rows fall on the same day, so the range has a single active day.
+    expect(details.summary.activeDays).toBe(1)
+  })
 })
 
 const today = '2026-04-28'
@@ -142,7 +175,7 @@ function createDb(tempDirs: string[]) {
     INSERT INTO profiles (user_id, slug, display_name, timezone, timezone_source, is_public, participates_in_leaderboards, created_at, updated_at)
     VALUES ('seed-user','seed','Seed','UTC','default',0,0,'2026-01-01','2026-01-01');
     INSERT INTO usage_summary_backfill_state (id, phase, completed_at, updated_at)
-    VALUES ('usage_summary_cache', 'totals', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    VALUES ('${usageSummaryBackfillStateId}', 'totals', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
   `
   )
   return { path, db: createSqliteD1(path) }

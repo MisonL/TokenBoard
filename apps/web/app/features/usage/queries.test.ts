@@ -77,7 +77,10 @@ describe('getUsageSummary', () => {
     expect(sqlStatements[0]).toContain('total_tokens_without_cache_read')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
     expect(sqlStatements[0]).toContain('ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC')
-    expect(sqlStatements[0]).toContain('LEFT JOIN device_stats')
+    // Device stats are an aggregate scoped to the signed-in user, so they always produce exactly
+    // one row and join unconditionally rather than by user id.
+    expect(sqlStatements[0]).toContain('FROM devices\n          WHERE user_id = (SELECT user_id FROM params)')
+    expect(sqlStatements[0]).toContain('CROSS JOIN device_stats')
   })
 
   test('can read dashboard totals in summary strict mode without raw usage fallback', async () => {

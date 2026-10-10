@@ -51,13 +51,15 @@ export async function getUsageSummary(db: D1Database, input: UsageSummaryInput):
           FROM month_usage
           GROUP BY source
         ),
+        -- Scoped to the signed-in user rather than the whole table: the dashboard renders one
+        -- user's row, so materialising every user's device list on each render is work that
+        -- scales with the platform rather than with the request.
         device_stats AS (
           SELECT
-            devices.user_id,
-            MAX(devices.last_synced_at) as lastSyncedAt,
+            MAX(last_synced_at) as lastSyncedAt,
             COUNT(*) as deviceCount
           FROM devices
-          GROUP BY devices.user_id
+          WHERE user_id = (SELECT user_id FROM params)
         )
         SELECT
           COALESCE(SUM(CASE WHEN month_usage.usage_date = params.today THEN month_usage.total_tokens ELSE 0 END), 0) as todayTokens,
@@ -87,7 +89,7 @@ export async function getUsageSummary(db: D1Database, input: UsageSummaryInput):
           ) as sourceSplit
         FROM params
         LEFT JOIN month_usage ON month_usage.user_id = params.user_id
-        LEFT JOIN device_stats ON device_stats.user_id = params.user_id
+        CROSS JOIN device_stats
       `
     )
     .bind(input.userId, input.today, input.monthStart)

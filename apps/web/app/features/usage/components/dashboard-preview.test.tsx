@@ -232,7 +232,9 @@ describe('DashboardPreview', () => {
     expect(html).toContain('$4.56')
     expect(html).toContain('(Antigravity 费用不可用)')
     expect(html).toContain('<span class="sr-only">今日费用: $1.23</span>')
-    expect(html).toContain('<span class="sr-only">本月费用: $4.56</span>')
+    // The visible "cost unavailable" notice is aria-hidden, so the month card has to announce
+    // it in the sr-only label too — otherwise a screen reader never hears it.
+    expect(html).toContain('<span class="sr-only">本月费用: $4.56 (Antigravity 费用不可用)</span>')
     const todayCostCard = metricCardHtml(html, '今日费用')
     const monthCostCard = metricCardHtml(html, '本月费用')
     expect(todayCostCard).not.toContain('Antigravity 费用不可用')

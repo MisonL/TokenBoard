@@ -126,6 +126,54 @@ describe('UsageDetailsPanel', () => {
     expect(html).toContain('<span class="sr-only">范围 tokens: 12,007,199,254,740,992 (12.01P, 1.2京)</span>')
     expect(html).toContain('aria-hidden="true"')
     expect(html).toContain('data-usage-metric-detail="true"')
+    expect(html).toContain('当前筛选范围内没有用量。')
+    expect(html).not.toContain('DailySummaryHeader')
+  })
+
+  // The real page always has one seeded row per calendar day, so "no usage" shows up as a range
+  // of zero rows, not an empty array. The empty state has to key off the zero totals.
+  test('shows the empty state for a range seeded with zero-total days', async () => {
+    const html = await renderToString(
+      <UsageDetailsPanel
+        devices={[]}
+        filters={{ source: 'all', startDate: '2026-05-25', endDate: '2026-05-26', deviceId: 'all', modelQuery: '' }}
+        details={{
+          summary: {
+            totalTokens: 0,
+            totalTokensWithoutCacheRead: 0,
+            cacheReadRate: 0,
+            costUsd: 0,
+            sessionCount: 0,
+            activeDays: 0
+          },
+          dailyRows: [
+            {
+              usageDate: '2026-05-26',
+              totalTokens: 0,
+              totalTokensWithoutCacheRead: 0,
+              cacheReadRate: 0,
+              costUsd: 0,
+              sessionCount: 0,
+              sourceSplit: [],
+              modelRows: []
+            },
+            {
+              usageDate: '2026-05-25',
+              totalTokens: 0,
+              totalTokensWithoutCacheRead: 0,
+              cacheReadRate: 0,
+              costUsd: 0,
+              sessionCount: 0,
+              sourceSplit: [],
+              modelRows: []
+            }
+          ],
+          modelRows: []
+        }}
+      />
+    )
+
+    expect(html).toContain('当前筛选范围内没有用量。')
   })
 
   test('renders empty source split text with readable muted contrast', async () => {
@@ -141,15 +189,34 @@ describe('UsageDetailsPanel', () => {
         }}
         details={{
           summary: {
-            totalTokens: 0,
-            totalTokensWithoutCacheRead: 0,
-            cacheReadRate: 0,
-            costUsd: 0,
-            sessionCount: 0,
-            activeDays: 0
+            totalTokens: 1000,
+            totalTokensWithoutCacheRead: 900,
+            cacheReadRate: 0.1,
+            costUsd: 1.5,
+            sessionCount: 2,
+            activeDays: 2
           },
           dailyRows: [
             {
+              usageDate: '2026-05-26',
+              totalTokens: 1000,
+              totalTokensWithoutCacheRead: 900,
+              cacheReadRate: 0.1,
+              costUsd: 1.5,
+              sessionCount: 2,
+              sourceSplit: [
+                {
+                  source: 'codex',
+                  totalTokens: 1000,
+                  totalTokensWithoutCacheRead: 900,
+                  cacheReadRate: 0.1
+                }
+              ],
+              modelRows: []
+            },
+            {
+              // A day with no usage of its own still renders beside its neighbours, and that
+              // is where the muted-but-readable 无用量 placeholder shows up.
               usageDate: '2026-05-25',
               totalTokens: 0,
               totalTokensWithoutCacheRead: 0,

@@ -21,9 +21,12 @@ export function UsageMetricGrid(props: { columns?: UsageMetricGridColumns; class
 
 export function UsageMetricCard(props: { label: string; value: string | UsageMetricValue; tone?: 'lime' }) {
   const metric = readMetricValue(props.value)
+  // `detail` carries the "cost unavailable" notice, and the visible copy of it is
+  // `aria-hidden`. It therefore has to be announced here too, not only when the value was
+  // compacted — otherwise a screen reader never hears that a source's cost is unavailable.
   const exactLabel =
     metric.exactValue === metric.value
-      ? `${props.label}: ${metric.exactValue}`
+      ? `${props.label}: ${metric.exactValue}${metric.detail ? ` (${metric.detail})` : ''}`
       : `${props.label}: ${metric.exactValue} (${metric.value}${metric.detail ? `, ${metric.detail}` : ''})`
 
   return (

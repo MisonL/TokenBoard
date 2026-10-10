@@ -105,6 +105,9 @@ function usageDetailsSubtitle(filters: UsageDetailsFilters, selectedDevice?: Use
 }
 
 function DailySummaryCard(props: { dailyRows: UsageDetails['dailyRows'] }) {
+  // `buildDailyDetails` seeds one row per calendar day in the range, so a length check would
+  // never fire on the page; the range is empty of *usage* when every seeded day is zero.
+  const hasUsage = props.dailyRows.some((row) => row.totalTokens > 0)
   return (
     <Card>
       <CardHeader>
@@ -112,10 +115,18 @@ function DailySummaryCard(props: { dailyRows: UsageDetails['dailyRows'] }) {
         <CardDescription>按日期聚合；展开任意日期查看当天模型明细。</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
-        <DailySummaryHeader />
-        {props.dailyRows.map((row) => (
-          <DailySummaryRow row={row} />
-        ))}
+        {!hasUsage ? (
+          <p class="app-surface-subtle rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-muted)]">
+            当前筛选范围内没有用量。
+          </p>
+        ) : (
+          <>
+            <DailySummaryHeader />
+            {props.dailyRows.map((row) => (
+              <DailySummaryRow row={row} />
+            ))}
+          </>
+        )}
       </CardContent>
     </Card>
   )

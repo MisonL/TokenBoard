@@ -12,6 +12,19 @@ import {
 import { eachIsoDate, roundMetric } from './shared'
 import type { UsageDetails, UsageDetailsDailyRow, UsageDetailsInput, UsageDetailsModelRow } from './types'
 
+// Unlike the dashboard summary, leaderboards, public cards and daily reports — which read the
+// `daily_usage_summary` cache under `TOKENBOARD_USAGE_SUMMARY_STRICT` — this query reads
+// `daily_usage` (via the legacy-dedup CTE) directly, in both strict and non-strict deployments.
+// That is deliberate, not an oversight:
+//   * the summary table has no device dimension, so the per-device filter this page offers could
+//     not be served from it at all, and reading one table keeps the page and its CSV export
+//     consistent with each other;
+//   * the cache lags while the bounded backfill catches up, and in that window the strict
+//     surfaces under-report history. The details page is where a user checks what was actually
+//     collected, so it must show the complete rows rather than the partially-warmed cache.
+// Once the cache is current the two agree on every total this page shows; `summary-parity
+// .sqlite.test.ts` pins those shared fields so the two read paths cannot drift without a
+// failing test.
 export async function getUsageDetails(db: D1Database, input: UsageDetailsInput): Promise<UsageDetails> {
   const deviceId = normalizeDeviceFilter(input.deviceId)
   const usageTable = usageTableForDeviceFilter(deviceId)
