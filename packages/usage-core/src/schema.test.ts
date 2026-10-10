@@ -89,6 +89,32 @@ describe('usage snapshot schema', () => {
     }
   })
 
+  // `cacheReadTokens <= totalTokens` is the schema's only cross-field token invariant, and it
+  // had no rejection case: a cache-read count exceeding the total would inflate the
+  // cache-read-rate metric past 100% in every reporting surface.
+  test('rejects cache reads that exceed the snapshot total', () => {
+    expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, cacheReadTokens: baseSnapshot.totalTokens + 1 })).toThrow(
+      'cacheReadTokens must not exceed totalTokens'
+    )
+  })
+
+  // The schema deliberately does *not* enforce `totalTokens === input + output + cacheWrite +
+  // cacheRead`: codex legacy rows report a total that predates the cache-read split, so the
+  // four components legitimately sum past it (see `resolveCodexRawUsage`). This pins that
+  // acceptance so a future "tidy-up" tightening the invariant fails here, not in production.
+  test('accepts a total that does not equal the four components summed', () => {
+    const legacyCodexRow = {
+      ...baseSnapshot,
+      inputTokens: 100,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 41,
+      totalTokens: 101
+    }
+
+    expect(usageSnapshotSchema.parse(legacyCodexRow).totalTokens).toBe(101)
+  })
+
   test('rejects costs from sources that cannot report one', () => {
     expect(() => usageSnapshotSchema.parse({ ...baseSnapshot, source: 'grok-build', costUsd: 0.01 })).toThrow(
       'Grok Build source costs are unavailable'
