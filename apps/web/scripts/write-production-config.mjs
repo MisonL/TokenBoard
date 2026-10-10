@@ -18,10 +18,11 @@ const dailyReportHistoryDays = optionalIntegerEnv('TOKENBOARD_DAILY_REPORT_HISTO
 const usageSummaryBackfillLimit = optionalIntegerEnv('TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT', '50', 1, 500)
 const usageSummaryStrict = optionalBooleanEnv('TOKENBOARD_USAGE_SUMMARY_STRICT', 'false')
 const webhookLogRetentionDays = optionalIntegerEnv('TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '90', 1, 365)
-const webhookCronBatchSize = optionalIntegerEnv('TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '5', 1, 5)
+const webhookCronBatchSize = optionalIntegerEnv('TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '5', 1, 50)
 
 validateWorkerRoute(workerRoute)
 validateBetterAuthUrl(betterAuthUrl)
+validateAuthUrlMatchesWorkerRoute(workerRoute, betterAuthUrl)
 validateD1DatabaseId(d1DatabaseId)
 validateCollectorRepoUrl(collectorRepoUrl)
 validateCollectorRepoRef(collectorRepoRef)
@@ -132,15 +133,19 @@ function replaceRequired(content, pattern, replacement, label) {
 
 function validateWorkerRoute(value) {
   const route = value.trim()
+  // wrangler rejects wildcard operators in custom domains outright ("Wildcard operators (*)
+  // are not allowed in Custom Domains"), and the deploy config requires `custom_domain`.
+  // Failing here reports the problem against the env var instead of a late dry-run error.
+  if (route.includes('*')) {
+    fail(
+      'TOKENBOARD_WORKER_ROUTE must not contain a wildcard: Cloudflare custom domains do not accept wildcard operators.'
+    )
+  }
   if (!route || /^https?:\/\//i.test(route) || /[/?#\s]/.test(route)) {
     fail('TOKENBOARD_WORKER_ROUTE must be a custom domain host without protocol, path, query, or hash.')
   }
-  if (route.includes('*') && !route.startsWith('*.')) {
-    fail('TOKENBOARD_WORKER_ROUTE must be a custom domain host without protocol, path, query, or hash.')
-  }
 
-  const hostname = route.startsWith('*.') ? route.slice(2) : route
-  if (!isValidHostname(hostname) || isUnsafeProductionHostname(hostname)) {
+  if (!isValidHostname(route) || isUnsafeProductionHostname(route)) {
     fail('TOKENBOARD_WORKER_ROUTE must be a custom domain host without protocol, path, query, or hash.')
   }
 }
@@ -169,6 +174,29 @@ function validateBetterAuthUrl(value) {
   if (url.pathname !== '/' || url.search || url.hash) {
     fail('BETTER_AUTH_URL must be the production origin without path, query, or hash.')
   }
+}
+
+// The route pattern decides which hostnames reach this Worker; BETTER_AUTH_URL decides
+// which origin Better Auth builds OAuth callback links against. When the two hosts
+// diverge (for example after a domain rename), every sign-in round-trip starts on one
+// host and posts back to the other, which fails at runtime. Validate the pair here so
+// this generator and the deploy checker both catch it before anything ships.
+function validateAuthUrlMatchesWorkerRoute(workerRoute, betterAuthUrl) {
+  if (!routePatternCoversHostname(workerRoute, new URL(betterAuthUrl).hostname)) {
+    fail(
+      'BETTER_AUTH_URL host must be covered by TOKENBOARD_WORKER_ROUTE host, or OAuth redirects will target a different origin.'
+    )
+  }
+}
+
+function routePatternCoversHostname(routePattern, hostname) {
+  const pattern = routePattern.trim().toLowerCase().replace(/\.+$/, '')
+  const target = hostname.toLowerCase().replace(/\.+$/, '')
+  if (pattern.startsWith('*.')) {
+    const base = pattern.slice(2)
+    return target === base || target.endsWith(`.${base}`)
+  }
+  return target === pattern
 }
 
 function validateD1DatabaseId(value) {

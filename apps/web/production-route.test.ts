@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest'
 // @ts-expect-error The executable route checker is intentionally JavaScript.
 import * as routeChecker from './scripts/check-production-route.mjs'
 
-const { findAccessibleZone, readProductionRoute, stripJsonc, verifyProductionRoute } = routeChecker
+const { findAccessibleZone, readProductionRoute, stripJsonc, verifyProductionRoute, wranglerAuthPaths } = routeChecker
 
 describe('production route preflight', () => {
   test('preserves comma-like text inside JSONC strings while removing structural trailing commas', () => {
@@ -97,6 +97,68 @@ describe('production route preflight', () => {
     await expect(
       findAccessibleZone('tokenboard.chaosyn.com', 'test-token', async () => new Response('{}', { status: 403 }))
     ).rejects.toThrow('credentials were rejected')
+  })
+})
+
+// The preflight reads the oauth token from wherever wrangler would have written it. Getting
+// this wrong fails closed — the deploy refuses to start even though `wrangler login` succeeded —
+// so the search has to mirror wrangler's own resolution.
+describe('wrangler auth file resolution', () => {
+  const noneDirectory = () => false
+
+  test('honours XDG_CONFIG_HOME, which wrangler reads but this script used to skip', () => {
+    const paths = wranglerAuthPaths(
+      { XDG_CONFIG_HOME: '/custom/xdg' },
+      { home: '/home/me', isDirectory: noneDirectory }
+    )
+
+    expect(paths).toContain('/custom/xdg/.wrangler/config/default.toml')
+  })
+
+  test('falls back to the macOS config directory when XDG_CONFIG_HOME is unset', () => {
+    const paths = wranglerAuthPaths({}, { home: '/Users/me', platform: 'darwin', isDirectory: noneDirectory })
+
+    expect(paths).toContain('/Users/me/Library/Preferences/.wrangler/config/default.toml')
+  })
+
+  test('falls back to ~/.config on Linux', () => {
+    const paths = wranglerAuthPaths({}, { home: '/home/me', platform: 'linux', isDirectory: noneDirectory })
+
+    expect(paths).toContain('/home/me/.config/.wrangler/config/default.toml')
+  })
+
+  // wrangler prefers the legacy `~/.wrangler` directory whenever it exists, so the search has to
+  // cover it before the XDG-derived paths or a login from an older install would be missed.
+  test('searches the legacy ~/.wrangler directory when it exists', () => {
+    const paths = wranglerAuthPaths(
+      { XDG_CONFIG_HOME: '/custom/xdg' },
+      { home: '/home/me', platform: 'linux', isDirectory: (path: string) => path === '/home/me/.wrangler' }
+    )
+
+    expect(paths.indexOf('/home/me/.wrangler/config/default.toml')).toBeLessThan(
+      paths.indexOf('/custom/xdg/.wrangler/config/default.toml')
+    )
+  })
+
+  test('every candidate is an absolute path ending in the auth file name', () => {
+    const paths = wranglerAuthPaths(
+      { XDG_CONFIG_HOME: '/custom/xdg' },
+      { home: '/home/me', isDirectory: noneDirectory }
+    )
+
+    for (const path of paths) {
+      expect(path.startsWith('/')).toBe(true)
+      expect(path.endsWith('/config/default.toml')).toBe(true)
+    }
+  })
+
+  test('returns no duplicates', () => {
+    const paths = wranglerAuthPaths(
+      { XDG_CONFIG_HOME: '/home/me/.config' },
+      { home: '/home/me', platform: 'linux', isDirectory: noneDirectory }
+    )
+
+    expect(new Set(paths).size).toBe(paths.length)
   })
 })
 

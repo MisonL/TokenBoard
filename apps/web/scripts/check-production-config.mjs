@@ -1,13 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { isIP } from 'node:net'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const CONFIG_FILE = process.env.TOKENBOARD_WRANGLER_CONFIG?.trim() || 'wrangler.production.jsonc'
+// Default to the config next to this script — the same anchor `check-production-route.mjs`
+// uses — so invoking either checker from any working directory reads the same file; the
+// default relative path used to depend on `process.cwd()`, which made a bare run from the
+// repository root fail differently from the route checker.
+const DEFAULT_CONFIG_FILE = fileURLToPath(new URL('../wrangler.production.jsonc', import.meta.url))
+const CONFIG_FILE = process.env.TOKENBOARD_WRANGLER_CONFIG?.trim() || DEFAULT_CONFIG_FILE
 const EXAMPLE_FILE = 'wrangler.production.example.jsonc'
 const DAILY_REPORT_HISTORY_DAYS_MAX = 31
 const USAGE_SUMMARY_BACKFILL_LIMIT_MAX = 500
 const WEBHOOK_LOG_RETENTION_DAYS_MAX = 365
-const WEBHOOK_CRON_BATCH_SIZE_MAX = 5
+const WEBHOOK_CRON_BATCH_SIZE_MAX = 50
 const MODEL_PRICING_SYNC_INTERVAL_HOURS_MAX = 168
 const DEFAULT_MODEL_PRICING_SOURCE_URL = 'https://models.dev/api.json'
 
@@ -30,12 +36,15 @@ if (config.workers_dev !== false) {
   fail(`${CONFIG_FILE} is missing workers_dev: false.`)
 }
 
-validateProductionAuthUrl(readRequiredString(config.vars?.BETTER_AUTH_URL, 'vars.BETTER_AUTH_URL'))
+const betterAuthUrl = readRequiredString(config.vars?.BETTER_AUTH_URL, 'vars.BETTER_AUTH_URL')
+validateProductionAuthUrl(betterAuthUrl)
 validateCollectorRepoUrl(
   readRequiredString(config.vars?.TOKENBOARD_COLLECTOR_REPO_URL, 'vars.TOKENBOARD_COLLECTOR_REPO_URL')
 )
 validateCollectorRepoRef(readRequiredString(config.vars?.TOKENBOARD_COLLECTOR_REF, 'vars.TOKENBOARD_COLLECTOR_REF'))
-validateProductionRoute(readRequiredString(firstRoute(config).pattern, 'routes[0].pattern'))
+const routePattern = readRequiredString(firstRoute(config).pattern, 'routes[0].pattern')
+validateProductionRoute(routePattern)
+validateAuthUrlMatchesRoute(betterAuthUrl, routePattern)
 validateProductionDatabaseId(readRequiredString(d1Database(config).database_id, 'd1_databases[DB].database_id'))
 validateOptionalIntegerString(
   config.vars?.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS,
@@ -76,6 +85,7 @@ validateModelPricingSourceUrl(config.vars?.TOKENBOARD_MODEL_PRICING_SOURCE_URL ?
 validateRequiredCronTrigger(config)
 validateWorkerFirstAssetRoutes(config)
 validateNoInlineAuthSecret(config)
+validateNoInlineWebhookEncryptionKey(config)
 
 // `BETTER_AUTH_SECRET` must come from `wrangler secret put`, never from `vars`, which is
 // committed to the repository in plain text. The runtime refuses to sign sessions without
@@ -86,6 +96,18 @@ function validateNoInlineAuthSecret(config) {
   if (typeof inline === 'string' && inline.trim()) {
     fail(
       `${CONFIG_FILE} sets vars.BETTER_AUTH_SECRET. Configure it as a Worker secret instead (\`wrangler secret put BETTER_AUTH_SECRET\`), so the value is not committed.`
+    )
+  }
+}
+
+// `WEBHOOK_ENCRYPTION_KEY` is required to be a Worker secret too (AGENTS.md): it decrypts the
+// stored webhook URLs, so committing it to `vars` would leak the key that protects them. The
+// deploy writes none today, but nothing stopped a hand-edit until this guard.
+function validateNoInlineWebhookEncryptionKey(config) {
+  const inline = config.vars?.WEBHOOK_ENCRYPTION_KEY
+  if (typeof inline === 'string' && inline.trim()) {
+    fail(
+      `${CONFIG_FILE} sets vars.WEBHOOK_ENCRYPTION_KEY. Configure it as a Worker secret instead (\`wrangler secret put WEBHOOK_ENCRYPTION_KEY\`), so the value is not committed.`
     )
   }
 }
@@ -298,10 +320,42 @@ function hasExplicitDefaultHttpsPort(value) {
 }
 
 function validateProductionRoute(value) {
+  // wrangler rejects wildcard operators in custom domains outright ("Wildcard operators (*)
+  // are not allowed in Custom Domains", verified against wrangler 4.148.0 dry-run), and this
+  // config requires `custom_domain: true` (see check-production-route.mjs). Catching the `*`
+  // here fails at config-check time with a precise message instead of a late dry-run error.
+  if (value.trim().includes('*')) {
+    fail(
+      `${CONFIG_FILE} route pattern must not contain a wildcard: Cloudflare custom domains do not accept wildcard operators.`
+    )
+  }
   const hostname = extractProductionRouteHostname(value)
   if (isUnsafeProductionHostname(hostname) || !hostname.includes('.')) {
     fail(`${CONFIG_FILE} route pattern must be a production custom domain host.`)
   }
+}
+
+// The route pattern decides which hostnames reach this Worker; BETTER_AUTH_URL decides
+// which origin Better Auth builds OAuth callback links against. When the two hosts
+// diverge (for example after a domain rename), every sign-in round-trip starts on one
+// host and posts back to the other, which fails at runtime. Validate the pair here so
+// this checker and the CI generator both catch it before anything deploys.
+function validateAuthUrlMatchesRoute(authUrl, routePattern) {
+  if (!routePatternCoversHostname(routePattern, new URL(authUrl).hostname)) {
+    fail(
+      `${CONFIG_FILE} BETTER_AUTH_URL host must be covered by routes[0].pattern host, or OAuth redirects will target a different origin.`
+    )
+  }
+}
+
+function routePatternCoversHostname(routePattern, hostname) {
+  const pattern = routePattern.trim().toLowerCase().replace(/\.+$/, '')
+  const target = hostname.toLowerCase().replace(/\.+$/, '')
+  if (pattern.startsWith('*.')) {
+    const base = pattern.slice(2)
+    return target === base || target.endsWith(`.${base}`)
+  }
+  return target === pattern
 }
 
 function validateProductionDatabaseId(value) {
@@ -361,11 +415,8 @@ function extractProductionRouteHostname(value) {
   if (!route || /^https?:\/\//i.test(route) || /[/?#\s]/.test(route)) {
     fail(`${CONFIG_FILE} route pattern must be a production custom domain host.`)
   }
-  if (route.includes('*') && !route.startsWith('*.')) {
-    fail(`${CONFIG_FILE} route pattern must be a production custom domain host.`)
-  }
 
-  const hostname = route.startsWith('*.') ? route.slice(2) : route
+  const hostname = route
   if (!isValidHostname(hostname)) {
     fail(`${CONFIG_FILE} route pattern must be a production custom domain host.`)
   }

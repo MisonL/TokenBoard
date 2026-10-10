@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -139,15 +139,48 @@ async function fetchJson(url, token, fetcher) {
   return body
 }
 
-function wranglerAuthPaths(env) {
+// Mirrors how wrangler itself resolves the auth file, so a logged-in `wrangler login` is found
+// wherever wrangler would have written it. wrangler (4.x) builds the config directory as
+// `xdgConfig()/.wrangler`, where `xdgConfig()` honours `XDG_CONFIG_HOME` and otherwise falls
+// back per platform (macOS `~/Library/Preferences`, Windows `%APPDATA%/xdg.config`, else
+// `~/.config`); when the legacy `~/.wrangler` directory exists it takes precedence. The auth
+// file is always `<configDir>/config/default.toml`. `WRANGLER_CONFIG_DIR` is not a variable
+// wrangler reads — it is kept first only because this repo's own tooling documents it.
+export function wranglerAuthPaths(env = process.env, deps = {}) {
+  const home = deps.home ?? homedir()
+  const os = deps.platform ?? platform()
+  const isDirectory = deps.isDirectory ?? defaultIsDirectory
   const candidates = []
+
   const configured = env.WRANGLER_CONFIG_DIR?.trim()
   if (configured) candidates.push(resolve(configured, 'config/default.toml'))
-  const home = homedir()
-  if (platform() === 'darwin') candidates.push(resolve(home, 'Library/Preferences/.wrangler/config/default.toml'))
+
+  const legacyConfigDir = resolve(home, '.wrangler')
+  if (isDirectory(legacyConfigDir)) candidates.push(resolve(legacyConfigDir, 'config/default.toml'))
+
+  const xdgHome = env.XDG_CONFIG_HOME?.trim()
+  const configBase = xdgHome
+    ? resolve(xdgHome)
+    : os === 'darwin'
+      ? resolve(home, 'Library/Preferences')
+      : os === 'win32'
+        ? resolve(env.APPDATA?.trim() || home, 'xdg.config')
+        : resolve(home, '.config')
+  candidates.push(resolve(configBase, '.wrangler/config/default.toml'))
+
+  // The pre-XDG default, kept last for older wrangler installs on any platform.
   candidates.push(resolve(home, '.config/.wrangler/config/default.toml'))
-  candidates.push(resolve(home, '.wrangler/config/default.toml'))
+  candidates.push(resolve(legacyConfigDir, 'config/default.toml'))
+
   return [...new Set(candidates)]
+}
+
+function defaultIsDirectory(path) {
+  try {
+    return statSync(path).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 export function stripJsonc(value) {

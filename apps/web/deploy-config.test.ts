@@ -58,7 +58,7 @@ describe('Wrangler deploy config', () => {
     expect(deploymentScript).toContain("process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'")
     expect(deploymentScript).toContain("'d1', 'migrations', 'apply', 'DB'")
     expect(deploymentScript).toContain("'deploy', '--config'")
-    expect(productionCheckScript).toContain("|| 'wrangler.production.jsonc'")
+    expect(productionCheckScript).toContain("new URL('../wrangler.production.jsonc', import.meta.url)")
     expect(productionCheckScript).not.toContain("|| 'wrangler.jsonc'")
   })
 
@@ -87,6 +87,25 @@ describe('Wrangler deploy config', () => {
     expect(example).toContain('"database_id": "<your-d1-database-id>"')
     expect(example).not.toMatch(/"pattern":\s*"[a-z0-9.-]+\.[a-z]{2,}"/i)
     expect(example).not.toMatch(/"database_id":\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i)
+  })
+
+  test('static assets are published by allow-list, not by deny-list enumeration', () => {
+    // `assets.directory` is the whole build output root (it also holds `main`), so an
+    // ignore list that enumerates what to hide publishes every future root-level build
+    // artifact by default. The list must invert: ignore everything, re-include only the
+    // files that are meant to be public (favicon, logo, hashed client assets).
+    const assetsIgnore = readPackageFile('public/.assetsignore')
+    const lines = assetsIgnore
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+
+    expect(lines[0]).toBe('/*')
+    expect(lines).toContain('!/logo.svg')
+    expect(lines).toContain('!/favicon.ico')
+    expect(lines).toContain('!/static')
+    expect(lines).not.toContain('index.js')
+    expect(lines).not.toContain('.vite/')
   })
 
   test('manual production deploy helper verifies migrated schema before Worker deploy', () => {
@@ -169,6 +188,25 @@ describe('Wrangler deploy config', () => {
       rmSync(tempDir, { recursive: true, force: true })
     }
   }, 30_000)
+
+  // The migration chain is hand-maintained (AGENTS.md bans `drizzle-kit generate`, and the
+  // applied history is immutable). Wrangler applies migrations in filename order and only
+  // dedupes by name, so a skipped or duplicated number would not fail the deploy — it would
+  // silently apply out of the intended order, or never. Pin the numbering as a contiguous
+  // 0000..N sequence with no gaps so a hand-added file cannot drift the chain.
+  test('the migration chain is a contiguous numbered sequence', () => {
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const names = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+    const numbers = names.map((name) => {
+      const match = /^(\d{4})_/.exec(name)
+      expect(match, `migration ${name} must start with a four-digit sequence number`).not.toBeNull()
+      return Number(match?.[1])
+    })
+
+    expect(numbers).toEqual(numbers.map((_value, index) => index))
+  })
 
   test('model pricing migrations add the staged catalogue schema before the critical gate', () => {
     const migrationsDir = resolve(packageDir, 'db/migrations')
@@ -376,6 +414,138 @@ describe('Wrangler deploy config', () => {
     }
   }, 30_000)
 
+  // AGENTS.md says the model-pricing deploy runs a foreign-key check after applying the
+  // migrations. This asserts the deploy script actually schedules it, so the documented
+  // contract cannot silently drift away from what deploy.mjs executes.
+  test('deploy runs the foreign-key check after migrations and before the live deploy', () => {
+    const deployScript = readPackageFile('scripts/deploy.mjs')
+    const migrationsApply = deployScript.indexOf(
+      "'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath"
+    )
+    const foreignKeyCheck = deployScript.indexOf('db/verify-foreign-keys.sql')
+    const liveDeploy = deployScript.indexOf("'deploy', '--config', configPath")
+
+    expect(foreignKeyCheck).toBeGreaterThan(-1)
+    expect(migrationsApply).toBeLessThan(foreignKeyCheck)
+    expect(foreignKeyCheck).toBeLessThan(liveDeploy)
+  })
+
+  // The ordering test above anchors the foreign-key check relative to migrations and the live
+  // deploy, but all the gates share one array literal: reordering inside it, or dropping
+  // `verify-critical-schema.sql` / `verify-rate-limit-index.sql` / `verify-retention-index.sql`
+  // from it, moves no anchor and would leave that test green. Pin the array itself, in order, so
+  // the deploy loop cannot drift from the gate set the rest of this file asserts the contents of.
+  test('deploy runs every schema gate in the documented order', () => {
+    const deployScript = readPackageFile('scripts/deploy.mjs')
+    const gates = [
+      'db/verify-critical-schema.sql',
+      'db/verify-rate-limit-index.sql',
+      'db/verify-retention-index.sql',
+      'db/verify-foreign-keys.sql'
+    ]
+    const positions = gates.map((gate) => deployScript.indexOf(`'${gate}'`))
+
+    // Every gate must be scheduled, in the array's order, so neither a dropped gate nor a
+    // reordering can pass unnoticed.
+    for (const position of positions) expect(position).toBeGreaterThan(-1)
+    expect(positions).toEqual([...positions].sort((left, right) => left - right))
+
+    // `wrangler d1 execute --file --remote` only prompts when interactive, and declining
+    // returns null (exit 0), so a gate without `--yes` can be skipped while deploy.mjs reads a
+    // zero status and publishes. Pin the flag so the gate command cannot lose it.
+    const gateCall = deployScript.slice(
+      deployScript.indexOf('for (const file of ['),
+      deployScript.indexOf("runPnpm(['exec', 'wrangler', 'deploy', '--config', configPath])")
+    )
+    expect(gateCall).toContain("'--yes'")
+  })
+
+  // The retention indexes from 0036 were built the same way the rate-limit index was, and
+  // suffered the same gap: nothing in the deploy gate knew they existed, so `DROP INDEX` on
+  // either left every gate green. This runs the real migrations and then asserts the check
+  // notices a missing index — the negative half is what makes the positive half mean anything.
+  test('the retention index check accepts migrated data and rejects a dropped index', () => {
+    const schemaCheck = readPackageFile('db/verify-retention-index.sql')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-retention-index-gate-'))
+    const dbPath = join(tempDir, 'retention.db')
+
+    try {
+      for (const migration of readdirSync(migrationsDir)
+        .filter((name) => name.endsWith('.sql'))
+        .sort()) {
+        runSqlite(dbPath, readFileSync(join(migrationsDir, migration), 'utf8'))
+      }
+
+      const check = runSqlite(dbPath, schemaCheck, false)
+      expect(check.status).toBe(0)
+      expect(check.stderr).toBe('')
+
+      runSqlite(dbPath, 'DROP INDEX pairing_codes_retention_julianday_idx;')
+      const afterPairingDrop = runSqlite(dbPath, schemaCheck, false)
+      expect(afterPairingDrop.status).not.toBe(0)
+
+      runSqlite(
+        dbPath,
+        'CREATE INDEX pairing_codes_retention_julianday_idx ON pairing_codes(julianday(COALESCE(consumed_at, expires_at)));'
+      )
+      runSqlite(dbPath, 'DROP INDEX audit_logs_created_julianday_idx;')
+      const afterAuditDrop = runSqlite(dbPath, schemaCheck, false)
+      expect(afterAuditDrop.status).not.toBe(0)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  // The retention indexes from 0036 were built the same way the rate-limit index was, and
+  // suffered the same gap: nothing in the deploy gate knew they existed, so `DROP INDEX` on
+  // either left every gate green. The runtime check above proves the migration produces them;
+  // this pins the Drizzle declarations so the hand-maintained schema keeps the index even if
+  // someone edits `schema-identity.ts` and forgets the migration (the AGENTS.md ban on
+  // `drizzle-kit generate` means the SQL and the declaration can drift).
+  test('the schema declares the retention expression indexes from 0036', () => {
+    const schema = readDrizzleSchema()
+
+    expect(schema).toContain("index('pairing_codes_retention_julianday_idx')")
+    expect(schema).toContain("index('audit_logs_created_julianday_idx')")
+  })
+
+  // The verifier only proves something if a clean database passes and an orphaned row fails.
+  // `PRAGMA foreign_key_check` returns rows on violation but still exits zero, so the check has
+  // to convert a non-empty result into an error the way verify-rate-limit-index.sql does.
+  test('the foreign-key check accepts migrated data and rejects an orphaned row', () => {
+    const foreignKeyCheck = readPackageFile('db/verify-foreign-keys.sql')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-foreign-key-gate-'))
+    const dbPath = join(tempDir, 'foreign-key.db')
+
+    try {
+      for (const migration of readdirSync(migrationsDir)
+        .filter((name) => name.endsWith('.sql'))
+        .sort()) {
+        runSqlite(dbPath, readFileSync(join(migrationsDir, migration), 'utf8'))
+      }
+
+      const clean = runSqlite(dbPath, foreignKeyCheck, false)
+      expect(clean.status).toBe(0)
+      expect(clean.stderr).toBe('')
+
+      // `profiles.user_id` references `users(id)`, so a profile for a user that does not
+      // exist is exactly the corruption the check exists to catch.
+      runSqlite(
+        dbPath,
+        `PRAGMA foreign_keys = OFF;
+         INSERT INTO profiles (user_id, slug, display_name, timezone, timezone_source, is_public, participates_in_leaderboards, created_at, updated_at)
+         VALUES ('ghost-user', 'ghost', 'Ghost', 'UTC', 'default', 0, 0, '2026-01-01', '2026-01-01');`
+      )
+
+      const orphaned = runSqlite(dbPath, foreignKeyCheck, false)
+      expect(orphaned.status).not.toBe(0)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
   test('device token rotation migration prevents duplicate active successors', () => {
     const schema = readDrizzleSchema()
     const migration = readPackageFile('db/migrations/0024_upload_token_active_successor.sql')
@@ -539,8 +709,8 @@ describe('Wrangler deploy config', () => {
         ],
         [
           'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE',
-          '6',
-          'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'
+          '51',
+          'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 50'
         ],
         [
           'TOKENBOARD_COLLECTOR_REPO_URL',
@@ -649,8 +819,8 @@ describe('Wrangler deploy config', () => {
         ],
         [
           'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE',
-          '6',
-          'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'
+          '51',
+          'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 50'
         ],
         [
           'TOKENBOARD_MODEL_PRICING_SOURCE_URL',
@@ -718,6 +888,39 @@ describe('Wrangler deploy config', () => {
     }
   }, 15000)
 
+  test('production config checker rejects secrets placed in vars', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-inline-secret-config-'))
+
+    try {
+      for (const [name, message] of [
+        ['BETTER_AUTH_SECRET', 'vars.BETTER_AUTH_SECRET'],
+        ['WEBHOOK_ENCRYPTION_KEY', 'vars.WEBHOOK_ENCRYPTION_KEY']
+      ]) {
+        const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
+        const content = filledProductionExample().replace(
+          '"BETTER_AUTH_URL": "https://tokenboard.example.com",',
+          `"BETTER_AUTH_URL": "https://tokenboard.example.com",\n    "${name}": "inline-secret-value",`
+        )
+        writeFileSync(outputFile, content)
+
+        const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+          cwd: packageDir,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            TOKENBOARD_WRANGLER_CONFIG: outputFile
+          }
+        })
+
+        expect(result.status).not.toBe(0)
+        expect(result.stderr).toContain(message)
+        expect(result.stderr).toContain('Worker secret')
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
   test('deploy helper generates production config for clean Cloudflare builds', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-clean-deploy-'))
     const scriptDir = join(tempDir, 'scripts')
@@ -779,10 +982,15 @@ describe('Wrangler deploy config', () => {
     }
   }, 15_000)
 
-  test('production config checker defaults to the private production config path', () => {
+  test('production config checker resolves its default config next to the script, not the cwd', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-empty-config-'))
 
     try {
+      // A decoy in the working directory: it still contains a placeholder, so if the
+      // checker resolved its default against `process.cwd()` the failure would name the
+      // decoy's path. The script-relative default must never read it.
+      writeFileSync(join(tempDir, 'wrangler.production.jsonc'), '{ "pattern": "<decoy-marker>" }')
+
       const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
         cwd: tempDir,
         encoding: 'utf8',
@@ -792,9 +1000,13 @@ describe('Wrangler deploy config', () => {
         }
       })
 
-      expect(result.status).not.toBe(0)
-      expect(result.stderr).toContain('wrangler.production.jsonc')
+      expect(result.stderr).not.toContain(tempDir)
       expect(result.stderr).not.toContain('wrangler.jsonc')
+      // With the private config present next to the script (developer machines) the check
+      // passes; in a bare checkout it fails with the package-relative filename.
+      if (result.status !== 0) {
+        expect(result.stderr).toContain('wrangler.production.jsonc')
+      }
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
@@ -1059,6 +1271,106 @@ describe('Wrangler deploy config', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
+  })
+
+  test('production config checker rejects an auth URL host that differs from the route host', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-mismatched-auth-url-'))
+    const outputFile = join(tempDir, 'wrangler.production.mismatched.jsonc')
+
+    try {
+      const content = filledProductionExample().replace(
+        '"BETTER_AUTH_URL": "https://tokenboard.example.com"',
+        '"BETTER_AUTH_URL": "https://accounts.example.com"'
+      )
+      writeFileSync(outputFile, content)
+
+      const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WRANGLER_CONFIG: outputFile
+        }
+      })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('BETTER_AUTH_URL')
+      expect(result.stderr).toContain('routes[0].pattern')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('production config checker rejects wildcard routes that wrangler custom domains do not accept', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-wildcard-route-'))
+    const outputFile = join(tempDir, 'wrangler.production.wildcard.jsonc')
+
+    try {
+      const content = filledProductionExample().replace(
+        '"pattern": "tokenboard.example.com"',
+        '"pattern": "*.example.com"'
+      )
+      writeFileSync(outputFile, content)
+
+      const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WRANGLER_CONFIG: outputFile
+        }
+      })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('wildcard')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('production config generator rejects a route and auth URL on different hosts', () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(packageDir, 'scripts/write-production-config.mjs'), 'wrangler.production.example.jsonc'],
+      {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
+          BETTER_AUTH_URL: 'https://accounts.example.com',
+          TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+          TOKENBOARD_COLLECTOR_REF: 'master',
+          D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
+        }
+      }
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('BETTER_AUTH_URL')
+    expect(result.stderr).toContain('TOKENBOARD_WORKER_ROUTE')
+  })
+
+  test('production config generator rejects wildcard routes that wrangler custom domains do not accept', () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(packageDir, 'scripts/write-production-config.mjs'), 'wrangler.production.example.jsonc'],
+      {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WORKER_ROUTE: '*.example.com',
+          BETTER_AUTH_URL: 'https://tokenboard.example.com',
+          TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+          TOKENBOARD_COLLECTOR_REF: 'master',
+          D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
+        }
+      }
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('wildcard')
   })
 
   test('production config checker ignores misleading JSONC comments', () => {
