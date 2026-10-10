@@ -89,6 +89,27 @@ describe('Wrangler deploy config', () => {
     expect(example).not.toMatch(/"database_id":\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i)
   })
 
+  // The example is the template the deploy generator fills in, and the tracked config is what
+  // ships. Nothing compared them structurally, so a var added to one and not the other (or
+  // renamed in one) drifted silently until a deploy failed or a default shipped. Compare the
+  // flattened key sets and the non-placeholder values, so the two cannot diverge unnoticed.
+  test('the tracked config and the production example carry the same keys and defaults', () => {
+    const tracked = flattenJsonc(readPackageFile('wrangler.jsonc'))
+    const example = flattenJsonc(readPackageFile('wrangler.production.example.jsonc'))
+
+    const trackedKeys = Object.keys(tracked).sort()
+    const exampleKeys = Object.keys(example).sort()
+    expect(trackedKeys).toEqual(exampleKeys)
+
+    // Every value the example leaves as a placeholder must be filled in the tracked config;
+    // every value it states outright must match it exactly.
+    for (const key of exampleKeys) {
+      const exampleValue = example[key]
+      if (isPlaceholder(exampleValue)) continue
+      expect(tracked[key], `${key} must match the example's stated value`).toBe(exampleValue)
+    }
+  })
+
   test('static assets are published by allow-list, not by deny-list enumeration', () => {
     // `assets.directory` is the whole build output root (it also holds `main`), so an
     // ignore list that enumerates what to hide publishes every future root-level build
@@ -959,6 +980,8 @@ describe('Wrangler deploy config', () => {
           TOKENBOARD_USAGE_SUMMARY_STRICT: '1',
           TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: '45',
           TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE: '3',
+          TOKENBOARD_MODEL_PRICING_SYNC_ENABLED: '0',
+          TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '12',
           D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
         }
       })
@@ -975,6 +998,12 @@ describe('Wrangler deploy config', () => {
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "true"')
       expect(generated).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "45"')
       expect(generated).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "3"')
+      // The model-pricing sync vars are real values in the example, not placeholders, so the
+      // generator must still replace them by key; assert the env values reached the output.
+      // The source URL is deliberately left alone: the deploy checker pins it to
+      // `https://models.dev/api.json`, which is the only value that passes.
+      expect(generated).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_ENABLED": "false"')
+      expect(generated).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS": "12"')
       expect(generated).toContain('"database_id": "11111111-1111-4111-8111-111111111111"')
       expect(result.stderr).toBe('')
     } finally {
@@ -1402,6 +1431,35 @@ describe('Wrangler deploy config', () => {
 
 function readPackageFile(relativePath: string): string {
   return readFileSync(resolve(packageDir, relativePath), 'utf8')
+}
+
+// The two configs are JSONC (comments allowed), so parse them by stripping line comments and
+// flattening nested objects into dotted keys. Only the key *structure* and the non-placeholder
+// values are compared, so a comment or key reorder is not a divergence.
+function flattenJsonc(source: string) {
+  const withoutComments = source
+    .split('\n')
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join('\n')
+  const parsed = JSON.parse(withoutComments)
+  const flat: Record<string, string> = {}
+  const walk = (value: unknown, prefix: string) => {
+    if (value === null || typeof value !== 'object') {
+      flat[prefix] = String(value)
+      return
+    }
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      walk(child, prefix ? `${prefix}.${key}` : key)
+    }
+  }
+  walk(parsed, '')
+  return flat
+}
+
+function isPlaceholder(value: string) {
+  // A placeholder may be the whole value (`<your-d1-database-id>`) or embedded in one
+  // (`https://<your-tokenboard-domain>`); either way the tracked config is free to differ.
+  return value.includes('<') && value.includes('>')
 }
 
 function readDrizzleSchema() {

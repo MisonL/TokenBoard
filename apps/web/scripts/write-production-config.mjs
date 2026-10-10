@@ -19,6 +19,8 @@ const usageSummaryBackfillLimit = optionalIntegerEnv('TOKENBOARD_USAGE_SUMMARY_B
 const usageSummaryStrict = optionalBooleanEnv('TOKENBOARD_USAGE_SUMMARY_STRICT', 'false')
 const webhookLogRetentionDays = optionalIntegerEnv('TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '90', 1, 365)
 const webhookCronBatchSize = optionalIntegerEnv('TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '5', 1, 50)
+const modelPricingSyncEnabled = optionalBooleanEnv('TOKENBOARD_MODEL_PRICING_SYNC_ENABLED', 'true')
+const modelPricingSyncIntervalHours = optionalIntegerEnv('TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS', '24', 1, 168)
 
 validateWorkerRoute(workerRoute)
 validateBetterAuthUrl(betterAuthUrl)
@@ -88,6 +90,23 @@ content = replaceRequired(
   /"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE"\s*:\s*"<tokenboard-webhook-cron-batch-size>"/,
   `"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": ${JSON.stringify(webhookCronBatchSize)}`,
   'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE'
+)
+// The model-pricing sync switch and interval are hardcoded real values in the example, not
+// placeholders, so the generator has to replace them by key — otherwise a CI build cannot
+// override them and silently ships the example's values. `TOKENBOARD_MODEL_PRICING_SOURCE_URL`
+// is deliberately *not* substituted: the deploy checker pins it to `https://models.dev/api.json`,
+// so the example already carries the only value the checker accepts.
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_MODEL_PRICING_SYNC_ENABLED"\s*:\s*"[^"]*"/,
+  `"TOKENBOARD_MODEL_PRICING_SYNC_ENABLED": ${JSON.stringify(modelPricingSyncEnabled)}`,
+  'TOKENBOARD_MODEL_PRICING_SYNC_ENABLED'
+)
+content = replaceRequired(
+  content,
+  /"TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS"\s*:\s*"[^"]*"/,
+  `"TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS": ${JSON.stringify(modelPricingSyncIntervalHours)}`,
+  'TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS'
 )
 
 if (/<[^>]+>/.test(content)) {
