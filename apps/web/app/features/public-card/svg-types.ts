@@ -1,5 +1,4 @@
 import type { PublicCardConfig } from './config'
-import type { SourceSplitItem } from '../usage/source-format'
 
 export type UsageCardInput = {
   displayName: string
@@ -19,7 +18,6 @@ export type UsageCardInput = {
   todayCacheReadRate?: number
   todayCostUsd?: number
   todayCostAvailable?: boolean
-  sourceSplit?: SourceSplitItem[]
   /**
    * The offset of the owner's zone right now, e.g. `UTC+8`.
    *

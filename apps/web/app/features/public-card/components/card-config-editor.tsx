@@ -118,11 +118,13 @@ export function PublicCardConfigEditor(props: {
       <div class="grid gap-3 sm:grid-cols-2">
         <Label>
           标题
-          <Input name="cardTitle" value={props.config.title} autocomplete="off" />
+          {/* Matches `publicCardConfigSchema`'s max(48), so the limit is enforced before submit
+              rather than only by the server's error message. */}
+          <Input name="cardTitle" value={props.config.title} autocomplete="off" maxLength={48} />
         </Label>
         <Label>
           副标题
-          <Input name="cardSubtitle" value={props.config.subtitle} autocomplete="off" />
+          <Input name="cardSubtitle" value={props.config.subtitle} autocomplete="off" maxLength={96} />
         </Label>
       </div>
 

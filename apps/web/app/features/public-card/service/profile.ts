@@ -14,13 +14,15 @@ export async function getPublicUsageProfile(
   now = new Date(),
   summaryStrict = false
 ): Promise<PublicUsageProfile> {
-  const core = await getPublicUsageProfileCore(db, slug, now, summaryStrict)
+  // The core carries `userId` so its own queries can bind it; spreading it here would copy
+  // that field into the public-facing profile object. Nothing reads it today — the JSON and
+  // SVG builders both construct their responses field by field — but TypeScript's excess
+  // property checks do not police spreads, so the field would ride along unnoticed until
+  // someone serialised the object directly. Strip it at the boundary where "core" ends and
+  // "public" begins.
+  const { userId: _userId, ...core } = await getPublicUsageProfileCore(db, slug, now, summaryStrict)
 
-  return {
-    ...core,
-    sourceSplit: core.sourceSplit,
-    topModels: core.topModels
-  }
+  return core
 }
 
 export async function getPublicUsageProfileCore(

@@ -1,5 +1,5 @@
 ﻿import { describe, expect, test } from 'vitest'
-import { getPublicUsageCard, getPublicUsageJson } from './service'
+import { getPublicUsageCard, getPublicUsageJson, getPublicUsageProfile } from './service'
 import { getPublicTotals } from './service/totals'
 
 describe('public card service', () => {
@@ -434,5 +434,172 @@ describe('public card service', () => {
     expect(json.timezone).toBe('UTC')
     expect(bindings[1]).toEqual(['user_1', '2026-04-30', '2026-04-01'])
     expect(svg).toContain('<svg')
+  })
+
+  // The SVG renderer never reads `sourceSplit`, so the card path must not compute it: the
+  // aggregate is real SQL work on every public card render. The JSON path still needs it, so
+  // the two paths are pinned separately.
+  test('the SVG card path does not compute the JSON-only source split', async () => {
+    const sqlStatements: string[] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind() {
+            return {
+              async first() {
+                if (sql.includes('FROM profiles')) {
+                  return {
+                    userId: 'user_1',
+                    slug: 'eve',
+                    displayName: 'Eve',
+                    timezone: 'UTC',
+                    publicCardConfig: null,
+                    isPublic: 1
+                  }
+                }
+
+                return {
+                  totalTokens: 0,
+                  totalTokensWithoutCacheRead: 0,
+                  totalCostUsd: 0,
+                  todayTokens: 0,
+                  todayTokensWithoutCacheRead: 0,
+                  todayCostUsd: 0,
+                  monthTokens: 0,
+                  monthTokensWithoutCacheRead: 0,
+                  monthCostUsd: 0
+                }
+              },
+              async all() {
+                throw new Error('Public card should not query breakdown rows')
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const svg = await getPublicUsageCard(db, 'eve', new Date('2026-04-29T10:00:00.000Z'))
+
+    expect(svg).toContain('<svg')
+    expect(sqlStatements).toHaveLength(2)
+    // The bare `FROM source_usage` / `FROM model_usage` reads (and their JSON builders) are the
+    // removed work; the `today_source_usage`-style CTEs that stay are the cost-availability
+    // probes, which the card's metric labels do use.
+    expect(sqlStatements[1]).not.toContain('FROM source_usage')
+    expect(sqlStatements[1]).not.toContain('FROM model_usage')
+    expect(sqlStatements[1]).not.toContain("'source', ordered_sources.source")
+    expect(sqlStatements[1]).not.toContain("'model', ordered_models.model")
+    expect(sqlStatements[1]).toContain("'[]' as sourceSplit")
+    expect(sqlStatements[1]).toContain("'[]' as topModels")
+  })
+
+  test('the JSON path still computes the source split', async () => {
+    const sqlStatements: string[] = []
+    const db = {
+      prepare(sql: string) {
+        sqlStatements.push(sql)
+        return {
+          bind() {
+            return {
+              async first() {
+                if (sql.includes('FROM profiles')) {
+                  return {
+                    userId: 'user_1',
+                    slug: 'eve',
+                    displayName: 'Eve',
+                    timezone: 'UTC',
+                    publicCardConfig: null,
+                    isPublic: 1
+                  }
+                }
+
+                return {
+                  totalTokens: 0,
+                  totalTokensWithoutCacheRead: 0,
+                  totalCostUsd: 0,
+                  todayTokens: 0,
+                  todayTokensWithoutCacheRead: 0,
+                  todayCostUsd: 0,
+                  monthTokens: 0,
+                  monthTokensWithoutCacheRead: 0,
+                  monthCostUsd: 0,
+                  sourceSplit: '[]',
+                  topModels: '[]'
+                }
+              },
+              async all() {
+                throw new Error('Public JSON should use one metrics query')
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const json = await getPublicUsageJson(db, 'eve', new Date('2026-04-29T10:00:00.000Z'))
+
+    expect(json.sourceSplit).toEqual([])
+    expect(sqlStatements).toHaveLength(2)
+    expect(sqlStatements[1]).toContain('source_usage AS')
+    expect(sqlStatements[1]).toContain('model_usage AS')
+  })
+
+  // The profile object is the last step before the id-bearing core becomes public-facing, and
+  // nothing reads its `userId` — the JSON and SVG paths both build their responses field by
+  // field. TypeScript does not police spreads for excess properties, so a direct serialisation
+  // of the object would otherwise reach the public JSON/PII diff unnoticed. This pins the field
+  // at the boundary where "core" ends and "public" begins, so it cannot leak by accident.
+  test('the public profile object carries no internal user id', async () => {
+    const internalUserId = 'internal-user-id'
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind() {
+            return {
+              async first() {
+                if (sql.includes('FROM profiles')) {
+                  return {
+                    userId: internalUserId,
+                    slug: 'eve',
+                    displayName: 'Eve',
+                    timezone: 'Asia/Shanghai',
+                    publicCardConfig: null,
+                    isPublic: 1
+                  }
+                }
+
+                return {
+                  totalTokens: 0,
+                  totalTokensWithoutCacheRead: 0,
+                  totalCostUsd: 0,
+                  totalCostAvailable: 1,
+                  todayTokens: 0,
+                  todayTokensWithoutCacheRead: 0,
+                  todayCostUsd: 0,
+                  todayCostAvailable: 1,
+                  monthTokens: 0,
+                  monthTokensWithoutCacheRead: 0,
+                  monthCostUsd: 0,
+                  monthCostAvailable: 1,
+                  costAvailable: 1,
+                  sourceSplit: '[]',
+                  topModels: '[]'
+                }
+              },
+              async all() {
+                throw new Error('The public profile object should not query breakdown rows')
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    const profile = await getPublicUsageProfile(db, 'eve', new Date('2026-04-29T10:00:00.000Z'))
+
+    expect(profile).not.toHaveProperty('userId')
+    expect(JSON.stringify(profile)).not.toContain(internalUserId)
   })
 })
