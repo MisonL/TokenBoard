@@ -61,6 +61,37 @@ describe('normalizeCcusageDailyJson', () => {
     }
   })
 
+  // A per-model row without its own cost falls back to a pro-rata share of the parent day's
+  // cost by token count. ccusage normally emits breakdowns that partition the parent, but the
+  // fallback runs on whatever tokens the rows carry, so the allocation must be pinned: each
+  // model's share of the parent cost, and the shares summing back to the parent cost.
+  test('allocates a missing model cost pro-rata from the parent day cost', () => {
+    const snapshots = normalizeCcusageDailyJson(
+      {
+        type: 'daily',
+        data: [
+          {
+            date: '2026-04-28',
+            totalTokens: 300,
+            costUSD: 3,
+            breakdown: {
+              'claude-sonnet-4-5': { inputTokens: 100, outputTokens: 0, totalTokens: 100 },
+              'claude-opus-4-1': { inputTokens: 200, outputTokens: 0, totalTokens: 200 }
+            }
+          }
+        ]
+      },
+      { source: 'claude-code', timezone: 'Asia/Shanghai', collectedAt }
+    )
+
+    expect(snapshots.map((snapshot) => [snapshot.model, snapshot.costUsd])).toEqual([
+      ['claude-sonnet-4-5', 1],
+      ['claude-opus-4-1', 2]
+    ])
+    const allocated = snapshots.reduce((total, snapshot) => total + snapshot.costUsd, 0)
+    expect(allocated).toBeCloseTo(3, 12)
+  })
+
   test('normalizes ccusage daily breakdown rows into per-model snapshots', () => {
     const snapshots = normalizeCcusageDailyJson(
       {

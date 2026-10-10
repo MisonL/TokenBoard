@@ -98,13 +98,16 @@ export async function loadModelPricingCatalogue(input: {
   }
 
   if (!endpointOrigin) {
+    // Distinguish "not set" from "set but unusable" (`not-a-url`, `ftp://…`): both end at the
+    // same fallback, but an operator reading the log needs to know which one to fix.
+    const problem = input.endpoint?.trim() ? 'is invalid' : 'is not configured'
     if (cached) {
       input.stderr?.(
-        `TokenBoard model pricing: TOKENBOARD_ENDPOINT is unavailable; using last successful cache (${cached.models.length} models)`
+        `TokenBoard model pricing: TOKENBOARD_ENDPOINT ${problem}; using last successful cache (${cached.models.length} models)`
       )
       return { ...cached, source: 'cache' }
     }
-    input.stderr?.('TokenBoard model pricing: TOKENBOARD_ENDPOINT is unavailable; using bundled static pricing')
+    input.stderr?.(`TokenBoard model pricing: TOKENBOARD_ENDPOINT ${problem}; using bundled static pricing`)
     return staticModelPricingCatalogue()
   }
 

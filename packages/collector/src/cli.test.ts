@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
-import type { UsageSnapshot } from '@tokenboard/usage-core'
+import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
 import { runCollectorCli, transientSyncExitCode } from './cli'
 import { attachCodexHookAcknowledgement } from './providers/codex-hook-profiles'
 import { cursorSnapshotGroupKey } from './providers/session-cursor'
@@ -140,6 +140,69 @@ describe('runCollectorCli', () => {
       { source: 'claude-code', until: '' },
       { source: 'codex', until: '' }
     ])
+  })
+
+  test('accepts every source from the shared enum and rejects an unknown one', async () => {
+    // `concreteCliSources` is derived from `usageSources`, so each member must parse; the list is
+    // read from the package rather than restated here so a new source fails this test, not silently
+    // diverges from what the collector accepts.
+    for (const source of usageSources) {
+      const result = await runCollectorCli(
+        ['preview', '--source', source],
+        { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+        {
+          stdout: () => undefined,
+          stderr: () => undefined,
+          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectCodexUsage: async () => [codexSnapshot],
+          uploadSnapshots: async () => {
+            throw new Error('preview must not upload')
+          }
+        }
+      )
+      expect(result, source).toBe(0)
+    }
+
+    const stderr: string[] = []
+    const result = await runCollectorCli(
+      ['preview', '--source', 'not-a-source'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+    expect(result).not.toBe(0)
+    expect(stderr.join('\n')).toContain('Invalid source: not-a-source')
+  })
+
+  test('builds the usage line from the shared source list', async () => {
+    // The help text is the one place a hand-maintained source list used to drift; derive it and
+    // assert every shared member shows up, so a new source cannot be missing from the Usage.
+    const stderr: string[] = []
+    const result = await runCollectorCli(
+      ['not-a-command'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+    expect(result).not.toBe(0)
+    const usage = stderr.join('\n')
+    expect(usage).toContain('Usage: tokenboard <preview|sync|warm-hooks>')
+    for (const source of usageSources) expect(usage, source).toContain(source)
+    expect(usage).toContain('all')
   })
 
   test.each([

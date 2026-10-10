@@ -32,6 +32,36 @@ describe('model pricing catalogue client', () => {
     )
   })
 
+  // Both an unset endpoint and an unusable one fall back the same way, but the log line has to
+  // say which, or an operator with a typo'd `TOKENBOARD_ENDPOINT` is told to configure it.
+  test('distinguishes an invalid endpoint from an unset one in the fallback diagnostic', async () => {
+    const stateDir = await tempDirectory()
+
+    const unsetDiagnostics: string[] = []
+    await loadModelPricingCatalogue({
+      endpoint: undefined,
+      stateDir,
+      stderr: (line) => unsetDiagnostics.push(line),
+      fetcher: async () => {
+        throw new Error('network should not be used without an endpoint')
+      }
+    })
+    expect(unsetDiagnostics.join('\n')).toContain('TOKENBOARD_ENDPOINT is not configured')
+
+    const invalidDiagnostics: string[] = []
+    await loadModelPricingCatalogue({
+      endpoint: 'not-a-url',
+      stateDir,
+      stderr: (line) => invalidDiagnostics.push(line),
+      fetcher: async () => {
+        throw new Error('network should not be used with an invalid endpoint')
+      }
+    })
+    const invalidOutput = invalidDiagnostics.join('\n')
+    expect(invalidOutput).toContain('TOKENBOARD_ENDPOINT is invalid')
+    expect(invalidOutput).not.toContain('is not configured')
+  })
+
   test('reads every catalogue page and rejects a cursor loop', async () => {
     const stateDir = await tempDirectory()
     const requests: string[] = []

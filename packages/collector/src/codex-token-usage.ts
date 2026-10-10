@@ -32,3 +32,44 @@ export function normalizeCodexTotalTokens(input: CodexTokenUsageTotals) {
   if (input.explicitTotalTokens >= baseTotal) return input.explicitTotalTokens
   return Math.max(input.explicitTotalTokens, baseTotal + input.cacheCreationTokens)
 }
+
+export type CodexRawUsageInput = {
+  /** The record's reported input_tokens, which may already contain the cached input. */
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  /** The record's explicit total when it is usable (a positive number), else undefined. */
+  explicitTotalTokens?: number
+}
+
+export type CodexRawUsage = {
+  /** Whether input_tokens already contains the cached input (the legacy representation). */
+  cacheReadIncludedInInput: boolean
+  /** The total under the representation the record actually uses. */
+  totalTokens: number
+}
+
+// Raw Codex session records have emitted both representations over time: older records
+// include cached input in input_tokens, newer ones report it as a separate additive field.
+// A usable explicit total is the reliable discriminator — equal to input + output + cache
+// creation means the cache read is already inside input_tokens. Without one, the remaining
+// signal is that a legacy record cannot carry more cached input than input_tokens, since
+// that field already contains it; a larger cache read is additive by contradiction. A
+// legacy total must exclude the folded cache read — adding it again would count those
+// tokens twice, which is exactly what the additive fallback of normalizeCodexTotalTokens
+// would do for these rows.
+export function resolveCodexRawUsage(input: CodexRawUsageInput): CodexRawUsage {
+  const normalizedTotal = normalizeCodexTotalTokens(input)
+  const cacheReadIncludedInInput =
+    input.cacheReadTokens <= input.inputTokens &&
+    (input.explicitTotalTokens === undefined ||
+      normalizedTotal === input.inputTokens + input.outputTokens + input.cacheCreationTokens)
+  return {
+    cacheReadIncludedInInput,
+    totalTokens:
+      cacheReadIncludedInInput && input.explicitTotalTokens === undefined
+        ? input.inputTokens + input.outputTokens + input.cacheCreationTokens
+        : normalizedTotal
+  }
+}

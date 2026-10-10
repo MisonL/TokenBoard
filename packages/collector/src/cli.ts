@@ -1,7 +1,7 @@
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { UsageSnapshot } from '@tokenboard/usage-core'
+import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
 import { errorMessage } from './error-message'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
 import {
@@ -26,32 +26,14 @@ import { uploadSnapshots } from './upload'
 import { assertValidTimeZone } from './timezone'
 import { isAllDateFilter } from './iso-calendar-date'
 
-const concreteCliSources = [
-  'claude-code',
-  'codex',
-  'antigravity-cli',
-  'antigravity',
-  'antigravity-ide',
-  'opencode',
-  'pi',
-  'grok-build',
-  'deepseek-harness'
-] as const
+// Derived from the shared enum so a new source cannot exist in usage-core without the collector
+// accepting it as a CLI source; a hand-maintained copy here drifted silently before.
+const concreteCliSources = usageSources
 const warmHookSources = ['claude-code', 'codex'] as const
 
 type CliCommand = 'preview' | 'sync' | 'warm-hooks'
-type CliSource =
-  | 'claude-code'
-  | 'codex'
-  | 'antigravity-cli'
-  | 'antigravity'
-  | 'antigravity-ide'
-  | 'opencode'
-  | 'pi'
-  | 'grok-build'
-  | 'deepseek-harness'
-  | 'all'
-type ConcreteCliSource = Exclude<CliSource, 'all'>
+type ConcreteCliSource = (typeof usageSources)[number]
+type CliSource = ConcreteCliSource | 'all'
 
 type CliEnv = Partial<Record<string, string>>
 type SourceFailure = {
@@ -727,9 +709,7 @@ function readCommand(value: string | undefined): CliCommand {
     return value
   }
 
-  throw new Error(
-    'Usage: tokenboard <preview|sync|warm-hooks> [--source claude-code|codex|antigravity-cli|antigravity|antigravity-ide|opencode|pi|grok-build|deepseek-harness|all]'
-  )
+  throw new Error(`Usage: tokenboard <preview|sync|warm-hooks> [--source ${[...concreteCliSources, 'all'].join('|')}]`)
 }
 
 function readSource(value: string): CliSource {

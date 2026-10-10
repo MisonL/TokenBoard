@@ -23,6 +23,7 @@ export const runJsonCommand: CommandRunner = async (command, args, options = {})
   const shell = commandShellOption(command)
   assertWindowsShellSafeInvocation(command, args, shell)
   const invocation = buildShellInvocation(command, args, shell)
+  const timeoutMs = options.timeoutMs ?? readCommandTimeoutMs()
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -30,22 +31,51 @@ export const runJsonCommand: CommandRunner = async (command, args, options = {})
         shell: invocation.shell,
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         maxBuffer: 128 * 1024 * 1024,
-        timeout: options.timeoutMs ?? readCommandTimeoutMs(),
+        timeout: timeoutMs,
         env: options.env
       })
 
       return JSON.parse(stdout)
     } catch (error) {
-      if (attempt >= maxAttempts || !isRetryableCommandError(error)) {
-        throw error
+      const failure = describeCommandFailure(error, { command, args, timeoutMs })
+      if (attempt >= maxAttempts || !isRetryableCommandError(failure)) {
+        throw failure
       }
 
-      options.onRetry?.(`Retrying command after transient failure (${attempt}/${retries}): ${errorMessage(error)}`)
+      options.onRetry?.(`Retrying command after transient failure (${attempt}/${retries}): ${errorMessage(failure)}`)
       await wait(options.retryDelayMs ?? readRetryDelayMs())
     }
   }
 
   throw new Error(`Command failed without a result: ${command}`)
+}
+
+// Node reports a timeout kill as a bare `Command failed: <invocation>` with `killed: true`,
+// `signal: 'SIGTERM'`, and (usually) no stderr — indistinguishable in a run record from the
+// tool itself exiting non-zero, so a sync that lost its time budget on a loaded machine reads
+// as a bug in the tool. Name the timeout, and carry any stderr the kill did leave behind.
+export function describeCommandFailure(
+  error: unknown,
+  { command, args, timeoutMs }: { command: string; args: string[]; timeoutMs: number }
+) {
+  if (!isCommandTimeoutError(error)) return error
+  const stderr = readFailureStderr(error)
+  return new Error(
+    `Command timed out after ${timeoutMs}ms: ${[command, ...args].join(' ')}${stderr ? `\n${stderr}` : ''}`
+  )
+}
+
+// `killed` is only ever set by Node itself, and the runner passes no AbortSignal — so a kill
+// signal here means the timeout fired, not an external `kill`.
+function isCommandTimeoutError(error: unknown) {
+  if (!error || typeof error !== 'object') return false
+  const { killed, signal } = error as { killed?: unknown; signal?: unknown }
+  return killed === true && signal === 'SIGTERM'
+}
+
+function readFailureStderr(error: unknown) {
+  const stderr = (error as { stderr?: unknown }).stderr
+  return typeof stderr === 'string' ? stderr.trim() : ''
 }
 
 export function commandShellOption(command: string, platform = process.platform) {
