@@ -157,6 +157,9 @@ test('redaction covers the base64url upload-token charset and case-insensitive a
   assert.equal(redactUrlCredentials('tb_upload_sample_token_zzz'), 'tb_upload_<redacted>')
   assert.equal(redactUrlCredentials('tb_upload_sample-token_zzz'), 'tb_upload_<redacted>')
   assert.equal(redactUrlCredentials('tb_install_sample-token_zzz'), 'tb_install_<redacted>')
+  // Pairing codes share the `tb_` prefix family and are single-use secrets; a sink that echoes
+  // one (a failed pair request, a diagnostic) must redact it too.
+  assert.equal(redactUrlCredentials('pairing failed for tb_pair_sample-token_zzz'), 'pairing failed for tb_pair_<redacted>')
   // A leading word boundary is still required, so a substring is not mistaken for a token.
   assert.equal(redactUrlCredentials('notb_upload_SECRET'), 'notb_upload_SECRET')
   // HTTP auth schemes are case-insensitive and `Basic` carries the same secret.

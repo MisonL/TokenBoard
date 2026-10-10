@@ -17,6 +17,7 @@ import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
 import { errorMessage } from './error-message.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
@@ -114,7 +115,9 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
   })
 
   if (!response.ok) {
-    console.error(`Pairing failed with status ${response.status}: ${await response.text()}`)
+    // The server is the operator's own base URL, but its error body can echo the pairing code
+    // it was sent; redact it before it reaches the terminal scrollback.
+    console.error(`Pairing failed with status ${response.status}: ${redactUrlCredentials(await response.text())}`)
     process.exit(1)
   }
 

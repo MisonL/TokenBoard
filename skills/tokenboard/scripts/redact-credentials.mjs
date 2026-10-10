@@ -42,6 +42,6 @@ export function redactUrlCredentials(line) {
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s?#]+@/gi, '$1')
     .replace(new RegExp(`([?&#]${credentialQueryName})=[^&#\\s]+`, 'gi'), '$1=<redacted>')
     .replace(/\b(Bearer|Basic)(\s+)[A-Za-z0-9._~+/=-]{8,}\b/gi, '$1$2<redacted>')
-    .replace(/\b(tb_(?:upload|install)_)[A-Za-z0-9_-]+/g, '$1<redacted>')
+    .replace(/\b(tb_(?:upload|install|pair)_)[A-Za-z0-9_-]+/g, '$1<redacted>')
     .replace(/(\/api\/webhooks\/)[^\s?#"'`<>,;)\]}]+/gi, '$1<redacted>')
 }
