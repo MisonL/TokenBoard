@@ -1,5 +1,6 @@
 import { ApiError } from '../../../lib/errors'
 import { defaultTimezone, normalizeTimezone } from '../../../lib/timezone'
+import { FormError } from '../../../lib/form-error'
 import { parsePublicCardConfig, stringifyPublicCardConfig } from '../../public-card/config'
 import { isReservedPublicSlug } from '../../public-card/service/slug'
 import { publicProfileSchema, type PublicProfileInput } from '../schema'
@@ -185,7 +186,7 @@ async function runSlugUpdate(
     result = await statement.run()
   } catch (error) {
     if (isUniqueConstraintViolation(error)) {
-      throw new ApiError('BAD_REQUEST', 'Slug is already taken', 400)
+      throw new FormError('slug-taken', 'Slug is already taken')
     }
     throw error
   }
@@ -200,9 +201,9 @@ async function runSlugUpdate(
   // into a 500, so it falls back to the conflict answer.
   const takenByAnother = await slugHeldByAnother(db, userId, slug)
   if (takenByAnother) {
-    throw new ApiError('BAD_REQUEST', 'Slug is already taken', 400)
+    throw new FormError('slug-taken', 'Slug is already taken')
   }
-  throw new ApiError('NOT_FOUND', 'Profile not found', 404)
+  throw new FormError('profile-not-found', 'Profile not found', 'NOT_FOUND', 404)
 }
 
 async function slugHeldByAnother(db: D1Database, userId: string, slug: string) {
@@ -224,7 +225,7 @@ function isUniqueConstraintViolation(error: unknown) {
 
 async function assertSlugAvailable(db: D1Database, slug: string, userId: string) {
   if (isReservedPublicSlug(slug)) {
-    throw new ApiError('BAD_REQUEST', 'Slug is reserved', 400)
+    throw new FormError('slug-reserved', 'Slug is reserved')
   }
 
   const conflict = await db
@@ -233,7 +234,7 @@ async function assertSlugAvailable(db: D1Database, slug: string, userId: string)
     .first<{ userId: string }>()
 
   if (conflict) {
-    throw new ApiError('BAD_REQUEST', 'Slug is already taken', 400)
+    throw new FormError('slug-taken', 'Slug is already taken')
   }
 }
 

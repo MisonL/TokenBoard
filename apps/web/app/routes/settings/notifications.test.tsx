@@ -82,7 +82,10 @@ describe('NotificationsPage', () => {
       />
     )
 
-    expect(html).toContain('WEBHOOK_ENCRYPTION_KEY')
+    expect(html).toContain('当前 Worker 未正确配置 Webhook 加密密钥')
+    // The banner must not name the Worker secret: a signed-in user is not necessarily the
+    // operator, and the variable name tells them how the deployment is wired.
+    expect(html).not.toContain('WEBHOOK_ENCRYPTION_KEY')
     expect(html).toContain('disabled')
     expect(html).toMatch(/<input[^>]*name="provider"[^>]*disabled/)
     expect(html).toMatch(/<button[^>]*id="provider-menu-button"[^>]*disabled/)

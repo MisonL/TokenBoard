@@ -1,5 +1,6 @@
 ﻿import { describe, expect, test } from 'vitest'
 import { defaultPublicCardConfig } from '../public-card/config'
+import { FormError, formErrorCode } from '../../lib/form-error'
 import { vi } from 'vitest'
 import {
   getCanonicalPublicOrigin,
@@ -75,6 +76,30 @@ describe('settings service', () => {
         metrics: ['todayTokens', 'totalCost']
       }
     })
+  })
+
+  // The card schema is a second, independent parse: its failure must be tagged as a card problem,
+  // not escape as a bare ZodError the route would report as `invalid-profile`.
+  test('tags a public card validation failure as invalid-card', () => {
+    expect(() =>
+      parseProfilePageForm({
+        slug: 'eve-tokenboard',
+        displayName: 'Eve',
+        timezone: 'Asia/Hong_Kong',
+        cardTitle: 'x'.repeat(49)
+      })
+    ).toThrow(FormError)
+
+    try {
+      parseProfilePageForm({
+        slug: 'eve-tokenboard',
+        displayName: 'Eve',
+        timezone: 'Asia/Hong_Kong',
+        cardTitle: 'x'.repeat(49)
+      })
+    } catch (error) {
+      expect(formErrorCode(error)).toBe('invalid-card')
+    }
   })
 
   test('updates profile after checking slug ownership', async () => {

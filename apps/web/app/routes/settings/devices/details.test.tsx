@@ -10,6 +10,7 @@ vi.mock('../../../features/auth/middleware', () => ({
 }))
 
 vi.mock('../../../features/device/service', () => ({
+  legacyDeviceGroupId: 'legacy',
   listDeviceAuditLogs: vi.fn(),
   listUserDevices: vi.fn()
 }))
@@ -91,6 +92,49 @@ describe('device details route', () => {
     expect(html).toContain('Linux host')
     expect(html).not.toContain('<main')
     expect(response.headers.get('x-rendered-by')).toBeNull()
+  })
+
+  // The `legacy` group is derived and has no `devices` row, so a device-level rename/revoke/
+  // reconnect targets an id that does not exist and 404s. The page must not offer those actions
+  // for it, or the user gets an error on every click; per-token revocation stays available.
+  test('does not offer device-level actions for the derived legacy group', async () => {
+    mockedRequireUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedListUserDevices.mockResolvedValue([
+      {
+        id: 'legacy',
+        name: '未关联设备',
+        platform: 'legacy',
+        lastSyncedAt: null,
+        createdAt: '2026-04-29T10:03:36.232Z',
+        activeTokenCount: 1,
+        installations: [],
+        uploadTokens: [
+          {
+            id: 'token_1',
+            deviceId: 'legacy',
+            installationId: null,
+            name: 'unbound',
+            lastUsedAt: null,
+            createdAt: '2026-04-29T10:03:36.232Z',
+            revokedAt: null
+          }
+        ]
+      }
+    ] as never)
+    mockedListDeviceAuditLogs.mockResolvedValue([] as never)
+
+    const response = (await GET[0](
+      routeContext('https://tokenboard.example/settings/devices/details?deviceId=legacy&view=cards') as never,
+      async () => undefined
+    )) as Response
+    const html = await response.text()
+
+    expect(response.status).toBe(200)
+    // No device-level rename/revoke/reconnect forms bound to the sentinel id.
+    expect(html).not.toContain('name="action" value="rename"')
+    expect(html).not.toContain('name="action" value="revoke"')
+    expect(html).not.toContain('name="targetDeviceId" value="legacy"')
+    expect(html).toContain('未关联设备')
   })
 })
 

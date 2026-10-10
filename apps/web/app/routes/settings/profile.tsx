@@ -7,6 +7,7 @@ import { LucideIcon } from '../../components/ui/icon'
 import { Input, Label } from '../../components/ui/input'
 import { requireUser } from '../../features/auth/middleware'
 import { PublicCardConfigEditor } from '../../features/public-card/components/card-config-editor'
+import { settingsFormErrorMessage, settingsFormErrorCodeForRedirect } from '../../features/settings/errors'
 import {
   getCanonicalPublicOrigin,
   getProfileSettings,
@@ -31,6 +32,7 @@ export const GET = createRoute(async (c) => {
     <ProfilePage
       profile={profile}
       saved={c.req.query('saved') === '1'}
+      formError={settingsFormErrorMessage(c.req.query('error'))}
       email={user.email}
       collectorTimezones={collectorTimezones}
     />
@@ -44,6 +46,10 @@ export const POST = createRoute(async (c) => {
     await updateProfilePageSettings(c.env.DB, user.id, input)
     return c.redirect('/settings/profile?saved=1', 303)
   } catch (error) {
+    // A plain HTML form POST cannot answer with a JSON body: the browser would render it as
+    // the page and the user's edits would be gone. Redirect back with a code the page renders.
+    const formErrorCode = settingsFormErrorCodeForRedirect(error)
+    if (formErrorCode) return c.redirect(`/settings/profile?error=${formErrorCode}`, 303)
     return jsonError(c, error)
   }
 })
@@ -51,6 +57,7 @@ export const POST = createRoute(async (c) => {
 export function ProfilePage(props: {
   profile: ProfileSettings
   saved: boolean
+  formError?: string
   email: string
   /** Zones the user's collectors are currently stamping dates in, if any. */
   collectorTimezones?: string[]
@@ -72,6 +79,7 @@ export function ProfilePage(props: {
         <ProfileSettingsCard
           profile={props.profile}
           saved={props.saved}
+          formError={props.formError}
           collectorTimezones={props.collectorTimezones}
         />
         <PublicLinksCard profile={props.profile} />
@@ -80,7 +88,12 @@ export function ProfilePage(props: {
   )
 }
 
-function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean; collectorTimezones?: string[] }) {
+function ProfileSettingsCard(props: {
+  profile: ProfileSettings
+  saved: boolean
+  formError?: string
+  collectorTimezones?: string[]
+}) {
   return (
     <Card class="min-w-0 self-start">
       <CardHeader>
@@ -89,6 +102,11 @@ function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean; 
       </CardHeader>
       <CardContent>
         {props.saved ? <p class="app-flash-success mb-4 p-3 text-sm">设置已保存。</p> : null}
+        {props.formError ? (
+          <p class="app-flash-error mb-4 p-3 text-sm" role="alert">
+            {props.formError}
+          </p>
+        ) : null}
         {props.profile.profileNeedsRepair ? (
           <p class="app-flash-error mb-4 p-3 text-sm">资料里有旧格式字段，请检查后保存一次。</p>
         ) : null}

@@ -1,6 +1,7 @@
 import { renderToString } from 'hono/jsx/dom/server'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { requireUser } from '../../features/auth/middleware'
+import { FormError } from '../../lib/form-error'
 import {
   listDeviceAuditLogs,
   listLatestDeviceAuditLogs,
@@ -53,6 +54,21 @@ describe('devices POST route', () => {
     mockedRevokeInstallation.mockReset()
     mockedRevokeUploadToken.mockReset()
     mockedRotateUploadToken.mockReset()
+  })
+
+  test('redirects with a rendered message when a rename fails validation', async () => {
+    mockedRequireUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedParseDeviceNameForm.mockImplementation(() => {
+      throw new FormError('device-name-invalid', 'Device name must be 1-80 characters')
+    })
+
+    const response = (await POST[0](
+      postContext({ action: 'rename', deviceId: 'dev_1', name: '   ', view: 'cards', query: 'mac' }) as never,
+      async () => undefined
+    )) as Response
+
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/settings/devices?error=device-name-invalid&view=cards&query=mac')
   })
 
   test('prevents caching one-time rotated credentials', async () => {

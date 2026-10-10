@@ -46,13 +46,56 @@ describe('devices GET route', () => {
 
     expect(response.headers.get('Cache-Control')).toBe('no-store')
   })
+
+  test('renders the failure a rename redirect carried back', async () => {
+    mockedRequireUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedListUserDevices.mockResolvedValue([])
+    mockedListLatestDeviceAuditLogs.mockResolvedValue(new Map())
+
+    const response = (await GET[0](
+      getContext({ error: 'device-name-invalid' }) as never,
+      async () => undefined
+    )) as Response
+
+    expect(await response.text()).toContain('设备名称需为 1-80 个字符。')
+  })
+
+  // `revoked` is a user-controlled query parameter. An owned lookup must keep `?revoked=constructor`
+  // from resolving an inherited member — which renders an empty success flash — and keep an
+  // arbitrary value from being shown as a real revoke confirmation.
+  test.each(['constructor', 'toString', '__proto__', 'bogus'])(
+    'does not render a revoke flash for the unknown revoked code %s',
+    async (revoked) => {
+      mockedRequireUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+      mockedListUserDevices.mockResolvedValue([])
+      mockedListLatestDeviceAuditLogs.mockResolvedValue(new Map())
+
+      const response = (await GET[0](getContext({ revoked }) as never, async () => undefined)) as Response
+      const body = await response.text()
+
+      // The real codes still render their own message; anything else must fall back to the
+      // generic one rather than echoing an inherited member or confirming an unknown action.
+      expect(body).toContain('设备上传凭证已停用。')
+      expect(body).not.toContain('安装实例已停用。')
+    }
+  )
+
+  test('renders the specific message for a known revoked code', async () => {
+    mockedRequireUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedListUserDevices.mockResolvedValue([])
+    mockedListLatestDeviceAuditLogs.mockResolvedValue(new Map())
+
+    const response = (await GET[0](getContext({ revoked: 'installation' }) as never, async () => undefined)) as Response
+
+    expect(await response.text()).toContain('安装实例已停用。')
+  })
 })
 
-function getContext() {
+function getContext(query: Record<string, string> = {}) {
   const headers = new Headers()
   return {
     env: { DB: {} },
-    req: { url: 'https://tokenboard.example/settings/devices', query: () => undefined },
+    req: { url: 'https://tokenboard.example/settings/devices', query: (name: string) => query[name] },
     header: (name: string, value: string) => {
       headers.set(name, value)
     },

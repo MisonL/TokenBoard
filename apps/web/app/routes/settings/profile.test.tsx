@@ -123,6 +123,28 @@ describe('ProfilePage timezone consequence', () => {
   })
 })
 
+describe('ProfilePage form errors', () => {
+  test('renders the failure the redirect carried back', async () => {
+    const html = await renderToString(
+      <ProfilePage
+        email="user@example.com"
+        saved={false}
+        formError="这个 slug 已被占用，请换一个。"
+        profile={profile()}
+      />
+    )
+
+    expect(html).toContain('这个 slug 已被占用，请换一个。')
+    expect(html).toContain('role="alert"')
+  })
+
+  test('renders no alert when there is no error', async () => {
+    const html = await renderToString(<ProfilePage email="user@example.com" saved={false} profile={profile()} />)
+
+    expect(html).not.toContain('role="alert"')
+  })
+})
+
 function profile() {
   return {
     displayName: 'Example User',

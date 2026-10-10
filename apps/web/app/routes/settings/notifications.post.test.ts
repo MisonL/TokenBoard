@@ -159,7 +159,9 @@ describe('notifications POST route', () => {
   })
 
   test.each([
-    ['INTERNAL_SERVER_ERROR', 'WEBHOOK_ENCRYPTION_KEY is not configured', 500],
+    // The status code a `requireEncryptionKey` failure carries; its user-facing message is the
+    // generic 500 copy, with the WEBHOOK_ENCRYPTION_KEY diagnosis kept for the logs only.
+    ['INTERNAL_SERVER_ERROR', 'Internal server error', 500],
     ['NOT_FOUND', 'Webhook subscription not found', 404],
     ['UNAUTHORIZED', 'Authentication required', 401]
   ] as const)('keeps %s errors as JSON responses', async (code, message, status) => {
@@ -186,6 +188,10 @@ describe('notifications POST route', () => {
     )
     expect(notificationFormErrorMessage('invalid-daily-report-id')).toBe('Invalid daily report id')
     expect(notificationFormErrorMessage('unknown')).toBeUndefined()
+    // A user-controlled `?error=` must not resolve prototype members to a function value.
+    for (const key of ['constructor', 'toString', 'valueOf', '__proto__']) {
+      expect(notificationFormErrorMessage(key)).toBeUndefined()
+    }
   })
 })
 
