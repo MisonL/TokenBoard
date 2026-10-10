@@ -37,7 +37,9 @@ pnpm format:check
 - `packages/usage-core/`：跨端共享的 usage schema、normalize、hash 和工具函数。
 - `skills/tokenboard/`：Codex / Claude Code 安装、同步、hook、schedule 脚本。
 - `apps/web/app/components/ui/`：通用 UI 原语；业务组件不要放这里。
-- `apps/web/db/migrations/`：按序执行的 D1 migration；部署前必须核对 migration、Drizzle schema 和 `db/verify-critical-schema.sql`。
+- `apps/web/db/migrations/`：按序执行的 D1 migration；部署前必须核对 migration、Drizzle schema 和 `db/verify-*.sql`。
+  migration 链是**手工维护**的（`meta/_journal.json` 被 gitignore 且为空），禁止对真实目录运行 `drizzle-kit generate`——它会无视现有编号另起一套 `0000_` 全量基线。已 apply 到生产的 migration 视为不可变：wrangler 只按文件名去重，不比对内容 hash，事后修改不会被察觉。
+  已知偏差：`webhook_subscriptions`/`webhook_delivery_logs`/`daily_report_history`/`model_pricing_sync_state`/`usage_summary_backfill_state`/`user_usage_totals` 的 `TEXT PRIMARY KEY` 在 SQLite 终态里可空，而 `app/db/schema.ts` 声明 NOT NULL；所有写入都是手写 SQL 且显式绑非空主键，故无运行时影响，但不要依赖 `drizzle-kit generate` 的基线（它会据此产出重建表的假迁移）。
 - `docs/model-pricing.md`：动态模型定价目录、缓存、回退、分页和部署说明。
 
 ### 提交与 PR
@@ -239,9 +241,15 @@ GET  /api/public/:slug.json
 GET  /api/public/:slug.svg
 ```
 
-当前还包括：`GET /api/v1/health`、`POST /api/v1/ingest/check`、`GET /api/public/model-pricing`、
-`POST /api/v1/model-pricing/sync` 以及设备配对/重连接口。具体行为以 `apps/web/app/routes/` 和对应
+当前还包括：`GET /api/v1/health`、`POST /api/v1/ingest/check`、`GET /api/v1/model-pricing`、
+`POST /api/v1/model-pricing/sync`、`GET /api/public/model-pricing`、`POST /api/v1/public-card/preview`
+以及设备配对/重连接口。具体行为以 `apps/web/app/routes/` 和对应
 feature service 为准，不要只依据本节示例添加路由。
+
+其中 `GET /api/v1/summary`、`GET /api/v1/daily`、`GET /api/v1/models`、
+`GET /api/v1/leaderboards/{daily,monthly}` **尚未实现**（线上返回 404）：dashboard 与排行榜的数据由
+HonoX 页面路由和 `/leaderboards/fragment` 直接渲染，不经这些 JSON 端点。它们只是保留的候选路径，
+不要假设可用。
 
 接口规则：
 
@@ -279,8 +287,10 @@ feature service 为准，不要只依据本节示例添加路由。
 
 ```txt
 /api/auth/*
-/settings/tokens
 /settings/profile
+/settings/devices
+/settings/notifications
+/settings/install
 ```
 
 Better Auth 相关代码必须集中在 `apps/web/app/features/auth`，不要散落在业务 feature 中。业务代码通过封装后的 `requireUser`、`getOptionalUser`、`verifyUploadToken` 使用鉴权能力。
@@ -357,6 +367,7 @@ apps/web/
         auth/
       dashboard/
       leaderboards/
+      reports/
       settings/
     features/
       auth/
@@ -364,10 +375,25 @@ apps/web/
         middleware.ts
         schema.ts
         service.ts
+      device/
+        schema.ts
+        service.ts
+        components/
       ingest/
         schema.ts
         service.ts
+        repository/
+          upsert.ts
+          backfill.ts
+      notifications/
+        schema.ts
+        service.ts
+        queries/
+        components.tsx
+      model-pricing/
+        service.ts
         repository.ts
+        validation.ts
       usage/
         schema.ts
         queries.ts
@@ -380,21 +406,29 @@ apps/web/
         components/
       public-card/
         svg.ts
-        service.ts
+        service/
+        config.ts
       settings/
         schema.ts
-        service.ts
+        service/
         components/
-  db/
+  app/db/
     schema.ts
+  db/
     migrations/
   lib/
     db.ts
-    env.ts
     errors.ts
     http.ts
     time.ts
+    timezone.ts
     money.ts
+    crypto.ts
+    rate-limit.ts
+    security-headers.ts
+    theme.ts
+    usage-cost.ts
+    usage-metrics.ts
   components/
     ui/
     charts/
@@ -405,6 +439,7 @@ packages/usage-core/
     normalize.ts
     money.ts
     dates.ts
+    index.ts
 
 packages/collector/
   src/
@@ -417,6 +452,9 @@ packages/collector/
       deepseek-harness.ts
       bounded-session-scan.ts
       session-usage-aggregate.ts
+      session-jsonl-parser.ts
+      session-cursor-store.ts
+      hook-incremental.ts
       sqlite-reader.ts
       zstd-frames.ts
       antigravity-cli.ts
@@ -436,8 +474,11 @@ skills/tokenboard/
     setup.mjs
     sync.mjs
     install-schedule.mjs
+    coordinator.mjs
     antigravity-hook.mjs
     antigravity-statusline.mjs
+    uninstall.mjs
+    upgrade.mjs
     status.mjs
 ```
 
@@ -501,7 +542,10 @@ skills/tokenboard/
 - 任何新增公开字段，都要同时检查 dashboard、public JSON、SVG 和排行榜的隐私影响。
 - 重要行为变更需要补测试。
 - 动态定价只作用于新采集；不得自动重算历史 `costUsd`。hook 模式不得发起网络请求，应使用缓存或 bundled 静态配置。
-- 部署模型定价前按 `0030` 至 `0034` 顺序应用 migration，并执行生产路由检查、critical schema 和外键检查。
+- 部署模型定价前，`deploy.mjs` 的实际顺序是：配置校验 → build → dry-run → **生产路由检查** →
+  按序应用全部待执行 migration（当前到 `0037`）→ 四项 schema 校验（`verify-critical-schema.sql`、
+  `verify-rate-limit-index.sql`、`verify-retention-index.sql`、`verify-foreign-keys.sql`）→ 发布。
+  每步 fail-fast（`spawnSync` 非零即 `process.exit`）。
 
 ## 交流约定
 

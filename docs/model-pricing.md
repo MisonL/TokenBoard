@@ -121,7 +121,7 @@ successful generation and records the failure for the next scheduled retry.
 
 ## Collector integration
 
-Claude Code and Codex usage is calculated locally by the pinned `ccusage@20.0.20` runtime. Before a
+Claude Code and Codex usage is calculated locally by the pinned `ccusage@20.0.26` runtime. Before a
 normal preview or sync, the collector derives the origin from `TOKENBOARD_ENDPOINT`, reads the
 paginated `/api/v1/model-pricing` compatibility alias, and writes a merged temporary `ccusage` config
 under `TOKENBOARD_STATE_DIR`. Dynamic catalogue prices override the bundled
@@ -138,14 +138,18 @@ static config. A failed refresh never blocks token collection. Diagnostics ident
 source and refresh failure; a model without reliable input/output pricing keeps the existing
 collector result and emits a warning instead of being silently treated as free.
 
-The catalogue is intentionally not joined into historical usage aggregation. Ingested `costUsd`
-values are the collector's timestamped pricing result and remain stable when the catalogue changes;
-dynamic pricing applies only to new collection runs. Repricing old snapshots is not performed and
-would require a separate, explicitly versioned migration because provider tiers, cache semantics and
-exchange-rate assumptions can change independently of token counts.
+The catalogue is intentionally not joined into historical usage aggregation. An ingested `costUsd`
+is the price that applied when the collector measured that day, not a live view of the catalogue, so
+it survives later catalogue changes. A scheduled sync re-scans its lookback window on every run and
+re-derives each day with the prices current at that moment; ingest therefore keeps the stored cost
+whenever the re-derived token counts are identical, which is what a catalogue change alone looks
+like. A day whose token counts actually moved is a new measurement and takes the new cost, so a day
+that genuinely grew still reports the spend it grew by. Repricing already-ingested days is not
+performed and would require a separate, explicitly versioned migration because provider tiers, cache
+semantics and exchange-rate assumptions can change independently of token counts.
 
 The override values are USD per token, so official USD-per-million values are divided by 1,000,000.
-`ccusage@20.0.20` exposes only fields named `*Above200kTokens`; those fields are intentionally not
+`ccusage@20.0.26` exposes only fields named `*Above200kTokens`; those fields are intentionally not
 used for GPT-5.x because the current long-context boundary is 272,000 tokens. Do not change that
 boundary without upgrading the collector runtime and adding a matching schema test.
 
