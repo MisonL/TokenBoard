@@ -64,6 +64,26 @@ const canCreateSymlinks = await (async () => {
 })()
 
 describe('Codex session attribution cache', () => {
+  // The cache files are written 0600, but they sit inside a state directory the cache creates
+  // itself: on a shared machine a directory left at the umask default (0755) makes the
+  // directory listable and lets its lock/temp files be replaced by whoever can write the dir.
+  test.skipIf(process.platform === 'win32')('creates a missing state directory private', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
+    const stateDir = join(root, 'state')
+
+    try {
+      await withCodexSessionAttributionCache({
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        callback: async () => undefined
+      })
+
+      expect((await stat(stateDir)).mode & 0o777).toBe(0o700)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('rejects a cache hit when its source session changes before the transaction finishes', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
     const sourceDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-source-'))

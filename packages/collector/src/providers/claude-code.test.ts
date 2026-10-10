@@ -61,11 +61,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.26', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.26', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -96,7 +96,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.20',
+          'ccusage@20.0.26',
           '--',
           'ccusage',
           'claude',
@@ -114,7 +114,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.20',
+          'ccusage@20.0.26',
           '--',
           'ccusage',
           'claude',
@@ -143,7 +143,7 @@ describe('collectClaudeCodeUsage', () => {
 
     expect(calls).toEqual([
       [
-        'ccusage@20.0.20',
+        'ccusage@20.0.26',
         'claude',
         'daily',
         '--json',
@@ -152,7 +152,7 @@ describe('collectClaudeCodeUsage', () => {
         '20260501',
         ...bundledCcusageConfigArgs
       ],
-      ['ccusage@20.0.20', 'claude', 'session', '--json', '--since', '20260501', ...bundledCcusageConfigArgs]
+      ['ccusage@20.0.26', 'claude', 'session', '--json', '--since', '20260501', ...bundledCcusageConfigArgs]
     ])
   })
 
@@ -173,7 +173,7 @@ describe('collectClaudeCodeUsage', () => {
 
     expect(calls).toEqual([
       [
-        'ccusage@20.0.20',
+        'ccusage@20.0.26',
         'claude',
         'daily',
         '--json',
@@ -185,7 +185,7 @@ describe('collectClaudeCodeUsage', () => {
         ...bundledCcusageConfigArgs
       ],
       [
-        'ccusage@20.0.20',
+        'ccusage@20.0.26',
         'claude',
         'session',
         '--json',
@@ -237,13 +237,47 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.26', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.20', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.26', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
       }
     ])
+  })
+
+  // ccusage walks the whole session tree per report, so it gets the same 15-minute budget the
+  // Codex provider uses rather than the generic 2-minute command default — the difference
+  // between a loaded machine finishing a hook sync and a bare `Command failed` in the log.
+  test('budgets ccusage commands for a full session scan, not the shared command default', async () => {
+    const timeouts: Array<number | undefined> = []
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    await collectClaudeCodeUsage({
+      since: '20260708',
+      env: { TOKENBOARD_FORCE_PACKAGE_RUNNER: '1' },
+      async runner(_command, _args, options) {
+        timeouts.push(options?.timeoutMs)
+        return { data: [] }
+      }
+    })
+
+    expect(timeouts).toEqual([900_000, 900_000])
+  })
+
+  test('honours TOKENBOARD_CCUSAGE_TIMEOUT_MS for ccusage commands', async () => {
+    const timeouts: Array<number | undefined> = []
+
+    await collectClaudeCodeUsage({
+      since: '20260708',
+      env: { TOKENBOARD_FORCE_PACKAGE_RUNNER: '1', TOKENBOARD_CCUSAGE_TIMEOUT_MS: '1234' },
+      async runner(_command, _args, options) {
+        timeouts.push(options?.timeoutMs)
+        return { data: [] }
+      }
+    })
+
+    expect(timeouts).toEqual([1234, 1234])
   })
 
   test('passes the generated dynamic pricing config to every ccusage invocation', async () => {

@@ -402,7 +402,9 @@ async function writeCache(cachePath: string, cache: CacheState) {
   if (Buffer.byteLength(serialized) > maxCacheBytes) {
     throw new Error('Codex session attribution cache exceeds the ' + maxCacheBytes + '-byte limit')
   }
-  await mkdir(dirname(cachePath), { recursive: true })
+  // Private like the 0600 cache file it will hold: the state directory itself must not be
+  // writable by others when this call creates it.
+  await mkdir(dirname(cachePath), { recursive: true, mode: 0o700 })
   const tempPath = cachePath + '.tmp-' + process.pid + '-' + randomBytes(8).toString('hex')
   try {
     await writeFile(tempPath, serialized, { mode: 0o600 })

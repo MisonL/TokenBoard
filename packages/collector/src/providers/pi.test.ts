@@ -1,8 +1,15 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import { collectPiUsage } from './pi'
+
+// Temp agent directories created below are removed after each test so repeated runs
+// do not accumulate directories in the OS temp folder.
+const tempDirs: string[] = []
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
 
 // Entry types, the `message.usage` shape and the cost breakdown below follow
 // Pi's session JSONL: entries form an id/parentId tree, and usage rides on
@@ -43,6 +50,7 @@ function assistantEntry(overrides: Record<string, unknown> = {}) {
 
 async function piAgentDir(files: Record<string, string[]>) {
   const agentDir = await mkdtemp(join(tmpdir(), 'tokenboard-pi-'))
+  tempDirs.push(agentDir)
   for (const [relative, lines] of Object.entries(files)) {
     const filePath = join(agentDir, 'sessions', ...relative.split('/'))
     await mkdir(join(filePath, '..'), { recursive: true })
@@ -278,6 +286,7 @@ describe('collectPiUsage', () => {
 
   test('reports no sessions instead of empty usage when nothing is scanned', async () => {
     const agentDir = await mkdtemp(join(tmpdir(), 'tokenboard-pi-empty-'))
+    tempDirs.push(agentDir)
 
     await expect(collect(agentDir)).rejects.toThrow('No Pi sessions found')
   })

@@ -23,6 +23,11 @@ export type CollectUsageOptions = {
 }
 
 const DEFAULT_PACKAGE_COMMAND_RETRIES = 2
+// ccusage scans every Claude Code session file to build one day's totals, so a large session
+// library on a loaded machine can outlast a short budget. The Codex provider gives its
+// ccusage calls 15 minutes; this side used to fall back to the generic 2-minute default, which
+// turned busy-machine hook syncs into `Command failed` with no timeout in the message.
+const DEFAULT_CCUSAGE_TIMEOUT_MS = 900_000
 
 export async function collectClaudeCodeUsage(options: CollectUsageOptions = {}): Promise<UsageSnapshot[]> {
   const runner = options.runner ?? runJsonCommand
@@ -145,6 +150,7 @@ async function collectClaudeCcusageRange(input: {
     ]),
     packageCommandOptions({
       env: input.env,
+      timeoutMs: readCcusageTimeoutMs(input.env),
       stderr: input.options.stderr
     })
   )
@@ -158,6 +164,7 @@ async function collectClaudeCcusageRange(input: {
     ]),
     packageCommandOptions({
       env: input.env,
+      timeoutMs: readCcusageTimeoutMs(input.env),
       stderr: input.options.stderr
     })
   )
@@ -172,16 +179,27 @@ async function collectClaudeCcusageRange(input: {
 
 function packageCommandOptions({
   env,
+  timeoutMs,
   stderr = console.error
 }: {
   env: NodeJS.ProcessEnv
+  timeoutMs: number
   stderr?: (line: string) => void
 }) {
   return {
     env,
+    timeoutMs,
     retries: readPackageCommandRetries(env),
     onRetry: stderr
   }
+}
+
+export function readCcusageTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
+  const value = Number.parseInt(env.TOKENBOARD_CCUSAGE_TIMEOUT_MS || '', 10)
+  if (Number.isFinite(value) && value > 0) {
+    return value
+  }
+  return DEFAULT_CCUSAGE_TIMEOUT_MS
 }
 
 function readPackageCommandRetries(env: NodeJS.ProcessEnv = process.env) {

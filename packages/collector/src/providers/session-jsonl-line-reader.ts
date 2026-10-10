@@ -46,14 +46,33 @@ type LineState = {
 
 export const maxDiscardedSessionJsonlLineBytes = 64 * 1024 * 1024
 
+// Record types that never carry a root-level `usage`, so an oversized row of one of these can be
+// dropped instead of failing the whole source. Every entry here is a claim that the type is not a
+// metric row; a type left out is treated as potentially billable and its oversized row is fatal.
+//
+// `attachment` and `result` are the two that were missing. Claude Code writes `attachment` rows
+// for hook output, tool listings and queued prompts, and a queued command can embed base64 images:
+// one 1.1 MB `attachment` row stopped every claude-code hook sync for a week, while four larger
+// `user` rows in the same file passed untouched because `user` was listed. `result` rows hold a
+// subagent result key, also without usage.
+//
+// Listing a type here is what fixes the production path: an oversized row whose type is absent
+// from this set is fatal in `finishLine`, whatever its content. The `root-attachment` scope added
+// to session-jsonl-metadata-scanner.ts is defence in depth for callers that read without a source
+// (where `hasRelevantSessionJsonlMetadata` cannot gate on `source === 'claude-code'`) and would
+// otherwise see `attachment.usage`'s `totalTokens` as evidence that the row is metric-bearing.
+// The parser never reads that subtree — usage comes only from `record.message.usage` or
+// `record.usage` — so the task summary inside it is safe to ignore in both paths.
 const discardableSessionRecordTypes = new Set([
   'assistant',
+  'attachment',
   'compacted',
   'event_msg',
   'file-history-snapshot',
   'progress',
   'queue-operation',
   'response_item',
+  'result',
   'session_meta',
   'summary',
   'task_complete',

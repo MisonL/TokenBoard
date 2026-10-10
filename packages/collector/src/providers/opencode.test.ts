@@ -1,8 +1,15 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import { collectOpenCodeUsage } from './opencode'
+
+// Temp roots created below are removed after each test so repeated runs do not
+// accumulate directories in the OS temp folder.
+const tempDirs: string[] = []
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
 
 const dbPath = '/home/user/.local/share/opencode/opencode.db'
 const statFile = async () => ({ mtimeMs: 1_700_000_000_000 })
@@ -238,6 +245,7 @@ describe('collectOpenCodeUsage', () => {
     }
 
     const root = await mkdtemp(joinPath(tmpdir(), 'tokenboard-opencode-db-'))
+    tempDirs.push(root)
     const realDb = joinPath(root, 'opencode.db')
     const seed = new sqlite.DatabaseSync(realDb)
     seed.exec(`

@@ -40,6 +40,56 @@ describe('collectChangedSessionFiles', () => {
     }
   })
 
+  test('rejects a poisoned cursor instead of restoring snapshots under a forged key', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-forged-key-'))
+    const sessionsDir = join(root, 'sessions')
+    const cursorPath = join(root, 'codex-cursor.json')
+    try {
+      await writeSession(join(sessionsDir, '2026', '05', '22', 'first.jsonl'), 'one', '2026-05-22T01:00:00.000Z')
+      // A cursor entry parked under a key that escapes the sessions root: without a key
+      // check it passes validation, `preserveMissingCursorEntries` keeps it forever, and
+      // its pending snapshots are restored as "vanished file" uploads on every scan.
+      await writeFile(
+        cursorPath,
+        JSON.stringify({
+          version: 1,
+          source: 'codex',
+          files: {
+            '../../etc/passwd': {
+              size: 1,
+              mtimeMs: 1,
+              sha256: 'a'.repeat(64),
+              snapshots: [
+                {
+                  source: 'codex',
+                  usageDate: '2026-05-22',
+                  timezone: 'UTC',
+                  model: 'gpt-5',
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  cacheCreationTokens: 0,
+                  cacheReadTokens: 0,
+                  totalTokens: 2,
+                  costUsd: 0,
+                  sessionCount: 1
+                }
+              ],
+              missingCost: false,
+              updatedAt: '2026-05-22T00:00:00.000Z',
+              pendingUpload: true
+            }
+          }
+        })
+      )
+
+      await expect(collectChangedSessionFiles({ source: 'codex', sessionsDir, cursorPath })).rejects.toThrow(
+        /Invalid codex cursor file/
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('returns only new or changed session files after the cursor is written', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
     const sessionsDir = join(root, 'sessions')

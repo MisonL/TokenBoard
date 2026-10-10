@@ -6,7 +6,19 @@ export type SessionJsonlResolutionOptions = {
   rejectRootSymlink?: boolean
   rootBoundary?: string
   allowedRootSymlinks?: readonly string[]
+  /** Recursion cap below the root, matching `bounded-session-scan`'s default. */
+  maxDepth?: number
+  /** Per-directory entry cap, matching the Antigravity scanner's limit. */
+  maxEntries?: number
 }
+
+// The codex/claude session tree is outside TokenBoard's control, so the walk needs the same
+// ceilings its sibling scanners carry: `bounded-session-scan` caps depth at 8, and the
+// Antigravity scanner caps a single directory listing at 10k entries. Symlinked entries are
+// already rejected, so a cycle cannot recurse forever — these bounds cover a deliberately
+// deep tree and a directory too large to list in one go.
+export const maxSessionWalkDepth = 8
+export const maxSessionWalkEntries = 10_000
 
 export type SessionJsonlFiles = {
   rootDir: string
@@ -21,12 +33,15 @@ export async function resolveSessionJsonlFiles(
   if (!resolvedRoot) return null
   return {
     rootDir: resolvedRoot,
-    files: walkDirectory(resolvedRoot, resolvedRoot)
+    files: walkDirectory(resolvedRoot, resolvedRoot, options, 0)
   }
 }
 
-export async function* walkJsonlFiles(rootDir: string): AsyncGenerator<string> {
-  const resolved = await resolveSessionJsonlFiles(rootDir)
+export async function* walkJsonlFiles(
+  rootDir: string,
+  options: SessionJsonlResolutionOptions = {}
+): AsyncGenerator<string> {
+  const resolved = await resolveSessionJsonlFiles(rootDir, options)
   if (!resolved) return
   yield* resolved.files
 }
@@ -35,17 +50,30 @@ async function resolveSessionRoot(rootDir: string, options: SessionJsonlResoluti
   return resolveCodexSessionRoot(rootDir, options)
 }
 
-async function* walkDirectory(rootDir: string, currentDir: string): AsyncGenerator<string> {
+async function* walkDirectory(
+  rootDir: string,
+  currentDir: string,
+  options: SessionJsonlResolutionOptions,
+  depth: number
+): AsyncGenerator<string> {
+  const maxDepth = options.maxDepth ?? maxSessionWalkDepth
+  const maxEntries = options.maxEntries ?? maxSessionWalkEntries
+  if (depth > maxDepth) {
+    throw new Error(`Session directory ${currentDir} exceeds the ${maxDepth}-level scan depth limit`)
+  }
   if (!(await assertSessionDirectory(currentDir))) return
   const entries = await readDirectoryEntries(currentDir)
   if (!entries) return
+  if (entries.length > maxEntries) {
+    throw new Error(`Session directory ${currentDir} exceeds the ${maxEntries}-entry scan limit`)
+  }
   for (const entry of entries.sort((left, right) => compareDirectoryEntries(rootDir, currentDir, left, right))) {
     const entryPath = join(currentDir, entry.name)
     if (entry.isSymbolicLink()) {
       throw new Error(`Unable to read session entry ${entryPath}: symbolic links are not supported`)
     }
     if (entry.isDirectory()) {
-      yield* walkDirectory(rootDir, entryPath)
+      yield* walkDirectory(rootDir, entryPath, options, depth + 1)
       continue
     }
     if (entry.name.endsWith('.jsonl')) {

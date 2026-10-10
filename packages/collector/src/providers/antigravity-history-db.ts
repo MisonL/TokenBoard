@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { opendir, stat } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { errorMessage } from '../error-message'
-import { querySqliteText } from './sqlite-reader'
+import { antigravityMaxSqliteOutputBytes, querySqliteText } from './sqlite-reader'
 import type { AntigravityUsageEvent } from './antigravity-gui-parser'
 import { parseAntigravityGeneratorMetadataBlobEvents } from './antigravity-history-protobuf'
 import { formatDate } from './session-jsonl-parser-utils'
@@ -591,6 +591,7 @@ async function readSqliteOutput(dbFile: string, sqliteBin: string, sql: string, 
       runQuery: readSqlite,
       timeoutMs: sqliteTimeoutMs,
       forceExternalSqlite: readSqlite ? true : process.env.TOKENBOARD_SQLITE_BIN !== undefined,
+      maxOutputBytes: antigravityMaxSqliteOutputBytes,
       label: 'Antigravity'
     })
   } catch (error) {

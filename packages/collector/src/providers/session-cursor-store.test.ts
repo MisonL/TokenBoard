@@ -211,6 +211,145 @@ describe('session cursor store concurrency', () => {
   })
 })
 
+describe('session cursor key validation', () => {
+  // The cursor file is plain JSON on disk. Every value is validated on read; keys used to be
+  // trusted verbatim, so a corrupted or hand-edited cursor could park a path-like key in
+  // state that later scans preserve forever and that is echoed into uploaded reconciliation
+  // metadata. A path-keyed source only ever produces keys through the bounded session walk,
+  // so an absolute key or a `..` segment cannot have come from the collector; Antigravity
+  // sources key entries by synthetic identifiers, which always carry a NUL separator that no
+  // filesystem path can contain.
+  const snapshot = {
+    source: 'codex' as const,
+    usageDate: '2026-10-01',
+    timezone: 'UTC',
+    model: 'gpt-5',
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 2,
+    costUsd: 0,
+    sessionCount: 1
+  }
+  const entry = {
+    size: 1,
+    mtimeMs: 1,
+    sha256: 'a'.repeat(64),
+    snapshots: [snapshot],
+    missingCost: false,
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    pendingUpload: true
+  }
+
+  test.each([['../../etc/passwd'], ['/etc/passwd'], ['sessions/../../etc/passwd'], ['..'], ['']])(
+    'rejects the path-escaping codex cursor key %j',
+    async (key) => {
+      const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-key-'))
+      const cursorPath = join(root, 'codex-cursor.json')
+      try {
+        await writeRawFile(cursorPath, JSON.stringify({ version: 1, source: 'codex', files: { [key]: entry } }))
+        await expect(readCursor(cursorPath, 'codex')).rejects.toThrow(/Invalid codex cursor file/)
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  test('keeps accepting path keys the session walk can produce', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-key-paths-'))
+    const cursorPath = join(root, 'codex-cursor.json')
+    // `literal\name.jsonl` is a legal POSIX filename with a literal backslash, and
+    // `C:notes.jsonl` a legal POSIX filename with a colon; the walk yields both verbatim,
+    // so neither may be rejected as path-like.
+    const keys = ['2026/10/01/rollout.jsonl', 'literal\\name.jsonl', 'C:notes.jsonl', '.hidden.jsonl']
+    try {
+      await writeRawFile(
+        cursorPath,
+        JSON.stringify({ version: 1, source: 'codex', files: Object.fromEntries(keys.map((key) => [key, entry])) })
+      )
+      const cursor = await readCursor(cursorPath, 'codex')
+      expect(Object.keys(cursor.files).sort()).toEqual([...keys].sort())
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('keeps accepting every Antigravity synthetic key kind', async () => {
+    const h = 'b'.repeat(64)
+    const cursorKeys: Record<string, string[]> = {
+      'antigravity-cli': [
+        `history-event\u0000${h}\u0000${h}`,
+        `session\u0000antigravity-cli\u00002026-10-01\u0000gemini-3-pro\u0000${h}`,
+        `aggregate\u0000${h}`,
+        `db-row\u0000antigravity-cli\u0000${h}`,
+        `db-row\u0000antigravity-cli\0since:2026-10-01\u0000${h}`,
+        `history-authority-correction\u0000${h}`,
+        // A model name is free-form local data and may carry a slash (`org/model`); it is not
+        // a path marker, so the tightened part check must keep accepting it.
+        `session\u0000antigravity-cli\u00002026-10-01\u0000acme/gemini-3-pro\u0000${h}`
+      ],
+      antigravity: [
+        `event\u0000${h}\u0000${h}`,
+        `session\u0000antigravity\u00002026-10-01\u0000gemini-3-pro\u0000${h}`,
+        `aggregate\u0000${h}`,
+        `cascade\u0000antigravity\u0000${h}`,
+        `cascade\u0000antigravity\0since:2026-10-01\u0000${h}`,
+        'cascade-empty-frontier\u0000antigravity',
+        `db\u0000antigravity\u0000${h}`,
+        `db-covered\u0000antigravity\0since:2026-10-01\u0000${h}`,
+        `gui-db-reset-correction\u0000${h}`
+      ]
+    }
+    for (const [source, keys] of Object.entries(cursorKeys)) {
+      const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-key-antigravity-'))
+      const cursorPath = join(root, `${source}-cursor.json`)
+      try {
+        await writeRawFile(
+          cursorPath,
+          JSON.stringify({
+            version: 1,
+            source,
+            files: Object.fromEntries(keys.map((key) => [key, entry]))
+          })
+        )
+        const cursor = await readCursor(cursorPath, source as 'antigravity-cli' | 'antigravity')
+        expect(Object.keys(cursor.files).sort()).toEqual([...keys].sort())
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  })
+
+  test.each([
+    ['../../etc/passwd'],
+    ['/etc/passwd\0db-row'],
+    ['..\0x'],
+    ['c:\\x\0y'],
+    ['\0leading'],
+    // A valid kebab-case kind must not smuggle path markers in the trailing parts: only the
+    // kind is shape-checked today, so `db-row\0..` would otherwise pass as a synthetic key.
+    ['db-row\0..'],
+    ['db-row\0x\0.'],
+    // The same escape nested inside a part: the whole-part check alone used to let an
+    // absolute or escaping path through as long as the whole part was not exactly `.`/`..`.
+    // Splitting stays on `/` only — a literal backslash is a legal POSIX filename character,
+    // so `..\..\etc\passwd` remains a (weird) legal model name rather than an escape.
+    ['db-row\0/etc/passwd'],
+    ['db-row\0x/../etc'],
+    ['db-row\0../etc/passwd']
+  ])('rejects the path-like Antigravity cursor key %j', async (key) => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-key-antigravity-bad-'))
+    const cursorPath = join(root, 'antigravity-cli-cursor.json')
+    try {
+      await writeRawFile(cursorPath, JSON.stringify({ version: 1, source: 'antigravity-cli', files: { [key]: entry } }))
+      await expect(readCursor(cursorPath, 'antigravity-cli')).rejects.toThrow(/Invalid antigravity-cli cursor file/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
 function deferred<T>() {
   let isSettled = false
   let resolve!: (value: T | PromiseLike<T>) => void

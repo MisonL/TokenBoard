@@ -1,8 +1,15 @@
-import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import { collectGrokBuildUsage } from './grok-build'
+
+// Temp homes created below are removed after each test so repeated runs do not
+// accumulate directories in the OS temp folder.
+const tempDirs: string[] = []
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
 
 const sessionId = '019fb7fc-11bd-7da0-91a4-44be3dbd35e6'
 // Field names, the epoch-seconds timestamp and the cache-inclusive input below
@@ -32,6 +39,7 @@ function counters(overrides: Record<string, unknown> = {}) {
 
 async function grokHome(files: Record<string, string[]>) {
   const home = await mkdtemp(join(tmpdir(), 'tokenboard-grok-'))
+  tempDirs.push(home)
   for (const [relative, lines] of Object.entries(files)) {
     const filePath = join(home, ...relative.split('/'))
     await mkdir(join(filePath, '..'), { recursive: true })
@@ -140,6 +148,98 @@ describe('collectGrokBuildUsage', () => {
     expect(snapshot.inputTokens).toBe(1000)
   })
 
+  test('keeps top-level totals when the model breakdown is an empty object', async () => {
+    const home = await grokHome({
+      [`sessions/enc-cwd/${sessionId}/updates.jsonl`]: [
+        turnCompleted({
+          ...counters({ inputTokens: 1000, cachedReadTokens: 0, outputTokens: 10 }),
+          modelUsage: {}
+        })
+      ]
+    })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.model).toBe('unknown')
+    expect(snapshot.inputTokens).toBe(1000)
+  })
+
+  test('keeps top-level totals when every model entry is unreadable', async () => {
+    const home = await grokHome({
+      [`sessions/enc-cwd/${sessionId}/updates.jsonl`]: [
+        turnCompleted({
+          ...counters({ inputTokens: 1000, cachedReadTokens: 0, outputTokens: 10 }),
+          modelUsage: { 'grok-4.5': 'corrupt' }
+        })
+      ]
+    })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.model).toBe('unknown')
+    expect(snapshot.inputTokens).toBe(1000)
+  })
+
+  test('counts only readable model entries when the breakdown is partially corrupt', async () => {
+    const home = await grokHome({
+      [`sessions/enc-cwd/${sessionId}/updates.jsonl`]: [
+        turnCompleted({
+          ...counters({ inputTokens: 1000, cachedReadTokens: 0, outputTokens: 10 }),
+          modelUsage: {
+            'grok-4.5': counters({ inputTokens: 500, cachedReadTokens: 0, outputTokens: 5 }),
+            broken: 42
+          }
+        })
+      ]
+    })
+
+    const snapshots = await collect(home)
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0].model).toBe('grok-4.5')
+    expect(snapshots[0].inputTokens).toBe(500)
+  })
+
+  test('reports an unreadable model entry instead of dropping it silently', async () => {
+    const home = await grokHome({
+      [`sessions/enc-cwd/${sessionId}/updates.jsonl`]: [
+        turnCompleted({
+          ...counters({ inputTokens: 1000, cachedReadTokens: 0, outputTokens: 10 }),
+          modelUsage: {
+            'grok-4.5': counters({ inputTokens: 500, cachedReadTokens: 0, outputTokens: 5 }),
+            broken: 42
+          }
+        })
+      ]
+    })
+    const warnings: string[] = []
+
+    await collect(home, { stderr: (line: string) => warnings.push(line) })
+
+    expect(warnings.some((line) => line.includes('Skipping unreadable Grok Build modelUsage entry'))).toBe(true)
+    expect(warnings.some((line) => line.includes('broken'))).toBe(true)
+  })
+
+  // A readable but all-zero entry carries no usage of its own; treating it as the turn's
+  // output would skip the top-level totals and lose them, the way an empty breakdown did.
+  test('falls back to top-level totals when every model entry is readable but zero', async () => {
+    const home = await grokHome({
+      [`sessions/enc-cwd/${sessionId}/updates.jsonl`]: [
+        turnCompleted({
+          ...counters({ inputTokens: 1000, cachedReadTokens: 0, outputTokens: 10 }),
+          modelUsage: {
+            'grok-4.5': counters({ inputTokens: 0, cachedReadTokens: 0, outputTokens: 0, totalTokens: 0 })
+          }
+        })
+      ]
+    })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.model).toBe('unknown')
+    expect(snapshot.inputTokens).toBe(1000)
+  })
+
   test('ignores updates that are not completed turns', async () => {
     // A mid-turn snapshot alongside the turn's final event would double-count.
     const home = await grokHome({
@@ -152,9 +252,43 @@ describe('collectGrokBuildUsage', () => {
         JSON.stringify({
           method: 'session/update',
           timestamp: eventSeconds,
-          params: { update: { usage: counters() } }
+          params: { update: { update: { usage: counters() } } }
         }),
-        turnCompleted({ modelUsage: { 'grok-4.5': counters() } })
+        JSON.stringify({
+          method: '_x.ai/session/update',
+          timestamp: eventSeconds,
+          params: { update: { sessionUpdate: 'turn_completed', usage: counters() } }
+        })
+      ]
+    })
+
+    const snapshots = await collect(home)
+
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0].cacheReadTokens).toBe(22_016)
+  })
+
+  test('skips a completed turn whose kind is not a string', async () => {
+    // Every usage-bearing event observed from real Grok logs was
+    // `turn_completed`. A non-string kind is not evidence of a completed turn,
+    // so it is skipped rather than guessed at.
+    const home = await grokHome({
+      [`sessions/enc-cwd/${sessionId}/updates.jsonl`]: [
+        JSON.stringify({
+          method: '_x.ai/session/update',
+          timestamp: eventSeconds,
+          params: { update: { sessionUpdate: 42, usage: counters() } }
+        }),
+        JSON.stringify({
+          method: '_x.ai/session/update',
+          timestamp: eventSeconds,
+          params: { update: { sessionUpdate: ['turn_completed'], usage: counters() } }
+        }),
+        JSON.stringify({
+          method: '_x.ai/session/update',
+          timestamp: eventSeconds,
+          params: { update: { sessionUpdate: 'turn_completed', usage: counters() } }
+        })
       ]
     })
 
@@ -243,6 +377,7 @@ describe('collectGrokBuildUsage', () => {
 
   test('reports no sessions instead of empty usage when nothing is scanned', async () => {
     const home = await mkdtemp(join(tmpdir(), 'tokenboard-grok-empty-'))
+    tempDirs.push(home)
 
     await expect(collect(home)).rejects.toThrow('No Grok Build sessions found')
   })

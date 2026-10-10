@@ -1,7 +1,8 @@
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { maxSnapshotCostUsd } from '@tokenboard/usage-core'
 import { assertValidDateFilter, isAllDateFilter } from '../iso-calendar-date'
-import { normalizeCodexTotalTokens } from '../codex-token-usage'
+import { resolveCodexRawUsage } from '../codex-token-usage'
 import { resolveSessionJsonlFiles } from './session-file-walk'
 import { codexChildSessionReadLimits } from './codex-subagent-usage-child'
 import { fingerprintCodexSessionFile, type CodexSessionFileFingerprint } from './codex-session-attribution-cache'
@@ -566,7 +567,14 @@ export async function discoverCodexContextPricingFiles(input: {
       const root = await resolveSessionJsonlFiles(rootPath, {
         rejectRootSymlink: true,
         rootBoundary: codexHome,
-        allowedRootSymlinks: input.codexSymlinkRoots
+        allowedRootSymlinks: input.codexSymlinkRoots,
+        // This scan carries its own total-file budget and an `allowFileOverflow` degrade; the
+        // walker's default per-directory cap is far below it and would throw first, turning the
+        // degrade into a hard failure. Raise the per-directory entry cap to this scan's own
+        // budget so the file budget below is what governs overflow — not the listing limit. The
+        // walker's depth cap still applies (the real codex tree is a handful of levels deep, so
+        // it does not bite); only the entry cap is widened here.
+        maxEntries: maxCodexContextPricingFiles
       })
       if (!root) continue
       for await (const relativePath of root.files) {
@@ -699,7 +707,18 @@ export function applyCodexContextPricingCosts<
 
   return snapshots.map((snapshot, index) => {
     const cost = matches.get(index)
-    return cost === undefined ? snapshot : { ...snapshot, costUsd: cost }
+    if (cost === undefined) return snapshot
+    // The rates here come from a dynamic catalogue and the tokens from a user's own session
+    // files, so neither is bounded by this module. The shared `usageSnapshotSchema` validated
+    // the snapshot *before* context pricing rewrote its cost, and this is the only place that
+    // writes one afterwards — the subagent path re-parses for the same reason. A non-finite,
+    // negative, or above-`maxSnapshotCostUsd` product (an extreme rate times an extreme token
+    // count) would otherwise leave the collector as a cost the server rejects at ingest, far
+    // from the cause.
+    if (!Number.isFinite(cost) || cost < 0 || cost > maxSnapshotCostUsd) {
+      throw new Error(`Codex context pricing produced an invalid cost for ${snapshot.usageDate}/${snapshot.model}`)
+    }
+    return { ...snapshot, costUsd: cost }
   })
 }
 
@@ -1504,23 +1523,21 @@ function readUsage(value: unknown, filePath: string): UsageValues | null {
   // whether cached input is already included, so keep the legacy-compatible
   // input interpretation used by the rest of the Codex parser.
   const hasUsableExplicitTotal = hasAnyField(raw, ['total_tokens', 'totalTokens']) && explicitTotal > 0
-  const totalTokens = normalizeCodexTotalTokens({
+  // `resolveCodexRawUsage` owns the legacy/additive decision and the matching total, so this
+  // path and the hook parser cannot drift apart on how a raw Codex row is read.
+  const resolved = resolveCodexRawUsage({
     inputTokens: reportedInputTokens,
     outputTokens,
     cacheCreationTokens,
     cacheReadTokens,
     explicitTotalTokens: hasUsableExplicitTotal ? explicitTotal : undefined
   })
-  // Codex has emitted both representations over time. Older records include
-  // cached input in input_tokens; newer records report it as a separate
-  // additive field. The total is the only reliable discriminator.
-  const cacheReadIsIncludedInInput =
-    !hasUsableExplicitTotal ||
-    (cacheReadTokens <= reportedInputTokens && totalTokens === reportedInputTokens + cacheCreationTokens + outputTokens)
+  const cacheReadIsIncludedInInput = resolved.cacheReadIncludedInInput
   const inputTokens = cacheReadIsIncludedInInput ? reportedInputTokens : reportedInputTokens + cacheReadTokens
   const uncachedInputTokens = cacheReadIsIncludedInInput
     ? subtractNonNegative(reportedInputTokens, cacheReadTokens)
     : reportedInputTokens
+  const totalTokens = resolved.totalTokens
   return {
     raw,
     inputTokens,

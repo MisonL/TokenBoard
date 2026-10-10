@@ -7,6 +7,12 @@ type MetadataScope =
   | 'root-payload-metadata'
   | 'root-payload-info'
   | 'root-payload-source'
+  // The `attachment` subtree. Claude Code nests a subagent task summary here as
+  // `attachment.usage = {totalTokens, toolUses, durationMs}`, whose `totalTokens` collides with
+  // the token-metric key names. That summary is not an uploadable usage object — the parser reads
+  // usage only from `record.message.usage` or `record.usage` — so a key found in this subtree
+  // must not be taken as evidence that an oversized row is a metric row.
+  | 'root-attachment'
   | 'claude-usage'
   | 'codex-usage'
   | 'other'
@@ -366,11 +372,16 @@ function scanJsonStringByte(byte: number, scanner: SessionJsonlMetadataScanner) 
     string.container.currentKey = value
     string.container.phase = 'colon'
     if (string.container.scope === 'root' && value === 'type') scanner.rootType = undefined
-    if (tokenMetricKeys.has(value) && (!scanner.codexUsageOnly || string.container.scope === 'codex-usage')) {
+    if (
+      tokenMetricKeys.has(value) &&
+      string.container.scope !== 'root-attachment' &&
+      (!scanner.codexUsageOnly || string.container.scope === 'codex-usage')
+    ) {
       scanner.codexTokenMetricKey = true
     }
     if (
       scanner.additionalRelevantKeys.has(value) &&
+      string.container.scope !== 'root-attachment' &&
       (!scanner.codexUsageOnly || isStrictCodexRelevantKey(string.container.scope, value))
     ) {
       scanner.additionalRelevantKey = true
@@ -462,9 +473,11 @@ function childScope(container: JsonContainer, kind: JsonContainer['kind']): Meta
   if (container.scope === 'claude-usage' || container.scope === 'codex-usage') {
     return container.scope
   }
+  if (container.scope === 'root-attachment') return 'root-attachment'
   if (kind !== 'object') return 'other'
   if (container.scope === 'root' && container.currentKey === 'message') return 'root-message'
   if (container.scope === 'root' && container.currentKey === 'payload') return 'root-payload'
+  if (container.scope === 'root' && container.currentKey === 'attachment') return 'root-attachment'
   if (container.scope === 'root' && container.currentKey === 'usage') return 'claude-usage'
   if (container.scope === 'root-message' && container.currentKey === 'usage') return 'claude-usage'
   if (container.scope === 'root-payload' && container.currentKey === 'info') return 'root-payload-info'

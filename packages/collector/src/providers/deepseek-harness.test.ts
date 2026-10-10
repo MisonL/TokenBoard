@@ -1,9 +1,34 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { constants, zstdCompressSync } from 'node:zlib'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+// Records the `maxOutputLength` each frame is decompressed against. The peak-memory property
+// cannot be observed from the output alone — handing every frame the full limit and handing each
+// the remaining budget produce identical bytes and identical errors — so the test watches the
+// budget passed to zlib directly.
+const { recordedBudgets } = vi.hoisted(() => ({ recordedBudgets: [] as (number | undefined)[] }))
+
+vi.mock('node:zlib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:zlib')>()
+  return {
+    ...actual,
+    zstdDecompressSync: (buffer: Buffer, options?: { maxOutputLength?: number }) => {
+      recordedBudgets.push(options?.maxOutputLength)
+      return actual.zstdDecompressSync(buffer, options)
+    }
+  }
+})
+
 import { collectDeepSeekHarnessUsage } from './deepseek-harness'
+
+// Temp homes created below are removed after each test so repeated runs do not
+// accumulate directories in the OS temp folder.
+const tempDirs: string[] = []
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
 
 // The event envelope `{ type, seq, time, data }` with `time` in epoch
 // milliseconds, and `usage` on `assistant/message`, follow DSH's session types.
@@ -11,14 +36,14 @@ const eventMs = Date.parse('2026-08-14T11:42:00.000Z')
 // DSH writes frames with a content checksum, as this helper does.
 const zstdOptions = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
 
-function assistantMessage(overrides: Record<string, unknown> = {}, time = eventMs) {
+function assistantMessage(overrides: Record<string, unknown> = {}, time = eventMs, seq = 12) {
   const { usage, model, ...rest } = overrides as {
     usage?: Record<string, unknown>
     model?: string
   } & Record<string, unknown>
   return JSON.stringify({
     type: 'assistant/message',
-    seq: 12,
+    seq,
     time,
     data: {
       turn: 1,
@@ -44,6 +69,7 @@ function assistantMessage(overrides: Record<string, unknown> = {}, time = eventM
 
 async function dshHome(files: Record<string, { lines: string[]; compress?: boolean }>) {
   const home = await mkdtemp(join(tmpdir(), 'tokenboard-dsh-'))
+  tempDirs.push(home)
   for (const [relative, spec] of Object.entries(files)) {
     const filePath = join(home, 'sessions', ...relative.split('/'))
     await mkdir(join(filePath, '..'), { recursive: true })
@@ -102,9 +128,9 @@ describe('collectDeepSeekHarnessUsage', () => {
       'project/session-a/session.jsonl.zstd': {
         compress: true,
         lines: [
-          assistantMessage({ usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0 } }),
-          assistantMessage({ usage: { inputTokens: 200, outputTokens: 20, cacheReadTokens: 0 } }, eventMs + 1000),
-          assistantMessage({ usage: { inputTokens: 300, outputTokens: 30, cacheReadTokens: 0 } }, eventMs + 2000)
+          assistantMessage({ usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0 } }, eventMs, 1),
+          assistantMessage({ usage: { inputTokens: 200, outputTokens: 20, cacheReadTokens: 0 } }, eventMs + 1000, 2),
+          assistantMessage({ usage: { inputTokens: 300, outputTokens: 30, cacheReadTokens: 0 } }, eventMs + 2000, 3)
         ]
       }
     })
@@ -115,8 +141,160 @@ describe('collectDeepSeekHarnessUsage', () => {
     expect(snapshot.outputTokens).toBe(60)
   })
 
+  test('deduplicates overlapping plain and compressed files by session sequence', async () => {
+    const overlapping = assistantMessage(
+      { usage: { inputTokens: 20, outputTokens: 2, cacheReadTokens: 0 } },
+      eventMs,
+      2
+    )
+    const tail = assistantMessage(
+      { usage: { inputTokens: 30, outputTokens: 3, cacheReadTokens: 0 } },
+      eventMs + 1000,
+      3
+    )
+    const home = await dshHome({
+      'project/session-a/session.jsonl.zstd': {
+        compress: true,
+        lines: [
+          assistantMessage({ usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 0 } }, eventMs, 1),
+          overlapping
+        ]
+      },
+      'project/session-a/session.jsonl': {
+        lines: [overlapping, tail]
+      }
+    })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.inputTokens).toBe(60)
+    expect(snapshot.outputTokens).toBe(6)
+  })
+
+  // The scanner recurses into a subdirectory as soon as it meets it in the sorted listing, so a
+  // subdirectory whose name sorts between `session.jsonl` and `session.jsonl.zstd` splits the
+  // session's two encodings in scan order. Dedup groups by directory, so the overlap still counts
+  // once instead of being folded twice.
+  test('deduplicates the two encodings even when a subdirectory splits them in scan order', async () => {
+    const overlapping = assistantMessage(
+      { usage: { inputTokens: 20, outputTokens: 2, cacheReadTokens: 0 } },
+      eventMs,
+      2
+    )
+    const home = await dshHome({
+      'project/session-a/session.jsonl': {
+        lines: [
+          assistantMessage({ usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 0 } }, eventMs, 1),
+          overlapping
+        ]
+      },
+      // Sorts after `session.jsonl` and before `session.jsonl.zstd`.
+      'project/session-a/session.jsonl.bak/session.jsonl': {
+        lines: [assistantMessage({ usage: { inputTokens: 99, outputTokens: 9, cacheReadTokens: 0 } }, eventMs, 9)]
+      },
+      'project/session-a/session.jsonl.zstd': {
+        compress: true,
+        lines: [overlapping]
+      }
+    })
+
+    const [snapshot] = await collect(home)
+
+    // seq 1 (10) + seq 2 (20, once) + seq 9 (99).
+    expect(snapshot.inputTokens).toBe(129)
+    expect(snapshot.outputTokens).toBe(12)
+  })
+
+  test('keeps sessions separate when their sequences collide', async () => {
+    // Sequences are per session, so the same number in two sessions is two
+    // events. The expected total requires both properties at once: session-a's
+    // two files are folded together, and the state resets before session-b.
+    const home = await dshHome({
+      'project/session-a/session.jsonl.zstd': {
+        compress: true,
+        lines: [
+          assistantMessage({ usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 0 } }, eventMs, 1),
+          assistantMessage({ usage: { inputTokens: 20, outputTokens: 2, cacheReadTokens: 0 } }, eventMs, 2)
+        ]
+      },
+      'project/session-a/session.jsonl': {
+        lines: [
+          assistantMessage({ usage: { inputTokens: 20, outputTokens: 2, cacheReadTokens: 0 } }, eventMs, 2),
+          assistantMessage({ usage: { inputTokens: 30, outputTokens: 3, cacheReadTokens: 0 } }, eventMs, 3)
+        ]
+      },
+      'project/session-b/session.jsonl': {
+        lines: [assistantMessage({ usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0 } }, eventMs, 1)]
+      }
+    })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.inputTokens).toBe(160)
+    expect(snapshot.outputTokens).toBe(16)
+    expect(snapshot.sessionCount).toBe(2)
+  })
+
+  test('keeps distinct sequences even when their usage is identical', async () => {
+    const usage = { inputTokens: 20, outputTokens: 2, cacheReadTokens: 0 }
+    const home = await dshHome({
+      'project/session-a/session.jsonl': {
+        lines: [assistantMessage({ usage }, eventMs, 7), assistantMessage({ usage }, eventMs + 1000, 8)]
+      }
+    })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.inputTokens).toBe(40)
+    expect(snapshot.outputTokens).toBe(4)
+  })
+
+  test('counts usage events without a sequence instead of silently dropping them', async () => {
+    const line = JSON.stringify({
+      type: 'assistant/message',
+      time: eventMs,
+      data: {
+        message: { source: { model: 'deepseek-v4-pro' } },
+        usage: { inputTokens: 17, outputTokens: 3 }
+      }
+    })
+    const home = await dshHome({ 'project/session-a/session.jsonl': { lines: [line] } })
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.inputTokens).toBe(17)
+    expect(snapshot.outputTokens).toBe(3)
+  })
+
+  test('bounds each frame by the remaining budget, not the full file limit', async () => {
+    // Handing every frame the full 256 MiB cap bounds the *result* but not the peak: the frames
+    // already decoded plus one more at full size can reach twice the cap. Each frame is handed
+    // what is left instead, so the second frame's budget is the cap minus the first frame's
+    // decoded length. Passing the full cap to both would leave this assertion unchanged only if
+    // the first frame decoded to nothing, which it does not.
+    const first = assistantMessage({ usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0 } }, eventMs, 1)
+    const second = assistantMessage(
+      { usage: { inputTokens: 200, outputTokens: 20, cacheReadTokens: 0 } },
+      eventMs + 1000,
+      2
+    )
+    const firstDecodedBytes = Buffer.byteLength(`${first}\n`, 'utf8')
+    const home = await dshHome({
+      'project/session-a/session.jsonl.zstd': { compress: true, lines: [first, second] }
+    })
+
+    recordedBudgets.length = 0
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.inputTokens).toBe(300)
+    expect(recordedBudgets).toHaveLength(2)
+    expect(recordedBudgets[0]).toBe(256 * 1024 * 1024)
+    expect(recordedBudgets[1]).toBe(256 * 1024 * 1024 - firstDecodedBytes)
+  })
+
   test('preserves a UTF-8 model id split across compressed frames', async () => {
     const home = await mkdtemp(join(tmpdir(), 'tokenboard-dsh-'))
+    tempDirs.push(home)
     const filePath = join(home, 'sessions', 'project', 'session-a', 'session.jsonl.zstd')
     await mkdir(join(filePath, '..'), { recursive: true })
     const line = Buffer.from(`${assistantMessage({ model: '模型-α' })}\n`, 'utf8')
@@ -221,25 +399,44 @@ describe('collectDeepSeekHarnessUsage', () => {
     expect(snapshot.model).toBe('unknown')
   })
 
-  test('keeps other sessions when one log cannot be read', async () => {
+  test('fails the source when one log cannot be read', async () => {
     const home = await dshHome({
       'project-a/broken/session.jsonl.zstd': { lines: ['not zstd at all'] },
       'project-b/session-b/session.jsonl': { lines: [assistantMessage()] }
     })
-    const warnings: string[] = []
 
-    const snapshots = await collect(home, { stderr: (line: string) => warnings.push(line) })
+    // A real read failure must fail the source instead of silently dropping the
+    // broken log's usage, matching the Pi and Grok Build providers.
+    await expect(collect(home)).rejects.toThrow('not a Zstandard session log')
+  })
 
-    expect(snapshots).toHaveLength(1)
-    expect(warnings.join('\n')).toContain('Skipping unreadable DeepSeek Harness session log')
+  test('keeps the complete frames when the last one is torn mid-append', async () => {
+    // DSH may be appending while a scan runs, so the trailing frame can be
+    // half-written. That is expected rather than exceptional: the torn bytes
+    // are dropped and every complete frame before them still counts.
+    const home = await mkdtemp(join(tmpdir(), 'tokenboard-dsh-'))
+    tempDirs.push(home)
+    const filePath = join(home, 'sessions', 'project', 'session-a', 'session.jsonl.zstd')
+    await mkdir(join(filePath, '..'), { recursive: true })
+    const complete = Buffer.concat([
+      zstdCompressSync(Buffer.from(`${assistantMessage({}, eventMs, 1)}\n`), zstdOptions),
+      zstdCompressSync(Buffer.from(`${assistantMessage({}, eventMs + 1000, 2)}\n`), zstdOptions)
+    ])
+    const torn = zstdCompressSync(Buffer.from(`${assistantMessage({}, eventMs + 2000, 3)}\n`), zstdOptions)
+    await writeFile(filePath, Buffer.concat([complete, torn.subarray(0, torn.length - 4)]))
+
+    const [snapshot] = await collect(home)
+
+    expect(snapshot.inputTokens).toBe(3272 * 2)
+    expect(snapshot.outputTokens).toBe(802 * 2)
   })
 
   test('applies the since window and rejects an invalid value', async () => {
     const home = await dshHome({
       'project/session-a/session.jsonl': {
         lines: [
-          assistantMessage({}, Date.parse('2026-08-10T02:00:00.000Z')),
-          assistantMessage({}, Date.parse('2026-08-20T02:00:00.000Z'))
+          assistantMessage({}, Date.parse('2026-08-10T02:00:00.000Z'), 1),
+          assistantMessage({}, Date.parse('2026-08-20T02:00:00.000Z'), 2)
         ]
       }
     })
@@ -252,6 +449,7 @@ describe('collectDeepSeekHarnessUsage', () => {
 
   test('reports no sessions instead of empty usage when nothing is scanned', async () => {
     const home = await mkdtemp(join(tmpdir(), 'tokenboard-dsh-empty-'))
+    tempDirs.push(home)
 
     await expect(collect(home)).rejects.toThrow('No DeepSeek Harness sessions found')
   })

@@ -4,39 +4,6 @@ const zstdMagic = 0xfd2fb528
 const skippableMagicMin = 0x184d2a50
 const skippableMagicMax = 0x184d2a5f
 
-/**
- * Decompress a Zstandard stream that may hold several concatenated frames.
- *
- * Node's `zstdDecompress` — the sync and stream forms alike — stops after the
- * first frame and silently drops the rest, so a log appended to in batches
- * would report only its first batch. Frames are therefore delimited by walking
- * the frame headers (per RFC 8878) and decompressed one at a time.
- *
- * A torn final frame is expected rather than exceptional: the tool may be
- * mid-append while a scan runs. Its bytes are dropped and the frames before it
- * are still returned.
- */
-export function decompressZstdFrames(buffer: Buffer, options?: { maxOutputLength?: number }): Buffer {
-  const maxOutputLength = options?.maxOutputLength
-  const decoded: Buffer[] = []
-  let decodedBytes = 0
-  for (const frame of scanZstdFrames(buffer)) {
-    const frameBuffer = decompressZstdFrame(
-      buffer,
-      frame,
-      maxOutputLength === undefined ? undefined : { maxOutputLength }
-    )
-    decodedBytes += frameBuffer.length
-    // A per-frame cap is not a total cap: a stream of many small frames each under the limit
-    // would still accumulate past it. The running total is what actually bounds the result.
-    if (maxOutputLength !== undefined && decodedBytes > maxOutputLength) {
-      throw new Error(`Decompressed Zstandard stream exceeds ${maxOutputLength} bytes`)
-    }
-    decoded.push(frameBuffer)
-  }
-  return Buffer.concat(decoded)
-}
-
 export function decompressZstdFrame(
   buffer: Buffer,
   frame: ZstdFrameRange,

@@ -76,7 +76,7 @@ describe('collectCodexUsage', () => {
         {
           command: platformCommand('npx'),
           args: [
-            'ccusage@20.0.20',
+            'ccusage@20.0.26',
             'codex',
             'daily',
             '--json',
@@ -89,7 +89,7 @@ describe('collectCodexUsage', () => {
         {
           command: platformCommand('npx'),
           args: [
-            'ccusage@20.0.20',
+            'ccusage@20.0.26',
             'codex',
             'session',
             '--json',
@@ -305,6 +305,445 @@ describe('collectCodexUsage', () => {
           sessionCount: 0
         })
       ])
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  // Codex has emitted both token representations: older records report cached input *inside*
+  // `input_tokens`, newer ones report it as a separate additive field. ccusage always reports the
+  // additive form, so a mixed-model session parsed from a legacy record carries an `input` that is
+  // larger than the canonical row's by exactly its cache-read tokens. Comparing the two directly
+  // reports an overflow for a perfectly consistent day — this is the shape that failed the
+  // 2026-09-28 local scan, where attributed input 10104392 (= 1063769 uncached + 9040623 cached)
+  // was judged against a canonical input of 8609394.
+  test('compares mixed-model input against the canonical uncached representation', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const sessionPath = join(codexHome, 'sessions', '2026', '05', '20', 'mixed-cached-input.jsonl')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_SINCE', '')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '')
+    vi.stubEnv('TOKENBOARD_UNTIL', '')
+
+    try {
+      await writeJsonl(sessionPath, [
+        { type: 'turn_context', payload: { model: 'deepseek-v4-flash' } },
+        // Legacy shape: `input_tokens` already includes the cached portion, and the total
+        // proves it by excluding cache reads from its own sum.
+        {
+          type: 'event_msg',
+          timestamp: '2026-05-20T00:00:00.000Z',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: {
+                input_tokens: 500,
+                output_tokens: 0,
+                cached_input_tokens: 400,
+                total_tokens: 500
+              }
+            }
+          }
+        },
+        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+        {
+          type: 'event_msg',
+          timestamp: '2026-05-20T00:01:00.000Z',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: {
+                input_tokens: 200,
+                output_tokens: 0,
+                cached_input_tokens: 100,
+                total_tokens: 200
+              }
+            }
+          }
+        }
+      ])
+
+      const errors: string[] = []
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        timezone: 'UTC',
+        collectedAt: '2026-05-20T01:00:00.000Z',
+        stderr: (line) => errors.push(line),
+        async runner(_command, args) {
+          if (args.includes('daily')) {
+            return {
+              data: [
+                {
+                  date: '2026-05-20',
+                  models: {
+                    // ccusage's additive form: 100 uncached + 400 cached = 500 total.
+                    'deepseek-v4-flash': {
+                      inputTokens: 100,
+                      outputTokens: 0,
+                      cacheCreationInputTokens: 0,
+                      cacheReadInputTokens: 400,
+                      totalTokens: 500,
+                      costUSD: 0.001
+                    }
+                  }
+                }
+              ]
+            }
+          }
+          if (args.includes('session')) {
+            return {
+              sessions: [
+                {
+                  directory: '2026/05/20',
+                  sessionFile: 'mixed-cached-input',
+                  lastActivity: '2026-05-20T00:01:00.000Z',
+                  models: { 'deepseek-v4-flash': { inputTokens: 100, totalTokens: 500 } }
+                }
+              ]
+            }
+          }
+          throw new Error('Unexpected ccusage command')
+        }
+      })
+
+      // Session 2's 200 tokens are charged at context pricing but ccusage filed them under the
+      // non-context model, so they are moved out of that row: the context model carries them in
+      // ccusage's additive shape (100 uncached + 100 cached), and the non-context row keeps the
+      // remaining 300 it was measured with. It is not corrected to zero, so it carries no flag.
+      // The cost splits the same way: 0.00055 of the row's 0.001 is context-priced (100 input at
+      // 5/M + 100 cached at 0.5/M) and moves with the tokens, leaving 0.00045 behind — the day
+      // total is conserved, and no floor warning applies.
+      expect(snapshots).toEqual([
+        expect.objectContaining({
+          usageDate: '2026-05-20',
+          model: 'deepseek-v4-flash',
+          totalTokens: 300,
+          inputTokens: 0,
+          cacheReadTokens: 300,
+          costUsd: 0.00045
+        }),
+        expect.objectContaining({
+          usageDate: '2026-05-20',
+          model: 'gpt-5.6-sol',
+          totalTokens: 200,
+          inputTokens: 100,
+          cacheReadTokens: 100,
+          costUsd: 0.00055
+        })
+      ])
+      expect(errors.filter((line) => line.includes('floored'))).toEqual([])
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  // The attributed cost is priced with the context model's rates, the canonical cost with the
+  // canonical model's. They are not comparable, so a subset of tokens can cost more when the
+  // context model is the dearer one — the 2026-09-28 local scan hit exactly this, where 10.2M
+  // attributed tokens cost 0.491 against 95.6M canonical tokens at 0.444. The reconciliation must
+  // proceed; the canonical row floors at zero rather than going negative.
+  test('reconciles when the context model is dearer than the canonical model', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const sessionPath = join(codexHome, 'sessions', '2026', '05', '20', 'dearer-context.jsonl')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_SINCE', '')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '')
+    vi.stubEnv('TOKENBOARD_UNTIL', '')
+
+    try {
+      await writeJsonl(sessionPath, [
+        { type: 'turn_context', payload: { model: 'deepseek-v4-flash' } },
+        tokenCountEvent('2026-05-20T00:00:00.000Z', 30, null),
+        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+        tokenCountEvent('2026-05-20T00:01:00.000Z', 20, null)
+      ])
+
+      const errors: string[] = []
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        timezone: 'UTC',
+        collectedAt: '2026-05-20T01:00:00.000Z',
+        stderr: (line) => errors.push(line),
+        async runner(_command, args) {
+          if (args.includes('daily')) {
+            return {
+              data: [
+                {
+                  date: '2026-05-20',
+                  models: {
+                    // ccusage priced this with the cheap canonical model, so the 20 tokens it
+                    // priced at context rates cost more than the whole row did.
+                    'deepseek-v4-flash': {
+                      inputTokens: 30,
+                      outputTokens: 0,
+                      cacheCreationInputTokens: 0,
+                      cacheReadInputTokens: 0,
+                      totalTokens: 30,
+                      costUSD: 0.00001
+                    }
+                  }
+                }
+              ]
+            }
+          }
+          if (args.includes('session')) {
+            return {
+              sessions: [
+                {
+                  directory: '2026/05/20',
+                  sessionFile: 'dearer-context',
+                  lastActivity: '2026-05-20T00:01:00.000Z',
+                  models: { 'deepseek-v4-flash': { inputTokens: 30, totalTokens: 30 } }
+                }
+              ]
+            }
+          }
+          throw new Error('Unexpected ccusage command')
+        }
+      })
+
+      // 10 tokens stay with the canonical model; the 20 that belong to the context model move to
+      // it at context pricing. The canonical row keeps the 10 and floors its cost at zero rather
+      // than going negative, because 20 context-priced tokens cost more than the row held. The
+      // context row carries its full 20-token price, 20 × 5/M = 0.0001.
+      expect(snapshots).toEqual([
+        expect.objectContaining({
+          usageDate: '2026-05-20',
+          model: 'deepseek-v4-flash',
+          totalTokens: 10,
+          costUsd: 0
+        }),
+        expect.objectContaining({
+          usageDate: '2026-05-20',
+          model: 'gpt-5.6-sol',
+          totalTokens: 20,
+          costUsd: 0.0001
+        })
+      ])
+
+      // The floor breaks the day's cost conservation — the 0.00009 by which the attributed share
+      // exceeded the row could not be deducted — so it must be announced with those figures
+      // rather than silently absorbed. Sub-micro amounts must stay readable: toFixed(6) would
+      // have printed the whole message as zeros.
+      expect(errors).toContainEqual(
+        "Codex context pricing floored deepseek-v4-flash cost to 0 for 2026-05-20: this row's attributed context-priced share (0.0001) exceeded its canonical total (0.00001); 0.00009 of this row's share could not be deducted"
+      )
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  // The 2026-09-28 local scan failed the whole codex source for days when this shape exceeded the
+  // canonical row: the two sides are derived independently, so a field can come out larger without
+  // either side being corrupt. The reconciliation must clip to what the canonical row holds, keep
+  // the day's other models flowing, and say so — never reject the source and never subtract the
+  // canonical row below zero.
+  test('clips mixed-model usage that exceeds the canonical row instead of failing the source', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const sessionPath = join(codexHome, 'sessions', '2026', '05', '20', 'attributed-exceeds.jsonl')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_SINCE', '')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '')
+    vi.stubEnv('TOKENBOARD_UNTIL', '')
+
+    try {
+      await writeJsonl(sessionPath, [
+        { type: 'turn_context', payload: { model: 'deepseek-v4-flash' } },
+        tokenCountEvent('2026-05-20T00:00:00.000Z', 30, null),
+        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+        // Additive shape: 50 uncached + 20 cached = 70 total, larger than the canonical row's 30.
+        {
+          type: 'event_msg',
+          timestamp: '2026-05-20T00:01:00.000Z',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: {
+                input_tokens: 50,
+                output_tokens: 0,
+                cached_input_tokens: 20,
+                cache_write_input_tokens: 0,
+                total_tokens: 70
+              }
+            }
+          }
+        }
+      ])
+
+      const errors: string[] = []
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        timezone: 'UTC',
+        collectedAt: '2026-05-20T01:00:00.000Z',
+        stderr: (line) => errors.push(line),
+        async runner(_command, args) {
+          if (args.includes('daily')) {
+            return {
+              data: [
+                {
+                  date: '2026-05-20',
+                  models: {
+                    // The canonical measurement is smaller than the session attribution.
+                    'deepseek-v4-flash': {
+                      inputTokens: 10,
+                      outputTokens: 0,
+                      cacheCreationInputTokens: 0,
+                      cacheReadInputTokens: 20,
+                      totalTokens: 30,
+                      costUSD: 0.001
+                    }
+                  }
+                }
+              ]
+            }
+          }
+          if (args.includes('session')) {
+            return {
+              sessions: [
+                {
+                  directory: '2026/05/20',
+                  sessionFile: 'attributed-exceeds',
+                  lastActivity: '2026-05-20T00:01:00.000Z',
+                  models: { 'deepseek-v4-flash': { inputTokens: 10, totalTokens: 30 } }
+                }
+              ]
+            }
+          }
+          throw new Error('Unexpected ccusage command')
+        }
+      })
+
+      // The whole canonical row moves: the clip is 50 input + 20 cacheRead + 70 total against
+      // canonical 10 + 20 + 30, so every subtractable field is clamped to what the row holds and
+      // the row ends at zero instead of minus-forty.
+      expect(snapshots).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            usageDate: '2026-05-20',
+            model: 'gpt-5.6-sol',
+            inputTokens: 50,
+            cacheReadTokens: 20,
+            totalTokens: 70
+          })
+        ])
+      )
+      const canonicalRow = snapshots.find(
+        (snapshot) => snapshot.usageDate === '2026-05-20' && snapshot.model === 'deepseek-v4-flash'
+      )
+      expect(canonicalRow).toMatchObject({
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 0
+      })
+      expect(errors).toContainEqual(
+        'Codex context pricing clipped mixed-model usage for 2026-05-20/deepseek-v4-flash to the canonical daily row: inputTokens 50 > 10, totalTokens 70 > 30'
+      )
+      expect(errors.some((line) => line.includes('exceeds canonical daily snapshot'))).toBe(false)
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+
+  // The two rows can disagree about which part of the usage is cached. Here the session says the
+  // context model's share is uncached, while ccusage filed the day's cache reads under the
+  // canonical model — so clipping each field to the canonical row independently moved the whole
+  // total out while a larger cache-read bound left reads behind, producing `cacheRead > total`.
+  // That is the invariant `usageSnapshotSchema` enforces and the server rejects at ingest, so the
+  // reconciliation has to restore it rather than emit a snapshot the upload refuses.
+  test('never leaves cache reads above total when the rows disagree about what is cached', async () => {
+    const codexHome = await createEmptyCodexHome()
+    const sessionPath = join(codexHome, 'sessions', '2026', '05', '20', 'cached-asymmetry.jsonl')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_SINCE', '')
+    vi.stubEnv('TOKENBOARD_DEFAULT_SINCE', '')
+    vi.stubEnv('TOKENBOARD_UNTIL', '')
+
+    try {
+      await writeJsonl(sessionPath, [
+        { type: 'turn_context', payload: { model: 'deepseek-v4-flash' } },
+        tokenCountEvent('2026-05-20T00:00:00.000Z', 30, null),
+        { type: 'turn_context', payload: { model: 'gpt-5.6-sol' } },
+        // Additive shape, uncached: 50 fresh input, no cached input.
+        {
+          type: 'event_msg',
+          timestamp: '2026-05-20T00:01:00.000Z',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: {
+                input_tokens: 50,
+                output_tokens: 0,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                total_tokens: 50
+              }
+            }
+          }
+        }
+      ])
+
+      const errors: string[] = []
+      const snapshots = await collectCodexUsage({
+        codexHome,
+        timezone: 'UTC',
+        collectedAt: '2026-05-20T01:00:00.000Z',
+        stderr: (line) => errors.push(line),
+        async runner(_command, args) {
+          if (args.includes('daily')) {
+            return {
+              data: [
+                {
+                  date: '2026-05-20',
+                  models: {
+                    // ccusage filed the day's cache reads here, but the session attributes them
+                    // elsewhere: canonical input 10 < attributed 50, canonical cacheRead 20 > 0.
+                    'deepseek-v4-flash': {
+                      inputTokens: 10,
+                      outputTokens: 0,
+                      cacheCreationInputTokens: 0,
+                      cacheReadInputTokens: 20,
+                      totalTokens: 30,
+                      costUSD: 0.001
+                    }
+                  }
+                }
+              ]
+            }
+          }
+          if (args.includes('session')) {
+            return {
+              sessions: [
+                {
+                  directory: '2026/05/20',
+                  sessionFile: 'cached-asymmetry',
+                  lastActivity: '2026-05-20T00:01:00.000Z',
+                  models: { 'deepseek-v4-flash': { inputTokens: 10, totalTokens: 30 } }
+                }
+              ]
+            }
+          }
+          throw new Error('Unexpected ccusage command')
+        }
+      })
+
+      for (const snapshot of snapshots) {
+        expect(snapshot.cacheReadTokens).toBeLessThanOrEqual(snapshot.totalTokens)
+      }
+      const canonicalRow = snapshots.find(
+        (snapshot) => snapshot.usageDate === '2026-05-20' && snapshot.model === 'deepseek-v4-flash'
+      )
+      // Every subtractable field was moved out, so the canonical row empties instead of holding
+      // 20 cache reads against a zero total.
+      expect(canonicalRow).toMatchObject({
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 0
+      })
+      expect(
+        snapshots.find((snapshot) => snapshot.usageDate === '2026-05-20' && snapshot.model === 'gpt-5.6-sol')
+      ).toMatchObject({ inputTokens: 50, totalTokens: 50 })
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
@@ -780,7 +1219,7 @@ describe('collectCodexUsage', () => {
       {
         command: platformCommand('npx'),
         args: [
-          'ccusage@20.0.20',
+          'ccusage@20.0.26',
           'codex',
           'daily',
           '--json',
@@ -794,7 +1233,7 @@ describe('collectCodexUsage', () => {
       {
         command: platformCommand('npx'),
         args: [
-          'ccusage@20.0.20',
+          'ccusage@20.0.26',
           'codex',
           'session',
           '--json',
@@ -808,7 +1247,7 @@ describe('collectCodexUsage', () => {
       {
         command: platformCommand('npx'),
         args: [
-          'ccusage@20.0.20',
+          'ccusage@20.0.26',
           'codex',
           'session',
           '--json',
@@ -847,7 +1286,7 @@ describe('collectCodexUsage', () => {
 
     expect(calls).toEqual([
       [
-        'ccusage@20.0.20',
+        'ccusage@20.0.26',
         'codex',
         'daily',
         '--json',
@@ -862,7 +1301,7 @@ describe('collectCodexUsage', () => {
         ...bundledCcusageConfigArgs
       ],
       [
-        'ccusage@20.0.20',
+        'ccusage@20.0.26',
         'codex',
         'session',
         '--json',
@@ -877,7 +1316,7 @@ describe('collectCodexUsage', () => {
         ...bundledCcusageConfigArgs
       ],
       [
-        'ccusage@20.0.20',
+        'ccusage@20.0.26',
         'codex',
         'session',
         '--json',

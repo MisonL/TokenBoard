@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, test } from 'vitest'
+import { maxSnapshotCostUsd } from '@tokenboard/usage-core'
 import { maxCodexChildSessionLineBytes } from './codex-subagent-usage-child'
 import {
   applyCodexContextPricingCosts,
@@ -9,6 +10,7 @@ import {
   buildCodexContextPricingRules,
   collectCodexContextPricingCostsFromFiles,
   collectCodexContextPricingCostsFromHomes,
+  collectCodexContextPricingUsagesFromFiles,
   isUnresolvedCodexContextPricingSnapshot,
   maxCodexContextPricingFiles,
   normalizeModelId,
@@ -1580,6 +1582,35 @@ describe('Codex context pricing', () => {
     ).toBe(1)
   })
 
+  // The dynamic pricing catalogue bounds neither its rates nor the token counts a session
+  // file can carry, and this is the one place a cost is written *after* the snapshot passed
+  // `usageSnapshotSchema` at normalize time. A non-finite product must fail here, beside the
+  // cause, instead of leaving the collector as a cost the server rejects at ingest.
+  test('rejects a non-finite context-priced cost instead of writing it', () => {
+    expect(() =>
+      applyCodexContextPricingCosts(
+        [{ usageDate: '2026-05-01', model: 'gpt-5.6-sol', costUsd: 0, totalTokens: 10 }],
+        [{ usageDate: '2026-05-01', model: 'gpt-5.6-sol', costUsd: Number.POSITIVE_INFINITY }]
+      )
+    ).toThrow('Codex context pricing produced an invalid cost for 2026-05-01/gpt-5.6-sol')
+
+    expect(() =>
+      applyCodexContextPricingCosts(
+        [{ usageDate: '2026-05-01', model: 'gpt-5.6-sol', costUsd: 0, totalTokens: 10 }],
+        [{ usageDate: '2026-05-01', model: 'gpt-5.6-sol', costUsd: -1 }]
+      )
+    ).toThrow('Codex context pricing produced an invalid cost for 2026-05-01/gpt-5.6-sol')
+
+    // The schema's upper bound is the other half of the guard: a finite cost above it would be
+    // written here and only rejected by the server, so this branch has to fail on the collector.
+    expect(() =>
+      applyCodexContextPricingCosts(
+        [{ usageDate: '2026-05-01', model: 'gpt-5.6-sol', costUsd: 0, totalTokens: 10 }],
+        [{ usageDate: '2026-05-01', model: 'gpt-5.6-sol', costUsd: maxSnapshotCostUsd + 1 }]
+      )
+    ).toThrow('Codex context pricing produced an invalid cost for 2026-05-01/gpt-5.6-sol')
+  })
+
   test('keeps same-day GPT-5.6 aliases as independent cost matches', () => {
     const result = applyCodexContextPricingCosts(
       [
@@ -1886,6 +1917,69 @@ describe('Codex context pricing', () => {
           usageDate: '2026-05-01',
           model: 'gpt-5.6-sol',
           costUsd: expect.closeTo((60 * 5 + 40 * 0.5 + 1 * 30) / 1_000_000, 12)
+        }
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // A legacy record's input_tokens already contains its cached input, so the additive
+  // fallback total would count that cache read a second time. Without a usable explicit
+  // total the components and the total must stay in one representation: the legacy total
+  // is the sum of the components that are not already inside input_tokens.
+  test.each([
+    ['a zero total', { input_tokens: 100, cached_input_tokens: 40, output_tokens: 1, total_tokens: 0 }],
+    ['no total field', { input_tokens: 100, cached_input_tokens: 40, output_tokens: 1 }]
+  ])('reports the legacy total for a cache read inside input_tokens under %s', async (_label, usagePayload) => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-context-legacy-total-'))
+    const file = join(root, 'session.jsonl')
+    try {
+      await writeJsonl(file, [tokenCount('2026-05-01T00:00:00.000Z', { last_token_usage: usagePayload })])
+
+      const usages = await collectCodexContextPricingUsagesFromFiles({ filePaths: [file], timezone: 'UTC' })
+
+      expect(usages).toEqual([
+        expect.objectContaining({
+          inputTokens: 100,
+          uncachedInputTokens: 60,
+          cacheReadTokens: 40,
+          cacheCreationTokens: 0,
+          outputTokens: 1,
+          totalTokens: 101
+        })
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // A legacy record folds cached input into input_tokens, so it cannot report a
+  // larger cache read than that field. When no usable total exists to decide the
+  // representation, this shape is additive by contradiction — the old default to
+  // legacy clamped uncached input to zero and priced the request on a context
+  // smaller than its cache read, which also kept it under the long tier here.
+  test.each([
+    ['a zero total', { input_tokens: 100_000, cached_input_tokens: 200_000, output_tokens: 1, total_tokens: 0 }],
+    ['no total field', { input_tokens: 100_000, cached_input_tokens: 200_000, output_tokens: 1 }]
+  ])('reads a cache read larger than input_tokens as additive under %s', async (_label, usagePayload) => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-context-additive-no-total-'))
+    const file = join(root, 'session.jsonl')
+    try {
+      await writeJsonl(file, [tokenCount('2026-05-01T00:00:00.000Z', { last_token_usage: usagePayload })])
+
+      await expect(
+        collectCodexContextPricingCostsFromFiles({
+          filePaths: [file],
+          timezone: 'UTC'
+        })
+      ).resolves.toEqual([
+        {
+          usageDate: '2026-05-01',
+          model: 'gpt-5.6-sol',
+          // Additive: 100k uncached + 200k cache read = 300k context, past the 272k
+          // threshold, so the long tier prices all three buckets.
+          costUsd: expect.closeTo((100_000 * 10 + 200_000 * 1 + 1 * 45) / 1_000_000, 12)
         }
       ])
     } finally {

@@ -124,6 +124,36 @@ describe('parseSessionJsonl', () => {
     })
   })
 
+  // A legacy Codex record folds cached input into input_tokens, so its total is
+  // input + output + cache creation — adding the cache read again would count those
+  // tokens twice and push the uploaded total past what the record ever reported.
+  test('keeps a legacy Codex total free of double-counted cached input when no total is usable', () => {
+    for (const usage of [
+      { input_tokens: 100, cached_input_tokens: 40, output_tokens: 1 },
+      { input_tokens: 100, cached_input_tokens: 40, output_tokens: 1, total_tokens: 0 }
+    ]) {
+      const parsed = parseSessionJsonl({
+        source: 'codex',
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        sessionId: 'codex-session',
+        content: `${JSON.stringify({
+          type: 'event_msg',
+          timestamp: '2026-05-22T01:00:00.000Z',
+          payload: { type: 'token_count', info: { model: 'gpt-5', last_token_usage: usage } }
+        })}\n`
+      })
+
+      expect(parsed.snapshots[0]).toMatchObject({
+        inputTokens: 100,
+        outputTokens: 1,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 40,
+        totalTokens: 101
+      })
+    }
+  })
+
   test('parses Claude assistant usage rows', () => {
     const snapshots = parseSessionJsonl({
       source: 'claude-code',

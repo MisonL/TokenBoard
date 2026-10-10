@@ -53,7 +53,7 @@ export async function collectGrokBuildUsage(options: CollectGrokBuildUsageOption
       onSkipped: (path, reason) => options.stderr?.(`Skipping ${label} session path (${reason}): ${path}`)
     })) {
       scannedFiles += 1
-      for await (const event of readUsageEvents(file.path)) {
+      for await (const event of readUsageEvents(file.path, options.stderr)) {
         if (sinceDate && formatDate(event.occurredAt, timezone) < sinceDate) continue
         aggregate.add(event)
       }
@@ -75,10 +75,13 @@ export async function collectGrokBuildUsage(options: CollectGrokBuildUsageOption
  * across the inference loops inside it, and the next turn starts from zero.
  * They are therefore recorded at face value: differencing against the previous
  * event would treat per-turn totals as a running counter and lose most usage.
- * Events tagged as any other update kind are skipped, because a mid-turn
- * snapshot alongside the turn's final event would double-count it.
+ * Only events whose `sessionUpdate` is exactly `turn_completed` carry usage:
+ * every usage-bearing event observed from real Grok logs across many sessions
+ * was `turn_completed`, and a mid-turn snapshot alongside the turn's final
+ * event would double-count it. An update with a different kind, a non-string
+ * kind, or no kind at all is skipped rather than guessed at.
  */
-async function* readUsageEvents(filePath: string): AsyncGenerator<UsageEvent> {
+async function* readUsageEvents(filePath: string, stderr?: (line: string) => void): AsyncGenerator<UsageEvent> {
   const sessionId = basename(dirname(filePath))
   for await (const line of readSessionLines(filePath)) {
     const record = parseJsonLine(line)
@@ -86,8 +89,7 @@ async function* readUsageEvents(filePath: string): AsyncGenerator<UsageEvent> {
 
     const update = readRecordAt(readRecordAt(record.params)?.update)
     if (!update) continue
-    const kind = update.sessionUpdate
-    if (typeof kind === 'string' && kind !== turnCompleted) continue
+    if (update.sessionUpdate !== turnCompleted) continue
 
     const usage = readRecordAt(update.usage)
     if (!usage) continue
@@ -95,19 +97,40 @@ async function* readUsageEvents(filePath: string): AsyncGenerator<UsageEvent> {
     if (!occurredAt) continue
 
     const perModel = readRecordAt(usage.modelUsage)
-    if (perModel) {
+    if (perModel && Object.keys(perModel).length > 0) {
       // Sorted so repeated scans aggregate in a deterministic order.
+      let yielded = false
       for (const model of Object.keys(perModel).sort()) {
         const counters = readRecordAt(perModel[model])
-        if (!counters) continue
-        yield toUsageEvent(counters, { occurredAt, sessionId, model })
+        if (!counters) {
+          // A corrupt entry is skipped rather than guessed at, but silently: the turn's
+          // top-level totals do not stand in for it (a present breakdown is authoritative),
+          // so the tokens it carried would vanish with no trace. Report it instead.
+          stderr?.(`Skipping unreadable ${label} modelUsage entry (${model}) in ${filePath}`)
+          continue
+        }
+        const event = toUsageEvent(counters, { occurredAt, sessionId, model })
+        // A readable but token-less entry (all counters zero) must not count as the turn's
+        // output: marking it yielded would skip the top-level totals below and lose whatever
+        // they held, the same way an empty breakdown did before.
+        if (!hasBillableTokens(event)) continue
+        yielded = true
+        yield event
       }
-      continue
+      // A present-but-empty or entirely unreadable breakdown would otherwise drop the turn on
+      // the floor; fall through to the top-level totals.
+      if (yielded) continue
     }
-    // Without a per-model breakdown the turn's top-level totals still count;
-    // the model is unknown and is labeled as such rather than guessed.
+    // Without a usable per-model breakdown the turn's top-level totals still count; the model is
+    // unknown and is labeled as such rather than guessed.
     yield toUsageEvent(usage, { occurredAt, sessionId, model: unknownModel })
   }
+}
+
+// Mirrors the aggregate's own billable test (`SessionUsageAggregate.add`), so an event this
+// provider emits is exactly one the aggregate will keep.
+function hasBillableTokens(event: UsageEvent) {
+  return event.inputTokens + event.outputTokens + event.cacheCreationTokens + event.cacheReadTokens > 0
 }
 
 /**

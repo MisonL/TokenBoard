@@ -69,13 +69,21 @@ const childSessionChangeMessages = new Set([
   'Codex child session changed while correcting; retry the sync',
   'Codex child session changed while fingerprinting; retry the sync'
 ])
-const contextPricingReconciliationChangePrefixes = [
-  'Codex context pricing cannot split mixed-model usage for ',
-  'Codex context pricing mixed-model usage exceeds canonical daily snapshot for ',
-  'Codex context pricing mixed-model usage has no positive token total for ',
-  'Codex context pricing mixed-model cost exceeds context-priced daily usage for ',
-  'Codex context pricing mixed-model cost exceeds canonical daily snapshot for '
-]
+// These three mixed-model reconciliation messages double as the prefixes the retry matches on
+// (`isCodexContextPricingReconciliationChange` → `isCodexReconciliationChange`). Building the
+// thrown message from the same constant the retry reads is what keeps them in lockstep: a
+// reworded message would otherwise stop starting with its prefix and drop out of the retry set
+// silently, turning a transient reconciliation into a hard source failure. The throw sites
+// below append the date (and model) to these prefixes.
+const contextPricingReconciliationChangeMessages = {
+  cannotSplitMixedModelUsage: 'Codex context pricing cannot split mixed-model usage for ',
+  mixedModelUsageHasNoPositiveTokenTotal: 'Codex context pricing mixed-model usage has no positive token total for ',
+  mixedModelCostExceedsContextPricedDailyUsage:
+    'Codex context pricing mixed-model cost exceeds context-priced daily usage for '
+} as const
+const contextPricingReconciliationChangePrefixes: readonly string[] = Object.values(
+  contextPricingReconciliationChangeMessages
+)
 
 export type CollectCodexUsageOptions = {
   timezone?: string
@@ -1054,6 +1062,16 @@ function mergeContextPricingUsages(usages: readonly CodexContextPricingUsage[]) 
   return [...merged.values()]
 }
 
+// These diagnostics compare amounts that run from whole dollars down below 1e-6, where the
+// previous `toFixed(6)` printed every small value as 0.000000. Four significant digits keep
+// the figure informative at any magnitude; re-parsing through `Number` drops the trailing
+// zeros `toPrecision` pads with, and the fixed-point spelling survives down to 1e-6 (`0.000001`).
+function formatCostAmount(value: number): string {
+  if (!Number.isFinite(value)) return String(value)
+  if (value === 0) return '0'
+  return String(Number(value.toPrecision(4)))
+}
+
 function splitMixedCodexContextPricingSnapshots(
   snapshots: readonly UsageSnapshot[],
   usages: readonly CodexContextPricingUsage[],
@@ -1086,11 +1104,17 @@ function splitMixedCodexContextPricingSnapshots(
     const normalizedAttributedModel = normalizeModelId(attributedModel)
     const key = `${usage.usageDate}\u0000${model}`
     const current = contextEntries.get(key)
-    const inputTokens = usage.inputTokens
+    // `usage.inputTokens` keeps Codex's legacy shape, where cached input is folded into the
+    // input count. The canonical row ccusage produces is additive — its `input_tokens` excludes
+    // cache reads, which it reports separately — so the two must be compared and subtracted in
+    // the same shape. `uncachedInputTokens` is exactly that canonical figure, and the total is
+    // rebuilt from it so the identity `total = input + cacheRead + cacheCreation + output` holds
+    // on both sides.
+    const inputTokens = usage.uncachedInputTokens
     const outputTokens = usage.outputTokens
     const cacheCreationTokens = usage.cacheCreationTokens
     const cacheReadTokens = usage.cacheReadTokens
-    const totalTokens = usage.totalTokens ?? inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
+    const totalTokens = inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
     const usageCost = priceCodexContextPricingUsages([usage])[0]?.costUsd ?? 0
     if (current) {
       current.snapshot.inputTokens += inputTokens
@@ -1152,11 +1176,18 @@ function splitMixedCodexContextPricingSnapshots(
   const costsByKey = new Map(
     costs.map((cost) => [`${cost.usageDate}\u0000${normalizeModelId(cost.model)}`, cost.costUsd])
   )
+  // Every lookup below is by `usageDate + normalized model`, so index the snapshots once instead
+  // of scanning the whole list per attributed model. A mixed-model day has one entry per model,
+  // and the linear scan made this quadratic in the number of snapshots on exactly the path that
+  // has to stay fast enough to finish inside a sync.
+  const snapshotByKey = new Map<string, UsageSnapshot>()
+  for (const snapshot of result) {
+    const key = `${snapshot.usageDate}\u0000${normalizeModelId(snapshot.model)}`
+    if (!snapshotByKey.has(key)) snapshotByKey.set(key, snapshot)
+  }
   for (const { snapshot: contextSnapshot, attributedUsages } of contextEntries.values()) {
-    const existingContextSnapshot = result.find(
-      (snapshot) =>
-        snapshot.usageDate === contextSnapshot.usageDate &&
-        normalizeModelId(snapshot.model) === normalizeModelId(contextSnapshot.model)
+    const existingContextSnapshot = snapshotByKey.get(
+      `${contextSnapshot.usageDate}\u0000${normalizeModelId(contextSnapshot.model)}`
     )
     if (existingContextSnapshot) {
       // A same-day context row may already exist for sessions that ccusage
@@ -1183,55 +1214,114 @@ function splitMixedCodexContextPricingSnapshots(
     let totalAttributedTokens = 0
     let totalMixedCost = 0
     for (const [attributedModel, attributedUsage] of attributedUsages) {
-      const canonical = result.find(
-        (snapshot) =>
-          snapshot.usageDate === contextSnapshot.usageDate && normalizeModelId(snapshot.model) === attributedModel
-      )
+      const canonical = snapshotByKey.get(`${contextSnapshot.usageDate}\u0000${attributedModel}`)
       if (!canonical) {
-        const message = `Codex context pricing cannot split mixed-model usage for ${contextSnapshot.usageDate}/${contextSnapshot.model}`
+        const message = `${contextPricingReconciliationChangeMessages.cannotSplitMixedModelUsage}${contextSnapshot.usageDate}/${contextSnapshot.model}`
         stderr?.(message)
         throw new Error(message)
       }
-      if (
-        attributedUsage.inputTokens > canonical.inputTokens ||
-        attributedUsage.outputTokens > canonical.outputTokens ||
-        attributedUsage.cacheCreationTokens > canonical.cacheCreationTokens ||
-        attributedUsage.cacheReadTokens > canonical.cacheReadTokens ||
-        attributedUsage.totalTokens > canonical.totalTokens
-      ) {
-        const message = `Codex context pricing mixed-model usage exceeds canonical daily snapshot for ${contextSnapshot.usageDate}`
-        stderr?.(message)
-        throw new Error(message)
+      // The attributed usage is normally a subset of the canonical row, but the two are derived
+      // independently — the attributed side from the session files, the canonical row from
+      // ccusage's daily recomputation — so a field can still come out larger. Rejecting the whole
+      // source over that would drop every other model's usage for the day, and subtracting the raw
+      // amount would drive the canonical row negative. Clip each token field to what the row
+      // actually holds, report the clip, and move the rest. Clipping only bounds what leaves the
+      // canonical row; the context-priced row keeps the full attributed amount, so a clipped day's
+      // token total ends up above what ccusage measured — the same one-sided correction the cost
+      // floor makes below, and reported for the same reason.
+      const clipped = {
+        inputTokens: Math.min(attributedUsage.inputTokens, canonical.inputTokens),
+        outputTokens: Math.min(attributedUsage.outputTokens, canonical.outputTokens),
+        cacheCreationTokens: Math.min(attributedUsage.cacheCreationTokens, canonical.cacheCreationTokens),
+        cacheReadTokens: Math.min(attributedUsage.cacheReadTokens, canonical.cacheReadTokens),
+        totalTokens: Math.min(attributedUsage.totalTokens, canonical.totalTokens),
+        costUsd: attributedUsage.costUsd
       }
-      canonicalEntries.push({ canonical, usage: attributedUsage })
-      totalAttributedTokens += attributedUsage.totalTokens
-      totalMixedCost += attributedUsage.costUsd
+      const clippedFields: Array<[string, number, number]> = []
+      if (attributedUsage.inputTokens > clipped.inputTokens) {
+        clippedFields.push(['inputTokens', attributedUsage.inputTokens, clipped.inputTokens])
+      }
+      if (attributedUsage.outputTokens > clipped.outputTokens) {
+        clippedFields.push(['outputTokens', attributedUsage.outputTokens, clipped.outputTokens])
+      }
+      if (attributedUsage.cacheCreationTokens > clipped.cacheCreationTokens) {
+        clippedFields.push(['cacheCreationTokens', attributedUsage.cacheCreationTokens, clipped.cacheCreationTokens])
+      }
+      if (attributedUsage.cacheReadTokens > clipped.cacheReadTokens) {
+        clippedFields.push(['cacheReadTokens', attributedUsage.cacheReadTokens, clipped.cacheReadTokens])
+      }
+      if (attributedUsage.totalTokens > clipped.totalTokens) {
+        clippedFields.push(['totalTokens', attributedUsage.totalTokens, clipped.totalTokens])
+      }
+      if (clippedFields.length > 0) {
+        // A warning, not a reconciliation change: the row keeps moving with the amounts it holds
+        // instead of failing the whole source for the day.
+        stderr?.(
+          `Codex context pricing clipped mixed-model usage for ${contextSnapshot.usageDate}/${attributedModel} to the canonical daily row: ` +
+            clippedFields
+              .map(([field, attributed, canonicalValue]) => `${field} ${attributed} > ${canonicalValue}`)
+              .join(', ')
+        )
+      }
+      canonicalEntries.push({ canonical, usage: clipped })
+      totalAttributedTokens += clipped.totalTokens
+      totalMixedCost += clipped.costUsd
     }
     const contextCost =
       costsByKey.get(`${contextSnapshot.usageDate}\u0000${normalizeModelId(contextSnapshot.model)}`) ?? 0
     if (!Number.isSafeInteger(totalAttributedTokens) || totalAttributedTokens <= 0) {
-      const message = `Codex context pricing mixed-model usage has no positive token total for ${contextSnapshot.usageDate}`
+      const message = `${contextPricingReconciliationChangeMessages.mixedModelUsageHasNoPositiveTokenTotal}${contextSnapshot.usageDate}`
       stderr?.(message)
       throw new Error(message)
     }
     if (!Number.isFinite(totalMixedCost) || totalMixedCost < 0 || totalMixedCost > contextCost + 1e-12) {
-      const message = `Codex context pricing mixed-model cost exceeds context-priced daily usage for ${contextSnapshot.usageDate}`
+      const message = `${contextPricingReconciliationChangeMessages.mixedModelCostExceedsContextPricedDailyUsage}${contextSnapshot.usageDate}`
       stderr?.(message)
       throw new Error(message)
     }
     for (const entry of canonicalEntries) {
       const amount = entry.usage.costUsd
-      if (!Number.isFinite(amount) || amount < 0 || amount > entry.canonical.costUsd + 1e-12) {
-        const message = `Codex context pricing mixed-model cost exceeds canonical daily snapshot for ${contextSnapshot.usageDate}`
+      // The move is meant to conserve the day's cost: what leaves the canonical row is added to
+      // the context-priced row, so the total is unchanged. But the two amounts are priced with
+      // different models' rates, and a subset of tokens can cost more under the dearer one, so the
+      // conservation only holds while the context model is not the dearer of the two. When it is,
+      // the row is floored at zero and the share that could not be deducted stays in the day —
+      // the total ends up above what conservation would have produced — which is reported below
+      // rather than swallowed. The clip above already bound the attributed usage by the canonical
+      // row, which is what makes the floor a rare edge rather than a routine correction.
+      if (!Number.isFinite(amount) || amount < 0) {
+        const message = `Codex context pricing mixed-model cost is invalid for ${contextSnapshot.usageDate}`
         stderr?.(message)
         throw new Error(message)
       }
+      const canonicalCostBefore = entry.canonical.costUsd
       entry.canonical.inputTokens -= entry.usage.inputTokens
       entry.canonical.outputTokens -= entry.usage.outputTokens
       entry.canonical.cacheCreationTokens -= entry.usage.cacheCreationTokens
       entry.canonical.cacheReadTokens -= entry.usage.cacheReadTokens
       entry.canonical.totalTokens -= entry.usage.totalTokens
-      entry.canonical.costUsd = Math.max(0, entry.canonical.costUsd - amount)
+      // When the attributed and canonical rows disagree about which part of the usage is cached,
+      // clipping each field to the canonical row independently can leave more cache reads than
+      // total tokens behind: the total is bounded by the canonical total and can be moved out
+      // entirely while a larger cache-read bound leaves reads in place. `cacheRead <= total` is a
+      // shared invariant the server enforces at ingest, so restore it here rather than emit a
+      // snapshot the upload rejects.
+      entry.canonical.cacheReadTokens = Math.min(entry.canonical.cacheReadTokens, entry.canonical.totalTokens)
+      // 1e-12 matches the tolerance the replaced throw used: floating-point noise on values
+      // that are effectively equal must not announce a floor that barely moved anything.
+      if (amount > canonicalCostBefore + 1e-12) {
+        // The floor keeps the day moving, but the deduction is capped at the canonical total:
+        // the excess stays in the day's cost rather than moving to the context row. Say so
+        // rather than let a partly-conserved day look like a fully measured one. The message is
+        // per canonical row — a mixed day can floor several — so it names the row and its own
+        // figures instead of phrasing them as the day's total, which would not reconcile when a
+        // reader added the lines up. The amount that could not be deducted is a purely mechanical
+        // statement — true regardless of how the two rows' rates relate.
+        stderr?.(
+          `Codex context pricing floored ${entry.canonical.model} cost to 0 for ${contextSnapshot.usageDate}: this row's attributed context-priced share (${formatCostAmount(amount)}) exceeded its canonical total (${formatCostAmount(canonicalCostBefore)}); ${formatCostAmount(amount - canonicalCostBefore)} of this row's share could not be deducted`
+        )
+      }
+      entry.canonical.costUsd = Math.max(0, canonicalCostBefore - amount)
       canonicalContextSnapshots.add(entry.canonical)
     }
     if (existingContextSnapshot) {
@@ -1239,6 +1329,10 @@ function splitMixedCodexContextPricingSnapshots(
     } else {
       contextSnapshot.costUsd = contextCost
       result.push(contextSnapshot)
+      // Keep the index in step with the list it was built from, so a later entry whose
+      // attributed model is this context model still finds this row.
+      const key = `${contextSnapshot.usageDate}\u0000${normalizeModelId(contextSnapshot.model)}`
+      if (!snapshotByKey.has(key)) snapshotByKey.set(key, contextSnapshot)
     }
   }
 

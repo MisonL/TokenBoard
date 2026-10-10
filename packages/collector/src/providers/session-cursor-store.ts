@@ -84,7 +84,7 @@ function isMissingFileError(error: unknown) {
 }
 
 export async function writeCursor(cursorPath: string, cursor: CursorState) {
-  await mkdir(dirname(cursorPath), { recursive: true })
+  await mkdir(dirname(cursorPath), { recursive: true, mode: 0o700 })
   const tempPath = `${cursorPath}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
     await writeFile(tempPath, `${JSON.stringify(cursor, null, 2)}\n`, { mode: 0o600 })
@@ -101,7 +101,10 @@ export async function withCursorLock<T>(
   callback: () => Promise<T>,
   options: CursorLockHeartbeatOptions = {}
 ) {
-  await mkdir(dirname(cursorPath), { recursive: true })
+  // The state directory holds the cursor, its lock, and both cache files; a directory left
+  // at the umask default (0755) lets whoever can write it swap those out from under the
+  // ownership checks. Private like the files written inside it.
+  await mkdir(dirname(cursorPath), { recursive: true, mode: 0o700 })
   const lockPath = `${cursorPath}.lock`
   const processStartIdentity = currentCursorProcessStartIdentity()
   const owner = {
@@ -398,8 +401,42 @@ function isValidCursor(value: unknown, source: UsageSource): value is CursorStat
     candidate.files !== null &&
     typeof candidate.files === 'object' &&
     !Array.isArray(candidate.files) &&
-    Object.values(candidate.files).every(isValidCursorEntry)
+    Object.entries(candidate.files).every(([key, entry]) => isValidCursorKey(key) && isValidCursorEntry(entry))
   )
+}
+
+// `files` keys are either session file paths relative to the sessions root (claude-code,
+// codex) or synthetic identifiers (the Antigravity sources: a kebab-case kind, a NUL
+// separator, then the kind's parts). The bounded session walk never yields an absolute path
+// or a `..` segment, and no filesystem path can contain NUL, so a key matching neither shape
+// cannot have come from the collector — and a corrupted or hand-edited cursor must not park
+// a path-like key in state that later scans preserve forever and echo into uploaded
+// reconciliation metadata. Splitting on `/` alone is deliberate: a literal backslash is a
+// legal POSIX filename character and the walk yields such names verbatim.
+function isValidCursorKey(key: string) {
+  const separator = key.indexOf('\0')
+  if (separator > 0) {
+    if (!/^[a-z][a-z0-9-]*$/.test(key.slice(0, separator))) return false
+    // The parts after a synthetic kind's NUL are opaque identifiers: hashes, dates, model
+    // names or `since:` scopes. A model name is free-form local data and may contain a `/`
+    // (`org/model`), so a part is not banned from looking like a path — only from escaping
+    // one: an absolute part (leading `/`) or a `.`/`..` segment is rejected. That covers
+    // both a marker smuggled as its own part (`db-row\0..`) and one nested inside a part
+    // (`db-row\0/../etc/passwd`), which the whole-part check above used to let through. The
+    // kinds that close with a trailing empty part (`db`, `db-covered`) keep that empty part
+    // legal: empty is neither absolute nor a marker.
+    return key
+      .slice(separator + 1)
+      .split('\0')
+      .every((part) => !isPathEscapingSyntheticPart(part))
+  }
+  if (separator === 0) return false
+  return key.length > 0 && key.split('/').every((segment) => segment !== '' && segment !== '..')
+}
+
+function isPathEscapingSyntheticPart(part: string) {
+  if (part.startsWith('/')) return true
+  return part.split('/').some((segment) => segment === '.' || segment === '..')
 }
 
 function isValidAntigravityHistoryAliasMtimes(value: unknown): value is Record<string, number[]> {

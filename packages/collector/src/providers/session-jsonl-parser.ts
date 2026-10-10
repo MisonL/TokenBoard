@@ -10,7 +10,7 @@ import {
 } from './session-jsonl-parser-utils'
 import { isSkippedOversizedSessionJsonlLine, type SessionJsonlLine } from './session-jsonl-line-reader'
 import { hasUnparsedTokenMetricField } from './session-jsonl-token-fields'
-import { normalizeCodexTotalTokens } from '../codex-token-usage'
+import { resolveCodexRawUsage } from '../codex-token-usage'
 
 type ParseInput = {
   source: UsageSource
@@ -247,13 +247,13 @@ function buildMetric(input: {
     cacheReadTokens,
     totalTokens:
       input.source === 'codex'
-        ? normalizeCodexTotalTokens({
+        ? resolveCodexRawUsage({
             inputTokens,
             outputTokens,
             cacheCreationTokens,
             cacheReadTokens,
             explicitTotalTokens: usableExplicitTotal(input.usage)
-          })
+          }).totalTokens
         : readTotalTokens(input.usage, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens),
     costUsd: costUsd.value,
     hasCost: costUsd.found
