@@ -47,6 +47,29 @@ describe('error route', () => {
 
     expect(response).toBe(original)
   })
+
+  // A route that forgot its own try/catch (the auth passthrough did) lets a plain Error reach
+  // this handler. On an `/api/*` path that must still answer as JSON — an HTML body breaks
+  // every JSON client — and it must not be cacheable.
+  test('answers a plain error on an API path as JSON, not HTML', async () => {
+    const response = await handler(new Error('boom'), createContext('/api/auth/sign-in'))
+
+    expect(response.status).toBe(500)
+    expect(response.headers.get('content-type')).toContain('application/json')
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    await expect(response.json()).resolves.toEqual({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Internal server error' }
+    })
+  })
+
+  test('still renders an HTML error page for a plain error on a page path', async () => {
+    const response = await handler(new Error('boom'), createContext('/dashboard'))
+
+    // The test double's `c.render` returns the body with the status the real Hono `c.status`
+    // would have set; here we only assert the branch, i.e. it is not a JSON error body.
+    expect(response.headers.get('content-type') ?? '').not.toContain('application/json')
+    await expect(response.text()).resolves.toBe('Internal Server Error')
+  })
 })
 
 function createContext(path: string, accept = 'text/html') {

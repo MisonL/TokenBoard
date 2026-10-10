@@ -19,6 +19,16 @@ const handler: ErrorHandler = (e, c) => {
     c.status(e.status)
     return c.render(e.message)
   }
+  // An unhandled error on an `/api/*` path must still answer in the `{ error: { code, message } }`
+  // shape the rest of the API uses — a route that forgot its own try/catch (for example the
+  // auth passthrough) would otherwise return an HTML body to a JSON client. `no-store` matches
+  // every other error branch.
+  if (expectsJson(c)) {
+    console.error(e.message)
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Internal server error' } }, 500, {
+      'Cache-Control': 'no-store'
+    })
+  }
   console.error(e.message)
   c.status(500)
   return c.render('Internal Server Error')
