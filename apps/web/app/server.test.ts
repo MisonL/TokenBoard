@@ -534,6 +534,212 @@ describe('worker server', () => {
     expect(env.ASSETS.fetch).toHaveBeenCalledOnce()
   })
 
+  // The fallback serves a missing static file with the assets binding's default revalidate
+  // directive (and the zone's cache-by-extension list covers `.js`-style paths), so the edge
+  // could cache the 404 and keep serving it after the file is deployed. The honox `_404`
+  // handler sets `no-store`; this branch bypasses it, so the boundary forces it over whatever
+  // directive arrived.
+  test('marks a static asset fallback 404 as no-store', async () => {
+    const env = createEnv()
+    env.ASSETS.fetch.mockResolvedValueOnce(
+      new Response('not found', {
+        status: 404,
+        headers: { 'cache-control': 'public, max-age=0, must-revalidate' }
+      })
+    )
+    const response = await worker.fetch(
+      workerRequest('https://tokenboard.example/static/definitely-missing.js'),
+      env,
+      createExecutionContext()
+    )
+
+    expect(response.status).toBe(404)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+  })
+
+  // The assets binding answers a missing file with an empty 404 (no body, no content-type), and
+  // that answer used to replace the app's own 404 for every extension path — so `/robots.txt`
+  // lost the stable error shape `_404` gives a plain path. A missing asset must fall back to the
+  // app's 404; only a real asset is served.
+  test('falls back to the app 404 when the assets binding has no such file', async () => {
+    const env = createEnv()
+    env.ASSETS.fetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+    const response = await worker.fetch(
+      workerRequest('https://tokenboard.example/robots.txt'),
+      env,
+      createExecutionContext()
+    )
+
+    expect(response.status).toBe(404)
+    // The app's 404 carries a body and a type; the empty asset 404 carries neither.
+    expect(await response.text()).not.toBe('')
+    expect(response.headers.get('content-type')).not.toBeNull()
+  })
+
+  // The build emits content-hashed filenames under `/static/` (`client-<hash>.js`), so a
+  // given URL's bytes cannot change: those may be cached immutably instead of the assets
+  // binding's `public, max-age=0, must-revalidate`, which costs a revalidation per load.
+  // The mock carries the binding's real default header — a header-less mock let this test
+  // pass while production kept the revalidation directive, because the platform default is
+  // attached upstream of the Worker's own `withResponsePolicies` boundary.
+  test.each([
+    ['https://tokenboard.example/static/client-v68nPwkR.js', 'public, max-age=31536000, immutable'],
+    ['https://tokenboard.example/static/runtime-CTavEsGH.js', 'public, max-age=31536000, immutable'],
+    ['https://tokenboard.example/static/style-D6bcQK7w.css', 'public, max-age=31536000, immutable']
+  ])('caches the hashed asset %s as immutable', async (url, cacheControl) => {
+    const env = createEnv()
+    env.ASSETS.fetch.mockResolvedValue(
+      new Response('asset response', {
+        status: 200,
+        headers: { 'cache-control': 'public, max-age=0, must-revalidate' }
+      })
+    )
+    const response = await worker.fetch(workerRequest(url), env, createExecutionContext())
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe(cacheControl)
+  })
+
+  // A conditional request for a hashed asset answers 304 with no body. RFC 9111 §4.3.4 has the
+  // client refresh the stored entry from that response's headers, so a `must-revalidate` here
+  // would downgrade the cached immutable asset and cost a revalidation per navigation after a
+  // hard refresh. The immutable directive has to cover 304 as well as 200.
+  test('keeps the hashed asset immutable on a 304 revalidation', async () => {
+    const env = createEnv()
+    env.ASSETS.fetch.mockResolvedValue(
+      new Response(null, {
+        status: 304,
+        headers: { 'cache-control': 'public, max-age=0, must-revalidate', etag: '"abc123"' }
+      })
+    )
+    const response = await worker.fetch(
+      workerRequest('https://tokenboard.example/static/client-v68nPwkR.js', {
+        headers: { 'if-none-match': '"abc123"' }
+      }),
+      env,
+      createExecutionContext()
+    )
+
+    expect(response.status).toBe(304)
+    expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  // A `/static/` prefix or an extension alone is not a content hash — a file dropped there
+  // without one can change under its own URL, so it must not be cached immutably. The
+  // assets binding's own revalidation directive passes through untouched.
+  test.each([
+    'https://tokenboard.example/static/unhashed.js',
+    'https://tokenboard.example/static/style.css',
+    'https://tokenboard.example/manifest.json',
+    'https://tokenboard.example/logo.svg'
+  ])('does not mark the unhashed asset %s immutable', async (url) => {
+    const env = createEnv()
+    env.ASSETS.fetch.mockResolvedValue(
+      new Response('asset response', {
+        status: 200,
+        headers: { 'cache-control': 'public, max-age=0, must-revalidate' }
+      })
+    )
+    const response = await worker.fetch(workerRequest(url), env, createExecutionContext())
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate')
+  })
+
+  // A route's own directive must survive the boundary: the public card revalidates on the
+  // caller's side, and the caching public API path decides its own window.
+  test('keeps a route Cache-Control header over the boundary default', async () => {
+    const env = createEnv({ publicProfile: true })
+    const response = await worker.fetch(
+      workerRequest('https://tokenboard.example/api/public/eve.svg'),
+      env,
+      createExecutionContext()
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate')
+  })
+
+  // No page route leaves HTML without a directive today (the auth boundary and each page set
+  // `no-store`), but the boundary is what keeps that true: the `_error` 500 page renders HTML
+  // with no directive of its own, and a page that forgets one must not become browser-cacheable.
+  test('marks HTML with no explicit directive as no-store', async () => {
+    const env = createEnv()
+    env.ASSETS.fetch.mockResolvedValueOnce(
+      new Response('<!doctype html><title>page</title>', {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=UTF-8' }
+      })
+    )
+    const response = await worker.fetch(
+      workerRequest('https://tokenboard.example/static/landing-page.html'),
+      env,
+      createExecutionContext()
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+  })
+
+  // The Worker is reachable over plaintext HTTP, and a zone without Always Use HTTPS answers
+  // it directly — cookies and the ingest bearer token would travel in the clear. A Worker-level
+  // redirect closes that without depending on the zone setting. The scheme comes from the
+  // `cf-visitor` header, which Cloudflare sets to the client-facing scheme: `request.url` is
+  // already rewritten to the zone's configured scheme, so it cannot be used here.
+  test('redirects a plaintext HTTP request to HTTPS', async () => {
+    const env = createEnv()
+    for (const url of [
+      'https://tokenboard.example/dashboard?tab=month',
+      'http://tokenboard.example/dashboard?tab=month'
+    ]) {
+      const response = await worker.fetch(
+        workerRequest(url, { headers: { 'cf-visitor': '{"scheme":"http"}' } }),
+        env,
+        createExecutionContext()
+      )
+
+      expect(response.status).toBe(308)
+      expect(response.headers.get('location')).toBe('https://tokenboard.example/dashboard?tab=month')
+      expect(response.headers.get('strict-transport-security')).toBe('max-age=31536000; includeSubDomains')
+      expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(response.headers.get('x-frame-options')).toBe('DENY')
+      expect(response.headers.get('content-security-policy')).toContain("frame-ancestors 'none'")
+    }
+  })
+
+  // 308 keeps the method and body, which matters for the ingest POST: a 301 would let clients
+  // downgrade it to a GET and silently drop the snapshot.
+  test('keeps the method on the HTTPS redirect', async () => {
+    const env = createEnv()
+    const response = await worker.fetch(
+      workerRequest('http://tokenboard.example/api/v1/ingest', {
+        method: 'POST',
+        headers: { 'cf-visitor': '{"scheme":"http"}' }
+      }),
+      env,
+      createExecutionContext()
+    )
+
+    expect(response.status).toBe(308)
+    expect(response.headers.get('location')).toBe('https://tokenboard.example/api/v1/ingest')
+  })
+
+  // Requests without the header come from local `wrangler dev` (plain HTTP by design) or a
+  // non-Cloudflare runtime; the redirect must not fire there. A malformed header is treated
+  // the same way rather than guessing a scheme.
+  test('serves HTTPS, missing and malformed cf-visitor requests normally', async () => {
+    const env = createEnv()
+    for (const headers of [{ 'cf-visitor': '{"scheme":"https"}' }, { 'cf-visitor': 'not json' }, undefined]) {
+      const response = await worker.fetch(
+        workerRequest('http://localhost:8787/static/app.js', headers ? { headers } : undefined),
+        env,
+        createExecutionContext()
+      )
+
+      expect(response.status).toBe(200)
+    }
+  })
+
   test('does not use assets fallback for API 404 responses', async () => {
     const env = createEnv()
     const response = await worker.fetch(
@@ -576,10 +782,14 @@ describe('worker server', () => {
     expect(statements).toContain('FROM webhook_subscriptions')
     expect(statements).toContain('DELETE FROM api_rate_limits')
     expect(statements).toContain('julianday(reset_at) IS NULL OR julianday(reset_at) <= julianday(?)')
+    expect(statements).toContain('DELETE FROM pairing_codes')
+    expect(statements).toContain('DELETE FROM audit_logs')
     expect(statements).not.toContain('aggregate_usage AS')
     expect(env.boundValues).toContainEqual(['2026-04-29T10:00:00.000Z'])
     expect(env.boundValues.some((values) => values.at(-1) === 76)).toBe(true)
-    expect(env.DB.batch).toHaveBeenCalledOnce()
+    // One batch from the summary backfill plus one from device-retention (its two deletes run
+    // together); rate-limit cleanup and the empty webhook queue do not call D1 batch.
+    expect(env.DB.batch).toHaveBeenCalledTimes(2)
   })
 
   test('scheduled handler refreshes the model pricing catalogue when enabled', async () => {
@@ -602,7 +812,8 @@ describe('worker server', () => {
 
       expect(globalThis.fetch).toHaveBeenCalledOnce()
       expect(env.sqlStatements.join('\n')).toContain('model_pricing_sync_state')
-      expect(env.DB.batch).toHaveBeenCalledTimes(3)
+      expect(env.sqlStatements.join('\n')).toContain('DELETE FROM pairing_codes')
+      expect(env.DB.batch).toHaveBeenCalledTimes(4)
     } finally {
       globalThis.fetch = originalFetch
     }

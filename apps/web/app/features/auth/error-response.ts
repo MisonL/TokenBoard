@@ -11,6 +11,13 @@
 type AuthErrorBody = { message?: unknown; code?: unknown }
 
 export async function normalizeAuthErrorResponse(response: Response): Promise<Response> {
+  // A session response is per-user state, so it must not be stored: without a directive a
+  // browser may cache it heuristically and show the previous user's session on a shared
+  // machine. The app's own session routes set this in `requireUser`; the Better Auth handler
+  // sits outside that middleware, so it is set here. Mutating in place rather than rebuilding
+  // keeps the Set-Cookie headers exactly as Better Auth wrote them.
+  applyNoStore(response)
+
   // Redirects are a normal outcome here (sign-in hands off to GitHub), not failures.
   if (response.status < 400) return response
 
@@ -54,6 +61,15 @@ export async function normalizeAuthErrorResponse(response: Response): Promise<Re
 
 function isAuthErrorBody(value: unknown): value is AuthErrorBody {
   return typeof value === 'object' && value !== null && ('message' in value || 'code' in value)
+}
+
+function applyNoStore(response: Response) {
+  try {
+    response.headers.set('Cache-Control', 'no-store')
+  } catch {
+    // A redirect or another immutable-header response cannot be edited; those carry no body
+    // that could be cached as a session.
+  }
 }
 
 // Better Auth does not always set a code, so an unmapped failure still has to land on

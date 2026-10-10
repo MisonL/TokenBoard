@@ -23,6 +23,16 @@ describe('sign-in route', () => {
     expect(response.headers.get('location')).toBe('/dashboard')
   })
 
+  // The form is anonymous-only — a signed-in visitor is redirected — so a shared browser cache
+  // must not replay either branch to the next person.
+  test('does not let the page be cached', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    const response = (await GET[0](signInContext() as never, async () => undefined)) as Response
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+  })
+
   test('marks the login card as the nav login focus target', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
@@ -72,13 +82,17 @@ describe('sign-in route', () => {
 })
 
 function signInContext(query: Record<string, string | undefined> = {}) {
+  const headers = new Headers()
   return {
     req: {
       query(name: string) {
         return query[name]
       }
     },
-    render: vi.fn(async (body: unknown) => new Response(await renderToString(body as never))),
+    header: (name: string, value: string) => {
+      headers.set(name, value)
+    },
+    render: vi.fn(async (body: unknown) => new Response(await renderToString(body as never), { headers })),
     redirect: vi.fn((location: string, status = 302) => new Response(null, { status, headers: { location } }))
   }
 }

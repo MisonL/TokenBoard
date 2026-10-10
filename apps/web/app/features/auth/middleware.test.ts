@@ -291,6 +291,46 @@ describe('ensureProfile', () => {
       expect.any(String)
     ])
   })
+
+  // GitHub accounts without a display name reach the session with an empty `name`. Falling
+  // back to the full address wrote the user's email into `display_name`, which the public
+  // profile JSON and SVG card serve verbatim the moment the profile is made public — a leak
+  // the user never chose. The email's local part is the same fallback the slug already uses.
+  test('falls back to the email local part, never the full address, for the display name', async () => {
+    const bindings: unknown[][] = []
+    const db = {
+      prepare() {
+        return {
+          bind(...values: unknown[]) {
+            bindings.push(values)
+            return {
+              async run() {
+                return { success: true }
+              }
+            }
+          }
+        }
+      }
+    } as unknown as D1Database
+
+    await ensureProfile(db, {
+      id: 'USER123456789',
+      email: 'eve@example.com',
+      name: '',
+      image: null
+    })
+
+    expect(bindings[0]).toEqual([
+      'USER123456789',
+      'eve-user1234',
+      'eve',
+      'UTC',
+      'default',
+      expect.any(String),
+      expect.any(String)
+    ])
+    expect(JSON.stringify(bindings[0])).not.toContain('eve@example.com')
+  })
 })
 
 describe('requireUser response caching', () => {

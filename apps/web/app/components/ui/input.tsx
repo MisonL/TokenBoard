@@ -12,6 +12,7 @@ export function Input(props: {
   required?: boolean
   disabled?: boolean
   minLength?: number
+  maxLength?: number
   'data-timezone-input'?: string
   'data-timezone-default'?: string
   'data-timezone-autofill'?: string

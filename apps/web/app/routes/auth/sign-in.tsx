@@ -8,6 +8,10 @@ import { getOptionalUser } from '../../features/auth/middleware'
 import { forwardGithubSignIn } from '../../features/auth/service'
 
 export const GET = createRoute(async (c) => {
+  // Session-dependent like the home page: a signed-in visitor gets a redirect instead of the
+  // form, so a shared browser cache must not replay the cached form — or the cached redirect —
+  // to the next person. Set before the branch so the redirect carries it too.
+  c.header('Cache-Control', 'no-store')
   const user = await getOptionalUser(c)
   if (user) return c.redirect('/dashboard')
 

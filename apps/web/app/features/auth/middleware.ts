@@ -134,7 +134,20 @@ export async function ensureProfile(db: D1Database, user: SessionUser, timezoneI
           AND excluded.timezone_source = 'browser'
       `
     )
-    .bind(user.id, profileSlug(user), user.name || user.email, timezone, timezoneSource, now, now)
+    // GitHub accounts without a display name reach the session with an empty `name`.
+    // Falling back to the full address wrote the user's email into `display_name`, which
+    // the public profile JSON and SVG card serve verbatim once the profile is public — a
+    // leak the user never chose. The email's local part is what the slug already falls
+    // back to for the same reason.
+    .bind(
+      user.id,
+      profileSlug(user),
+      user.name || user.email.split('@')[0] || 'user',
+      timezone,
+      timezoneSource,
+      now,
+      now
+    )
     .run()
 }
 

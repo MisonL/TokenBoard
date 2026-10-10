@@ -33,9 +33,40 @@ describe('normalizeAuthErrorResponse', () => {
     await expect(response.json()).resolves.toEqual({ token: 'abc', user: { id: 'u1' } })
   })
 
+  // The session body is per-user state and the Better Auth handler sits outside the
+  // `requireUser` middleware that sets this for the app's own routes, so it has to be set here.
+  test('marks a successful session response no-store without rebuilding it', async () => {
+    const original = jsonResponse({ session: { id: 's1' } }, 200, {
+      'set-cookie': 'session=xyz; Path=/; HttpOnly'
+    })
+    const response = await normalizeAuthErrorResponse(original)
+
+    expect(response).toBe(original)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('set-cookie')).toBe('session=xyz; Path=/; HttpOnly')
+  })
+
+  test('marks an auth failure no-store', async () => {
+    const response = await normalizeAuthErrorResponse(jsonResponse({ message: 'Unauthorized' }, 401))
+
+    expect(response.headers.get('cache-control')).toBe('no-store')
+  })
+
   test('leaves redirects untouched', async () => {
     const original = new Response(null, { status: 302, headers: { location: 'https://github.com/login' } })
     expect(await normalizeAuthErrorResponse(original)).toBe(original)
+  })
+
+  // `Response.redirect` carries immutable headers, so setting Cache-Control on it throws. The
+  // no-store boundary has to swallow that — a redirect has no cacheable body — rather than let
+  // the sign-in hand-off fail.
+  test('does not fail on a redirect whose headers are immutable', async () => {
+    const redirect = Response.redirect('https://github.com/login', 302)
+    const response = await normalizeAuthErrorResponse(redirect)
+
+    expect(response).toBe(redirect)
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('https://github.com/login')
   })
 
   test('supplies a code when Better Auth sends only a message', async () => {

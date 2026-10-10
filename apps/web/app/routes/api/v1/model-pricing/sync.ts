@@ -21,6 +21,10 @@ export const POST = createRoute(async (c) => {
     if (!pricingSyncTokenConfigured(c.env)) {
       throw new ApiError('INTERNAL_SERVER_ERROR', 'Model pricing sync is not configured', 500)
     }
+    // Read the flag before doing any work: an invalid TOKENBOARD_MODEL_PRICING_SYNC_ENABLED
+    // throws, and reading it while building the response discarded a sync that had already
+    // succeeded behind a 500.
+    const scheduledSyncEnabled = modelPricingSyncEnabled(c.env)
     const clientIp = clientIpRateLimitSubject(c.req.raw.headers)
     const authorization = c.req.header('authorization')
     await assertRateLimitAvailable(c.env.DB, {
@@ -46,7 +50,7 @@ export const POST = createRoute(async (c) => {
     })
     const syncState = await readModelPricingSyncState(c.env.DB)
     c.header('Cache-Control', 'no-store')
-    return c.json({ ...result, scheduledSyncEnabled: modelPricingSyncEnabled(c.env), syncState })
+    return c.json({ ...result, scheduledSyncEnabled, syncState })
   } catch (error) {
     return jsonError(c, error)
   }

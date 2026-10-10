@@ -23,6 +23,16 @@ describe('home route', () => {
     expect(response.headers.get('location')).toBe('/dashboard')
   })
 
+  // The page reads the session to decide between the marketing copy and a redirect to the
+  // dashboard, so a shared browser cache must not replay either branch to the next visitor.
+  test('does not let the page be cached', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    const response = (await handler[0](homeContext() as never, async () => undefined)) as Response
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+  })
+
   test('keeps hero copy wrapped inside narrow mobile viewports', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
@@ -41,8 +51,12 @@ describe('home route', () => {
 })
 
 function homeContext() {
+  const headers = new Headers()
   return {
-    render: vi.fn(async (body: unknown) => new Response(await renderToString(body as never))),
+    header: (name: string, value: string) => {
+      headers.set(name, value)
+    },
+    render: vi.fn(async (body: unknown) => new Response(await renderToString(body as never), { headers })),
     redirect: vi.fn((location: string, status = 302) => new Response(null, { status, headers: { location } }))
   }
 }

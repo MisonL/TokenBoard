@@ -3,6 +3,12 @@ import { AppNav } from '../components/app-nav'
 import { getOptionalUser } from '../features/auth/middleware'
 
 export default createRoute(async (c) => {
+  // The page is anonymous-only (signed-in visitors are redirected below), so nothing in it
+  // leaks between viewers — but the redirect is part of the response, and a shared browser
+  // cache must not serve the cached marketing page to a signed-in visitor instead of the
+  // redirect to their dashboard. Same reasoning as the `requireUser` boundary, applied to the
+  // one decision this route makes from the session.
+  c.header('Cache-Control', 'no-store')
   const user = await getOptionalUser(c)
   if (user) return c.redirect('/dashboard')
 

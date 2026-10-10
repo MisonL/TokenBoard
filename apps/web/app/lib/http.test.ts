@@ -51,4 +51,33 @@ describe('jsonError', () => {
     expect(captured.status).toBe(500)
     expect(captured.body).toEqual({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Internal server error' } })
   })
+
+  // Error responses must not sit in any cache, matching `publicApiErrorResponse` and
+  // `modelPricingErrorResponse`: a cached 401 keeps showing a stale failure, and without a
+  // directive a browser may cache a 404 heuristically. This helper is the shared exit for
+  // every API error branch, so the header is set here rather than at each call site.
+  test.each([
+    ['an ApiError', new ApiError('NOT_FOUND', 'Profile not found', 404)],
+    ['a ZodError', new ZodError([])],
+    ['a SyntaxError', new SyntaxError('Unexpected token b in JSON at position 0')],
+    ['an unexpected error', new Error('database is on fire')]
+  ])('marks %s response as no-store', (_label, error) => {
+    const { c, captured } = fakeContext()
+    jsonError(c, error)
+    expect(captured.headers?.['Cache-Control']).toBe('no-store')
+  })
+
+  test('keeps the error-specific headers next to no-store', () => {
+    const { c, captured } = fakeContext()
+    jsonError(c, new ApiError('RATE_LIMITED', 'Too many requests', 429, { 'Retry-After': '30' }))
+    expect(captured.headers).toEqual({ 'Retry-After': '30', 'Cache-Control': 'no-store' })
+  })
+
+  // RFC 9110: a 401 should carry a challenge so a generic client knows the scheme. The app's
+  // 401s are the collector's only signal about its upload token, which is always a bearer token.
+  test('marks a 401 with the Bearer challenge', () => {
+    const { c, captured } = fakeContext()
+    jsonError(c, new ApiError('UNAUTHORIZED', 'Missing upload token', 401))
+    expect(captured.headers).toEqual({ 'WWW-Authenticate': 'Bearer', 'Cache-Control': 'no-store' })
+  })
 })
