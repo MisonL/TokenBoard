@@ -12,9 +12,9 @@ import {
   writeFileSync,
   writeSync
 } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import { readConfig, parseArgs, collectorDir, readPackageManager } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { normalizePathEnv } from './schedule.mjs'
@@ -498,7 +498,7 @@ function sleepSync(ms) {
 }
 
 function isMain() {
-  return process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  return isMainModule(import.meta.url)
 }
 
 // A process exit code is 0-255, but the value reaching `recordState` is not always one:

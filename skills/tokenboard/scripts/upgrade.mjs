@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import {
   collectorDir as defaultCollectorDir,
   configDir as defaultConfigDir,
@@ -439,6 +440,6 @@ function runCli() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
 }

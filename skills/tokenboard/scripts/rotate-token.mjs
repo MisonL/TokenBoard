@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import {
   configDir,
   configPath,
@@ -106,6 +106,6 @@ function runCli() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
 }

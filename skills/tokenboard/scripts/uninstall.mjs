@@ -2,7 +2,7 @@
 import { existsSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, relative, resolve, win32 as windowsPath } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import { collectorDir, configDir, configPath, parseArgs } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { deviceLinkPath } from './device-link.mjs'
@@ -168,7 +168,7 @@ function runCli() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
 }
 

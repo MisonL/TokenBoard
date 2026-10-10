@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { cpSync, existsSync, renameSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { join } from 'node:path'
 import { collectorDir, configDir, mergeConfig, parseArgs, readPackageManager } from './config.mjs'
@@ -114,6 +114,6 @@ function corepackCommand(platform) {
   return platform === 'win32' ? 'corepack.cmd' : 'corepack'
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
 }

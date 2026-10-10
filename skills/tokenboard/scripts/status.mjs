@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import { configPath, readConfig } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
@@ -185,7 +185,7 @@ function isIsoTimestamp(value) {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     runCli()
   } catch (error) {

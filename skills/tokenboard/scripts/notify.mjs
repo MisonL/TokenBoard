@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import { configDir, parseArgs, readConfig } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { coordinatedSync } from './coordinator.mjs'
@@ -784,8 +785,8 @@ function dispatchQuarantinePath(path) {
   return `${path}.release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  if (printHelpIfRequested(process.argv.slice(2), 'Usage: notify.mjs --source codex|claude-code|antigravity-cli')) {
+if (isMainModule(import.meta.url)) {
+  if (printHelpIfRequested(process.argv.slice(2), 'Usage: notify.mjs --source codex|claude-code')) {
     process.exitCode = 0
   } else {
     process.exitCode = await runNotifyCli()

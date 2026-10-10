@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, rmSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import { configDir, readConfig } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
@@ -125,6 +125,6 @@ function runCli() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
 }
