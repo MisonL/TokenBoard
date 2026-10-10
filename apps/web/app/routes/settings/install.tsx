@@ -96,9 +96,12 @@ function parseInstallTimezone(value: unknown, fallback: string) {
   return timezone
 }
 
+// The reconnect endpoint caps `targetDeviceId` at 128 characters; this form feeds the same
+// pairing-code creation, so it carries the same ceiling. Ownership is still enforced by
+// `ensureDeviceOwnedByUser`, so this is an input bound, not an authorization check.
 function parseOptionalDeviceId(value: unknown) {
   if (typeof value !== 'string') return null
   const deviceId = value.trim()
-  if (!deviceId) return null
+  if (!deviceId || deviceId.length > 128) return null
   return deviceId
 }
