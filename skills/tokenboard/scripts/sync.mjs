@@ -204,12 +204,7 @@ function runSync({ flags, invocation, logs }) {
     return 1
   }
 
-  const result = spawnSync(effectiveInvocation.command, effectiveInvocation.args, {
-    cwd: effectiveInvocation.cwd,
-    env: effectiveInvocation.env,
-    stdio: logs ? ['ignore', logs.stdoutFd, logs.stderrFd] : 'inherit',
-    shell: effectiveInvocation.shell
-  })
+  const result = runCollectorProcess(effectiveInvocation, logs)
 
   if (result.error) {
     console.error(`Failed to run ${effectiveInvocation.command}: ${errorMessage(result.error)}`)
@@ -217,6 +212,49 @@ function runSync({ flags, invocation, logs }) {
   }
 
   return result.status ?? 1
+}
+
+// The collector's own stdout/stderr must reach the scheduled log through the same credential
+// redaction the parent's log lines go through. Inheriting the log fds (`stdio: [...fd]`) writes
+// the child's output straight into a file that outlives the terminal — a provider or `ccusage`
+// error echoing `tb_upload_…` or `https://user:token@host/…` would land there intact. Capture
+// instead and forward each line through `redactUrlCredentials`, the way `upgrade-utils` already
+// does for the git steps. The child still inherits the real terminal when there is no log file,
+// so interactive runs keep their live output.
+const collectorOutputMaxBuffer = 64 * 1024 * 1024
+
+function runCollectorProcess(invocation, logs) {
+  if (!logs) {
+    return spawnSync(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      env: invocation.env,
+      stdio: 'inherit',
+      shell: invocation.shell
+    })
+  }
+
+  const result = spawnSync(invocation.command, invocation.args, {
+    cwd: invocation.cwd,
+    env: invocation.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: collectorOutputMaxBuffer,
+    shell: invocation.shell
+  })
+  writeRedactedOutput(logs.stdoutFd, result.stdout)
+  writeRedactedOutput(logs.stderrFd, result.stderr)
+  return result
+}
+
+function writeRedactedOutput(fd, text) {
+  const output = String(text ?? '')
+  if (!output) return
+  // A diagnostic sink must never change the sync result, so a failed write is swallowed.
+  try {
+    writeSync(fd, redactUrlCredentials(output.endsWith('\n') ? output.slice(0, -1) : output) + '\n')
+  } catch {
+    // ignore
+  }
 }
 
 export function createUpgradeLogger(logs, { write = writeSync, log = console.log } = {}) {
