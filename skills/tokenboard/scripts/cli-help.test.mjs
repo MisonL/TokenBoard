@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -95,6 +104,38 @@ for (const script of helpScripts) {
     })
   }
 }
+
+// An entry guard that compares paths by string — or via `resolve()`, which does not follow
+// symlinks — fails when the script is reached through one: the process exits 0 having printed
+// nothing, so `--help` silently violates its own contract. Node resolves `import.meta.url`
+// through symlinks while `process.argv[1]` is whatever the caller typed, so the guard must
+// canonicalize both sides. This covers every CLI in one place rather than one test per script.
+test('every CLI treats a symlinked invocation as its own entry point', async () => {
+  const harness = createHarness()
+  try {
+    const symlinkDir = join(harness.root, 'symlinked-bin')
+    mkdirSync(symlinkDir, { recursive: true })
+    for (const script of helpScripts) {
+      const linkPath = join(symlinkDir, script.name)
+      symlinkSync(scriptPath(script.name), linkPath)
+
+      const result = await spawnWithOpenStdin(process.execPath, [linkPath, ...script.args, '--help'], {
+        cwd: harness.root,
+        env: harness.env
+      })
+
+      assert.equal(result.timedOut, false, `${script.name} waited on stdin through a symlink`)
+      assert.equal(result.code, 0, `${script.name} exited ${result.code} through a symlink: ${result.stderr}`)
+      assert.match(
+        result.stdout,
+        /Usage:/,
+        `${script.name} printed no usage through a symlink — its entry guard did not resolve the link`
+      )
+    }
+  } finally {
+    harness.cleanup()
+  }
+})
 
 test('antigravity-statusline.mjs records an invalid option and exits without reading stdin', async () => {
   const harness = createHarness()

@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendBoundedStatuslineError, appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
+import { isMainModule } from './is-main.mjs'
 import { startOriginalStatuslineCommand } from './antigravity-statusline-original.mjs'
 import { errorMessage } from './error-message.mjs'
 
@@ -318,6 +319,6 @@ function readFlags(args) {
   return flags
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (isMainModule(import.meta.url)) {
   process.exitCode = await runStatuslineCli()
 }
