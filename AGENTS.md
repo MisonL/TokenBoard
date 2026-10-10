@@ -543,7 +543,7 @@ skills/tokenboard/
 - 重要行为变更需要补测试。
 - 动态定价只作用于新采集；不得自动重算历史 `costUsd`。hook 模式不得发起网络请求，应使用缓存或 bundled 静态配置。
 - 部署模型定价前，`deploy.mjs` 的实际顺序是：配置校验 → build → dry-run → **生产路由检查** →
-  按序应用全部待执行 migration（当前到 `0037`）→ 四项 schema 校验（`verify-critical-schema.sql`、
+  按序应用全部待执行 migration（当前到 `0038`）→ 四项 schema 校验（`verify-critical-schema.sql`、
   `verify-rate-limit-index.sql`、`verify-retention-index.sql`、`verify-foreign-keys.sql`）→ 发布。
   每步 fail-fast（`spawnSync` 非零即 `process.exit`）。
 
