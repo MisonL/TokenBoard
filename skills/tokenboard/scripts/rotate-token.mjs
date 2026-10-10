@@ -13,6 +13,7 @@ import {
 import { withCredentialsLock } from './credentials-lock.mjs'
 import { writeDeviceLink } from './device-link.mjs'
 import { errorMessage } from './error-message.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 
 export function applyRotatedToken({
   currentConfig,
@@ -74,6 +75,14 @@ function readServerOrigin(flags) {
 }
 
 function runCli() {
+  if (
+    printHelpIfRequested(
+      process.argv.slice(2),
+      'Usage: rotate-token.mjs --upload-token TOKEN --device-id ID --installation-id ID [--endpoint URL | --server-origin ORIGIN] [--install-claim CLAIM]'
+    )
+  ) {
+    return
+  }
   try {
     if (!existsSync(configPath())) {
       throw new Error(`TokenBoard config not found: ${configPath()}`)

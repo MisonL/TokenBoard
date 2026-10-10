@@ -60,7 +60,10 @@ export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, p
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter: ';' })
   const stateDir = configDir || tokenboardDirForDelimiter(homeDir, ';')
   const logDir = joinForDelimiter(stateDir, 'logs', '', ';').replace(/[\\/]$/, '')
-  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --source all --scheduled`
+  // No --source here: sync.mjs resolves it at run time from config.source (default
+  // 'all'), the same value status.mjs reads, so editing the config retargets the
+  // scheduled sync without regenerating the task.
+  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --scheduled`
   return [
     '@echo off',
     `set "TOKENBOARD_CONFIG_DIR=${escapeWindowsCmdValue(stateDir)}"`,
@@ -77,7 +80,7 @@ export function buildWindowsTaskCommand({ nodePath, scriptPath, packageManager, 
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter: ';' })
   const stateDir = configDir || tokenboardDirForDelimiter(homeDir, ';')
   const logDir = joinForDelimiter(stateDir, 'logs', '', ';').replace(/[\\/]$/, '')
-  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --source all --scheduled`
+  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --scheduled`
   const command = [
     `set "TOKENBOARD_CONFIG_DIR=${escapeWindowsCmdValue(stateDir)}"`,
     `set "TOKENBOARD_PACKAGE_MANAGER=${escapeWindowsCmdValue(packageManager)}"`,
@@ -150,8 +153,6 @@ function buildMacProgramArguments({ nodePath, scriptPath }) {
 \t\t<string>${escapeXml(scriptPath)}</string>
 \t\t<string>--mode</string>
 \t\t<string>sync</string>
-\t\t<string>--source</string>
-\t\t<string>all</string>
 \t\t<string>--scheduled</string>
 \t</array>`
 }
@@ -182,19 +183,20 @@ export function buildLinuxSystemdUnits({
 }) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath })
   const stateDir = configDir || `${homeDir.replace(/\/$/, '')}/.tokenboard`
-  const timezoneSuffix = typeof timezone === 'string' && timezone.length > 0 ? ` ${timezone}` : ''
+  const timezoneSuffix = systemdTimezoneSuffix(timezone)
   return {
     service: `[Unit]
 Description=TokenBoard daily sync
 
 [Service]
 Type=oneshot
+UMask=0077
 Environment=${quoteSystemdValue(`TOKENBOARD_CONFIG_DIR=${stateDir}`)}
 Environment=${quoteSystemdValue(`TOKENBOARD_PACKAGE_MANAGER=${packageManager}`)}
 Environment=${quoteSystemdValue('TOKENBOARD_SCHEDULED_SYNC=1')}
 Environment=${quoteSystemdValue(`TOKENBOARD_LOG_DIR=${stateDir}/logs`)}
 Environment=${quoteSystemdValue(`PATH=${normalizedPath}`)}
-ExecStart=${quoteSystemdArg(nodePath)} ${quoteSystemdArg(scriptPath)} --mode sync --source all --scheduled
+ExecStart=${quoteSystemdArg(nodePath)} ${quoteSystemdArg(scriptPath)} --mode sync --scheduled
 `,
     timer: `[Unit]
 Description=Run TokenBoard daily sync
@@ -247,8 +249,28 @@ function escapeXml(value) {
     .replaceAll("'", '&apos;')
 }
 
-function quoteSystemdValue(value) {
-  return `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')}"`
+// The timezone reaches this function from the pairing response (or --timezone) and is
+// interpolated into the timer's OnCalendar lines, which systemd parses as unit syntax. An
+// IANA name only ever contains letters, digits, `_`, `+`, `-` and `/`; anything else stops
+// the install instead of being dropped, because dropping the suffix would quietly move the
+// schedule to the system-local zone.
+function systemdTimezoneSuffix(timezone) {
+  if (timezone === undefined || timezone === null || timezone === '') return ''
+  if (typeof timezone !== 'string' || !/^[A-Za-z0-9_+/-]+$/.test(timezone)) {
+    throw new Error(`Invalid timezone: ${JSON.stringify(timezone)}. Expected an IANA timezone name like Asia/Shanghai.`)
+  }
+  return ` ${timezone}`
+}
+
+// Exported for the escaping tests: the values interpolated here include a user-supplied
+// timezone in `Environment=…=TOKENBOARD_…`, and a newline inside one would split the unit.
+export function quoteSystemdValue(value) {
+  return `"${String(value)
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('%', '%%')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '\\r')}"`
 }
 
 function quoteSystemdArg(value) {

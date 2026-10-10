@@ -15,6 +15,7 @@ import {
   uninstallClaudeHook
 } from './claude-hook.mjs'
 import { configDir, parseArgs } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { assertCodexNotifyWritable, getCodexHookStatus, installCodexHook, uninstallCodexHook } from './codex-hook.mjs'
 import { errorMessage } from './error-message.mjs'
 import {
@@ -1158,10 +1159,15 @@ function runCli(command) {
   }
 }
 
-export function runInstallHooksCli() {
-  runCli(() => installHooks())
+const installUsage = 'Usage: install-hook.mjs [--source codex|claude-code|antigravity-cli|all]'
+const uninstallUsage = 'Usage: uninstall-hook.mjs [--source codex|claude-code|antigravity-cli|all]'
+
+export function runInstallHooksCli(argv = process.argv.slice(2)) {
+  if (printHelpIfRequested(argv, installUsage)) return
+  runCli(() => installHooks({ argv }))
 }
 
-export function runUninstallHooksCli() {
-  runCli(() => uninstallHooks())
+export function runUninstallHooksCli(argv = process.argv.slice(2)) {
+  if (printHelpIfRequested(argv, uninstallUsage)) return
+  runCli(() => uninstallHooks({ argv }))
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +6,19 @@ import { assertCredentialsLockOwnership, withCredentialsLock } from './credentia
 
 export function configDir() {
   return process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
+}
+
+// Only touches a directory, and only when its mode is not already private, so a directory the
+// user owns and has already locked down is left exactly as-is.
+function chmodConfigDirPrivate(dir) {
+  if (process.platform === 'win32') return
+  try {
+    const stats = statSync(dir)
+    if (!stats.isDirectory()) return
+    if ((stats.mode & 0o077) !== 0) chmodSync(dir, 0o700)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
 }
 
 export function configPath() {
@@ -73,14 +86,21 @@ function readRawConfig() {
 
 // Only the position is carried over: `SyntaxError.message` also contains a snippet of the
 // offending text, which is the part that can hold a secret.
-function jsonErrorLocation(error) {
+export function jsonErrorLocation(error) {
   if (!(error instanceof SyntaxError)) return 'unparseable'
   const match = /position (\d+)/.exec(error.message)
   return match ? `parse error at position ${match[1]}` : 'parse error'
 }
 
 export function writeConfig(config) {
-  mkdirSync(configDir(), { recursive: true })
+  // 0700 up front rather than waiting for the first sync to tighten it: the directory holds the
+  // upload token in `config.json`, and between `setup` and the first sync it would otherwise sit
+  // at the umask default. `recursive: true` does not change an existing directory's mode, so a
+  // directory the user created themselves (or one that has since been loosened) is tightened here
+  // as well — same guarantee `sync.mjs`'s `ensurePrivateStateDir` gives it on every run.
+  const dir = configDir()
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodConfigDirPrivate(dir)
   const file = configPath()
   const tempFile = `${file}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
   try {

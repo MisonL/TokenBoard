@@ -5,13 +5,14 @@ import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configDir, readConfig } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
 import { dailyScheduleTimes, launchAgentLabel, serviceName, timerName } from './schedule.mjs'
 
+const usage = 'Usage: uninstall-schedule.mjs'
+
 export function uninstallSchedule(options = {}) {
   const env = options.env || process.env
-  const config = options.config || readOptionalConfig(options.readConfig || readConfig)
-  const scheduleTimes = readScheduleTimes(config)
   const runtime = {
     platform: options.platform || env.TOKENBOARD_INSTALL_SCHEDULE_TEST_PLATFORM || platform(),
     homeDir: options.homeDir || homedir(),
@@ -23,8 +24,11 @@ export function uninstallSchedule(options = {}) {
       (() => Number.parseInt(env.TOKENBOARD_INSTALL_SCHEDULE_TEST_UID || process.getuid?.() || 0, 10)),
     exists: options.exists || existsSync,
     rm: options.rm || rmSync,
-    log: options.log || console.log
+    log: options.log || console.log,
+    error: options.error || console.error
   }
+  const config = options.config || readOptionalConfig(options.readConfig || readConfig, runtime)
+  const scheduleTimes = readScheduleTimes(config)
 
   if (runtime.platform === 'win32') {
     return uninstallWindows(runtime, scheduleTimes)
@@ -76,10 +80,13 @@ function uninstallLinux(runtime) {
   return { platform: 'linux', unitDir }
 }
 
-function readOptionalConfig(readConfig) {
+function readOptionalConfig(readConfig, runtime) {
   try {
     return readConfig()
-  } catch {
+  } catch (error) {
+    // Uninstall must still remove the schedule when the config is unreadable, but the
+    // failure must not be silent: the reported schedule times fall back to defaults.
+    runtime.error(`TokenBoard config could not be read (${errorMessage(error)}); using default schedule times.`)
     return {}
   }
 }
@@ -109,6 +116,7 @@ function run(runtime, command, args, options = {}) {
 }
 
 function runCli() {
+  if (printHelpIfRequested(process.argv.slice(2), usage)) return
   try {
     uninstallSchedule()
   } catch (error) {

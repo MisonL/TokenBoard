@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { existsSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, renameSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { join } from 'node:path'
 import { collectorDir, configDir, mergeConfig, parseArgs, readPackageManager } from './config.mjs'
 import {
@@ -22,6 +23,8 @@ function run(command, args, options = {}) {
       {
         spawn: spawnSync,
         remove: rmSync,
+        rename: renameSync,
+        copy: cpSync,
         platform: process.platform
       }
     )
@@ -52,10 +55,20 @@ export function buildInstallCollectorPlan({
           ...(repoRef ? [] : buildDefaultBranchPullSteps({ dir }))
         ]
       : exists
-        ? [
-            { command: 'remove', args: [dir], options: { recursive: true, force: true } },
-            ...buildCloneSteps({ repoUrl, repoRef, dir })
-          ]
+        ? (() => {
+            // Never delete the existing checkout before its replacement exists: a failed
+            // clone (offline, bad ref) must leave the original directory untouched, not an
+            // empty one. Stage the clone beside the target and swap it in with a backup
+            // kept until the swap succeeds — the same replace-with-rollback the upgrade
+            // path uses for a non-git collector.
+            const stagingDir = `${dir}.tokenboard-install-staging-${process.pid}`
+            const backupDir = `${dir}.tokenboard-upgrade-backup-${process.pid}`
+            return [
+              { command: 'remove', args: [stagingDir], options: { recursive: true, force: true } },
+              ...buildCloneSteps({ repoUrl, repoRef, dir: stagingDir }),
+              { command: 'replace', args: [stagingDir, dir, backupDir], options: {} }
+            ]
+          })()
         : [...buildCloneSteps({ repoUrl, repoRef, dir })]
 
   steps.push({
@@ -67,6 +80,14 @@ export function buildInstallCollectorPlan({
 }
 
 function runCli() {
+  if (
+    printHelpIfRequested(
+      process.argv.slice(2),
+      'Usage: install-collector.mjs [--repo-url URL] [--repo-ref REF] [--package-manager pnpm|bun|npm]'
+    )
+  ) {
+    return
+  }
   const flags = parseArgs(process.argv.slice(2))
   const repoUrl = flags['repo-url'] || process.env.TOKENBOARD_REPO_URL || defaultRepoUrl
   const repoRef = flags['repo-ref'] || process.env.TOKENBOARD_REPO_REF || null

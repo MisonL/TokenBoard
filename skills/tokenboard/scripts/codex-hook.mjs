@@ -5,7 +5,8 @@ import {
   readOptional,
   removeTomlKey,
   setTomlStringArray,
-  timestamp
+  timestamp,
+  writePrivateFile
 } from './hooks-utils.mjs'
 
 export function installCodexHook({ paths, fs, nodePath, platform = process.platform }) {
@@ -28,7 +29,7 @@ export function installCodexHook({ paths, fs, nodePath, platform = process.platf
 
   fs.mkdir(dirname(paths.codexConfigPath), { recursive: true })
   const backupPath = `${paths.codexConfigPath}.bak.${timestamp()}`
-  fs.writeFile(backupPath, text)
+  writePrivateFile(backupPath, text, fs)
   fs.writeFile(paths.codexConfigPath, setTomlStringArray(text, 'notify', notify))
   return { source: codexSource, action: 'install', changed: true, detail: 'Codex hook installed', backupPath }
 }
@@ -47,7 +48,7 @@ export function uninstallCodexHook({ paths, fs }) {
   const original = readOriginalCodexNotify(paths, fs)
   const next = original ? setTomlStringArray(text, 'notify', original) : removeTomlKey(text, 'notify')
   const backupPath = `${paths.codexConfigPath}.bak.${timestamp()}`
-  fs.writeFile(backupPath, text)
+  writePrivateFile(backupPath, text, fs)
   fs.writeFile(paths.codexConfigPath, next)
   return {
     source: codexSource,
@@ -142,9 +143,10 @@ function readOriginalCodexNotify(paths, fs) {
 function captureOriginalCodexNotify({ current, paths, fs }) {
   if (current && current.length > 0) {
     fs.mkdir(dirname(paths.codexOriginalPath), { recursive: true })
-    fs.writeFile(
+    writePrivateFile(
       paths.codexOriginalPath,
-      `${JSON.stringify({ notify: current, capturedAt: new Date().toISOString() }, null, 2)}\n`
+      `${JSON.stringify({ notify: current, capturedAt: new Date().toISOString() }, null, 2)}\n`,
+      fs
     )
     return
   }

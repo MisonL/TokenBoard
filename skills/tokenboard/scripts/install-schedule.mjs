@@ -5,6 +5,7 @@ import { homedir, platform, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configDir, parseArgs, readConfig } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
 import {
   buildLinuxSystemdUnits,
@@ -21,6 +22,7 @@ import {
 } from './schedule.mjs'
 
 const scriptPath = fileURLToPath(new URL('./sync.mjs', import.meta.url))
+const usage = 'Usage: install-schedule.mjs [--schedule-times 09:00,12:00,18:00,23:00]'
 
 export function installSchedule(options = {}) {
   const env = options.env || process.env
@@ -209,6 +211,7 @@ function spawnCommand(runtime, command, args, options) {
 }
 
 function runCli() {
+  if (printHelpIfRequested(process.argv.slice(2), usage)) return
   try {
     installSchedule()
   } catch (error) {

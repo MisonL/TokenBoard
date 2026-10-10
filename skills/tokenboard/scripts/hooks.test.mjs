@@ -419,6 +419,63 @@ test('refreshes the generated handler for an already installed Codex hook', () =
   assert.match(fs.files.get(paths.notifyPath), /TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN/)
 })
 
+// The `.bak.*` copies of config.toml / settings.json keep the previous settings verbatim —
+// the original notify argv or statusLine command, which can carry a webhook URL or a
+// command-line token — while ~/.codex, ~/.claude and ~/.gemini are commonly 0755. A backup
+// left at the default umask (0644) would be world-readable, so the writers must pin 0600
+// the same way the Antigravity original-statusline capture already does.
+test('writes hook backups and original captures with private file mode', () => {
+  const paths = createPaths()
+  const modes = new Map()
+  const files = new Map([
+    [paths.codexConfigPath, 'model = "gpt-5"\nnotify = ["old", "--flag"]\n'],
+    [paths.claudeSettingsPath, JSON.stringify({ hooks: {} })]
+  ])
+  const fs = {
+    exists: (path) => files.has(path),
+    mkdir: () => {},
+    readFile: (path) => {
+      if (!files.has(path)) {
+        const error = new Error(`ENOENT: ${path}`)
+        error.code = 'ENOENT'
+        throw error
+      }
+      return files.get(path)
+    },
+    writeFile: (path, value, options = {}) => {
+      files.set(path, String(value))
+      if (typeof options.mode === 'number') modes.set(path, options.mode)
+    },
+    chmod: (path, mode) => {
+      modes.set(path, mode)
+    },
+    unlink: (path) => {
+      if (!files.delete(path)) {
+        const error = new Error(`ENOENT: ${path}`)
+        error.code = 'ENOENT'
+        throw error
+      }
+    }
+  }
+
+  const installed = installHooks({ paths, fs, nodePath: '/usr/bin/node', platform: 'linux', flags: { source: 'all' } })
+
+  const codexBackupPath = installed.hooks.find((hook) => hook.source === 'codex')?.backupPath
+  assert.ok(codexBackupPath, 'codex install should report its backup path')
+  assert.equal(modes.get(codexBackupPath), 0o600)
+
+  assert.equal(modes.get(paths.codexOriginalPath), 0o600)
+
+  const claudeBackupPath = installed.hooks.find((hook) => hook.source === 'claude-code')?.backupPath
+  assert.ok(claudeBackupPath, 'claude install should report its backup path')
+  assert.equal(modes.get(claudeBackupPath), 0o600)
+
+  const removed = uninstallHooks({ paths, fs, platform: 'linux', flags: { source: 'all' } })
+  const codexRemoveBackupPath = removed.hooks.find((hook) => hook.source === 'codex')?.backupPath
+  assert.ok(codexRemoveBackupPath, 'codex uninstall should report its backup path')
+  assert.equal(modes.get(codexRemoveBackupPath), 0o600)
+})
+
 test('does not create a generated handler when no notifier hook is installed', () => {
   const paths = createPaths()
   const fs = memoryFs({

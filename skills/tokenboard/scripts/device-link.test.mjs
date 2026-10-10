@@ -105,6 +105,77 @@ test('reports only device link presence and path', () => {
   )
 })
 
+// `JSON.parse` embeds the offending source text in its message, and the device link holds the
+// install claim — the one value SKILL.md forbids printing. The read path reaches stderr via
+// setup/rotate-token's `console.error(errorMessage(error))`, so a hand-edited or truncated
+// file must fail without carrying the snippet.
+test('a malformed device link fails without echoing its contents', () => {
+  const path = '/home/user/.tokenboard/device-link.json'
+  const malformed = `{
+  "version": 2,
+  "servers": {
+    "https://example.invalid": {
+      "installClaim": CLAIM-SECRET-ABCDEF123456
+    }
+  }
+}
+`
+  const fs = {
+    existsSync(filePath) {
+      return filePath === path
+    },
+    readFileSync() {
+      return malformed
+    }
+  }
+
+  assert.throws(
+    () => readDeviceLink({ path, fs }),
+    (error) => {
+      assert.ok(!error.message.includes('CLAIM-SECRET'), `error message leaked the install claim: ${error.message}`)
+      assert.match(error.message, /device link is not valid JSON/)
+      assert.match(error.message, /parse error/)
+      return true
+    }
+  )
+})
+
+// The write path re-reads the existing store before merging, so the same malformed file must
+// not leak through `writeDeviceLink` either (rotate-token and setup both print write errors).
+test('a malformed device link store fails without echoing its contents on write', () => {
+  const path = '/home/user/.tokenboard/device-link.json'
+  const malformed = `{"version": 2, "servers": {"https://example.invalid": {"installClaim": CLAIM-SECRET-ABCDEF123456}}`
+  const fs = {
+    mkdirSync() {},
+    writeFileSync() {},
+    chmodSync() {},
+    existsSync(filePath) {
+      return filePath === path
+    },
+    readFileSync() {
+      return malformed
+    }
+  }
+
+  assert.throws(
+    () =>
+      writeDeviceLink(
+        {
+          serverOrigin: 'https://tokenboard.example',
+          deviceId: 'dev_1',
+          installationId: 'inst_1',
+          installClaim: 'claim-new'
+        },
+        { configDir: '/home/user/.tokenboard', path, fs }
+      ),
+    (error) => {
+      assert.ok(!error.message.includes('CLAIM-SECRET'), `error message leaked the install claim: ${error.message}`)
+      assert.match(error.message, /device link is not valid JSON/)
+      return true
+    }
+  )
+})
+
 test('builds device link path under config directory', () => {
   assert.equal(normalizeMemoryPath(deviceLinkPath('/tmp/tokenboard')), '/tmp/tokenboard/device-link.json')
 })

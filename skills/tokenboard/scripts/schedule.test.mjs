@@ -7,7 +7,8 @@ import {
   buildWindowsTaskScript,
   buildWindowsTaskDefinitions,
   normalizePathEnv,
-  parseScheduleTimes
+  parseScheduleTimes,
+  quoteSystemdValue
 } from './schedule.mjs'
 
 test('builds the Windows scheduled task shape with time-suffixed names', () => {
@@ -21,7 +22,10 @@ test('builds the Windows scheduled task shape with time-suffixed names', () => {
   assert.match(args[7], /TOKENBOARD_PACKAGE_MANAGER=pnpm/)
   assert.match(args[7], /TOKENBOARD_SCHEDULED_SYNC=1/)
   assert.doesNotMatch(args[7], /""TOKENBOARD_/)
-  assert.match(args[7], /--mode sync --source all --scheduled/)
+  assert.match(args[7], /--mode sync --scheduled/)
+  // The schedule must not pin a source: sync.mjs resolves it at run time from the config
+  // `source` field, so editing that field retargets scheduled syncs without reinstalling.
+  assert.doesNotMatch(args[7], /--source/)
   assert.deepEqual(args.slice(8), ['/ST', '09:00'])
 })
 
@@ -58,6 +62,7 @@ test('builds macOS LaunchAgent plist for every daily sync time', () => {
   assert.match(plist, /<string>\/Users\/tokenboard\/.tokenboard\/logs\/daily-sync\.out\.log<\/string>/)
   assert.match(plist, /<string>\/Users\/tokenboard\/.tokenboard\/logs\/daily-sync\.err\.log<\/string>/)
   assert.match(plist, /<string>--scheduled<\/string>/)
+  assert.doesNotMatch(plist, /--source/)
   assert.equal(
     [...plist.matchAll(/<key>Hour<\/key>\s+<integer>(\d+)<\/integer>/g)].map((match) => match[1]).join(','),
     '9,12,18,23'
@@ -86,6 +91,7 @@ test('builds Linux user systemd units with pnpm available in PATH', () => {
 
   assert.match(units.service, /Environment="TOKENBOARD_PACKAGE_MANAGER=pnpm"/)
   assert.match(units.service, /Environment="TOKENBOARD_SCHEDULED_SYNC=1"/)
+  assert.match(units.service, /UMask=0077/)
   assert.match(units.service, /Environment="TOKENBOARD_LOG_DIR=\/home\/tokenboard\/.tokenboard\/logs"/)
   assert.match(
     units.service,
@@ -93,8 +99,12 @@ test('builds Linux user systemd units with pnpm available in PATH', () => {
   )
   assert.match(
     units.service,
-    /ExecStart="\/usr\/bin\/node" "\/home\/tokenboard\/.tokenboard\/TokenBoard\/skills\/tokenboard\/scripts\/sync.mjs" --mode sync --source all --scheduled/
+    /ExecStart="\/usr\/bin\/node" "\/home\/tokenboard\/.tokenboard\/TokenBoard\/skills\/tokenboard\/scripts\/sync.mjs" --mode sync --scheduled/
   )
+  // No --source: sync.mjs resolves it at run time from the config `source` field, so editing
+  // that field retargets scheduled syncs without reinstalling. Windows and macOS assert this
+  // too; Linux was the one platform without the guard.
+  assert.doesNotMatch(units.service, /--source/)
   assert.match(units.timer, /OnCalendar=09:00/)
   assert.match(units.timer, /OnCalendar=12:00/)
   assert.match(units.timer, /OnCalendar=18:00/)
@@ -115,6 +125,58 @@ test('builds Linux user systemd calendar times with configured timezone', () => 
 
   assert.match(units.timer, /OnCalendar=06:00 Asia\/Shanghai/)
   assert.match(units.timer, /OnCalendar=09:00 Asia\/Shanghai/)
+})
+
+test('rejects a timezone that is not an IANA name', () => {
+  for (const timezone of ['Asia/Shanghai\nOnUnitInactiveSec=1h', 'UTC; rm -rf /', 'Not A Zone!']) {
+    assert.throws(
+      () =>
+        buildLinuxSystemdUnits({
+          nodePath: '/usr/bin/node',
+          scriptPath: '/home/tokenboard/.tokenboard/TokenBoard/skills/tokenboard/scripts/sync.mjs',
+          packageManager: 'pnpm',
+          pathEnv: '/usr/bin:/bin',
+          homeDir: '/home/tokenboard',
+          timezone
+        }),
+      /Invalid timezone/
+    )
+  }
+})
+
+test('omits the timezone suffix when none is configured', () => {
+  const units = buildLinuxSystemdUnits({
+    nodePath: '/usr/bin/node',
+    scriptPath: '/home/tokenboard/.tokenboard/TokenBoard/skills/tokenboard/scripts/sync.mjs',
+    packageManager: 'pnpm',
+    pathEnv: '/usr/bin:/bin',
+    homeDir: '/home/tokenboard'
+  })
+
+  assert.match(units.timer, /OnCalendar=09:00\n/)
+  assert.doesNotMatch(units.timer, /OnCalendar=09:00 /)
+})
+
+// An environment value that reaches `Environment=` cannot be split across lines: a raw newline
+// would end the directive and whatever followed would be read as a new unit directive.
+test('escapes newlines and quotes in systemd environment values', () => {
+  assert.equal(quoteSystemdValue('a\nb'), '"a\\nb"')
+  assert.equal(quoteSystemdValue('a\rb'), '"a\\rb"')
+  assert.equal(quoteSystemdValue('a"b'), '"a\\"b"')
+  assert.equal(quoteSystemdValue('a\\b'), '"a\\\\b"')
+  // `%` is systemd's specifier prefix; a literal one is doubled rather than dropped.
+  assert.equal(quoteSystemdValue('100%'), '"100%%"')
+
+  const units = buildLinuxSystemdUnits({
+    nodePath: '/usr/bin/node',
+    scriptPath: '/home/tokenboard/.tokenboard/TokenBoard/skills/tokenboard/scripts/sync.mjs',
+    packageManager: 'pnpm',
+    pathEnv: '/usr/bin:/bin',
+    homeDir: '/home/evil\nline',
+    timezone: 'UTC'
+  })
+  assert.doesNotMatch(units.service, /TOKENBOARD_CONFIG_DIR=[^\n]*\n[^\n]*\.tokenboard/)
+  assert.match(units.service, /Environment="TOKENBOARD_CONFIG_DIR=\/home\/evil\\nline\/\.tokenboard"/)
 })
 
 test('builds schedules with custom daily sync times', () => {
@@ -201,7 +263,7 @@ test('Linux systemd units quote paths that contain spaces', () => {
   assert.match(units.service, /Environment="TOKENBOARD_LOG_DIR=\/srv\/TokenBoard State\/logs"/)
   assert.match(
     units.service,
-    /ExecStart="\/opt\/Node Runtime\/bin\/node" "\/srv\/TokenBoard State\/TokenBoard\/skills\/tokenboard\/scripts\/sync\.mjs" --mode sync --source all --scheduled/
+    /ExecStart="\/opt\/Node Runtime\/bin\/node" "\/srv\/TokenBoard State\/TokenBoard\/skills\/tokenboard\/scripts\/sync\.mjs" --mode sync --scheduled/
   )
 })
 
@@ -296,7 +358,7 @@ test('builds Windows scheduled task command with explicit runtime environment', 
   )
   assert.match(taskCommand, /C:\\Program Files\\nodejs\\node\.exe/)
   assert.match(taskCommand, /C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync\.mjs/)
-  assert.match(taskCommand, /--mode sync --source all --scheduled/)
+  assert.match(taskCommand, /--mode sync --scheduled/)
 })
 
 test('builds Windows scheduled task args with a short wrapper command', () => {
@@ -330,6 +392,6 @@ test('builds Windows scheduled sync wrapper script with explicit runtime environ
   )
   assert.match(
     script,
-    /"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync\.mjs" --mode sync --source all --scheduled/
+    /"C:\\Program Files\\nodejs\\node\.exe" "C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync\.mjs" --mode sync --scheduled/
   )
 })

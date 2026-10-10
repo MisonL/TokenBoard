@@ -9,6 +9,7 @@ import {
 } from './upgrade-utils.mjs'
 import { renameSync, statSync } from 'node:fs'
 import { basename, dirname, win32 as windowsPath } from 'node:path'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 
 export function runArchiveFallback({
   archiveUrl,
@@ -48,8 +49,8 @@ export function runArchiveFallback({
   let skillBackupCreated = false
   let skillInstallStarted = false
   try {
-    downloadArchive({ archiveUrls: urls, zipPath, platform, spawn })
-    extractArchive({ zipPath, extractDir, platform, spawn, mkdir })
+    downloadArchive({ archiveUrls: urls, zipPath, platform, spawn, log })
+    extractArchive({ zipPath, extractDir, platform, spawn, mkdir, log })
     const extractedRoot = findExtractedRoot({ extractDir, readDir })
     copy(extractedRoot, replacementDir, { recursive: true, force: true })
     runStep(
@@ -58,7 +59,7 @@ export function runArchiveFallback({
         args: ['pnpm', 'install', '--frozen-lockfile'],
         options: { cwd: replacementDir }
       },
-      { spawn, copy, remove, platform }
+      { spawn, copy, remove, platform, log }
     )
 
     try {
@@ -245,7 +246,7 @@ function normalizeArchiveUrls({ archiveUrl, archiveUrls }) {
   return urls.filter((url) => typeof url === 'string' && url.trim()).map((url) => url.trim())
 }
 
-function downloadArchive({ archiveUrls, zipPath, platform, spawn }) {
+function downloadArchive({ archiveUrls, zipPath, platform, spawn, log }) {
   const command = platform === 'win32' ? 'powershell.exe' : 'curl'
   let lastError
   for (const archiveUrl of archiveUrls) {
@@ -260,7 +261,7 @@ function downloadArchive({ archiveUrls, zipPath, platform, spawn }) {
           ]
         : ['-fL', archiveUrl, '-o', zipPath]
     try {
-      runExternal(command, args, { spawn, platform })
+      runExternal(command, args, { spawn, platform, log })
       return
     } catch (error) {
       lastError = error
@@ -269,7 +270,7 @@ function downloadArchive({ archiveUrls, zipPath, platform, spawn }) {
   throw lastError ?? new Error('No TokenBoard archive URL candidates were provided')
 }
 
-function extractArchive({ zipPath, extractDir, platform, spawn, mkdir }) {
+function extractArchive({ zipPath, extractDir, platform, spawn, mkdir, log }) {
   mkdir(extractDir, { recursive: true })
   const command = platform === 'win32' ? 'powershell.exe' : 'unzip'
   const args =
@@ -282,14 +283,30 @@ function extractArchive({ zipPath, extractDir, platform, spawn, mkdir }) {
           `$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath '${escapePowerShellSingleQuoted(zipPath)}' -DestinationPath '${escapePowerShellSingleQuoted(extractDir)}' -Force`
         ]
       : ['-q', zipPath, '-d', extractDir]
-  runExternal(command, args, { spawn, platform })
+  runExternal(command, args, { spawn, platform, log })
 }
 
-function runExternal(command, args, { spawn, platform }) {
+// The archive URL is user-configurable and can carry a signed-token query parameter, so its
+// output is captured and forwarded through the same redaction as the git steps rather than
+// inheriting the scheduled log's file descriptors.
+function runExternal(command, args, { spawn, platform, log = () => {} }) {
   const result = spawn(command, args, {
-    stdio: 'inherit',
-    shell: platform === 'win32' && command.endsWith('.cmd')
+    shell: platform === 'win32' && command.endsWith('.cmd'),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024
   })
+  const stdout = String(result.stdout ?? '')
+  const stderr = String(result.stderr ?? '')
+  if (stdout) log(redactUrlCredentials(stdout))
+  if (stderr) log(redactUrlCredentials(stderr))
+  // A spawn that fails outright or is stopped for exceeding `maxBuffer` reports `status: null`;
+  // reporting a bare "exit code 1" there would hide the actual cause from the operator.
+  if (result.error?.code === 'ENOBUFS') {
+    throw new Error(`${command} produced more than 64 MiB of output and was stopped`)
+  }
+  if (result.error) throw new Error(`${command} failed to start: ${errorMessage(result.error)}`)
+  if (result.signal) throw new Error(`${command} was terminated by ${result.signal}`)
   if (result.status !== 0) {
     throw new Error(`${command} failed with exit code ${result.status ?? 1}`)
   }

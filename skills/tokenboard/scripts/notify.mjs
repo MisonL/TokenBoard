@@ -5,6 +5,7 @@ import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync,
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { configDir, parseArgs, readConfig } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { coordinatedSync } from './coordinator.mjs'
 import { errorMessage } from './error-message.mjs'
 import { currentProcessStartIdentity, probeProcessLiveness, probeProcessStartIdentity } from './process-liveness.mjs'
@@ -784,5 +785,9 @@ function dispatchQuarantinePath(path) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.exitCode = await runNotifyCli()
+  if (printHelpIfRequested(process.argv.slice(2), 'Usage: notify.mjs --source codex|claude-code|antigravity-cli')) {
+    process.exitCode = 0
+  } else {
+    process.exitCode = await runNotifyCli()
+  }
 }

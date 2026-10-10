@@ -77,6 +77,8 @@ The default schedule is `09:00,12:00,18:00,23:00`. When the user asks for custom
 - Linux: `~/.config/systemd/user/tokenboard-daily-sync.timer`
 - Windows: one `TokenBoardDailySyncHHMM` scheduled task per configured time
 
+The installed schedule runs `sync.mjs --mode sync --scheduled`; the sync resolves its source at run time from the config `source` field (default `all`), so editing that field retargets scheduled syncs without reinstalling the schedule.
+
 If the user pasted a TokenBoard install prompt from the website, follow the prompt and run the included setup command. Treat pairing codes as short-lived secrets and do not repeat them unless needed to execute setup.
 
 ## Sync

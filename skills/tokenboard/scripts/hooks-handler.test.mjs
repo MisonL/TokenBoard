@@ -132,11 +132,7 @@ test(
       )
 
       assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex']).status, 0)
-      await waitFor(
-        () => existsSync(countPath),
-        () => readDispatchDiagnostic(root)
-      )
-      assert.equal(await readTextFile(countPath), 'started')
+      await waitForText(countPath, 'started', () => readDispatchDiagnostic(root))
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -181,11 +177,7 @@ test('notify handler does not trust a live pid-only dispatch worker marker after
     )
 
     assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex']).status, 0)
-    await waitFor(
-      () => existsSync(countPath),
-      () => readDispatchDiagnostic(root)
-    )
-    assert.equal(await readTextFile(countPath), 'started')
+    await waitForText(countPath, 'started', () => readDispatchDiagnostic(root))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -220,11 +212,7 @@ test('notify handler reclaims a markerless dispatch lock after startup grace', a
     )
 
     assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex']).status, 0)
-    await waitFor(
-      () => existsSync(countPath),
-      () => readDispatchDiagnostic(root)
-    )
-    assert.equal(await readTextFile(countPath), 'started')
+    await waitForText(countPath, 'started', () => readDispatchDiagnostic(root))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -252,17 +240,7 @@ test('notify handler recovers a malformed dispatch lock before starting a worker
     )
 
     assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex']).status, 0)
-    await waitFor(
-      async () => {
-        try {
-          return (await readFile(countPath, 'utf8')).trim() === 'started'
-        } catch {
-          return false
-        }
-      },
-      () => readDispatchDiagnostic(root)
-    )
-    assert.equal(await readTextFile(countPath), 'started')
+    await waitForText(countPath, 'started', () => readDispatchDiagnostic(root))
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -300,11 +278,7 @@ test('notify handler keeps the original notify alive when dispatch lock is a dir
     const result = spawnSync(process.execPath, [handlerPath, '--source=codex'])
 
     assert.equal(result.status, 0)
-    await waitFor(
-      () => existsSync(originalResult),
-      () => readDispatchDiagnostic(root)
-    )
-    assert.equal(await readTextFile(originalResult), 'forwarded')
+    await waitForText(originalResult, 'forwarded', () => readDispatchDiagnostic(root))
     assert.match(await readFile(join(root, 'notify-handler-errors.log'), 'utf8'), /dispatch-lock/)
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -446,11 +420,7 @@ test('notify handler does not trust a legacy pid-only trailing lock', async () =
 
     await waitFor(() => existsSync(trailingLockPath))
     assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex']).status, 0)
-    await waitFor(
-      () => existsSync(countPath),
-      () => readDispatchDiagnostic(root)
-    )
-    assert.equal(await readTextFile(countPath), 'started')
+    await waitForText(countPath, 'started', () => readDispatchDiagnostic(root))
   } finally {
     if (trailingPid) {
       try {
@@ -500,11 +470,7 @@ test(
 
       await waitFor(() => existsSync(trailingLockPath))
       assert.equal(spawnSync(process.execPath, [handlerPath, '--source=codex']).status, 0)
-      await waitFor(
-        () => existsSync(countPath),
-        () => readDispatchDiagnostic(root)
-      )
-      assert.equal(await readTextFile(countPath), 'started')
+      await waitForText(countPath, 'started', () => readDispatchDiagnostic(root))
     } finally {
       if (trailingPid) {
         try {
@@ -548,10 +514,22 @@ test('detached notify worker releases dispatch ownership after scheduling traili
       false
     )
   } finally {
-    if (trailingPid) {
-      try {
-        process.kill(trailingPid, 'SIGTERM')
-      } catch {}
+    // `trailingPid` was read while the lock could still hold the dispatch worker's own pid:
+    // the worker writes the lock on acquire and only republishes it with the detached child's
+    // pid once that child has spawned, which can land after the read above. Killing only the
+    // stale pid leaves the real child alive to wake up minutes later and recreate this state
+    // directory after the removal below. The dispatch waits above guarantee the republish has
+    // happened, so re-read and kill whatever the lock names now, alongside the earlier pid.
+    let publishedPid
+    try {
+      publishedPid = JSON.parse(await readFile(join(root, 'trailing.lock'), 'utf8')).pid
+    } catch {}
+    for (const pid of new Set([trailingPid, publishedPid])) {
+      if (Number.isSafeInteger(pid)) {
+        try {
+          process.kill(pid, 'SIGTERM')
+        } catch {}
+      }
     }
     await rm(root, { recursive: true, force: true })
   }
@@ -777,18 +755,17 @@ async function readJsonFile(path) {
   throw lastError
 }
 
-async function readTextFile(path) {
-  let lastError
-  const deadline = Date.now() + backgroundResultTimeoutMs
-  while (Date.now() < deadline) {
+// Waiting for the file to merely exist is a TOCTOU race: the writer creates it with open()
+// and only then writes, so under load a poll can observe an empty file and a single read
+// returns ''. Wait for the content the caller actually asserts on.
+async function waitForText(path, expected, diagnostic) {
+  await waitFor(async () => {
     try {
-      return (await readFile(path, 'utf8')).trim()
-    } catch (error) {
-      lastError = error
-      await new Promise((resolve) => setTimeout(resolve, backgroundResultRetryMs))
+      return (await readFile(path, 'utf8')).trim() === expected
+    } catch {
+      return false
     }
-  }
-  throw lastError
+  }, diagnostic)
 }
 
 async function waitFor(condition, diagnostic) {
@@ -801,7 +778,22 @@ async function waitFor(condition, diagnostic) {
 }
 
 async function assertTrailingLockAlwaysParses(lockPath) {
-  await waitFor(() => existsSync(lockPath))
+  // The lock is first created with a non-atomic `writeFile(..., { flag: 'wx' })`, so a reader
+  // can observe the file after `open` but before the JSON payload lands. Waiting only for
+  // `existsSync` therefore races the writer and `JSON.parse` throws on the empty file. Wait for
+  // the first parseable record, then keep asserting every read parses: from here on the record
+  // is only ever replaced by an atomic rename, so any unparseable read is a real regression.
+  await waitFor(
+    async () => {
+      try {
+        const lock = JSON.parse(await readFile(lockPath, 'utf8'))
+        return Number.isSafeInteger(lock.pid) && lock.pid > 0
+      } catch {
+        return false
+      }
+    },
+    () => `trailing lock at ${lockPath} never became parseable`
+  )
   const deadline = Date.now() + 250
   while (Date.now() < deadline) {
     const lock = JSON.parse(await readFile(lockPath, 'utf8'))

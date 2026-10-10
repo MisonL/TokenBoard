@@ -9,12 +9,14 @@ import {
   readFileSync,
   renameSync,
   unlinkSync,
-  writeFileSync
+  writeFileSync,
+  writeSync
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { readConfig, parseArgs, collectorDir, readPackageManager } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { normalizePathEnv } from './schedule.mjs'
 import { readSince } from './sync-options.mjs'
 import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
@@ -24,6 +26,7 @@ import { acquireLock, lockHasToken, releaseLock, waitForLock } from './coordinat
 import { runScheduledRetry, transientSyncExitCode } from './scheduled-retry.mjs'
 import { currentProcessStartIdentity } from './process-liveness.mjs'
 import { writeScheduledSyncState } from './scheduled-sync-state.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 
 const defaultSyncLockTimeoutMs = 60_000
 
@@ -32,6 +35,14 @@ if (isMain()) {
 }
 
 function runCli() {
+  if (
+    printHelpIfRequested(
+      process.argv.slice(2),
+      'Usage: sync.mjs [--mode preview|sync] [--source SOURCE] [--until YYYY-MM-DD] [--scheduled] [--hook] [--skip-upgrade]'
+    )
+  ) {
+    return 0
+  }
   let logs
   try {
     const flags = parseArgs(process.argv.slice(2))
@@ -58,7 +69,7 @@ function runCli() {
       stateDir: configDirFromInvocation(invocation, homeDir)
     })
   } catch (error) {
-    console.error(`TokenBoard sync failed: ${errorMessage(error)}`)
+    console.error(`TokenBoard sync failed: ${redactUrlCredentials(errorMessage(error))}`)
     return 1
   } finally {
     closeScheduledLogRuntime(logs)
@@ -178,12 +189,10 @@ function runSync({ flags, invocation, logs }) {
       runUpgrade({
         flags,
         automatic: true,
-        log: (line) => {
-          if (!logs) console.log(line)
-        }
+        log: createUpgradeLogger(logs)
       })
     } catch (error) {
-      console.error(`TokenBoard upgrade skipped: ${errorMessage(error)}`)
+      console.error(`TokenBoard upgrade skipped: ${redactUrlCredentials(errorMessage(error))}`)
     }
   }
 
@@ -209,6 +218,26 @@ function runSync({ flags, invocation, logs }) {
 
   return result.status ?? 1
 }
+
+export function createUpgradeLogger(logs, { write = writeSync, log = console.log } = {}) {
+  return (line) => {
+    const message = redactUrlCredentials(String(line))
+    if (!logs) {
+      log(message)
+      return
+    }
+    try {
+      write(logs.stdoutFd, `${message}\n`)
+    } catch {
+      // A diagnostic sink must never change the upgrade or sync result.
+    }
+  }
+}
+
+// The scheduled log is private (0700 directory, 0600 files), but an upgrade line can embed the
+// configured repository URL — `https://user:token@host/…` — and the log outlives the terminal
+// it used to print to. Redaction lives in its own module (`redact-credentials.mjs`) so this log
+// path and the upgrade helpers that spawn the git steps scrub the same credentials the same way.
 
 export function refreshBundledCcusageConfig(invocation, fileExists = existsSync) {
   if (invocation.env?.TOKENBOARD_CCUSAGE_CONFIG?.trim()) return invocation

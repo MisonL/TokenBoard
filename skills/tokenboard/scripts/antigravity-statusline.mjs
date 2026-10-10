@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendBoundedStatuslineError, appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { startOriginalStatuslineCommand } from './antigravity-statusline-original.mjs'
 import { errorMessage } from './error-message.mjs'
 
@@ -14,6 +15,8 @@ const schemaVersion = 'antigravity-statusline/v1'
 const defaultMaxLogBytes = 8 * 1024 * 1024
 const minMaxLogBytes = 1024
 const maxMaxLogBytes = 64 * 1024 * 1024
+const statuslineUsage =
+  'Usage: antigravity-statusline.mjs [--state-dir DIR] [--log-path FILE] [--error-path FILE] [--original-command-file FILE] [--max-input-bytes N] [--max-log-bytes N]'
 const upstreamEventIdentifierFields = [
   'event_id',
   'eventId',
@@ -28,7 +31,25 @@ const upstreamEventIdentifierFields = [
 ]
 
 export async function runStatuslineCli(argv = process.argv.slice(2), env = process.env) {
-  const options = readOptions(argv, env)
+  if (printHelpIfRequested(argv, statuslineUsage)) return 0
+  let options
+  try {
+    options = readOptions(argv, env)
+  } catch (error) {
+    // A bad option is a caller mistake, not a capture failure: record it in the same bounded
+    // diagnostics log the other option errors use, and exit non-zero without touching stdin or
+    // the original command. The state directory is only known once `readOptions` has parsed the
+    // flags, so the error path is resolved from the same flags and environment here; when
+    // neither names a location there is nowhere safe to write and the one-line message — which
+    // never contains payload data or local paths — goes to stderr instead.
+    const errorPath = bestEffortErrorPath(argv, env)
+    if (errorPath) {
+      recordStatuslineError(errorPath, 'options', error, defaultMaxLogBytes)
+    } else {
+      console.error(errorMessage(error))
+    }
+    return 1
+  }
   let original = null
   try {
     original = startOriginalStatuslineCommand({
@@ -64,6 +85,22 @@ export async function runStatuslineCli(argv = process.argv.slice(2), env = proce
       process.stdout.write(result.output)
     }
   }
+  return 0
+}
+
+// An option error is a caller mistake, not a capture failure: record it in the same bounded
+// diagnostics log the other option errors use, and exit non-zero without touching stdin or the
+// original command. The state directory is only known once `readOptions` has parsed the flags,
+// so the error path is resolved from the same flags and environment here; when neither names a
+// location there is nowhere safe to write and the one-line message — which never contains
+// payload data or local paths — goes to stderr instead.
+function bestEffortErrorPath(argv, env) {
+  const flags = readFlags(argv)
+  const errorPath = flags['error-path']
+  if (typeof errorPath === 'string' && errorPath.trim()) return errorPath
+  const stateDir = flags['state-dir'] || env.TOKENBOARD_STATE_DIR || env.TOKENBOARD_CONFIG_DIR
+  if (typeof stateDir !== 'string' || !stateDir.trim()) return null
+  return `${stateDir}/antigravity-statusline-errors.log`
 }
 
 export function extractStatuslineEvent(raw, capturedAt, captureId) {
@@ -246,6 +283,7 @@ function readMaxLogBytes(value) {
 }
 
 function recordStatuslineError(filePath, stage, error, maxBytes) {
+  if (typeof filePath !== 'string' || !filePath) return
   try {
     appendBoundedStatuslineError(
       filePath,
@@ -281,5 +319,5 @@ function readFlags(args) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  await runStatuslineCli()
+  process.exitCode = await runStatuslineCli()
 }

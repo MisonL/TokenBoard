@@ -94,10 +94,19 @@ export function writeJsonWithBackup(filePath, value, previousRaw, fs) {
   let backupPath
   if (previousRaw !== null) {
     backupPath = `${filePath}.bak.${timestamp()}`
-    fs.writeFile(backupPath, previousRaw)
+    writePrivateFile(backupPath, previousRaw, fs)
   }
   fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`)
   return backupPath
+}
+
+// Hook backups hold the previous settings verbatim — the original notify argv or statusLine
+// command, which can carry a webhook URL or a command-line token. `~/.codex`, `~/.claude` and
+// `~/.gemini` are commonly 0755, so a backup left at the default umask (0644) would be
+// world-readable. Same intent as `antigravity-hook`'s private original-statusline write.
+export function writePrivateFile(filePath, value, fs) {
+  fs.writeFile(filePath, value, { mode: 0o600 })
+  fs.chmod?.(filePath, 0o600)
 }
 
 export function normalizeObject(value) {

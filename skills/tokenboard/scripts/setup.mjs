@@ -16,6 +16,7 @@ import { withCredentialsLock } from './credentials-lock.mjs'
 import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
 import { errorMessage } from './error-message.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
@@ -27,6 +28,13 @@ import {
   shouldUseDeviceLink,
   shouldWarmHookCursorsBeforeInstall
 } from './setup-options.mjs'
+
+const usage =
+  'Usage: setup.mjs [--pairing-code CODE] [--base-url URL] [--timezone TZ] [--device-name NAME] [--use-device-link] [--skip-collector] [--skip-schedule] [--skip-initial-sync] [--skip-hook] [--schedule-times HH:MM,...] [--package-manager pnpm|bun|npm] [--repo-url URL] [--repo-ref REF]'
+
+if (printHelpIfRequested(process.argv.slice(2), usage)) {
+  process.exit(0)
+}
 
 const flags = parseArgs(process.argv.slice(2))
 let pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE

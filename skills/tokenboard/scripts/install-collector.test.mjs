@@ -214,10 +214,17 @@ test('clones a configured full ref detached when provided', () => {
   )
 })
 
-test('removes an existing non-git collector directory before cloning', () => {
+// Replacing an existing checkout must not destroy it before the replacement exists. The
+// clone lands in a staging sibling first and is swapped in with a backup kept until the
+// swap succeeds — the same replace-with-rollback the upgrade path uses — so a failed clone
+// (offline, bad ref) leaves the original directory untouched instead of an empty one.
+test('replaces an existing non-git collector directory only after a staged clone succeeds', () => {
+  const dir = '/home/user/.tokenboard/TokenBoard'
+  const stagingDir = `${dir}.tokenboard-install-staging-${process.pid}`
+  const backupDir = `${dir}.tokenboard-upgrade-backup-${process.pid}`
   assert.deepEqual(
     buildInstallCollectorPlan({
-      dir: '/home/user/.tokenboard/TokenBoard',
+      dir,
       repoUrl: 'https://github.com/example/TokenBoard.git',
       packageManager: 'bun',
       exists: true,
@@ -227,24 +234,23 @@ test('removes an existing non-git collector directory before cloning', () => {
     [
       {
         command: 'remove',
-        args: ['/home/user/.tokenboard/TokenBoard'],
+        args: [stagingDir],
         options: { recursive: true, force: true }
       },
       {
         command: 'git',
-        args: [
-          'clone',
-          '--depth',
-          '1',
-          'https://github.com/example/TokenBoard.git',
-          '/home/user/.tokenboard/TokenBoard'
-        ],
+        args: ['clone', '--depth', '1', 'https://github.com/example/TokenBoard.git', stagingDir],
+        options: {}
+      },
+      {
+        command: 'replace',
+        args: [stagingDir, dir, backupDir],
         options: {}
       },
       {
         command: 'corepack',
         args: ['pnpm', 'install', '--frozen-lockfile'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+        options: { cwd: dir }
       }
     ]
   )

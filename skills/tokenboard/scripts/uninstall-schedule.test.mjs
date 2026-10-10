@@ -51,6 +51,7 @@ test('removes Windows scheduled tasks for configured times and legacy name', () 
     const result = uninstallSchedule(harness.options)
 
     assert.deepEqual(result.scheduleTimes, ['08:15', '21:45'])
+    assert.deepEqual(harness.errors, [])
     assert.deepEqual(harness.calls.map(commandLine), [
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command Get-ScheduledTask -TaskPath '\\' | Where-Object { ($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' }) } | Unregister-ScheduledTask -Confirm:$false"
     ])
@@ -68,6 +69,8 @@ test('removes default Windows scheduled tasks when config is missing', () => {
 
     uninstallSchedule(harness.options)
 
+    assert.equal(harness.errors.length, 1)
+    assert.match(harness.errors[0], /TokenBoard config could not be read \(missing config\)/)
     assert.deepEqual(harness.calls.map(commandLine), [
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command Get-ScheduledTask -TaskPath '\\' | Where-Object { ($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' }) } | Unregister-ScheduledTask -Confirm:$false"
     ])
@@ -107,12 +110,14 @@ function createHarness(platform, config = {}) {
   const configDir = join(root, 'config')
   const configPath = join(configDir, 'config.json')
   const calls = []
+  const errors = []
   mkdirSync(configDir, { recursive: true })
   writeFileSync(configPath, '{}')
   return {
     homeDir,
     configPath,
     calls,
+    errors,
     options: {
       platform,
       homeDir,
@@ -123,6 +128,9 @@ function createHarness(platform, config = {}) {
       },
       readConfig: () => config,
       log: () => {},
+      error: (line) => {
+        errors.push(line)
+      },
       spawn: (command, args) => {
         calls.push({ command, args })
         return { status: 0 }

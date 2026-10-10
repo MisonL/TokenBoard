@@ -1,12 +1,32 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync, writeSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+  writeSync
+} from 'node:fs'
+
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import test from 'node:test'
+import test, { afterEach } from 'node:test'
 import { closeScheduledLogRuntime, createScheduledLogRuntime, rotateScheduledLogs } from './logs.mjs'
+
+// Temp directories created below are removed after each test so repeated runs do not
+// accumulate directories in the OS temp folder.
+const tempDirs = []
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
 
 test('rotates scheduled logs over the size limit and removes expired rotations', () => {
   const logDir = mkdtempSync(join(tmpdir(), 'tokenboard-logs-'))
+  tempDirs.push(logDir)
   const now = localDate(2026, 5, 13, 9, 0, 0)
   const expired = join(logDir, 'daily-sync.out.log.20260501000000')
 
@@ -31,6 +51,7 @@ test('rotates scheduled logs over the size limit and removes expired rotations',
 
 test('scheduled log runtime opens managed stdout and stderr files', () => {
   const homeDir = mkdtempSync(join(tmpdir(), 'tokenboard-home-'))
+  tempDirs.push(homeDir)
   const logDir = join(homeDir, '.tokenboard', 'logs')
   const runtime = createScheduledLogRuntime({
     env: {
@@ -51,8 +72,58 @@ test('scheduled log runtime opens managed stdout and stderr files', () => {
   assert.equal(statSync(join(logDir, 'daily-sync.err.log')).size, 4)
 })
 
+test('scheduled log runtime keeps the log directory and files private', () => {
+  if (process.platform === 'win32') {
+    return
+  }
+  const homeDir = mkdtempSync(join(tmpdir(), 'tokenboard-home-'))
+  tempDirs.push(homeDir)
+  const logDir = join(homeDir, '.tokenboard', 'logs')
+  const runtime = createScheduledLogRuntime({
+    env: {
+      TOKENBOARD_SCHEDULED_SYNC: '1'
+    },
+    homeDir,
+    now: new Date('2026-05-13T01:00:00.000Z')
+  })
+
+  assert.ok(runtime)
+  closeScheduledLogRuntime(runtime)
+
+  assert.equal(statSync(logDir).mode & 0o777, 0o700)
+  assert.equal(statSync(join(logDir, 'daily-sync.out.log')).mode & 0o777, 0o600)
+  assert.equal(statSync(join(logDir, 'daily-sync.err.log')).mode & 0o777, 0o600)
+})
+
+test('scheduled log runtime tightens permissions on an existing world-readable log', () => {
+  if (process.platform === 'win32') {
+    return
+  }
+  const homeDir = mkdtempSync(join(tmpdir(), 'tokenboard-home-'))
+  tempDirs.push(homeDir)
+  const logDir = join(homeDir, '.tokenboard', 'logs')
+  mkdirSync(logDir, { recursive: true })
+  const logPath = join(logDir, 'daily-sync.out.log')
+  writeFileSync(logPath, 'old\n')
+  chmodSync(logPath, 0o644)
+
+  const runtime = createScheduledLogRuntime({
+    env: {
+      TOKENBOARD_SCHEDULED_SYNC: '1'
+    },
+    homeDir,
+    now: new Date('2026-05-13T01:00:00.000Z')
+  })
+
+  assert.ok(runtime)
+  closeScheduledLogRuntime(runtime)
+
+  assert.equal(statSync(logPath).mode & 0o777, 0o600)
+})
+
 test('scheduled flag enables log management without scheduler environment variables', () => {
   const homeDir = mkdtempSync(join(tmpdir(), 'tokenboard-home-'))
+  tempDirs.push(homeDir)
   const runtime = createScheduledLogRuntime({
     env: {},
     homeDir,
@@ -65,6 +136,7 @@ test('scheduled flag enables log management without scheduler environment variab
 
 test('rotated log names do not overwrite existing archives in the same second', () => {
   const logDir = mkdtempSync(join(tmpdir(), 'tokenboard-logs-'))
+  tempDirs.push(logDir)
   const now = localDate(2026, 5, 13, 9, 0, 0)
 
   writeFileSync(join(logDir, 'daily-sync.err.log'), 'first-over-limit')
@@ -88,6 +160,28 @@ test('rotated log names do not overwrite existing archives in the same second', 
     'daily-sync.err.log.20260513090000',
     'daily-sync.err.log.20260513090000.1'
   ])
+})
+
+test('rotation keeps the rotated archive and the fresh log private', () => {
+  if (process.platform === 'win32') {
+    return
+  }
+  const logDir = mkdtempSync(join(tmpdir(), 'tokenboard-logs-'))
+  tempDirs.push(logDir)
+  const now = localDate(2026, 5, 13, 9, 0, 0)
+  const activePath = join(logDir, 'daily-sync.out.log')
+  writeFileSync(activePath, 'x'.repeat(11))
+  chmodSync(activePath, 0o644)
+
+  rotateScheduledLogs({
+    logDir,
+    now,
+    maxBytes: 10,
+    retentionDays: 7
+  })
+
+  assert.equal(statSync(activePath).mode & 0o777, 0o600)
+  assert.equal(statSync(join(logDir, 'daily-sync.out.log.20260513090000')).mode & 0o777, 0o600)
 })
 
 test('rotates logs by reading only the retained tail bytes', () => {
@@ -116,6 +210,7 @@ test('rotates logs by reading only the retained tail bytes', () => {
     writeFileSync(_filePath, content) {
       calls.push({ content: String(content) })
     },
+    chmodSync() {},
     readdirSync() {
       return []
     },

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { configDir } from './config.mjs'
+import { configDir, jsonErrorLocation } from './config.mjs'
 import { assertCredentialsLockOwnership, withCredentialsLock } from './credentials-lock.mjs'
 import { readCanonicalDeviceLink, syncDeviceLinkToConfig } from './device-link-config.mjs'
 
@@ -45,7 +45,7 @@ export function readDeviceLink(options = {}) {
   const configLink = readCanonicalDeviceLink(root, requestedOrigin, options)
   if (configLink) return configLink
   if (!fs.existsSync(path)) return null
-  const store = normalizeDeviceLinkStore(JSON.parse(fs.readFileSync(path, 'utf8')))
+  const store = normalizeDeviceLinkStore(parseDeviceLinkJson(fs.readFileSync(path, 'utf8'), path))
   if (requestedOrigin) {
     return store.servers[requestedOrigin] ? deviceLinkFromStored(requestedOrigin, store.servers[requestedOrigin]) : null
   }
@@ -84,7 +84,21 @@ function readDeviceLinkStore(path, fs) {
   if (!fs.existsSync(path)) {
     return { version: deviceLinkStoreVersion, servers: {} }
   }
-  return normalizeDeviceLinkStore(JSON.parse(fs.readFileSync(path, 'utf8')))
+  return normalizeDeviceLinkStore(parseDeviceLinkJson(fs.readFileSync(path, 'utf8'), path))
+}
+
+// `JSON.parse` embeds the offending source text in its message, and the device link holds
+// the install claim — the one value SKILL.md forbids printing. Every caller reports this
+// error to stderr (`setup.mjs`, `rotate-token.mjs`), so only the parse position is carried
+// over, matching the config reader's handling of the same hazard.
+function parseDeviceLinkJson(raw, path) {
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    throw new Error(
+      `TokenBoard device link is not valid JSON: ${path}. Fix or remove it, then retry. (${jsonErrorLocation(error)})`
+    )
+  }
 }
 
 function writeDeviceLinkStore(path, store, fs, root) {

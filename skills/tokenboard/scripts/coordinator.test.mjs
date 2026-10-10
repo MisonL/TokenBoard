@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -1366,6 +1376,111 @@ test('coordinator writes its run logs private regardless of umask', () => {
     assert.equal(mode(join(stateDir, 'last-success.json')), 0o600, 'sync checkpoint')
   } finally {
     process.umask(previousUmask)
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+// The test above uses a directory that does not exist yet, so `mkdir`'s mode applies. In a real
+// install the state directory is created first by `writeConfig`, which passes no mode, and
+// `mkdir(..., { mode })` does not touch the mode of a directory that already exists. The
+// coordinator therefore has to chmod it, or the state directory stays world-listable under the
+// usual 022 umask.
+test('coordinator tightens an already-existing state directory', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'tokenboard-existing-state-'))
+  const stateDir = join(parent, 'state')
+  const runsDir = join(stateDir, 'runs')
+  const previousUmask = process.umask(0o022)
+  const mode = (path) => statSync(path).mode & 0o777
+
+  try {
+    // Simulate `writeConfig`: the directory exists and is world-readable before the coordinator
+    // runs. `mkdir` alone would leave it that way. The runs directory gets the same treatment:
+    // asserting it only ever after this run *creates* it would pass from `mkdir`'s mode alone,
+    // so it must pre-exist world-readable with its bounded marker to prove chmod is what
+    // tightens it — a run that is not created by this run is also the case a chmod can be
+    // dropped from without the test noticing.
+    mkdirSync(runsDir, { recursive: true })
+    writeFileSync(join(runsDir, '.bounded-v1'), 'TokenBoard bounded run logs v1\n')
+    assert.equal(mode(stateDir), 0o755, 'precondition: the state directory starts world-readable')
+    assert.equal(mode(runsDir), 0o755, 'precondition: the runs directory starts world-readable')
+
+    coordinatedSync(
+      { kind: 'notify', source: 'codex' },
+      {
+        stateDir,
+        cooldownMs: 0,
+        executeSync: () => ({ ok: true })
+      }
+    )
+
+    assert.equal(mode(stateDir), 0o700, 'state directory is tightened even though it pre-existed')
+    assert.equal(mode(runsDir), 0o700, 'pre-existing run log directory is tightened too')
+  } finally {
+    process.umask(previousUmask)
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+// The coordinator chmods the state directory to pin it private. Through a symlink that chmod
+// lands on the link's target — a directory this same run then refuses to use, because
+// `sync.mjs` rejects a symlinked state directory outright. Matching that rejection here keeps
+// the two paths from disagreeing about whether the directory is acceptable.
+test('coordinator refuses a symlinked state directory', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'tokenboard-symlinked-state-'))
+  const realTarget = join(parent, 'real-target')
+  const stateDir = join(parent, 'state')
+  const previousUmask = process.umask(0o022)
+
+  try {
+    mkdirSync(realTarget, { recursive: true })
+    symlinkSync(realTarget, stateDir)
+
+    assert.throws(
+      () =>
+        coordinatedSync(
+          { kind: 'notify', source: 'codex' },
+          {
+            stateDir,
+            cooldownMs: 0,
+            executeSync: () => ({ ok: true })
+          }
+        ),
+      /must not be a symbolic link/
+    )
+    assert.equal(statSync(realTarget).mode & 0o777, 0o755, "the link's target is left untouched")
+  } finally {
+    process.umask(previousUmask)
+    rmSync(parent, { recursive: true, force: true })
+  }
+})
+
+// Only a missing directory is an expected inspection outcome (the first run, before the
+// mkdir). Any other lstat failure — EACCES, ELOOP — means the symlink check could not run
+// at all, and skipping it would chmod a path this run never verified. `sync.mjs` rethrows
+// the same way; this pins that the coordinator does not quietly continue instead.
+test('coordinator fails closed when the state directory cannot be inspected', () => {
+  const parent = mkdtempSync(join(tmpdir(), 'tokenboard-lstat-failure-'))
+  const stateDir = join(parent, 'state')
+  const denied = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+
+  try {
+    assert.throws(
+      () =>
+        coordinatedSync(
+          { kind: 'notify', source: 'codex' },
+          {
+            stateDir,
+            cooldownMs: 0,
+            executeSync: () => ({ ok: true }),
+            lstat: () => {
+              throw denied
+            }
+          }
+        ),
+      /EACCES: permission denied/
+    )
+    assert.equal(existsSync(stateDir), false, 'nothing is created when the inspection fails')
+  } finally {
     rmSync(parent, { recursive: true, force: true })
   }
 })

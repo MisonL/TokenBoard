@@ -129,7 +129,7 @@ test('creates Windows scheduled tasks through an isolated schtasks harness', () 
     assert.match(wrapper, /TOKENBOARD_SCHEDULED_SYNC=1/)
     assert.match(wrapper, /TOKENBOARD_LOG_DIR=/)
     assert.match(wrapper, /PATH=/)
-    assert.match(wrapper, /"node-test" "sync-test\.mjs" --mode sync --source all --scheduled/)
+    assert.match(wrapper, /"node-test" "sync-test\.mjs" --mode sync --scheduled/)
   } finally {
     harness.cleanup()
   }

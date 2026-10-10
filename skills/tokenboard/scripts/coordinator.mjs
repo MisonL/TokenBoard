@@ -1,6 +1,8 @@
 import {
+  chmodSync,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -95,7 +97,7 @@ export function coordinatedSync(trigger, options) {
   // below here — the run logs, the sync checkpoint, the lock — belongs to this user alone.
   // (`sync.mjs` also chmods this directory, but only once a sync actually runs, which is too
   // late for a run that fails before reaching it.)
-  runtime.mkdir(runtime.stateDir, { recursive: true, mode: 0o700 })
+  ensurePrivateDirectory(runtime, runtime.stateDir)
 
   let completed
   let checkpointError
@@ -403,6 +405,8 @@ function buildRuntime(options = {}) {
     runProcessIdentity,
     scheduleTrailing: options.scheduleTrailing || (() => false),
     mkdir: options.mkdir || mkdirSync,
+    chmod: options.chmod || (hasCustomFileOps ? undefined : chmodSync),
+    lstat: options.lstat || (hasCustomFileOps ? undefined : lstatSync),
     readFile: options.readFile || ((path) => readFileSync(path, 'utf8')),
     writeFile: options.writeFile || writeFileSync,
     readdir: options.readdir || (hasCustomFileOps ? undefined : readdirSync),
@@ -411,6 +415,52 @@ function buildRuntime(options = {}) {
     link: options.link || (hasCustomFileOps ? undefined : linkSync),
     unlink: options.unlink || unlinkSync,
     exists: options.exists || existsSync
+  }
+}
+
+// `mkdir(..., { mode })` only applies the mode to a directory it actually creates. The state
+// directory is created earlier by `writeConfig`, which passes no mode and so leaves it at the
+// umask's default — 0755 under the interactive shell the hook path runs from. Chmodding after
+// the mkdir is what makes the pinning hold for an already-existing directory, the same reason
+// `sync.mjs` chmods rather than relying on the mode alone.
+//
+// A symlinked path is rejected the way `sync.mjs`'s `ensurePrivateStateDir` rejects it, for
+// the same two reasons: chmod follows the link and would change the permissions of whatever
+// it points at — a directory this same run then refuses to use — and a link substituted
+// between checks is a write through an unexpected path. When `lstat` is unavailable (tests
+// that inject custom file ops), the chmod is skipped along with it, matching how `readdir`
+// and `rename` are already gated.
+function ensurePrivateDirectory(runtime, path) {
+  const inspect = typeof runtime.lstat === 'function' ? runtime.lstat : null
+  if (inspect) {
+    const before = safeLstat(inspect, path)
+    if (before?.isSymbolicLink()) {
+      throw new Error(`TokenBoard state directory must not be a symbolic link: ${path}`)
+    }
+  }
+  runtime.mkdir(path, { recursive: true, mode: 0o700 })
+  if (inspect) {
+    const after = safeLstat(inspect, path)
+    if (after?.isSymbolicLink()) {
+      throw new Error(`TokenBoard state directory must not be a symbolic link: ${path}`)
+    }
+    if (after && typeof after.isDirectory === 'function' && !after.isDirectory()) {
+      throw new Error(`TokenBoard state path is not a directory: ${path}`)
+    }
+    runtime.chmod(path, 0o700)
+  }
+}
+
+// Only a missing path is expected (the first run, before `mkdir` creates it). Any other
+// failure — EACCES, ELOOP — means the inspection itself broke, and skipping the symlink
+// checks on an unreadable path is the fail-open this rejects. `sync.mjs`'s
+// `inspectDirectory` draws the same line.
+function safeLstat(inspect, path) {
+  try {
+    return inspect(path)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
   }
 }
 
@@ -502,11 +552,11 @@ function scheduleDeferredFollowUps(trigger, runtime, result) {
   }
 }
 
-// Written atomically — to a temp file, then renamed into place. A direct overwrite leaves
-// a truncated or empty file if the process dies mid-write, and an empty checkpoint is not
-// merely stale: `cooldownRemainingMs` treats an unparseable timestamp as damage and throws,
-// which stops the sync before it can rewrite the checkpoint. That deadlock has no way out
-// short of deleting the file by hand, so the write must never be observable half-done.
+// Written atomically — to a temp file, then renamed into place — so a process that dies
+// mid-write cannot leave a truncated or empty checkpoint behind. This is defence in depth
+// rather than the only thing preventing a stuck coordinator: the reader tolerates a damaged
+// file (an unparseable timestamp is treated like an absent checkpoint, costing at most one
+// extra sync — see `cooldownRemainingMs`), so a half-written file would not wedge the loop.
 // `rename` is not available under the custom file-op runtimes some tests inject; there the
 // direct write is the only option, and those runtimes do not crash mid-write.
 function writeSuccessfulSyncCheckpoint(result, runtime) {
@@ -604,7 +654,7 @@ function prepareRunLogDirectory(runId, runtime) {
   // umask is normally 022 — so the default here would publish them to every local user. The
   // rest of the state directory is already private (`sync.mjs` chmods the parent to 0700);
   // this is the one directory the coordinator creates itself.
-  runtime.mkdir(runsDir, { recursive: true, mode: 0o700 })
+  ensurePrivateDirectory(runtime, runsDir)
   if (!runtime.exists(markerPath)) {
     runtime.writeFile(markerPath, 'TokenBoard bounded run logs v1\n', { mode: 0o600 })
   }

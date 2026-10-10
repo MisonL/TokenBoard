@@ -1,7 +1,52 @@
 import { resolve, win32 as windowsPath } from 'node:path'
 import { cpSync, renameSync, rmSync, statSync } from 'node:fs'
 import { errorMessage } from './error-message.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 export { errorMessage }
+
+// A scheduled upgrade's stdout/stderr are the log files themselves, so a child process that
+// inherits them writes straight into a file that outlives the terminal. Capture instead and
+// forward to the same stream through the credential redaction the parent's own log lines go
+// through, so a git error echoing `https://user:token@host/…` does not land in the log with
+// the credential intact. stdout is only forwarded where it was user-facing before; capture-only
+// callers (`git-ensure-default-branch`) keep using that output as data.
+const childOutputMaxBuffer = 64 * 1024 * 1024
+
+function spawnRedacted(runtime, command, args, { forwardStdout = true, stdio, ...options } = {}) {
+  const result = runtime.spawn(command, args, {
+    ...options,
+    // stdin stays on the parent's stream by default, but a capture-only caller reads the
+    // child's stdout as data: a git credential helper that prompts on stdin would otherwise
+    // read the operator's terminal and hang instead of failing on EOF.
+    stdio: stdio ?? ['inherit', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: childOutputMaxBuffer
+  })
+  if (forwardStdout) forwardCapturedOutput(process.stdout, result.stdout)
+  forwardCapturedOutput(process.stderr, result.stderr)
+  // A spawn that fails outright (ENOENT) or is killed for exceeding `maxBuffer` (ENOBUFS)
+  // reports `status: null`; without this the caller would report a bare "exit code 1" and the
+  // real cause — and the diagnostic output, truncated at `childOutputMaxBuffer` — would be lost.
+  if (result.error || result.signal) {
+    throw spawnFailure(command, result)
+  }
+  return result
+}
+
+function spawnFailure(command, result) {
+  if (result.error?.code === 'ENOBUFS') {
+    return new Error(`${command} produced more than ${childOutputMaxBuffer} bytes of output and was stopped`)
+  }
+  if (result.error) {
+    return new Error(`${command} failed to start: ${errorMessage(result.error)}`)
+  }
+  return new Error(`${command} was terminated by ${result.signal}`)
+}
+
+function forwardCapturedOutput(stream, text) {
+  const message = String(text ?? '').replace(/\r?\n$/, '')
+  if (message) stream.write(`${redactUrlCredentials(message)}\n`)
+}
 
 export function runStep(step, runtime) {
   if (step.command === 'remove') {
@@ -37,8 +82,7 @@ export function runStep(step, runtime) {
     return
   }
 
-  const result = runtime.spawn(step.command, step.args, {
-    stdio: 'inherit',
+  const result = spawnRedacted(runtime, step.command, step.args, {
     shell: runtime.platform === 'win32' && step.command.endsWith('.cmd'),
     ...step.options
   })
@@ -282,21 +326,16 @@ function configureBranchTracking(runtime, branchName, options) {
 }
 
 function runGit(runtime, args, options) {
-  const result = runtime.spawn('git', args, {
-    stdio: 'inherit',
-    shell: false,
-    ...options
-  })
+  const result = spawnRedacted(runtime, 'git', args, options)
   if (result.status !== 0) {
     throw new Error(`git failed with exit code ${result.status ?? 1}`)
   }
 }
 
 function runGitCapture(runtime, args, options) {
-  const result = runtime.spawn('git', args, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'inherit'],
-    shell: false,
+  const result = spawnRedacted(runtime, 'git', args, {
+    forwardStdout: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
     ...options
   })
   if (result.status !== 0) {

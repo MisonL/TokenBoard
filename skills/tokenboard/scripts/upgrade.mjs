@@ -11,6 +11,8 @@ import {
   readConfig,
   readPackageManager
 } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 import { recoverOrphanedBackup, runArchiveFallback, selectAvailableBackupPath } from './upgrade-archive.mjs'
 import {
   buildCloneSteps,
@@ -69,11 +71,18 @@ export function buildUpgradePlan({
 
   const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
   if (!samePath(collectorSkillDir, skillDir, platform)) {
-    steps.push({
-      command: 'copy',
-      args: [collectorSkillDir, skillDir],
-      options: { recursive: true, force: true }
-    })
+    // A merge copy (`recursive + force`) leaves files the upstream deleted behind forever,
+    // and a failure mid-copy leaves a half-updated skill with no way back. Stage the new
+    // copy beside the target and swap it in with a backup kept until the swap succeeds —
+    // the same replace-with-rollback the archive path applies, so the installed skill
+    // always matches the upstream tree exactly.
+    const skillStagingDir = `${skillDir}.tokenboard-upgrade-staging-${process.pid}`
+    const skillBackupDir = `${skillDir}.tokenboard-upgrade-backup-${process.pid}`
+    steps.push(
+      { command: 'remove', args: [skillStagingDir], options: { recursive: true, force: true } },
+      { command: 'copy', args: [collectorSkillDir, skillStagingDir], options: { recursive: true, force: true } },
+      { command: 'replace', args: [skillStagingDir, skillDir, skillBackupDir], options: {} }
+    )
   }
 
   steps.push({
@@ -101,7 +110,10 @@ export function runUpgrade({
   readConfigFile = readConfig,
   mergeConfigFile = mergeConfig,
   configDirectory = defaultConfigDir(),
-  log = console.log
+  // The default sink is the terminal. Redact it too: a manual `node scripts/upgrade.mjs` run
+  // prints the configured repo URL, which may carry `user:token@host` userinfo, and the
+  // scheduled path already wraps its logger the same way.
+  log = (line) => console.log(redactUrlCredentials(line))
 } = {}) {
   const config = readConfigFile()
   const repoUrl = resolveRepoUrl({ flags, env, config })
@@ -337,7 +349,12 @@ export function resolveArchiveUrls({
     )
   }
 
-  throw new Error(`Archive fallback requires a GitHub repo URL or explicit archive URL: ${repoUrl}`)
+  // The message carries the repo URL, which may hold `user:token@host` userinfo; redact it here
+  // so no caller's error sink can leak it. This error reaches `console.error` on both the manual
+  // and scheduled paths, which do not go through `log()`.
+  throw new Error(
+    `Archive fallback requires a GitHub repo URL or explicit archive URL: ${redactUrlCredentials(repoUrl)}`
+  )
 }
 
 export function resolveArchiveUrl({
@@ -404,10 +421,20 @@ function buildArchiveRefPaths(repoRef) {
 }
 
 function runCli() {
+  if (
+    printHelpIfRequested(
+      process.argv.slice(2),
+      'Usage: upgrade.mjs [--repo-url URL] [--repo-ref REF] [--skill-dir DIR] [--archive-url URL] [--package-manager pnpm|bun|npm]'
+    )
+  ) {
+    return
+  }
   try {
     runUpgrade({ flags: parseArgs(process.argv.slice(2)) })
   } catch (error) {
-    console.error(errorMessage(error))
+    // The manual path prints to the terminal directly, so redact here too: an error can carry a
+    // repo URL with `user:token@host` userinfo, and this sink does not go through `log()`.
+    console.error(redactUrlCredentials(errorMessage(error)))
     process.exit(1)
   }
 }

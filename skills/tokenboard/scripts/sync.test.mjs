@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildSyncInvocation, refreshBundledCcusageConfig, runSyncInvocation } from './sync.mjs'
+import { buildSyncInvocation, createUpgradeLogger, refreshBundledCcusageConfig, runSyncInvocation } from './sync.mjs'
 import { buildDefaultSince, readSince } from './sync-options.mjs'
 import { normalizeMemoryPath } from './coordinator-test-helpers.mjs'
 
@@ -372,6 +372,79 @@ test('scheduled sync preserves an explicit source error policy override', () => 
   })
 
   assert.equal(invocation.env.TOKENBOARD_FAIL_ON_SOURCE_ERROR, '0')
+})
+
+test('scheduled upgrade diagnostics reach the scheduled log instead of the console', () => {
+  const lines = []
+  const runtime = { stdoutFd: 1 }
+  const logger = createUpgradeLogger(runtime, {
+    write: (fd, message) => {
+      assert.equal(fd, 1)
+      lines.push(message)
+    },
+    log: () => {
+      throw new Error('scheduled upgrade output must not go to the console')
+    }
+  })
+
+  logger('TokenBoard upgraded from https://example.invalid/repo')
+
+  assert.deepEqual(lines, ['TokenBoard upgraded from https://example.invalid/repo\n'])
+})
+
+test('unscheduled upgrade diagnostics still go to the console', () => {
+  const lines = []
+  const logger = createUpgradeLogger(null, {
+    write: () => {
+      throw new Error('manual upgrade output must not go to the log sink')
+    },
+    log: (message) => lines.push(message)
+  })
+
+  logger('TokenBoard upgraded from https://example.invalid/repo')
+
+  assert.deepEqual(lines, ['TokenBoard upgraded from https://example.invalid/repo'])
+})
+
+test('a failing scheduled log sink never changes the upgrade result', () => {
+  const logger = createUpgradeLogger(
+    { stdoutFd: 1 },
+    {
+      write: () => {
+        const error = new Error('disk full')
+        error.code = 'ENOSPC'
+        throw error
+      },
+      log: () => {
+        throw new Error('a failing sink must not fall back to the console')
+      }
+    }
+  )
+
+  assert.doesNotThrow(() => logger('TokenBoard upgraded from https://example.invalid/repo'))
+})
+
+test('scheduled upgrade diagnostics redact credentials embedded in URLs', () => {
+  const lines = []
+  const logger = createUpgradeLogger(
+    { stdoutFd: 1 },
+    {
+      write: (_fd, message) => lines.push(message),
+      log: () => {
+        throw new Error('scheduled upgrade output must not go to the console')
+      }
+    }
+  )
+
+  logger('TokenBoard upgraded from https://ci-user:ci-token@example.invalid/repo#release')
+  logger('TokenBoard upgraded from https://example.invalid/repo?token=ci-token&page=2')
+
+  assert.deepEqual(lines, [
+    'TokenBoard upgraded from https://example.invalid/repo#release\n',
+    'TokenBoard upgraded from https://example.invalid/repo?token=<redacted>&page=2\n'
+  ])
+  assert.doesNotMatch(lines[0], /ci-user|ci-token/)
+  assert.doesNotMatch(lines[1], /ci-token/)
 })
 
 test('scheduled sync records running and failed state without affecting manual sync', () => {

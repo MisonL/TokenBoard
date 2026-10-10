@@ -587,6 +587,29 @@ test('writeConfig re-tightens existing config file permissions', { skip: process
   }
 })
 
+// The directory holds the config file, and `mkdirSync`'s mode applies only when it creates the
+// directory — a pre-existing or later-loosened one keeps its own mode. writeConfig tightens it,
+// so the token is never left readable by other users on the machine.
+test('writeConfig re-tightens an existing config directory', { skip: process.platform === 'win32' }, () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-dir-mode-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+
+  try {
+    chmodSync(directory, 0o777)
+    writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
+
+    assert.equal(statSync(directory).mode & 0o777, 0o700)
+  } finally {
+    if (previousConfigDir === undefined) {
+      delete process.env.TOKENBOARD_CONFIG_DIR
+    } else {
+      process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('mergeConfig preserves concurrent server profile updates across processes', async () => {
   const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
   const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-concurrent-'))

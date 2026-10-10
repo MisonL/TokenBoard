@@ -26,6 +26,181 @@ import {
 } from './upgrade.mjs'
 import { runArchiveFallback } from './upgrade-archive.mjs'
 import { errorMessage, movePath, runStep, samePath } from './upgrade-utils.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
+
+test('upgrade child output is captured and scrubbed of credentials', () => {
+  const out = []
+  const err = []
+  const originalOut = process.stdout.write
+  const originalErr = process.stderr.write
+  process.stdout.write = (chunk) => (out.push(String(chunk)), true)
+  process.stderr.write = (chunk) => (err.push(String(chunk)), true)
+  try {
+    const runtime = {
+      platform: 'linux',
+      log: () => {},
+      spawn: (command, args, options) => {
+        assert.equal(options.stdio[0], 'inherit')
+        assert.equal(options.stdio[1], 'pipe')
+        assert.equal(options.stdio[2], 'pipe')
+        return {
+          status: 0,
+          stdout: 'Cloning into …\n',
+          stderr: "fatal: unable to access 'https://ci-user:ci-token@example.invalid/repo/'\n"
+        }
+      }
+    }
+
+    runStep({ command: 'git', args: ['clone', 'https://ci-user:ci-token@example.invalid/repo'], options: {} }, runtime)
+  } finally {
+    process.stdout.write = originalOut
+    process.stderr.write = originalErr
+  }
+
+  assert.deepEqual(out, ['Cloning into …\n'])
+  assert.deepEqual(err, ["fatal: unable to access 'https://example.invalid/repo/'\n"])
+})
+
+// A capture-only git step reads the child's stdout as data, so its stdin must be closed: a
+// credential helper that prompts would otherwise read the operator's terminal and hang.
+test('captures git output with stdin closed rather than inherited', () => {
+  const responses = [
+    'ref: refs/heads/main\tHEAD\n', // ls-remote --symref origin HEAD
+    '', // config --replace-all remote.origin.fetch
+    '', // fetch origin +refs/heads/main:refs/remotes/origin/main
+    '', // remote set-head origin --auto
+    'origin/main\n', // symbolic-ref --short refs/remotes/origin/HEAD
+    'main\n', // branch --show-current
+    '', // config branch.main.remote
+    '' // config branch.main.merge
+  ]
+  const calls = []
+  let index = 0
+  const runtime = {
+    platform: 'linux',
+    log: () => {},
+    spawn: (command, args, options) => {
+      calls.push({ args: args.join(' '), stdin: options.stdio[0], stdoutPipe: options.stdio[1] })
+      return { status: 0, stdout: responses[index++] ?? '', stderr: '' }
+    }
+  }
+
+  runStep({ command: 'git-ensure-default-branch', args: [], options: {} }, runtime)
+
+  const capture = calls.filter((call) => /^(ls-remote|symbolic-ref|branch --show-current)/.test(call.args))
+  assert.equal(capture.length, 3)
+  for (const call of capture) {
+    assert.equal(call.stdin, 'ignore', `${call.args} must not inherit stdin`)
+    assert.equal(call.stdoutPipe, 'pipe')
+  }
+})
+
+test('reports a spawn that failed or was stopped instead of a bare exit code', () => {
+  const runtimeFor = (extra) => ({
+    platform: 'linux',
+    log: () => {},
+    spawn: () => ({ status: null, stdout: '', stderr: '', ...extra })
+  })
+  const step = { command: 'git', args: ['clone', 'https://example.invalid/repo'], options: {} }
+
+  assert.throws(
+    () => runStep(step, runtimeFor({ error: Object.assign(new Error('spawn ENOBUFS'), { code: 'ENOBUFS' }) })),
+    /produced more than \d+ bytes of output and was stopped/
+  )
+  assert.throws(() => runStep(step, runtimeFor({ signal: 'SIGTERM' })), /was terminated by SIGTERM/)
+  assert.throws(
+    () => runStep(step, runtimeFor({ error: Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }) })),
+    /failed to start/
+  )
+})
+
+test('redaction covers signed-token query parameters as well as URL userinfo', () => {
+  assert.equal(
+    redactUrlCredentials('https://example.invalid/repo?token=ci-token&page=2'),
+    'https://example.invalid/repo?token=<redacted>&page=2'
+  )
+  assert.equal(redactUrlCredentials('https://ci-user:ci-token@example.invalid/repo'), 'https://example.invalid/repo')
+  assert.equal(redactUrlCredentials('https://example.invalid/repo'), 'https://example.invalid/repo')
+})
+
+test('redaction covers the parameter names signed and artifact URLs actually use', () => {
+  for (const name of ['private_token', 'job_token', 'api_key', 'X-Amz-Signature', 'X-Amz-Credential', 'password']) {
+    assert.equal(
+      redactUrlCredentials(`https://example.invalid/dl?${name}=s3cret&next=1`),
+      `https://example.invalid/dl?${name}=<redacted>&next=1`
+    )
+  }
+  // An `@` inside the query is not the userinfo delimiter — it must not swallow the host.
+  assert.equal(redactUrlCredentials('https://example.invalid/a?b=c@d'), 'https://example.invalid/a?b=c@d')
+  // Params that merely end in these letters without a segment boundary are left alone.
+  assert.equal(redactUrlCredentials('https://example.invalid/a?monkey=1'), 'https://example.invalid/a?monkey=1')
+  assert.equal(redactUrlCredentials('https://example.invalid/a?keyboard=1'), 'https://example.invalid/a?keyboard=1')
+})
+
+test('redaction covers bearer headers, bare upload tokens, webhook URLs and fragments', () => {
+  assert.equal(redactUrlCredentials('Authorization: Bearer tb_upload_sample-token_zzz'), 'Authorization: Bearer <redacted>')
+  assert.equal(redactUrlCredentials('token=tb_upload_sample-token_zzz'), 'token=tb_upload_<redacted>')
+  assert.equal(redactUrlCredentials('tb_install_sample-token_zzz'), 'tb_install_<redacted>')
+  assert.equal(redactUrlCredentials('?webhook_url=https://hooks.invalid/sample-token_zzz'), '?webhook_url=<redacted>')
+  assert.equal(redactUrlCredentials('#access_token=sample-token_zzz'), '#access_token=<redacted>')
+  // A fragment lead-in must not swallow the host the way the userinfo rule would.
+  assert.equal(
+    redactUrlCredentials('https://example.invalid/a#token=sample-token_zzz'),
+    'https://example.invalid/a#token=<redacted>'
+  )
+})
+
+test('redaction covers the base64url upload-token charset and case-insensitive auth schemes', () => {
+  // Real tokens are base64url, so `-` and `_` appear in the body. The old charset stopped at
+  // both: a `_` blocked the trailing `\b`, and a `-` ended the match early, leaving the suffix
+  // in the log. Both must now redact the whole token.
+  assert.equal(redactUrlCredentials('tb_upload_sample_token_zzz'), 'tb_upload_<redacted>')
+  assert.equal(redactUrlCredentials('tb_upload_sample-token_zzz'), 'tb_upload_<redacted>')
+  assert.equal(redactUrlCredentials('tb_install_sample-token_zzz'), 'tb_install_<redacted>')
+  // A leading word boundary is still required, so a substring is not mistaken for a token.
+  assert.equal(redactUrlCredentials('notb_upload_SECRET'), 'notb_upload_SECRET')
+  // HTTP auth schemes are case-insensitive and `Basic` carries the same secret.
+  assert.equal(redactUrlCredentials('authorization: bearer placeholder-token'), 'authorization: bearer <redacted>')
+  assert.equal(redactUrlCredentials('Authorization: BASIC cGxhY2Vob2xkZXI'), 'Authorization: BASIC <redacted>')
+  assert.equal(redactUrlCredentials('AUTHORIZATION: BEARER placeholder-token'), 'AUTHORIZATION: BEARER <redacted>')
+  // `monkey`/`keyboard`-style false positives stay clear of the auth rule too.
+  assert.equal(redactUrlCredentials('bearerish'), 'bearerish')
+})
+
+test('redaction covers a webhook secret carried as a URL path segment', () => {
+  // Discord-style webhooks put the secret in the path, which none of the query/userinfo rules
+  // reach. The host and the `/webhooks/` prefix stay; the id and secret go.
+  assert.equal(
+    redactUrlCredentials('https://discord.com/api/webhooks/123456789/AbCd-Ef_ghIjKl'),
+    'https://discord.com/api/webhooks/<redacted>'
+  )
+  assert.equal(
+    redactUrlCredentials('https://hooks.slack.com/api/webhooks/T00/B00/sample-token_zzz'),
+    'https://hooks.slack.com/api/webhooks/<redacted>'
+  )
+  // A bare `/api/webhooks/` with nothing after it is not a secret and stays readable.
+  assert.equal(redactUrlCredentials('see /api/webhooks/ for details'), 'see /api/webhooks/ for details')
+  // Inside a structured line the value must stop at the delimiter, or redaction eats the closing
+  // quote and the next key. The secret itself is still covered.
+  assert.equal(
+    redactUrlCredentials('{"url":"https://discord.com/api/webhooks/1/2","name":"x"}'),
+    '{"url":"https://discord.com/api/webhooks/<redacted>","name":"x"}'
+  )
+})
+
+// The archive fallback error carries the repo URL and reaches `console.error` on both the manual
+// and scheduled paths, which never go through `log()`. It must redact the userinfo itself.
+test('the archive fallback error redacts a credentialed repo URL', () => {
+  assert.throws(
+    () => resolveArchiveUrls({ repoUrl: 'https://ci-user:ci-token@gitlab.com/org/repo.git' }),
+    (error) => {
+      assert.match(error.message, /Archive fallback requires a GitHub repo URL/)
+      assert.ok(!error.message.includes('ci-token'), 'the credential must not appear in the message')
+      assert.match(error.message, /https:\/\/gitlab\.com\/org\/repo\.git/)
+      return true
+    }
+  )
+})
 
 test('normalizes empty error diagnostics', () => {
   assert.equal(errorMessage(new Error('')), 'Error')
@@ -101,9 +276,26 @@ test('updates collector and installed skill from the collector checkout', () => 
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
-        command: 'copy',
-        args: ['/home/user/.tokenboard/TokenBoard/skills/tokenboard', '/home/user/.codex/skills/tokenboard'],
+        command: 'remove',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
+      },
+      {
+        command: 'copy',
+        args: [
+          '/home/user/.tokenboard/TokenBoard/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid
+        ],
+        options: { recursive: true, force: true }
+      },
+      {
+        command: 'replace',
+        args: [
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
+          '/home/user/.codex/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
+        ],
+        options: {}
       },
       {
         command: 'corepack',
@@ -572,9 +764,26 @@ test('clones collector before installing skill when collector is missing', () =>
         options: {}
       },
       {
-        command: 'copy',
-        args: ['/home/user/.tokenboard/TokenBoard/skills/tokenboard', '/home/user/.codex/skills/tokenboard'],
+        command: 'remove',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
+      },
+      {
+        command: 'copy',
+        args: [
+          '/home/user/.tokenboard/TokenBoard/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid
+        ],
+        options: { recursive: true, force: true }
+      },
+      {
+        command: 'replace',
+        args: [
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
+          '/home/user/.codex/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
+        ],
+        options: {}
       },
       {
         command: 'corepack.cmd',
@@ -617,9 +826,26 @@ test('clones a configured collector ref before installing skill when collector i
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
-        command: 'copy',
-        args: ['/home/user/.tokenboard/TokenBoard/skills/tokenboard', '/home/user/.codex/skills/tokenboard'],
+        command: 'remove',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
+      },
+      {
+        command: 'copy',
+        args: [
+          '/home/user/.tokenboard/TokenBoard/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid
+        ],
+        options: { recursive: true, force: true }
+      },
+      {
+        command: 'replace',
+        args: [
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
+          '/home/user/.codex/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
+        ],
+        options: {}
       },
       {
         command: 'corepack.cmd',
@@ -1002,9 +1228,26 @@ test('prepares a replacement checkout before touching an existing non-git collec
         options: { recursive: true, force: true }
       },
       {
-        command: 'copy',
-        args: ['/home/user/.tokenboard/TokenBoard/skills/tokenboard', '/home/user/.codex/skills/tokenboard'],
+        command: 'remove',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
+      },
+      {
+        command: 'copy',
+        args: [
+          '/home/user/.tokenboard/TokenBoard/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid
+        ],
+        options: { recursive: true, force: true }
+      },
+      {
+        command: 'replace',
+        args: [
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
+          '/home/user/.codex/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
+        ],
+        options: {}
       },
       {
         command: 'corepack',
@@ -1066,9 +1309,26 @@ test('prepares a replacement checkout at the configured ref before touching an e
         options: { recursive: true, force: true }
       },
       {
-        command: 'copy',
-        args: ['/home/user/.tokenboard/TokenBoard/skills/tokenboard', '/home/user/.codex/skills/tokenboard'],
+        command: 'remove',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
+      },
+      {
+        command: 'copy',
+        args: [
+          '/home/user/.tokenboard/TokenBoard/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid
+        ],
+        options: { recursive: true, force: true }
+      },
+      {
+        command: 'replace',
+        args: [
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
+          '/home/user/.codex/skills/tokenboard',
+          '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
+        ],
+        options: {}
       },
       {
         command: 'corepack',

@@ -122,8 +122,23 @@ test('removes collector and config directory with all flag', () => {
 
 // `TOKENBOARD_CONFIG_DIR` is unvalidated and the removal is recursive, so a value like
 // `$HOME` or `/` used to delete that whole tree with no prompt. A TokenBoard config
-// directory is always a dot-directory the tool created for itself.
-for (const unsafe of ['/home/tokenboard', '/', '/tmp', '/home', 'relative-config', '/Users/example']) {
+// directory is always the tool's own `~/.tokenboard` (or a `.tokenboard-*` variant), never
+// a home directory, a filesystem root, or another dot-directory the user happens to own.
+for (const unsafe of [
+  '/home/tokenboard',
+  '/',
+  '/tmp',
+  '/home',
+  'relative-config',
+  '/Users/example',
+  // Dot-directories the tool never created: an "any dot-directory" guard would delete these
+  // recursively, taking SSH keys, cloud credentials, or the user's Claude config with them.
+  '/Users/example/.ssh',
+  '/Users/example/.aws',
+  '/Users/example/.claude',
+  '/Users/example/.config',
+  '/home/tokenboard/.gnupg'
+]) {
   test(`refuses to remove an unsafe config directory: ${unsafe}`, () => {
     const harness = createHarness()
 
@@ -139,14 +154,21 @@ for (const unsafe of ['/home/tokenboard', '/', '/tmp', '/home', 'relative-config
   })
 }
 
-test('still removes a dedicated dot-directory config dir', () => {
-  const harness = createHarness()
+for (const safe of ['/home/tokenboard/.tokenboard', '/home/tokenboard/.tokenboard-work']) {
+  test(`still removes the tool's own config dir: ${safe}`, () => {
+    const harness = createHarness()
 
-  const removed = uninstallClient({ ...harness.options, argv: ['--remove-config-dir'] })
+    const removed = uninstallClient({
+      ...harness.options,
+      configDir: safe,
+      exists: (p) => p === safe,
+      argv: ['--remove-config-dir']
+    })
 
-  assert.equal(removed.configDir, true)
-  assert.deepEqual(harness.removedPaths, ['/home/tokenboard/.tokenboard'])
-})
+    assert.equal(removed.configDir, true)
+    assert.deepEqual(harness.removedPaths, [safe])
+  })
+}
 
 for (const flag of ['--all', '--remove-config-dir', '--remove-collector', '--remove-config', '--remove-hooks']) {
   test(`does not remove recovery state after an incomplete Antigravity uninstall with ${flag}`, () => {
@@ -175,6 +197,9 @@ for (const flag of ['--all', '--remove-config-dir', '--remove-collector', '--rem
       /Antigravity statusline restoration is incomplete/
     )
     assert.equal(harness.hookCalls, 1)
+    // The schedule is removed even on this abort: what the throw preserves is the recovery
+    // data (the collector and config directories), and stopping the scheduled syncs is
+    // part of the uninstall the user asked for.
     assert.equal(harness.scheduleCalls, 1)
     assert.deepEqual(harness.removedPaths, [])
   })
@@ -285,10 +310,101 @@ test('changes directory for a Windows cwd in a child named ..cache', () => {
   assert.equal(chdirCalls, 1)
 })
 
+// `TOKENBOARD_COLLECTOR_DIR` is unvalidated and the collector checkout is removed
+// recursively, so a value like `$HOME` used to delete that whole tree. The checkout has no
+// fixed name — an override may point at any clone — so identity is checked by content: a
+// real checkout carries package.json and skills/tokenboard, and anything else is refused.
+// Validation runs before the hooks and schedule are touched, so a refusal leaves the
+// machine exactly as it was.
+for (const unsafe of ['/home/tokenboard', '/', '/tmp', '/home/tokenboard/.ssh', '/home/tokenboard/notes']) {
+  test(`refuses to remove a collector directory without checkout markers: ${unsafe}`, () => {
+    const harness = createHarness()
+
+    assert.throws(
+      () =>
+        uninstallClient({
+          ...harness.options,
+          collectorDir: unsafe,
+          argv: ['--remove-collector'],
+          exists: (p) => p === unsafe || p.startsWith('/home/tokenboard/.tokenboard')
+        }),
+      /Refusing to remove/
+    )
+    assert.deepEqual(harness.removedPaths, [])
+    assert.equal(harness.hookCalls, 0)
+    assert.equal(harness.scheduleCalls, 0)
+  })
+}
+
+test('refuses a home directory even when it carries checkout markers', () => {
+  const harness = createHarness()
+
+  assert.throws(
+    () =>
+      uninstallClient({
+        ...harness.options,
+        collectorDir: '/home/tokenboard',
+        argv: ['--remove-collector'],
+        exists: () => true
+      }),
+    /Refusing to remove/
+  )
+  assert.deepEqual(harness.removedPaths, [])
+  assert.equal(harness.hookCalls, 0)
+  assert.equal(harness.scheduleCalls, 0)
+})
+
+// The collector is removed before the config directory in the `--all` flow. Validating both
+// targets up front is what keeps a refused config directory from leaving the machine with
+// the collector already gone — and, since the guards run before any teardown, with the
+// hooks or schedule already removed either.
+test('validates the config directory before removing the collector', () => {
+  const harness = createHarness()
+
+  assert.throws(
+    () =>
+      uninstallClient({
+        ...harness.options,
+        configDir: '/home/tokenboard/.ssh',
+        argv: ['--all'],
+        exists: (p) => p === '/home/tokenboard/.ssh' || p.startsWith('/home/tokenboard/.tokenboard')
+      }),
+    /Refusing to remove/
+  )
+  assert.deepEqual(harness.removedPaths, [])
+  assert.equal(harness.hookCalls, 0)
+  assert.equal(harness.scheduleCalls, 0)
+})
+
+// `--remove-config` deletes the single config file without the directory guard the
+// recursive delete has. The file only ever lives inside the tool's own config directory,
+// so a stray `TOKENBOARD_CONFIG_DIR` must not turn this into "delete some other
+// directory's config.json".
+test('refuses to remove the config file from a directory that is not a TokenBoard directory', () => {
+  const harness = createHarness()
+
+  assert.throws(
+    () =>
+      uninstallClient({
+        ...harness.options,
+        configDir: '/home/tokenboard/.ssh',
+        configPath: '/home/tokenboard/.ssh/config.json',
+        argv: ['--remove-config'],
+        exists: (p) => p === '/home/tokenboard/.ssh/config.json' || p.startsWith('/home/tokenboard/.tokenboard')
+      }),
+    /Refusing to remove/
+  )
+  assert.deepEqual(harness.removedPaths, [])
+  assert.equal(harness.hookCalls, 0)
+  assert.equal(harness.scheduleCalls, 0)
+})
+
 function createHarness() {
   const existingPaths = new Set([
     '/home/tokenboard/.tokenboard',
     '/home/tokenboard/.tokenboard/TokenBoard',
+    '/home/tokenboard/.tokenboard/TokenBoard/package.json',
+    '/home/tokenboard/.tokenboard/TokenBoard/skills/tokenboard',
     '/home/tokenboard/.tokenboard/config.json',
     '/home/tokenboard/.tokenboard/device-link.json'
   ])
@@ -316,6 +432,7 @@ function createHarness() {
       configPath: '/home/tokenboard/.tokenboard/config.json',
       deviceLinkPath: '/home/tokenboard/.tokenboard/device-link.json',
       fallbackCwd: '/home/tokenboard',
+      homeDir: '/home/tokenboard',
       log: () => {},
       exists: (path) => existingPaths.has(path),
       rm: (path) => {
