@@ -29,6 +29,7 @@ describe('LeaderboardPanel', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
+        limit={50}
         entries={[entry()]}
       />
     )
@@ -56,12 +57,52 @@ describe('LeaderboardPanel', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
+        limit={50}
       />
     )
 
     expect(html).toContain('data-leaderboard-empty="true"')
     expect(html).toContain('app-surface-subtle rounded-xl')
     expect(html).not.toContain('colspan="4"')
+  })
+
+  // The board asks for a fixed number of rows; when it gets exactly that many there may be more
+  // below the cut, and the page must say so rather than let a viewer below the top N infer they
+  // have no data.
+  test('states when the board was truncated at its row cap', async () => {
+    const rows = Array.from({ length: 50 }, (_, index) =>
+      entry({ slug: `u${index}`, displayName: `User ${index}`, totalTokens: 1000 - index })
+    )
+    const html = await renderToString(
+      <LeaderboardPanel
+        period="daily"
+        metric="tokens"
+        rangeLabel="2026-04-29"
+        timezone="UTC"
+        timezoneLabel="UTC+0"
+        limit={50}
+        entries={rows}
+      />
+    )
+
+    expect(html).toContain('data-leaderboard-truncated="true"')
+    expect(html).toContain('仅显示前 50 名')
+  })
+
+  test('stays silent about truncation when the board did not fill its cap', async () => {
+    const html = await renderToString(
+      <LeaderboardPanel
+        period="daily"
+        metric="tokens"
+        rangeLabel="2026-04-29"
+        timezone="UTC"
+        timezoneLabel="UTC+0"
+        limit={50}
+        entries={[entry()]}
+      />
+    )
+
+    expect(html).not.toContain('data-leaderboard-truncated="true"')
   })
 
   test('names every cost-unavailable source on leaderboards', async () => {
@@ -83,6 +124,7 @@ describe('LeaderboardPanel', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
+        limit={50}
       />
     )
 
@@ -114,6 +156,7 @@ describe('LeaderboardPanel model and source columns', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
+        limit={50}
       />
     )
 
@@ -141,6 +184,7 @@ describe('LeaderboardPanel model and source columns', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
+        limit={50}
       />
     )
 
@@ -165,6 +209,7 @@ describe('LeaderboardPanel current viewer highlight', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
+        limit={50}
       />
     )
 
@@ -185,6 +230,7 @@ describe('LeaderboardPanel current viewer highlight', () => {
         rangeLabel="2026-04-29"
         timezone="UTC"
         timezoneLabel="UTC+0"
+        limit={50}
       />
     )
 
@@ -207,6 +253,7 @@ describe('LeaderboardPanel range caption', () => {
         rangeLabel="2026-05-01"
         timezone="Asia/Shanghai"
         timezoneLabel="UTC+8"
+        limit={50}
       />
     )
 
@@ -225,6 +272,7 @@ describe('LeaderboardPanel range caption', () => {
         rangeLabel="2026-05"
         timezone="America/Los_Angeles"
         timezoneLabel="UTC-7"
+        limit={50}
       />
     )
 
@@ -245,6 +293,7 @@ describe('LeaderboardPanel range caption', () => {
         rangeLabel="2026-05-01"
         timezone="Asia/Shanghai"
         timezoneLabel="UTC+8"
+        limit={50}
       />
     )
 

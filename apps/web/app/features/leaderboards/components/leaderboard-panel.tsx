@@ -19,10 +19,15 @@ export type LeaderboardPanelProps = {
   timezone: string
   /** The offset of `timezone` right now, e.g. `UTC+8`. */
   timezoneLabel: string
+  /** The row cap the page was ranked under. When the board fills it, the page is truncated. */
+  limit: number
 }
 
 export function LeaderboardPanel(props: LeaderboardPanelProps) {
   const title = `${props.period === 'monthly' ? '每月' : '每日'}${metricTitle(props.metric)}排名`
+  // The board asks for `limit` rows; getting exactly that many means there may be more below
+  // the cut. Say so, so a user outside the top N is not left to infer they have no data.
+  const truncated = props.entries.length >= props.limit
 
   return (
     <div data-leaderboard-panel="true">
@@ -35,7 +40,7 @@ export function LeaderboardPanel(props: LeaderboardPanelProps) {
           timezone={props.timezone}
           timezoneLabel={props.timezoneLabel}
         />
-        <LeaderboardPanelContent entries={props.entries} />
+        <LeaderboardPanelContent entries={props.entries} limit={props.limit} truncated={truncated} />
       </Card>
     </div>
   )
@@ -100,7 +105,7 @@ function LeaderboardRangeCaption(props: {
   )
 }
 
-function LeaderboardPanelContent(props: { entries: LeaderboardEntry[] }) {
+function LeaderboardPanelContent(props: { entries: LeaderboardEntry[]; limit: number; truncated: boolean }) {
   return (
     <CardContent class="pt-5">
       {props.entries.length > 0 ? (
@@ -111,6 +116,11 @@ function LeaderboardPanelContent(props: { entries: LeaderboardEntry[] }) {
             ))}
           </div>
           <LeaderboardTable entries={props.entries} />
+          {props.truncated ? (
+            <p class="mt-3 text-xs text-[var(--app-muted)]" data-leaderboard-truncated="true">
+              仅显示前 {props.limit} 名。榜单按排名截断，未上榜不代表没有用量。
+            </p>
+          ) : null}
         </>
       ) : (
         <div

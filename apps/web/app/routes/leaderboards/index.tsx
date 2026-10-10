@@ -46,6 +46,7 @@ export default createRoute(async (c) => {
         rangeLabel={view.rangeLabel}
         timezone={view.timezone}
         timezoneLabel={view.timezoneLabel}
+        limit={view.limit}
       />
     </main>
   )

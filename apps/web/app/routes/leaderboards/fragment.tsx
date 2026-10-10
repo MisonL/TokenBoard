@@ -43,6 +43,7 @@ export const GET = createRoute(async (c) => {
         rangeLabel={view.rangeLabel}
         timezone={view.timezone}
         timezoneLabel={view.timezoneLabel}
+        limit={view.limit}
       />
     )
   } catch (error) {

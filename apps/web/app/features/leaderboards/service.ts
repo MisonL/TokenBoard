@@ -5,6 +5,13 @@ import { localIsoDate, timezoneOffsetLabel } from '../../lib/time'
 import { defaultTimezone } from '../../lib/timezone'
 import type { Bindings } from '../../lib/db'
 
+/**
+ * How many ranked rows a page asks for. The board is a snapshot of the top of the ranking, not
+ * a paginated listing, so the panel states the cap when it is reached rather than letting a
+ * viewer below the cut wonder where they landed.
+ */
+export const leaderboardRowLimit = 50
+
 export type LeaderboardOptions = {
   period?: unknown
   metric?: unknown
@@ -34,6 +41,8 @@ export type LeaderboardView = {
   timezone: string
   /** `UTC+8`, `UTC-7`, `UTC+5:30` — the offset at this instant, not a fixed one. */
   timezoneLabel: string
+  /** The row cap this page was ranked under, so the panel can say when it may be truncated. */
+  limit: number
 }
 
 export async function getLeaderboard(
@@ -58,7 +67,7 @@ export async function getLeaderboard(
     metric,
     startDate: range.startDate,
     endDateExclusive: range.endDateExclusive,
-    limit: 50,
+    limit: leaderboardRowLimit,
     summaryStrict: usageSummaryStrictMode(env),
     viewerUserId: options.viewerUserId ?? null
   })
@@ -69,7 +78,8 @@ export async function getLeaderboard(
     metric,
     rangeLabel: period === 'monthly' ? today.slice(0, 7) : today,
     timezone,
-    timezoneLabel: timezoneOffsetLabel(timezone, now)
+    timezoneLabel: timezoneOffsetLabel(timezone, now),
+    limit: leaderboardRowLimit
   } satisfies LeaderboardView
 }
 
