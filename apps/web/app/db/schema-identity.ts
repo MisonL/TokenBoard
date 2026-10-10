@@ -125,7 +125,12 @@ export const pairingCodes = sqliteTable(
     consumedAt: text('consumed_at'),
     createdAt: text('created_at').notNull()
   },
-  (table) => [index('pairing_codes_target_device_idx').on(table.userId, table.targetDeviceId)]
+  (table) => [
+    index('pairing_codes_target_device_idx').on(table.userId, table.targetDeviceId),
+    // The retention sweep prunes on `julianday(COALESCE(consumed_at, expires_at))`, so this is a
+    // function index (0036) rather than one over a bare column.
+    index('pairing_codes_retention_julianday_idx').on(sql`julianday(coalesce(${table.consumedAt}, ${table.expiresAt}))`)
+  ]
 )
 
 export const devices = sqliteTable(
@@ -184,5 +189,9 @@ export const auditLogs = sqliteTable(
     metadata: text('metadata'),
     createdAt: text('created_at').notNull()
   },
-  (table) => [index('audit_logs_user_created_idx').on(table.userId, table.createdAt)]
+  (table) => [
+    index('audit_logs_user_created_idx').on(table.userId, table.createdAt),
+    // The retention sweep prunes on `julianday(created_at)`, so this is a function index (0036).
+    index('audit_logs_created_julianday_idx').on(sql`julianday(${table.createdAt})`)
+  ]
 )

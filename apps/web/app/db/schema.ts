@@ -129,7 +129,11 @@ export const webhookSubscriptions = sqliteTable(
     webhookUrlMasked: text('webhook_url_masked').notNull(),
     signingSecretEncrypted: text('signing_secret_encrypted'),
     timezone: text('timezone').notNull().default('UTC'),
-    scheduleTimeLocal: text('schedule_time_local').notNull().default('18:00'),
+    // Migration 0013 created this column `DEFAULT '09:00'` and no later migration changed it, so
+    // the declaration mirrors the deployed default. The singular column is read only as a
+    // fallback when a row predates `schedule_times_local`; every write sets it explicitly, so the
+    // default never decides a real schedule.
+    scheduleTimeLocal: text('schedule_time_local').notNull().default('09:00'),
     scheduleTimesLocal: text('schedule_times_local').notNull().default('18:00'),
     scheduleWeekdays: text('schedule_weekdays').notNull().default('0,1,2,3,4,5,6'),
     sendEmptyReport: integer('send_empty_report', { mode: 'boolean' }).notNull().default(false),
