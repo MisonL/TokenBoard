@@ -299,4 +299,31 @@ describe('LeaderboardPanel range caption', () => {
 
     expect(html).toContain('各自本地时区')
   })
+
+  // The period and metric strips both carry a link per metric, so a selector that matches on the
+  // query alone lands on the wrong strip. The swap restore reads the strip from the group name
+  // and the selection from the active item, and the active item has to be focusable for the
+  // restore to land on it at all.
+  test('names each tab strip and makes its active item focusable', async () => {
+    const html = await renderToString(
+      <LeaderboardPanel
+        entries={[]}
+        period="daily"
+        metric="cost"
+        rangeLabel="2026-05-01"
+        timezone="UTC"
+        timezoneLabel="UTC+0"
+        limit={50}
+      />
+    )
+
+    expect(html).toContain('data-leaderboard-group="period"')
+    expect(html).toContain('data-leaderboard-group="metric"')
+    expect(html).toContain('aria-current="true"')
+    expect(html).toContain('tabindex="-1"')
+    expect(html).toContain('data-leaderboard-value="cost"')
+    // The strip that changed is the one whose active item carries the new selection; the period
+    // strip's active item keeps its own value, so a restore aimed at `metric` finds `cost`.
+    expect(html).toContain('data-leaderboard-value="daily"')
+  })
 })

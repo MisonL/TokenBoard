@@ -71,8 +71,8 @@ function LeaderboardPanelHeader(props: {
         </p>
       </div>
       <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-        <SegmentedControl items={periodItems(props.period, props.metric)} />
-        <SegmentedControl items={metricItems(props.period, props.metric)} />
+        <SegmentedControl group="period" items={periodItems(props.period, props.metric)} />
+        <SegmentedControl group="metric" items={metricItems(props.period, props.metric)} />
       </div>
     </CardHeader>
   )
@@ -136,20 +136,21 @@ function LeaderboardPanelContent(props: { entries: LeaderboardEntry[]; limit: nu
 
 function periodItems(period: 'daily' | 'monthly', metric: LeaderboardMetric) {
   return [
-    { label: '每日', href: leaderboardHref('daily', metric), active: period === 'daily' },
-    { label: '每月', href: leaderboardHref('monthly', metric), active: period === 'monthly' }
+    { label: '每日', value: 'daily', href: leaderboardHref('daily', metric), active: period === 'daily' },
+    { label: '每月', value: 'monthly', href: leaderboardHref('monthly', metric), active: period === 'monthly' }
   ]
 }
 
 function metricItems(period: 'daily' | 'monthly', metric: LeaderboardMetric) {
   return [
-    { label: 'Tokens', href: leaderboardHref(period, 'tokens'), active: metric === 'tokens' },
+    { label: 'Tokens', value: 'tokens', href: leaderboardHref(period, 'tokens'), active: metric === 'tokens' },
     {
       label: '不含缓存读',
+      value: 'tokens-without-cache-read',
       href: leaderboardHref(period, 'tokens-without-cache-read'),
       active: metric === 'tokens-without-cache-read'
     },
-    { label: '费用', href: leaderboardHref(period, 'cost'), active: metric === 'cost' }
+    { label: '费用', value: 'cost', href: leaderboardHref(period, 'cost'), active: metric === 'cost' }
   ]
 }
 
@@ -350,22 +351,33 @@ function leaderboardHref(period: 'daily' | 'monthly', metric: LeaderboardMetric)
   return `/leaderboards?period=${period}&metric=${metric}`
 }
 
-function SegmentedControl(props: { items: Array<{ label: string; href: string; active: boolean }> }) {
+// The control name travels on the group, and the selected value on its active item: a switch that
+// rebuilds the tab strips has no unique selector of its own, and a keyboard user moving between
+// them needs the restore to find the strip they were in.
+function SegmentedControl(props: {
+  group: 'period' | 'metric'
+  items: Array<{ label: string; value: string; href: string; active: boolean }>
+}) {
   return (
     <div
       class={cn(
         'grid rounded-full border border-[var(--app-border)] p-1 text-sm text-[var(--app-muted)] sm:flex',
         props.items.length === 3 ? 'grid-cols-3' : 'grid-cols-2'
       )}
+      data-leaderboard-group={props.group}
     >
       {props.items.map((item) =>
         item.active ? (
           // The active item is not a link, but a screen-reader user has to be told it is the
           // current selection rather than reading a bare, unlabelled span. It is rendered as a
-          // plain span (not `Badge`) because the primitive takes no ARIA attributes.
+          // plain span (not `Badge`) because the primitive takes no ARIA attributes. It carries
+          // `tabindex="-1"` so the focus restore can land on it after a swap — a span is not
+          // focusable otherwise — while staying out of the tab order the links define.
           <span
             class="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-lime-300 px-4 py-2 text-xs font-black uppercase tracking-wide text-stone-950 sm:w-auto"
-            aria-current="page"
+            aria-current="true"
+            tabindex={-1}
+            data-leaderboard-value={item.value}
           >
             {item.label}
           </span>
