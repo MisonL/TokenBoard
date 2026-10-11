@@ -56,17 +56,35 @@ describe('client navigation', () => {
 
     expect(dom.body.hasAttribute('aria-busy')).toBe(false)
   })
+
+  // Swapping the panel's outerHTML destroys the element that held focus, so a keyboard user who
+  // activated a tab used to land on <body> and had to Tab through the whole page again. Focus
+  // has to follow the selection into the swapped-in control.
+  test('restores focus to the tab it just swapped in', async () => {
+    const dom = installNavigationDom({ initialPath: '/leaderboards', hasLeaderboardPanel: true })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => navigationResponse('/leaderboards/fragment', '<div data-leaderboard-panel="true"></div>'))
+    )
+
+    initAppNavigation(() => undefined)
+    await dom.click('/leaderboards?period=monthly&metric=cost')
+
+    expect(dom.focused).toEqual(['leaderboard-link'])
+  })
 })
 
 function installNavigationDom(
   options: {
     initialPath?: string
     hasLeaderboardPanel?: boolean
+    fragmentHtml?: string
   } = {}
 ) {
   const listeners = new Map<string, (event: Event) => Promise<void> | void>()
   const body = new FakeBody()
   const leaderboardPanel = options.hasLeaderboardPanel ? new FakePanel() : null
+  const focused: string[] = []
   const history: string[] = []
   const location = new URL(options.initialPath ?? '/start', 'https://tokenboard.example.com')
   const document = {
@@ -80,7 +98,18 @@ function installNavigationDom(
     addEventListener(type: string, listener: (event: Event) => Promise<void> | void) {
       listeners.set(type, listener)
     },
-    querySelector: (selector: string) => (selector === '[data-leaderboard-panel]' ? leaderboardPanel : null),
+    querySelector: (selector: string) => {
+      if (selector === '[data-leaderboard-panel]') return leaderboardPanel
+      // The focus restore looks the swapped-in control up by a selector built from the target
+      // URL; the double matches any of them so the test does not pin the exact spelling.
+      if (selector.includes('[data-leaderboard-link]')) {
+        return {
+          href: 'https://tokenboard.example.com/leaderboards?period=monthly&metric=tokens',
+          focus: () => focused.push('leaderboard-link')
+        }
+      }
+      return null
+    },
     querySelectorAll: () => [],
     getElementById: () => null
   }
@@ -110,6 +139,7 @@ function installNavigationDom(
   return {
     body,
     history,
+    focused,
     click(pathname: string) {
       const href = new URL(pathname, location).toString()
       const link = {

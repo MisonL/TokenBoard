@@ -69,6 +69,7 @@ async function replaceLeaderboardPanel(pageUrl: URL, pushState: boolean, navigat
     if (pushState) window.history.pushState({}, '', pageUrl)
     syncDocumentTitle(pageUrl)
     syncScroll(pageUrl)
+    restoreFocusAfterPanelSwap(pageUrl)
   } catch (_) {
     if (isCurrentNavigation(navigation)) window.location.href = pageUrl.toString()
   } finally {
@@ -179,4 +180,21 @@ function syncScroll(pageUrl: URL) {
     }
   }
   window.scrollTo(0, 0)
+}
+
+// Replacing the panel's `outerHTML` destroys the element that held focus, so a keyboard user who
+// activated a tab lands on `<body>` and has to Tab through the whole page again. Move focus to
+// the control that now represents the same selection, so the swap is invisible to them.
+function restoreFocusAfterPanelSwap(pageUrl: URL) {
+  const period = pageUrl.searchParams.get('period')
+  const metric = pageUrl.searchParams.get('metric')
+  const selector = period
+    ? `[data-leaderboard-link][href*="period=${period}"]`
+    : metric
+      ? `[data-leaderboard-link][href*="metric=${metric}"]`
+      : null
+  if (!selector) return
+  const target = document.querySelector<HTMLAnchorElement>(selector)
+  if (!target) return
+  target.focus()
 }

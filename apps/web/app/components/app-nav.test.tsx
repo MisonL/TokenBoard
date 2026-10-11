@@ -39,4 +39,12 @@ describe('AppNav', () => {
     expect(html).toContain('px-3 py-2')
     expect(html).not.toContain('xl:px-3 xl:py-2')
   })
+
+  // Every page has exactly one `<nav>` and one `<main>`, so the nav has to be labelled — an
+  // unlabelled nav is a landmark a screen-reader user cannot identify or jump between.
+  test('labels the navigation landmark', async () => {
+    const html = await renderToString(<AppNav isAuthenticated={false} />)
+
+    expect(html).toContain('aria-label="主导航"')
+  })
 })

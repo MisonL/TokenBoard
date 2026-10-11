@@ -20,6 +20,7 @@ export function AppNav(props: AppNavProps) {
 
   return (
     <nav
+      aria-label="主导航"
       class={cn(
         'app-surface-raised mx-auto flex max-w-6xl flex-col gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] px-3 py-3 text-[var(--app-text)] backdrop-blur sm:px-4 xl:flex-row xl:items-center xl:justify-between',
         props.compact ? 'mb-3 xl:py-2' : 'mb-6'
