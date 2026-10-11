@@ -367,9 +367,16 @@ function escapeWeComMarkdownText(value: string) {
 // Feishu cards render a Lark-markdown subset. User-controlled fields (display name, timezone,
 // model ids) reach the card body, so the same escaping the WeCom path applies is applied here:
 // entity-encode the HTML-sensitive characters and flatten newlines so a value cannot break out
-// of its line or inject markup into the card.
+// of its line or inject markup into the card. Lark markdown also consumes a backslash as an
+// escape, so the characters that would otherwise open emphasis, code or a link are escaped too —
+// a display name of `**x**` renders literally instead of bolding the rest of the card.
 function escapeFeishuMarkdownText(value: string) {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, ' ')
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r?\n/g, ' ')
+    .replace(/[\\`*_~[\]]/g, '\\$&')
 }
 
 function escapeDingTalkMarkdownText(value: string) {

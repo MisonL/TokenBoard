@@ -572,4 +572,34 @@ describe('notification adapters', () => {
     // The `&` and `<` in the timezone are entity-encoded, not passed through raw.
     expect(text).toContain('UTC+8 &amp; &lt;b&gt;x&lt;/b&gt;')
   })
+
+  // Lark markdown treats a backslash as an escape, so the characters that open emphasis, code
+  // spans or links would swallow the card's own markup when a value contains them literally.
+  // The timezone and model id both reach the card body; the display name goes to the card title
+  // as `plain_text`, which is not parsed as markdown.
+  test('escapes the markdown structural characters a Lark value could otherwise trigger', () => {
+    const injectionReport: DailyTokenReport = {
+      ...report,
+      timezone: '**x**',
+      sourceSplit: [{ source: 'codex', totalTokens: 100, totalTokensWithoutCacheRead: 80 }],
+      topModels: [
+        {
+          model: 'gpt_5 *flash* `code` [link](https://x) ~strike~',
+          totalTokens: 100,
+          totalTokensWithoutCacheRead: 80,
+          costUsd: 0.5,
+          sourceSplit: [{ source: 'codex' }]
+        }
+      ]
+    }
+
+    const text = formatFeishuDailyReport(injectionReport)
+
+    expect(text).toContain('\\*\\*x\\*\\*')
+    // Escaping the brackets is what breaks the link syntax; the parentheses alone do not.
+    expect(text).toContain('gpt\\_5 \\*flash\\* \\`code\\` \\[link\\](https://x) \\~strike\\~')
+    // The raw, unescaped form would let the card render its own emphasis.
+    expect(text).not.toContain('**x**')
+    expect(text).not.toContain('gpt_5 *flash*')
+  })
 })
