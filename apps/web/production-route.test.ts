@@ -1,6 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 // @ts-expect-error The executable route checker is intentionally JavaScript.
 import * as routeChecker from './scripts/check-production-route.mjs'
@@ -178,3 +180,30 @@ function createProductionRouteFixture(pattern = 'tokenboard.chaosyn.com') {
     cleanup: () => rmSync(directory, { recursive: true, force: true })
   }
 }
+
+// The checker is a deploy gate: `deploy.mjs` reads its exit status and publishes on success, so
+// an entry guard that misses a symlinked invocation would skip the preflight and report success.
+// A bare `resolve()` compare does exactly that — it does not follow symlinks while Node resolves
+// `import.meta.url` through them. Run the file through a symlink and assert it still executes.
+describe('production route preflight entry guard', () => {
+  test('runs when reached through a symlinked path', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'tokenboard-route-symlink-'))
+    try {
+      const link = join(directory, 'check-linked.mjs')
+      symlinkSync(fileURLToPath(new URL('./scripts/check-production-route.mjs', import.meta.url)), link)
+
+      // No Cloudflare credentials in a test environment, so the real check fails and exits
+      // non-zero — the point is that it ran at all, rather than exiting 0 having done nothing.
+      const result = spawnSync(process.execPath, [link], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { PATH: process.env.PATH, HOME: directory }
+      })
+
+      expect(result.status).not.toBe(0)
+      expect(`${result.stdout}${result.stderr}`).toContain('Cloudflare')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})

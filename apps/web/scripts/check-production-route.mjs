@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,11 +8,23 @@ const CONFIG_FILE = process.env.TOKENBOARD_WRANGLER_CONFIG?.trim() || DEFAULT_CO
 const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4'
 const REQUEST_TIMEOUT_MS = 10_000
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// This is a deploy gate, so a missed entry must fail loudly, not silently pass. A bare
+// `resolve()` compare does not follow symlinks while Node resolves `import.meta.url` through
+// them, so a symlinked invocation of this file would skip the check and exit 0 — which
+// `deploy.mjs` reads as success and publishes. Canonicalize both sides.
+if (process.argv[1] && isMainEntry(process.argv[1])) {
   runCli().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
   })
+}
+
+function isMainEntry(argv1) {
+  try {
+    return realpathSync(argv1) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
 }
 
 export async function verifyProductionRoute({
