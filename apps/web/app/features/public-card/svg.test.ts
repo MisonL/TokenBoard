@@ -216,4 +216,34 @@ describe('public card timezone caption', () => {
     expect(svg).toContain('data-card-timezone="true"')
     expect(svg).toContain('text-anchor="end"')
   })
+
+  // Every user-controlled string reaches the card as XML text, so it must be entity-encoded or
+  // a display name can close a tag and inject markup into the document. The implementation has
+  // always escaped; this pins it so a refactor cannot drop it silently.
+  test('escapes user-controlled fields out of the XML document', () => {
+    const svg = renderUsageCardSvg(
+      {
+        ...input,
+        displayName: '<script>alert(1)</script>',
+        timezoneLabel: 'A & B'
+      },
+      {
+        // `title` and `subtitle` are the operator's own config strings, but they still ride into
+        // XML text nodes, so they are covered here too. `displayName` reaches the subtitle when
+        // the config does not override it, which is the user-controlled path that matters.
+        title: 'Eve &amp; Co',
+        showPublicUrl: false,
+        metrics: ['todayTokens', 'totalTokens']
+      }
+    )
+
+    // The raw payload must never appear verbatim …
+    expect(svg).not.toContain('<script>')
+    // … and the entity-encoded form must, in both the visible text and the aria-label/title.
+    expect(svg).toContain('&lt;script&gt;')
+    expect(svg).toContain('Eve &amp;amp; Co')
+    // A bare `&` becomes `&amp;`; the double-encoding above is the correct result of encoding an
+    // already-encoded title, and confirms `&` itself is encoded rather than passed through.
+    expect(svg).toContain('A &amp; B')
+  })
 })
