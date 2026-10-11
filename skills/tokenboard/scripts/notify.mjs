@@ -5,6 +5,7 @@ import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync,
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 import { configDir, parseArgs, readConfig } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { coordinatedSync } from './coordinator.mjs'
@@ -306,7 +307,11 @@ function formatSyncFailure(result) {
   if (!stderr) {
     return `TokenBoard hook sync failed with exit code ${exitCode}`
   }
-  return `TokenBoard hook sync failed with exit code ${exitCode}: ${stderr}`
+  // The child's stderr is echoed into the terminal (and may be pasted into a chat or a log),
+  // so it must go through the same redaction every other output path uses. A provider or
+  // `ccusage` error can echo `tb_upload_…` or `https://user:token@host/…`; without this the
+  // secret lands in the scrollback intact.
+  return `TokenBoard hook sync failed with exit code ${exitCode}: ${redactUrlCredentials(stderr)}`
 }
 
 function normalizeChildOutput(value) {
