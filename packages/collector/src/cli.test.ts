@@ -1,6 +1,9 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, test, vi } from 'vitest'
 import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
 import { runCollectorCli, transientSyncExitCode } from './cli'
@@ -1365,4 +1368,26 @@ describe('runCollectorCli', () => {
     expect(result).toBe(1)
     expect(stderr).toEqual(['No valid Claude data directories found'])
   })
+})
+
+// The entry guard must canonicalize both paths. Node resolves `import.meta.url` through symlinks
+// while `argv[1]` is the typed path, and `resolve()` follows neither — so a symlinked invocation
+// made the CLI exit 0 with no output, doing nothing. `sync.mjs` reaches this file through a
+// relative path under a `cwd` (which arrives canonicalized), so only a direct symlinked call
+// exposes it; that is what this runs.
+test('runs when reached through a symlinked path', { timeout: 90_000 }, () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-cli-symlink-'))
+  try {
+    const link = join(root, 'cli-linked.ts')
+    symlinkSync(fileURLToPath(new URL('./cli.ts', import.meta.url)), link)
+
+    const result = spawnSync(process.execPath, ['--import', 'tsx', link], { encoding: 'utf8', timeout: 90_000 })
+
+    // No command argument, so the CLI reports usage and exits non-zero — the point is that it
+    // ran at all, rather than the silent exit 0 a broken guard produces.
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toContain('Usage: tokenboard')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

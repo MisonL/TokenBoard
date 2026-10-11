@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,6 +134,14 @@ function windowsCommand(packageManager) {
   return packageManager === 'bun' ? 'bun.exe' : `${packageManager}.cmd`
 }
 
+// This file is the package's `bin` entry, so it is normally reached through a `node_modules/.bin`
+// symlink — exactly the case a bare `resolve()` comparison misses, leaving the command exiting 0
+// with no output. Canonicalize both sides.
 function isMain() {
-  return process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
 }

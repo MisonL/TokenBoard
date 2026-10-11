@@ -1,5 +1,6 @@
+import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
 import { errorMessage } from './error-message'
@@ -746,7 +747,20 @@ function readFlags(args: string[]) {
   return flags
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Canonicalize both sides: Node resolves `import.meta.url` through symlinks while `argv[1]` is
+// whatever the caller typed, and `resolve()` does not follow links — so a symlinked entry path
+// made this false and the CLI exited 0 having done nothing. `sync.mjs` invokes this file with a
+// relative path under a `cwd`, which happens to arrive canonicalized, but a direct symlinked
+// invocation (the `bin` entry, or a hand-written path) does not.
+if (process.argv[1] && isMainEntry(process.argv[1])) {
   const exitCode = await runCollectorCli(process.argv.slice(2))
   process.exitCode = exitCode
+}
+
+function isMainEntry(argv1: string) {
+  try {
+    return realpathSync(argv1) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
 }

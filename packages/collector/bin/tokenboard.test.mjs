@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -193,6 +193,27 @@ test.skipIf(process.platform !== 'win32')('runs a real Windows shim without spli
     expect(result.error).toBeUndefined()
     expect(result.status).toBe(0)
     expect(result.stdout).toContain(JSON.stringify(['alpha beta', 'C:\\Program Files (x86)\\TokenBoard\\', 'tail']))
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// This file is the package `bin` entry, so the normal way it runs is through a `node_modules/.bin`
+// symlink. A bare `resolve()` compare does not follow links and made the command exit 0 with no
+// output; the guard must canonicalize both sides.
+test('runs when reached through a symlinked path', { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-bin-symlink-'))
+  try {
+    const link = join(root, 'tokenboard-linked.mjs')
+    await symlink(fileURLToPath(new URL('./tokenboard.mjs', import.meta.url)), link)
+
+    const result = spawnSync(process.execPath, [link], { encoding: 'utf8', timeout: 60_000 })
+
+    // The entry must actually run: it forwards to the package manager, which is absent here, so
+    // a non-zero exit is expected — what matters is that it produced output rather than the
+    // silent exit 0 a broken guard gives.
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`.trim().length).toBeGreaterThan(0)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
