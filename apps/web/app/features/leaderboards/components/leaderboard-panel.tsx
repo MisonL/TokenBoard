@@ -360,7 +360,15 @@ function SegmentedControl(props: { items: Array<{ label: string; href: string; a
     >
       {props.items.map((item) =>
         item.active ? (
-          <Badge class="w-full justify-center sm:w-auto">{item.label}</Badge>
+          // The active item is not a link, but a screen-reader user has to be told it is the
+          // current selection rather than reading a bare, unlabelled span. It is rendered as a
+          // plain span (not `Badge`) because the primitive takes no ARIA attributes.
+          <span
+            class="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-lime-300 px-4 py-2 text-xs font-black uppercase tracking-wide text-stone-950 sm:w-auto"
+            aria-current="page"
+          >
+            {item.label}
+          </span>
         ) : (
           <a
             class={cn(
