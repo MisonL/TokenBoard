@@ -81,4 +81,16 @@ describe('source-format', () => {
     expect(formatCostWithAvailability(0.42, [{ source: 'toString' }])).toBe('$0.42')
     expect(formatSourceCostNote('toString')).toBe('')
   })
+
+  // `formatSource` reads a string out of a plain object, so a source named after an inherited
+  // member would otherwise render that member's name. The stored-source path is guarded by the
+  // ingest enum, but the lookup should not depend on that guard being present.
+  test('falls back to the raw source for keys the label table does not own', () => {
+    expect(formatSource('claude-code')).toBe('Claude Code')
+    for (const key of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+      expect(formatSource(key)).toBe(key)
+    }
+    // The fallback is the raw string, not the member's own value.
+    expect(formatSource('constructor')).not.toContain('native code')
+  })
 })

@@ -29,8 +29,12 @@ export type SourceSplitItem = {
   source: string
 }
 
+// Sources reach this module as plain strings read back from stored rows, so a key like
+// `constructor` or `toString` would resolve to an inherited member instead of the fallback.
+// Upload validation rejects those, but the lookup stays owned-only to match the other label
+// tables in the app rather than relying on a check made somewhere else.
 export function formatSource(source: string) {
-  return sourceLabels[source] ?? source
+  return Object.prototype.hasOwnProperty.call(sourceLabels, source) ? sourceLabels[source] : source
 }
 
 export function hasUnavailableCostSource(sourceSplit: SourceSplitItem[]) {
