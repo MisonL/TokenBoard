@@ -180,13 +180,13 @@ export function formatDingTalkDailyReport(report: DailyTokenReport) {
   return `${body}${dingtalkLinkSeparator}${link}`
 }
 
-function formatFeishuDailyReport(report: DailyTokenReport) {
+export function formatFeishuDailyReport(report: DailyTokenReport) {
   const lines = [
-    `> ${report.reportDate} / ${report.timezone}`,
+    `> ${escapeFeishuMarkdownText(report.reportDate)} / ${escapeFeishuMarkdownText(report.timezone)}`,
     `> **总消耗**：${formatInteger(report.totalTokens)} token`,
     `> **去缓存读**：${formatInteger(report.totalTokensWithoutCacheRead)} token`,
     `> **缓存率**：${formatReportCacheRate(report)}`,
-    `> **费用**：${formatCostWithAvailability(report.costUsd, report.sourceSplit)} / 会话：${formatInteger(report.sessionCount)}`,
+    `> **费用**：${escapeFeishuMarkdownText(formatCostWithAvailability(report.costUsd, report.sourceSplit))} / 会话：${formatInteger(report.sessionCount)}`,
     '',
     '**主要来源**',
     ...formatFeishuSourceSplit(report),
@@ -301,7 +301,7 @@ function formatFeishuSourceSplit(report: DailyTokenReport) {
   const items = report.sourceSplit
     .slice(0, wecomListLimit)
     .flatMap((item) => [
-      `- **${formatSource(item.source)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token`,
+      `- **${escapeFeishuMarkdownText(formatSource(item.source))}**：${formatInteger(item.totalTokensWithoutCacheRead)} token`,
       `  - 含缓存读 ${formatInteger(item.totalTokens)} token / 缓存率 ${formatReportCacheRate(item)}${formatSourceCostSuffix(item.source)}`
     ])
   return appendFeishuHiddenCount(items, report.sourceSplit.length)
@@ -312,7 +312,7 @@ function formatFeishuTopModels(report: DailyTokenReport) {
   const items = report.topModels
     .slice(0, wecomListLimit)
     .flatMap((item) => [
-      `- **${item.model}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatModelCost(item, report)}`,
+      `- **${escapeFeishuMarkdownText(item.model)}**：${formatInteger(item.totalTokensWithoutCacheRead)} token / ${formatModelCost(item, report)}`,
       `  - 缓存率 ${formatReportCacheRate(item)}`
     ])
   return appendFeishuHiddenCount(items, report.topModels.length)
@@ -361,6 +361,14 @@ function formatInteger(value: number) {
 }
 
 function escapeWeComMarkdownText(value: string) {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, ' ')
+}
+
+// Feishu cards render a Lark-markdown subset. User-controlled fields (display name, timezone,
+// model ids) reach the card body, so the same escaping the WeCom path applies is applied here:
+// entity-encode the HTML-sensitive characters and flatten newlines so a value cannot break out
+// of its line or inject markup into the card.
+function escapeFeishuMarkdownText(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r?\n/g, ' ')
 }
 

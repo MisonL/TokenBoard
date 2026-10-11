@@ -3,6 +3,7 @@ import {
   buildWebhookPayload,
   formatDailyReport,
   formatDingTalkDailyReport,
+  formatFeishuDailyReport,
   formatWeComDailyReport,
   type DailyTokenReport
 } from './adapters'
@@ -541,5 +542,34 @@ describe('notification adapters', () => {
     expect(title).toContain('...')
     expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(14 * 1024)
     expect(new TextEncoder().encode(JSON.stringify(payload.body)).byteLength).toBeLessThanOrEqual(20 * 1024)
+  })
+
+  // Feishu cards receive the same user-controlled strings the WeCom and DingTalk paths escape,
+  // so they must be escaped too — otherwise a display name or model id carrying markup lands in
+  // the card body verbatim. Both providers encode `&`/`<`/`>` and flatten newlines.
+  test('escapes user-controlled fields in the Feishu card body', () => {
+    const injectionReport: DailyTokenReport = {
+      ...report,
+      displayName: '<script>alert(1)</script>',
+      timezone: 'UTC+8 & <b>x</b>',
+      sourceSplit: [{ source: 'codex', totalTokens: 100, totalTokensWithoutCacheRead: 80 }],
+      topModels: [
+        {
+          model: 'gpt-<script>5</script>',
+          totalTokens: 100,
+          totalTokensWithoutCacheRead: 80,
+          costUsd: 0.5,
+          sourceSplit: [{ source: 'codex' }]
+        }
+      ]
+    }
+
+    const text = formatFeishuDailyReport(injectionReport)
+
+    expect(text).not.toContain('<script>')
+    expect(text).toContain('&lt;script&gt;')
+    expect(text).toContain('gpt-&lt;script&gt;5&lt;/script&gt;')
+    // The `&` and `<` in the timezone are entity-encoded, not passed through raw.
+    expect(text).toContain('UTC+8 &amp; &lt;b&gt;x&lt;/b&gt;')
   })
 })
