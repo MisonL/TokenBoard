@@ -59,5 +59,9 @@ function redirectWithCookies(c: Context, source: Response, location: string) {
       response.headers.append('set-cookie', value)
     }
   })
+  // The redirect is built fresh, so the `no-store` the auth handler set on the response it
+  // replaces is gone. The 303 carries the sign-in/sign-out `Set-Cookie`, and a shared cache
+  // replaying it would hand one visitor's session cookie to the next.
+  response.headers.set('Cache-Control', 'no-store')
   return response
 }

@@ -30,7 +30,8 @@ function contextWith(headers: Record<string, string>) {
       raw: new Request(url, { method: 'POST', headers }),
       header: (name: string) => headers[name.toLowerCase()]
     },
-    redirect: (location: string, status: number) => new Response(null, { status, headers: { location } })
+    redirect: (location: string, status: number) =>
+      new Response(null, { status, headers: { location, 'cache-control': 'max-age=0' } })
   }
 }
 
@@ -55,5 +56,17 @@ describe('forwardGithubSignIn', () => {
     captured.length = 0
     await forwardGithubSignIn(contextWith({}) as never)
     expect(captured[0].headers.get('cf-connecting-ip')).toBeNull()
+  })
+
+  // The 303 carries the sign-in `Set-Cookie`, so a shared cache replaying it would hand one
+  // visitor's session cookie to the next. `c.redirect` builds a fresh response that does not
+  // inherit the `no-store` the auth handler set, so `redirectWithCookies` has to set it again.
+  test('marks the sign-in redirect no-store so a shared cache cannot replay the cookie', async () => {
+    captured.length = 0
+    const response = await forwardGithubSignIn(contextWith({ cookie: 'tb=abc' }) as never)
+
+    expect(response.status).toBe(303)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('location')).toBe('https://github.com/login/oauth/authorize')
   })
 })
