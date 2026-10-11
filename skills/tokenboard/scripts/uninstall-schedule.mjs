@@ -44,7 +44,15 @@ export function uninstallSchedule(options = {}) {
 }
 
 function uninstallWindows(runtime, scheduleTimes) {
-  run(runtime, 'powershell.exe', buildWindowsScheduleCleanupArgs(), { allowFailure: true })
+  // `allowFailure` keeps a non-zero exit from aborting the uninstall, but it must not be
+  // silent: `uninstall` reports the schedule as removed either way, so a swallowed failure
+  // would leave the task registered with no trace. Report it explicitly instead.
+  const result = run(runtime, 'powershell.exe', buildWindowsScheduleCleanupArgs(), { allowFailure: true })
+  if (result.status !== 0) {
+    runtime.error(
+      `TokenBoard scheduled-task cleanup failed with exit code ${result.status ?? 1}; the task may still be registered.`
+    )
+  }
   runtime.log('TokenBoard scheduled tasks removed.')
   return { platform: 'win32', scheduleTimes }
 }
@@ -107,12 +115,13 @@ function run(runtime, command, args, options = {}) {
     stdio: options.allowFailure ? 'ignore' : 'inherit',
     env: runtime.env
   })
-  if (result.error?.code === 'ENOENT' && !options.allowFailure) {
+  if (result.error?.code === 'ENOENT') {
     throw new Error(`Required scheduler command not found: ${command}`)
   }
   if (result.status !== 0 && !options.allowFailure) {
     throw new Error(`${command} failed with exit code ${result.status ?? 1}`)
   }
+  return result
 }
 
 function runCli() {

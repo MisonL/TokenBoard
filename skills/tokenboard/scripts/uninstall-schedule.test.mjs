@@ -79,6 +79,30 @@ test('removes default Windows scheduled tasks when config is missing', () => {
   }
 })
 
+// `allowFailure` keeps a non-zero exit from aborting the uninstall, but it must not be
+// silent: `uninstall` reports the schedule as removed either way, and a swallowed failure
+// would leave the task registered with no trace.
+test('reports a failed Windows scheduled-task cleanup instead of swallowing it', () => {
+  const harness = createHarness('win32')
+  try {
+    const spawned = []
+    harness.options.spawn = (command, args) => {
+      spawned.push([command, ...args].join(' '))
+      return { status: 1, error: undefined }
+    }
+
+    uninstallSchedule(harness.options)
+
+    assert.match(harness.errors[0], /TokenBoard scheduled-task cleanup failed/)
+    assert.match(harness.errors[0], /exit code 1/)
+    assert.deepEqual(spawned, [
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command Get-ScheduledTask -TaskPath '\\' | Where-Object { ($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' }) } | Unregister-ScheduledTask -Confirm:$false"
+    ])
+  } finally {
+    harness.cleanup()
+  }
+})
+
 test('ignores invalid configured Windows schedule times during uninstall', () => {
   const harness = createHarness('win32', { scheduleTimes: ['08:15', '9:00', 1200, '24:00', '21:45'] })
   try {
