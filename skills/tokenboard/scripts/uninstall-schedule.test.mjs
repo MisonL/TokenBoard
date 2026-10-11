@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { buildWindowsScheduleCleanupArgs, uninstallSchedule } from './uninstall-schedule.mjs'
 
@@ -98,6 +98,26 @@ test('reports a failed Windows scheduled-task cleanup instead of swallowing it',
     assert.deepEqual(spawned, [
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command Get-ScheduledTask -TaskPath '\\' | Where-Object { ($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' }) } | Unregister-ScheduledTask -Confirm:$false"
     ])
+  } finally {
+    harness.cleanup()
+  }
+})
+
+// A host whose `launchctl` is missing still has a plist to delete, and aborting before the
+// `rm` would leave the schedule registered while the uninstall reported failure. The ENOENT
+// guard must therefore stay scoped to commands that were not allowed to fail.
+test('removes the macOS LaunchAgent even when launchctl is missing', () => {
+  const harness = createHarness('darwin')
+  try {
+    const plistPath = join(harness.homeDir, 'Library', 'LaunchAgents', 'com.tokenboard.daily-sync.plist')
+    mkdirSync(dirname(plistPath), { recursive: true })
+    writeFileSync(plistPath, '<plist/>')
+    harness.options.spawn = () => ({ status: null, error: { code: 'ENOENT' } })
+
+    uninstallSchedule(harness.options)
+
+    assert.equal(existsSync(plistPath), false)
+    assert.deepEqual(harness.errors, [])
   } finally {
     harness.cleanup()
   }

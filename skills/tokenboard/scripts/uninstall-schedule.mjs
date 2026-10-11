@@ -110,12 +110,15 @@ function readScheduleTimes(config) {
   return scheduleTimes.length > 0 ? scheduleTimes : dailyScheduleTimes
 }
 
+// A missing scheduler command is not a failure to uninstall: the macOS and Linux paths already
+// tolerate it, and a host without the platform's scheduler has no schedule to remove. Only a
+// command that ran and returned non-zero is worth reporting.
 function run(runtime, command, args, options = {}) {
   const result = runtime.spawn(command, args, {
     stdio: options.allowFailure ? 'ignore' : 'inherit',
     env: runtime.env
   })
-  if (result.error?.code === 'ENOENT') {
+  if (result.error?.code === 'ENOENT' && !options.allowFailure) {
     throw new Error(`Required scheduler command not found: ${command}`)
   }
   if (result.status !== 0 && !options.allowFailure) {
