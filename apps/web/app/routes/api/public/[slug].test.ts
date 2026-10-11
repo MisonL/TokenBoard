@@ -130,6 +130,21 @@ describe('public usage route', () => {
     expect(response.status).toBe(429)
     expect(response.headers.get('Retry-After')).toBe('30')
   })
+
+  // A cached failure would keep serving after the underlying problem clears, so the error's own
+  // `Cache-Control` must not be able to override the no-store the boundary applies.
+  test('forces no-store over a Cache-Control carried by the error', async () => {
+    mockedGetPublicUsageJson.mockRejectedValue(
+      new ApiError('INTERNAL_SERVER_ERROR', 'boom', 500, { 'Cache-Control': 'max-age=60' })
+    )
+    const response = (await GET[0](
+      contextFor('eve-tokenboard', 'https://tokenboard.example/api/public/eve-tokenboard') as never,
+      async () => undefined
+    )) as Response
+
+    expect(response.status).toBe(500)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+  })
 })
 
 function contextFor(slug: string, url: string) {

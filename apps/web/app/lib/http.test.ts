@@ -10,7 +10,13 @@ function fakeContext() {
     json(body: unknown, status = 200, headers?: Record<string, string>) {
       captured.body = body
       captured.status = status
-      captured.headers = headers
+      // Headers are compared case-insensitively by the runtime, so the fake lower-cases the
+      // keys the same way — the assertions then do not depend on the spelling the policy uses.
+      const record: Record<string, string> = {}
+      new Headers(headers).forEach((value, key) => {
+        record[key] = value
+      })
+      captured.headers = record
       return new Response(JSON.stringify(body), { status })
     }
   } as unknown as Context
@@ -64,13 +70,22 @@ describe('jsonError', () => {
   ])('marks %s response as no-store', (_label, error) => {
     const { c, captured } = fakeContext()
     jsonError(c, error)
-    expect(captured.headers?.['Cache-Control']).toBe('no-store')
+    expect(captured.headers?.['cache-control']).toBe('no-store')
   })
 
   test('keeps the error-specific headers next to no-store', () => {
     const { c, captured } = fakeContext()
     jsonError(c, new ApiError('RATE_LIMITED', 'Too many requests', 429, { 'Retry-After': '30' }))
-    expect(captured.headers).toEqual({ 'Retry-After': '30', 'Cache-Control': 'no-store' })
+    expect(captured.headers).toEqual({ 'retry-after': '30', 'cache-control': 'no-store' })
+  })
+
+  // An error that carries its own `Cache-Control` must not be able to override the no-store
+  // policy: a cached 5xx would keep replaying a transient fault. The error's other headers are
+  // still kept, so only the directive is forced.
+  test('forces no-store over a Cache-Control the error carried', () => {
+    const { c, captured } = fakeContext()
+    jsonError(c, new ApiError('INTERNAL_SERVER_ERROR', 'boom', 500, { 'Cache-Control': 'max-age=60' }))
+    expect(captured.headers).toEqual({ 'cache-control': 'no-store' })
   })
 
   // RFC 9110: a 401 should carry a challenge so a generic client knows the scheme. The app's
@@ -78,6 +93,6 @@ describe('jsonError', () => {
   test('marks a 401 with the Bearer challenge', () => {
     const { c, captured } = fakeContext()
     jsonError(c, new ApiError('UNAUTHORIZED', 'Missing upload token', 401))
-    expect(captured.headers).toEqual({ 'WWW-Authenticate': 'Bearer', 'Cache-Control': 'no-store' })
+    expect(captured.headers).toEqual({ 'www-authenticate': 'Bearer', 'cache-control': 'no-store' })
   })
 })

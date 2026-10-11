@@ -1,4 +1,5 @@
 import { ApiError } from '../../lib/errors'
+import { withNoStore } from '../../lib/http'
 import { getCanonicalPublicOrigin } from '../settings/service'
 import { getPublicUsageCard, getPublicUsageJson } from './service'
 import { isReservedPublicSlug } from './service/slug'
@@ -78,12 +79,13 @@ export async function createPublicUsageResponse(input: {
 // Errors carry `no-store`, matching `model-pricing/http.ts`. Two reasons: a failure is not a
 // representation of the resource, so nothing should hold on to it, and without a directive a
 // browser may cache the 404 heuristically — which would keep serving "not found" for a slug
-// after its owner made the profile public. A route that already set its own policy keeps it.
+// after its owner made the profile public. The error's own headers are spread first so its
+// `Retry-After` survives while `no-store` still wins over a `Cache-Control` it carried.
 export function publicApiErrorResponse(error: unknown) {
   if (error instanceof ApiError) {
     return Response.json(
       { error: { code: error.code, message: error.message } },
-      { status: error.status, headers: { 'cache-control': 'no-store', ...error.headers } }
+      { status: error.status, headers: withNoStore(error.headers) }
     )
   }
 

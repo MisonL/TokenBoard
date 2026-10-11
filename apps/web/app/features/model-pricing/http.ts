@@ -1,5 +1,6 @@
 import { z, ZodError } from 'zod'
 import { ApiError } from '../../lib/errors'
+import { withNoStore } from '../../lib/http'
 import { sha256Hex } from '../../lib/crypto'
 import { getModelPricing } from './service'
 import { modelPricingLimitSchema, modelPricingProviderSchema } from './validation'
@@ -173,7 +174,7 @@ function modelPricingErrorResponse(error: unknown) {
   if (error instanceof ApiError) {
     return Response.json(
       { error: { code: error.code, message: error.message } },
-      { status: error.status, headers: { ...error.headers, ...noStore } }
+      { status: error.status, headers: withNoStore(error.headers) }
     )
   }
 

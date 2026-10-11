@@ -8,17 +8,35 @@ import { ApiError } from './errors'
 // so no error branch can be added without it.
 const noStore = { 'Cache-Control': 'no-store' }
 
+// `Headers` compares field names case-insensitively, so an error carrying `Cache-Control`
+// merged next to a differently-cased `no-store` key would append into
+// `max-age=60, no-store` rather than replace it — leaving the failure cacheable. Route through
+// `Headers` to normalize the name, then hand back a plain record: the policy wins whichever
+// spelling the error used, while its other headers (`Retry-After`, `WWW-Authenticate`) survive.
+export function withNoStore(headers?: Record<string, string>): Record<string, string> {
+  const merged = new Headers(headers)
+  merged.delete('Cache-Control')
+  merged.set('Cache-Control', 'no-store')
+  const record: Record<string, string> = {}
+  // `@cloudflare/workers-types` declares `Headers` without `entries()`, so `forEach` is the
+  // iteration both that type and lib.dom agree on.
+  merged.forEach((value, key) => {
+    record[key] = value
+  })
+  return record
+}
+
 // RFC 9110 §11.6.1: a 401 SHOULD carry a `WWW-Authenticate` challenge. The app's own 401s are
 // the collector's only signal that its upload token is missing or wrong, and without the
 // challenge a generic client cannot tell which scheme to use.
-const unauthorizedHeaders = { ...noStore, 'WWW-Authenticate': 'Bearer' }
+export function unauthorizedHeaders(headers?: Record<string, string>): Record<string, string> {
+  return { ...withNoStore(headers), 'WWW-Authenticate': 'Bearer' }
+}
 
 export function jsonError(c: Context, error: unknown) {
   if (error instanceof ApiError) {
-    return c.json({ error: { code: error.code, message: error.message } }, error.status, {
-      ...(error.status === 401 ? unauthorizedHeaders : noStore),
-      ...error.headers
-    })
+    const headers = error.status === 401 ? unauthorizedHeaders(error.headers) : withNoStore(error.headers)
+    return c.json({ error: { code: error.code, message: error.message } }, error.status, headers)
   }
 
   if (error instanceof ZodError) {
