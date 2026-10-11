@@ -228,9 +228,11 @@ function runSync({ flags, invocation, logs }) {
 // instead and forward each line through `redactUrlCredentials`, the way `upgrade-utils` already
 // does for the git steps. The child still inherits the real terminal when there is no log file,
 // so interactive runs keep their live output. `collectorOutputMaxBuffer` bounds the capture.
-function runCollectorProcess(invocation, logs) {
+export function runCollectorProcess(invocation, logs, options = {}) {
+  const spawn = options.spawn || spawnSync
+  const write = options.write || writeSync
   if (!logs) {
-    return spawnSync(invocation.command, invocation.args, {
+    return spawn(invocation.command, invocation.args, {
       cwd: invocation.cwd,
       env: invocation.env,
       stdio: 'inherit',
@@ -238,7 +240,7 @@ function runCollectorProcess(invocation, logs) {
     })
   }
 
-  const result = spawnSync(invocation.command, invocation.args, {
+  const result = spawn(invocation.command, invocation.args, {
     cwd: invocation.cwd,
     env: invocation.env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -246,17 +248,17 @@ function runCollectorProcess(invocation, logs) {
     maxBuffer: collectorOutputMaxBuffer,
     shell: invocation.shell
   })
-  writeRedactedOutput(logs.stdoutFd, result.stdout)
-  writeRedactedOutput(logs.stderrFd, result.stderr)
+  writeRedactedOutput(logs.stdoutFd, result.stdout, write)
+  writeRedactedOutput(logs.stderrFd, result.stderr, write)
   return result
 }
 
-function writeRedactedOutput(fd, text) {
+export function writeRedactedOutput(fd, text, write = writeSync) {
   const output = String(text ?? '')
   if (!output) return
   // A diagnostic sink must never change the sync result, so a failed write is swallowed.
   try {
-    writeSync(fd, redactUrlCredentials(output.endsWith('\n') ? output.slice(0, -1) : output) + '\n')
+    write(fd, redactUrlCredentials(output.endsWith('\n') ? output.slice(0, -1) : output) + '\n')
   } catch {
     // ignore
   }

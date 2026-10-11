@@ -4,7 +4,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildSyncInvocation, createUpgradeLogger, refreshBundledCcusageConfig, runSyncInvocation } from './sync.mjs'
+import {
+  buildSyncInvocation,
+  createUpgradeLogger,
+  refreshBundledCcusageConfig,
+  runCollectorProcess,
+  runSyncInvocation,
+  writeRedactedOutput
+} from './sync.mjs'
 import { buildDefaultSince, readSince } from './sync-options.mjs'
 import { normalizeMemoryPath } from './coordinator-test-helpers.mjs'
 
@@ -658,4 +665,88 @@ test('scheduled sync runs the real top-level entry without a temporal dead zone'
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// The scheduled log is the one artifact of a run that outlives its terminal, so the child's
+// output has to pass through the same redaction as the parent's log lines: a provider or
+// `ccusage` error echoing `tb_upload_…` or `https://user:token@host/…` would land there intact.
+test('scheduled collector output reaches the log with credentials redacted', () => {
+  const written = []
+  const result = runCollectorProcess(
+    { command: 'collector', args: [], cwd: '/repo', env: {}, shell: false },
+    { stdoutFd: 11, stderrFd: 12 },
+    {
+      spawn: () => ({
+        status: 0,
+        stdout: 'uploaded with tb_upload_abcdef123456\n',
+        stderr: 'POST https://ci-user:ci-token@example.invalid/upload failed\n'
+      }),
+      write: (fd, text) => written.push([fd, text])
+    }
+  )
+
+  assert.equal(result.status, 0)
+  assert.deepEqual(written, [
+    [11, 'uploaded with tb_upload_<redacted>\n'],
+    [12, 'POST https://example.invalid/upload failed\n']
+  ])
+  assert.ok(written.every(([_fd, text]) => !/ci-user|ci-token|tb_upload_abcdef/.test(text)))
+})
+
+// Without a scheduled log the child inherits the terminal, so nothing is captured and no log
+// line is synthesized — the interactive run keeps its live output.
+test('an unscheduled collector run inherits the terminal instead of capturing', () => {
+  const calls = []
+  const result = runCollectorProcess(
+    { command: 'collector', args: ['--sync'], cwd: '/repo', env: { A: '1' }, shell: false },
+    null,
+    {
+      spawn: (command, args, options) => {
+        calls.push({ command, args, options })
+        return { status: 3 }
+      }
+    }
+  )
+
+  assert.equal(result.status, 3)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].options.stdio, 'inherit')
+})
+
+test('writeRedactedOutput strips credentials before writing to the log', () => {
+  const written = []
+  const write = (fd, text) => written.push([fd, text])
+
+  writeRedactedOutput(
+    1,
+    'POST https://ci-user:ci-token@example.invalid/upload failed with tb_upload_abcdef123456',
+    write
+  )
+  writeRedactedOutput(2, 'second line', write)
+
+  assert.deepEqual(written, [
+    [1, 'POST https://example.invalid/upload failed with tb_upload_<redacted>\n'],
+    [2, 'second line\n']
+  ])
+  assert.ok(written.every(([_fd, text]) => !/ci-user|ci-token|tb_upload_abcdef/.test(text)))
+})
+
+test('writeRedactedOutput treats missing output as nothing to write', () => {
+  const written = []
+  const write = (_fd, text) => written.push(text)
+
+  writeRedactedOutput(1, '', write)
+  writeRedactedOutput(1, null, write)
+  writeRedactedOutput(1, undefined, write)
+
+  assert.deepEqual(written, [])
+})
+
+// A diagnostic sink must never change the sync result, so a throwing write is swallowed.
+test('writeRedactedOutput swallows a failing log sink', () => {
+  assert.doesNotThrow(() =>
+    writeRedactedOutput(1, 'line', () => {
+      throw new Error('EBADF')
+    })
+  )
 })

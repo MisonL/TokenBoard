@@ -1164,3 +1164,39 @@ function removeMemoryFile(files, path) {
   }
   files.delete(path)
 }
+
+// The child's stderr is echoed into the terminal, where it can be pasted into a chat or a log.
+// A provider or `ccusage` error can carry `tb_upload_…` or `https://user:token@host/…`, so the
+// failure message has to go through the same redaction every other output path uses.
+test('redacts credentials from a failed hook sync message', () => {
+  assert.throws(
+    () =>
+      executeTokenBoardSync('codex', {
+        lockToken: 'a'.repeat(32),
+        spawn: () => ({
+          status: 1,
+          error: undefined,
+          stderr: 'POST https://user:tb_secret@example.com/upload failed with tb_upload_abcdef123456'
+        })
+      }),
+    (error) => {
+      assert.match(error.message, /TokenBoard hook sync failed with exit code 1/)
+      assert.match(error.message, /https:\/\/example\.com\/upload/)
+      assert.doesNotMatch(error.message, /tb_secret/)
+      assert.doesNotMatch(error.message, /tb_upload_abcdef123456/)
+      return true
+    }
+  )
+})
+
+// A sync that fails without stderr still has to report the exit code, and the message must not
+// grow a trailing colon with nothing after it.
+test('reports a hook sync failure with no stderr without a dangling separator', () => {
+  assert.throws(
+    () => executeTokenBoardSync('codex', { lockToken: 'a'.repeat(32), spawn: () => ({ status: 2, error: undefined }) }),
+    (error) => {
+      assert.equal(error.message, 'TokenBoard hook sync failed with exit code 2')
+      return true
+    }
+  )
+})
