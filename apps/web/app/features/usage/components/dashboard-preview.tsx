@@ -238,9 +238,13 @@ function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
 }
 
+// A listed source did put tokens on the board, so a bare `Math.round` would print `0%` for a
+// 0.4% contribution and read as a display bug rather than a small one — the floor is 1%,
+// matching the leaderboard's source split.
 function formatPercent(value: number, total: number) {
   if (total <= 0) return '0%'
-  return `${Math.round((value / total) * 100)}%`
+  if (value <= 0) return '0%'
+  return `${Math.max(1, Math.round((value / total) * 100))}%`
 }
 
 function trendBarHeight(value: number, max: number) {
