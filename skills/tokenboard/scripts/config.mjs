@@ -51,14 +51,6 @@ export function packageManagerCommand(packageManager, platform = process.platfor
   return 'npm.cmd'
 }
 
-export function packageManagerRunArgs(packageManager, scriptName, scriptArgs = []) {
-  if (packageManager === 'npm') {
-    return ['run', scriptName, '--', ...scriptArgs]
-  }
-
-  return ['run', scriptName, ...scriptArgs]
-}
-
 export function readConfig() {
   return normalizeActiveServerConfig(readRawConfig())
 }

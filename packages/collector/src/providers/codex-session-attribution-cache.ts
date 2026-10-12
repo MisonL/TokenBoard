@@ -171,23 +171,6 @@ async function fingerprintObservedCodexSessionFile(filePath: string) {
   }
 }
 
-export async function readCodexSessionFileMetadata(filePath: string): Promise<CodexSessionFileMetadata> {
-  try {
-    const details = await lstat(filePath)
-    assertCodexSessionFileAtPath(details)
-    return {
-      size: details.size,
-      mtimeMs: details.mtimeMs,
-      ctimeMs: details.ctimeMs
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Unable to inspect Codex session file:')) {
-      throw error
-    }
-    throw new Error('Unable to inspect Codex session file', { cause: error })
-  }
-}
-
 export async function fingerprintCodexSessionFile(filePath: string): Promise<CodexSessionFileFingerprint> {
   try {
     const pathBefore = await lstat(filePath)

@@ -1,5 +1,4 @@
 const isoCalendarDatePattern = /^(\d{4})-(\d{2})-(\d{2})/
-const isoDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/
 
 export function isAllDateFilter(value: string | undefined) {
   return typeof value === 'string' && value.trim() === 'all'
@@ -51,28 +50,6 @@ export function assertValidIsoCalendarDate(value: string, message: string) {
   date.setUTCHours(0, 0, 0, 0)
   date.setUTCFullYear(year, month - 1, day)
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
-    throw new Error(message)
-  }
-}
-
-export function assertValidIsoDateTime(value: string, message: string) {
-  const match = isoDateTimePattern.exec(value)
-  if (!match) throw new Error(message)
-
-  assertValidIsoCalendarDate(value, message)
-  const hour = Number(match[4])
-  const minute = Number(match[5])
-  const second = Number(match[6])
-  const offsetHour = match[8] === undefined ? 0 : Number(match[8])
-  const offsetMinute = match[9] === undefined ? 0 : Number(match[9])
-  if (
-    hour > 23 ||
-    minute > 59 ||
-    second > 59 ||
-    offsetHour > 23 ||
-    offsetMinute > 59 ||
-    !Number.isFinite(Date.parse(value))
-  ) {
     throw new Error(message)
   }
 }

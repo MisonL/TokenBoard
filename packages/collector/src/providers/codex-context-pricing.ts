@@ -223,14 +223,13 @@ export const codexContextPricingRules: readonly CodexContextPricingRule[] = [
 ]
 
 type CodexContextPricingIndexes = {
-  rules: readonly CodexContextPricingRule[]
   knownModelBases: ReadonlySet<string>
   ruleByModel: ReadonlyMap<string, CodexContextPricingRule>
   canonicalModelByAlias: ReadonlyMap<string, string>
 }
 
 const codexContextPricingStorage = new AsyncLocalStorage<CodexContextPricingIndexes>()
-let defaultCodexContextPricingIndexes = buildCodexContextPricingIndexes(codexContextPricingRules)
+const defaultCodexContextPricingIndexes = buildCodexContextPricingIndexes(codexContextPricingRules)
 
 export type DynamicCodexPricingModel = {
   provider?: string
@@ -240,16 +239,6 @@ export type DynamicCodexPricingModel = {
   cacheReadCostPerMillion: number | null
   cacheWriteCostPerMillion: number | null
   pricing: Readonly<Record<string, unknown>>
-}
-
-export function getCodexContextPricingRules() {
-  return currentCodexContextPricingIndexes().rules
-}
-
-export function setCodexContextPricingRules(rules: readonly CodexContextPricingRule[]) {
-  const previous = defaultCodexContextPricingIndexes.rules
-  defaultCodexContextPricingIndexes = buildCodexContextPricingIndexes(rules)
-  return previous
 }
 
 export async function withCodexContextPricingRules<T>(
@@ -746,29 +735,6 @@ export function priceCodexRequest(input: {
   )
 }
 
-export function applyCodexContextPricingModelHints(
-  costs: readonly CodexContextPricingCost[],
-  canonicalModelsByDate?: CodexContextPricingModelHints
-) {
-  if (!canonicalModelsByDate) return [...costs]
-  const totals = new Map<string, CodexContextPricingCost>()
-  for (const cost of costs) {
-    const model = resolveCanonicalContextPricingModel(
-      normalizeModelId(cost.model),
-      cost.usageDate,
-      canonicalModelsByDate
-    )
-    const key = contextPricingKey(cost.usageDate, model)
-    const current = totals.get(key)
-    if (current) {
-      current.costUsd += cost.costUsd
-    } else {
-      totals.set(key, { ...cost, model })
-    }
-  }
-  return [...totals.values()]
-}
-
 export function priceCodexContextPricingUsages(usages: readonly CodexContextPricingUsage[]) {
   const totals = new Map<string, CodexContextPricingCost>()
   for (const usage of usages) {
@@ -869,7 +835,7 @@ function buildCodexContextPricingIndexes(rules: readonly CodexContextPricingRule
       return rule.modelIds.map((model) => [normalizeModelIdWithBases(model, knownModelBases), canonical] as const)
     })
   )
-  return { rules, knownModelBases, ruleByModel, canonicalModelByAlias }
+  return { knownModelBases, ruleByModel, canonicalModelByAlias }
 }
 
 function normalizeModelIdWithBases(value: string, knownModelBases: ReadonlySet<string>) {

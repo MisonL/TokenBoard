@@ -15,7 +15,6 @@ describe('AppNav', () => {
   test('wraps authenticated navigation without clipping narrow viewports', async () => {
     const html = await renderToString(<AppNav active="dashboard" email="user@example.com" />)
 
-    expect(html).toContain('data-app-nav-scroll="true"')
     expect(html).toContain('flex min-w-0 flex-wrap')
     expect(html).not.toContain('overflow-x-auto')
     expect(html).not.toContain('min-w-max')

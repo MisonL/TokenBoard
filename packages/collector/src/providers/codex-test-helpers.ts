@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -13,12 +13,6 @@ export async function createEmptyCodexHome() {
   const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))
   await mkdir(join(codexHome, 'sessions'), { recursive: true })
   return codexHome
-}
-
-export async function fileContainsTokenCount(file: string) {
-  return readFile(file, 'utf8')
-    .then((content) => content.includes('token_count'))
-    .catch(() => false)
 }
 
 export async function fileExists(file: string) {

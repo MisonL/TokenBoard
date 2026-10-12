@@ -23,7 +23,7 @@ export function initDashboardTrendTooltip() {
   document.addEventListener('keydown', handleDashboardTrendKeydown)
 }
 
-export function showDashboardTrendTooltip(bar: HTMLElement, clientX: number, clientY: number) {
+function showDashboardTrendTooltip(bar: HTMLElement, clientX: number, clientY: number) {
   const tooltip = getDashboardTrendTooltip()
   const date = bar.dataset.trendDate ?? '-'
   const total = bar.dataset.trendTotal ?? '0'
@@ -51,7 +51,7 @@ export function showDashboardTrendTooltip(bar: HTMLElement, clientX: number, cli
   tooltip.style.top = `${position.top}px`
 }
 
-export function hideDashboardTrendTooltip() {
+function hideDashboardTrendTooltip() {
   pendingDashboardTrendPointerState = null
   if (dashboardTrendTooltipActiveBar) {
     restoreDashboardTrendBarTitle(dashboardTrendTooltipActiveBar)

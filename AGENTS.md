@@ -373,7 +373,6 @@ apps/web/
       auth/
         auth.ts
         middleware.ts
-        schema.ts
         service.ts
       device/
         schema.ts

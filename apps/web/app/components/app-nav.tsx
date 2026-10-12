@@ -51,7 +51,7 @@ export function AppNav(props: AppNavProps) {
           </div>
         </div>
 
-        <div class="-mx-1 px-1" data-app-nav-scroll="true">
+        <div class="-mx-1 px-1">
           <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm">
             {isAuthenticated ? (
               <NavLink compact={props.compact} href="/dashboard" active={props.active === 'dashboard'}>

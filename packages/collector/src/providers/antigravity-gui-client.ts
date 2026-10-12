@@ -76,10 +76,6 @@ const nodeCascadeFileSystem: AntigravityCascadeFileSystem = {
   stat
 }
 
-export async function listAntigravityCascadeIds(input: { source: AntigravityGuiSource; conversationDir?: string }) {
-  return (await listAntigravityCascades(input)).map((cascade) => cascade.id)
-}
-
 export async function listAntigravityCascades(input: {
   source: AntigravityGuiSource
   conversationDir?: string

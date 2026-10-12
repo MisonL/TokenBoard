@@ -15,11 +15,6 @@ export function isTokenBoardNotifyHandler(text) {
   return typeof text === 'string' && text.includes(notifyHandlerMarker)
 }
 
-export function extractTomlStringArray(text, key) {
-  const result = inspectTomlStringArray(text, key)
-  return result.status === 'ok' ? result.value : null
-}
-
 export function inspectTomlStringArray(text, key) {
   const lines = text.split(/\r?\n/)
   const keyPattern = tomlKeyPattern(key)
@@ -139,11 +134,6 @@ export function nodeFs() {
 
 export function quoteShellArg(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`
-}
-
-export function arraysEqual(left, right) {
-  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
-  return left.every((value, index) => value === right[index])
 }
 
 export function timestamp() {
