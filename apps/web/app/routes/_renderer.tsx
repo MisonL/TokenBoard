@@ -23,7 +23,12 @@ export default jsxRenderer(({ children }) => {
         <Link href="/app/style.css" rel="stylesheet" />
         <script type="module" src={clientScriptSrc} async />
       </head>
-      <body>{children}</body>
+      <body>
+        <a class="app-skip-link" href="#app-content">
+          跳到主要内容
+        </a>
+        {children}
+      </body>
     </html>
   )
 })

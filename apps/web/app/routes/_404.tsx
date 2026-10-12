@@ -1,4 +1,5 @@
 import type { NotFoundHandler } from 'hono'
+import { SkipLinkTarget } from '../components/skip-link-target'
 
 const handler: NotFoundHandler = (c) => {
   // A 404 is not a representation of a resource, so nothing should hold on to it: without
@@ -12,7 +13,12 @@ const handler: NotFoundHandler = (c) => {
   }
 
   c.status(404)
-  return c.render('404 Not Found')
+  return c.render(
+    <>
+      <SkipLinkTarget />
+      404 Not Found
+    </>
+  )
 }
 
 export default handler

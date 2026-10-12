@@ -47,4 +47,16 @@ describe('AppNav', () => {
 
     expect(html).toContain('aria-label="主导航"')
   })
+
+  // The shell's "skip to content" link targets `#app-content`. On nav-bearing pages the anchor
+  // is rendered after the nav (not on `<main>`, which this app wraps around the nav, so an
+  // anchor there would land the user before the very navigation they meant to skip). Pages
+  // without a nav (404/error) render their own copy — see `skip-link-target.tsx`.
+  test('renders the skip-link target just after the nav landmark', async () => {
+    const html = await renderToString(<AppNav isAuthenticated={false} />)
+
+    expect(html).toContain('id="app-content"')
+    expect(html).toContain('tabindex="-1"')
+    expect(html.indexOf('</nav>')).toBeLessThan(html.indexOf('id="app-content"'))
+  })
 })

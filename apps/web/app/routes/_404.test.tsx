@@ -1,3 +1,4 @@
+import { renderToString } from 'hono/jsx/dom/server'
 import { describe, expect, test } from 'vitest'
 import handler from './_404'
 
@@ -24,7 +25,12 @@ describe('not found route', () => {
 
     expect(response.status).toBe(404)
     expect(response.headers.get('cache-control')).toBe('no-store')
-    expect(await response.text()).toBe('404 Not Found')
+    const html = await response.text()
+    expect(html).toContain('404 Not Found')
+    // This page renders no `AppNav`, so without its own anchor the shell's skip link would be a
+    // dead target here. The anchor has to be in the body the handler returns.
+    expect(html).toContain('id="app-content"')
+    expect(html).toContain('tabindex="-1"')
   })
 })
 
@@ -43,6 +49,6 @@ function createContext(path: string) {
     },
     json: (body: unknown, status: number) => withHeaders(Response.json(body, { status })),
     status() {},
-    render: (body: string) => withHeaders(new Response(body, { status: 404 }))
+    render: (body: unknown) => withHeaders(new Response(renderToString(body as never), { status: 404 }))
   } as never
 }

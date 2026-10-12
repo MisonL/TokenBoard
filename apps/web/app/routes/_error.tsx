@@ -1,4 +1,5 @@
 import type { ErrorHandler } from 'hono'
+import { SkipLinkTarget } from '../components/skip-link-target'
 import { ApiError } from '../lib/errors'
 
 const handler: ErrorHandler = (e, c) => {
@@ -17,7 +18,12 @@ const handler: ErrorHandler = (e, c) => {
     }
     for (const [name, value] of Object.entries(e.headers ?? {})) c.header(name, value)
     c.status(e.status)
-    return c.render(e.message)
+    return c.render(
+      <>
+        <SkipLinkTarget />
+        {e.message}
+      </>
+    )
   }
   // An unhandled error on an `/api/*` path must still answer in the `{ error: { code, message } }`
   // shape the rest of the API uses — a route that forgot its own try/catch (for example the
@@ -31,7 +37,12 @@ const handler: ErrorHandler = (e, c) => {
   }
   console.error(e.message)
   c.status(500)
-  return c.render('Internal Server Error')
+  return c.render(
+    <>
+      <SkipLinkTarget />
+      Internal Server Error
+    </>
+  )
 }
 
 export default handler

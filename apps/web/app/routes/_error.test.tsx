@@ -1,3 +1,4 @@
+import { renderToString } from 'hono/jsx/dom/server'
 import { describe, expect, test } from 'vitest'
 import { ApiError } from '../lib/errors'
 import handler from './_error'
@@ -68,7 +69,18 @@ describe('error route', () => {
     // The test double's `c.render` returns the body with the status the real Hono `c.status`
     // would have set; here we only assert the branch, i.e. it is not a JSON error body.
     expect(response.headers.get('content-type') ?? '').not.toContain('application/json')
-    await expect(response.text()).resolves.toBe('Internal Server Error')
+    const html = await response.text()
+    expect(html).toContain('Internal Server Error')
+    // The error surface renders no `AppNav`, so it must carry the skip-link anchor itself.
+    expect(html).toContain('id="app-content"')
+  })
+
+  test('renders the skip-link anchor on the ApiError HTML page', async () => {
+    const response = await handler(new ApiError('NOT_FOUND', 'Profile not found', 404), createContext('/x'))
+
+    const html = await response.text()
+    expect(html).toContain('Profile not found')
+    expect(html).toContain('id="app-content"')
   })
 })
 
@@ -86,6 +98,6 @@ function createContext(path: string, accept = 'text/html') {
       }),
     status() {},
     header() {},
-    render: (body: string) => new Response(body)
+    render: (body: unknown) => new Response(renderToString(body as never))
   } as never
 }
