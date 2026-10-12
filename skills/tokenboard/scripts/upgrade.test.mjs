@@ -138,7 +138,10 @@ test('redaction covers the parameter names signed and artifact URLs actually use
 })
 
 test('redaction covers bearer headers, bare upload tokens, webhook URLs and fragments', () => {
-  assert.equal(redactUrlCredentials('Authorization: Bearer tb_upload_sample-token_zzz'), 'Authorization: Bearer <redacted>')
+  assert.equal(
+    redactUrlCredentials('Authorization: Bearer tb_upload_sample-token_zzz'),
+    'Authorization: Bearer <redacted>'
+  )
   assert.equal(redactUrlCredentials('token=tb_upload_sample-token_zzz'), 'token=tb_upload_<redacted>')
   assert.equal(redactUrlCredentials('tb_install_sample-token_zzz'), 'tb_install_<redacted>')
   assert.equal(redactUrlCredentials('?webhook_url=https://hooks.invalid/sample-token_zzz'), '?webhook_url=<redacted>')
@@ -159,13 +162,16 @@ test('redaction covers the base64url upload-token charset and case-insensitive a
   assert.equal(redactUrlCredentials('tb_install_sample-token_zzz'), 'tb_install_<redacted>')
   // Pairing codes share the `tb_` prefix family and are single-use secrets; a sink that echoes
   // one (a failed pair request, a diagnostic) must redact it too.
-  assert.equal(redactUrlCredentials('pairing failed for tb_pair_sample-token_zzz'), 'pairing failed for tb_pair_<redacted>')
+  assert.equal(
+    redactUrlCredentials('pairing failed for tb_pair_sample-token_zzz'),
+    'pairing failed for tb_pair_<redacted>'
+  )
   // A leading word boundary is still required, so a substring is not mistaken for a token.
   assert.equal(redactUrlCredentials('notb_upload_SECRET'), 'notb_upload_SECRET')
   // HTTP auth schemes are case-insensitive and `Basic` carries the same secret.
-  assert.equal(redactUrlCredentials('authorization: bearer placeholder-token'), 'authorization: bearer <redacted>')
-  assert.equal(redactUrlCredentials('Authorization: BASIC cGxhY2Vob2xkZXI'), 'Authorization: BASIC <redacted>')
-  assert.equal(redactUrlCredentials('AUTHORIZATION: BEARER placeholder-token'), 'AUTHORIZATION: BEARER <redacted>')
+  assert.equal(redactUrlCredentials('authorization: bearer ci-token'), 'authorization: bearer <redacted>')
+  assert.equal(redactUrlCredentials('Authorization: BASIC ci-token'), 'Authorization: BASIC <redacted>')
+  assert.equal(redactUrlCredentials('AUTHORIZATION: BEARER ci-token'), 'AUTHORIZATION: BEARER <redacted>')
   // `monkey`/`keyboard`-style false positives stay clear of the auth rule too.
   assert.equal(redactUrlCredentials('bearerish'), 'bearerish')
 })

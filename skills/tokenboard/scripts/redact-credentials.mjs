@@ -31,9 +31,9 @@
 //   only half-redacted, leaking the suffix.
 // - HTTP auth schemes are case-insensitive (RFC 7235), and `Basic` carries the same secret as
 //   `Bearer`, so both spellings in any case are redacted. This over-matches an English phrase
-//   like "Basic authentication failed", but a real credential can be an all-letter base64 body
-//   (`cGxhY2Vob2xkZXI`), so the rule stays wide: a missed credential is a leak, a redacted
-//   phrase is only a less readable log line.
+//   like "Basic authentication failed", but a real credential can be an all-letter base64 body,
+//   so the rule stays wide: a missed credential is a leak, a redacted phrase is only a less
+//   readable log line.
 const credentialQueryName =
   '(?:[a-z0-9]+[_-])*(?:token|key|secret|signature|credential|password|passwd|auth(?:orization|_?token)?|webhook(?:_?url)?)'
 
