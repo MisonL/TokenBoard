@@ -174,7 +174,7 @@ OpenCode / Pi / Grok Build / DeepSeek Harness 约束：
 - OpenCode 的 `message.data` 同时含 prompt、回复和本地 `path`，必须在 SQL 内用 `json_extract` 投影 token 字段，禁止把整个 blob 读进 collector；查询必须以只读方式打开。
 - SQLite 读取优先使用 Node 内置 `node:sqlite`（无需额外安装），运行时缺失时回退外部 `sqlite3`；显式设置 `TOKENBOARD_SQLITE_BIN` 表示强制走外部二进制。两条路径必须产出一致结果并有测试覆盖。
 - 费用可用性：OpenCode 和 Pi 自报费用，可以直接使用；Grok Build 和 DSH 不提供费用，`costUsd` 只能置 `0`，禁止用定价表推算。
-- 费用不可用来源统一由 `usage-core` 的 `costUnavailableSources` 声明，Web、SVG、日报、排行榜必须由该常量派生，禁止再硬编码来源列表。
+- 费用不可用来源统一由 `usage-core` 的 `costUnavailableSources` 声明；Web、SVG、日报、排行榜等**消费方**（标签、展示、费用列）必须由该常量派生，禁止硬编码来源列表。各 provider 在采集侧直接置 `costUsd: 0` / `costAvailable: false` 即可，`usageSnapshotSchema` 的校验会对这些来源的 `costUsd > 0` fail-closed 报错。
 - Grok Build 的 `turn_completed` 是逐轮独立总量而非累计快照，必须按面值入账；禁止对相邻事件做差分。其 `inputTokens` 含 `cachedReadTokens`，必须减出 fresh input；`reasoningTokens` 已包含在 `outputTokens` 内，不得重复累加。
 - Pi 的 session 文件是 `id`/`parentId` 树，fork 会复制共享历史，必须按 entry id 去重；usage 载体包含 assistant message、toolResult、compaction、branch_summary 四类。
 - Pi 的 cache write 按 TTL 分两档：`cacheWrite` 与 `cacheWrite1h`，两者都属 cache creation，必须同时累加，漏掉后者会少记用量。订阅额度模型的 `cost` 各项为真实的 0。
@@ -217,7 +217,7 @@ type UsageSnapshot = {
 };
 ```
 
-D1 聚合表以 `user_id + source + usage_date + model` 作为幂等 upsert key，避免重复上传造成重复累计。
+D1 聚合表 `daily_usage` 以 `(user_id, device_id, source, usage_date, model)` 五元键作为幂等 upsert key（`device_id` 自 0004 起，缺省 `legacy`），避免重复上传造成重复累计；跨设备的读侧聚合表 `daily_usage_summary` 才是 `(user_id, usage_date, source, model)` 四元键。
 
 排行榜数据应优先从聚合表计算。只有当查询成本过高时，才增加 leaderboard snapshot 表或 KV cache。
 
