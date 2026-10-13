@@ -13,32 +13,9 @@
 - Codex session scope 仅作为时区无关的保守预筛选，日期边界前后各保留一个 UTC 日，由 ccusage 执行最终本地日期过滤。
 - Codex 和三类 Antigravity 日期过滤器都接受 `YYYYMMDD` 或 `YYYY-MM-DD`，并拒绝畸形格式和不存在的日历日期。
 
-## 验证命令
+## 验证
 
-```bash
-pnpm --filter @tokenboard/collector exec vitest run src/cli-antigravity.test.ts src/providers/claude-code.test.ts src/providers/claude-hook-sync.test.ts src/providers/hook-sync.test.ts
-pnpm --filter @tokenboard/collector exec vitest run src/providers/codex-session-scope.test.ts src/providers/codex.test.ts
-pnpm --filter @tokenboard/collector exec vitest run src/providers/antigravity-since.test.ts src/cli-antigravity.test.ts
-pnpm --filter @tokenboard/collector test
-pnpm --filter @tokenboard/web test
-node --test skills/tokenboard/scripts/*.test.mjs
-pnpm test
-pnpm typecheck
-pnpm build
-git diff HEAD --check
-```
-
-## 结果
-
-- Antigravity 日期格式、默认窗口与跨来源传递目标测试：46 个通过。
-- Codex scope 与 provider 目标测试：18 个通过。
-- `packages/usage-core`：9 个测试通过。
-- `packages/collector`：364 个测试通过。
-- `apps/web`：567 个测试通过。
-- Skill scripts：310 个测试通过。
-- Workspace typecheck：通过。
-- Web production build：通过。
-- Git whitespace 检查：通过。
+定向 Antigravity 日期（46）、Codex scope/provider（18）目标测试通过；`pnpm test` 全量（usage-core 9、collector 364、Web 567、skill scripts 310）、typecheck、Web production build、git whitespace 检查全部通过。
 
 ## 边界
 
