@@ -98,6 +98,128 @@ describe('model pricing SQLite contract', () => {
     ])
   })
 
+  test('an unchanged due sync releases the lock without touching the catalogue or generation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+
+    const first = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+    expect(first).toMatchObject({ status: 'success', changed: true })
+    const before = await getModelPricing({ db })
+    const rowTimestamps = runSql(
+      dbPath,
+      'SELECT model_id, fetched_at, sync_generation FROM model_pricing ORDER BY model_id'
+    )
+
+    // Non-forced: a forced sync always publishes (and bumps the generation) even when the
+    // catalogue is identical. This is the scheduled path, where an unchanged source must not.
+    const second = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:01:00.000Z'),
+      force: false,
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+
+    expect(second).toMatchObject({ status: 'success', changed: false, modelCount: 4 })
+    const after = await getModelPricing({ db })
+    // The generation and every served row are untouched; only the state row advanced.
+    expect(after.state?.activeGeneration).toBe(before.state?.activeGeneration)
+    expect(after.models.map((model) => model.fetchedAt)).toEqual(before.models.map((model) => model.fetchedAt))
+    expect(runSql(dbPath, 'SELECT model_id, fetched_at, sync_generation FROM model_pricing ORDER BY model_id')).toBe(
+      rowTimestamps
+    )
+    const state = runSql(
+      dbPath,
+      "SELECT status, lock_token, last_success_at FROM model_pricing_sync_state WHERE id = 'global'"
+    )
+    expect(state).toContain('success|')
+    // logicalNow() adds the injected wall-clock advance, so the exact stamp is dynamic;
+    // what matters is that it is the second sync's time, after the first one.
+    expect(state).toContain('2026-08-08T00:01:00')
+  })
+
+  test('publishes only the changed rows when the source moves a price', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+
+    await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+    const untouched = runSql(
+      dbPath,
+      "SELECT model_id, fetched_at, sync_generation FROM model_pricing WHERE model_id != 'gpt-5.6-sol' ORDER BY model_id"
+    )
+
+    const second = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(mutatedFixture()))
+    })
+
+    expect(second).toMatchObject({ status: 'success', changed: true, modelCount: 4 })
+    const republished = runSql(
+      dbPath,
+      "SELECT input_cost_per_million, is_active FROM model_pricing WHERE model_id = 'gpt-5.6-sol'"
+    )
+    expect(republished).toContain('6|1')
+    // Rows whose content did not change keep the fetch time and generation they were
+    // written with — the incremental publish never rewrites them.
+    expect(
+      runSql(
+        dbPath,
+        "SELECT model_id, fetched_at, sync_generation FROM model_pricing WHERE model_id != 'gpt-5.6-sol' ORDER BY model_id"
+      )
+    ).toBe(untouched)
+  })
+
+  test('reactivates a previously removed model when the source republishes it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+
+    await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+    const withoutTerra = sourceFixture()
+    delete (withoutTerra.openai.models as Record<string, unknown>)['gpt-5.6-terra']
+    await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(withoutTerra))
+    })
+    expect((await getModelPricing({ db })).models.some((model) => model.modelId === 'gpt-5.6-terra')).toBe(false)
+
+    const restored = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+
+    expect(restored).toMatchObject({ status: 'success', changed: true })
+    const active = await getModelPricing({ db })
+    expect(active.models.map((model) => model.modelId)).toContain('gpt-5.6-terra')
+    const restoredRow = runSql(dbPath, "SELECT is_active FROM model_pricing WHERE model_id = 'gpt-5.6-terra'").trim()
+    expect(restoredRow).toBe('1')
+  })
+
   test('keeps source-removed models as inactive history', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
     tempDirs.push(dir)
@@ -369,7 +491,7 @@ describe('model pricing SQLite contract', () => {
       END;
     `
     )
-    const next = sourceFixture()
+    const next = mutatedFixture()
 
     await expect(
       runModelPricingSync({
@@ -431,9 +553,12 @@ describe('model pricing SQLite contract', () => {
         env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
         now: new Date('2026-08-08T00:00:00.000Z'),
         force: true,
-        fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+        fetcher: async () => new Response(JSON.stringify(mutatedFixture()))
       })
-    ).rejects.toThrow('lock ownership was lost while writing staging rows')
+      // The staging write itself still lands (the trigger steals the lock after it), so
+      // ownership is enforced at the commit: the state UPDATE refuses to flip to `success`
+      // under a foreign lock token, and the recorded failure hits the same refusal.
+    ).rejects.toThrow('lock ownership was lost while recording success')
 
     const catalogue = await getModelPricing({ db })
     expect(catalogue.models).toHaveLength(4)
@@ -465,7 +590,7 @@ describe('model pricing SQLite contract', () => {
           force: true,
           fetcher: async () => {
             clock.mockReturnValue(11 * 60 * 1000)
-            return new Response(JSON.stringify(sourceFixture()))
+            return new Response(JSON.stringify(mutatedFixture()))
           }
         })
       ).rejects.toThrow('lock ownership was lost before writing staging rows')
@@ -562,10 +687,12 @@ describe('model pricing SQLite contract', () => {
         sourceUrl: snapshot.sourceUrl,
         now,
         sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
-        modelCount: snapshot.models.length + 1,
-        syncGeneration: generation
+        modelCount: snapshot.models.length,
+        syncGeneration: generation,
+        changeCount: snapshot.models.length,
+        removals: []
       })
-    ).rejects.toThrow('generation staging count 4 does not match expected model count 5')
+    ).rejects.toThrow('generation staging count 0 does not match expected change count 4')
 
     const catalogue = await getModelPricing({ db })
     expect(catalogue.models).toHaveLength(snapshot.models.length)
@@ -580,7 +707,7 @@ describe('model pricing SQLite contract', () => {
       runSql(dbPath, `SELECT COUNT(*) FROM model_pricing_staging WHERE generation_id = '${generation}'`).trim(),
       10
     )
-    expect(stagingCount).toBe(snapshot.models.length)
+    expect(stagingCount).toBe(0)
   })
 
   test('does not let an expired sync delete a newer owner staging generation', async () => {
@@ -607,12 +734,15 @@ describe('model pricing SQLite contract', () => {
         lockToken: firstLock
       })
     ).toBe(true)
-    const snapshot = normalizeModelsDevPayload(sourceFixture(), { fetchedAt: firstNow.toISOString() })
+    // Each attempt stages its own diff, so every fixture changes a different model: the
+    // first and third attempts both target the expired generation, the second one owns
+    // the lock and must survive the third attempt's stale-generation cleanup.
+    const firstSnapshot = normalizeModelsDevPayload(mutatedFixture(), { fetchedAt: firstNow.toISOString() })
     await replaceModelPricing({
       db,
-      models: snapshot.models,
-      sourceUrl: snapshot.sourceUrl,
-      fetchedAt: snapshot.fetchedAt,
+      models: firstSnapshot.models,
+      sourceUrl: firstSnapshot.sourceUrl,
+      fetchedAt: firstSnapshot.fetchedAt,
       syncGeneration: 'expired-owner-generation',
       lockToken: firstLock,
       now: firstNow
@@ -629,11 +759,12 @@ describe('model pricing SQLite contract', () => {
         lockToken: secondLock
       })
     ).toBe(true)
+    const secondSnapshot = normalizeModelsDevPayload(repricedFixture(), { fetchedAt: firstNow.toISOString() })
     await replaceModelPricing({
       db,
-      models: snapshot.models,
-      sourceUrl: snapshot.sourceUrl,
-      fetchedAt: snapshot.fetchedAt,
+      models: secondSnapshot.models,
+      sourceUrl: secondSnapshot.sourceUrl,
+      fetchedAt: secondSnapshot.fetchedAt,
       syncGeneration: 'current-owner-generation',
       lockToken: secondLock,
       now: new Date('2026-08-08T00:11:00.000Z')
@@ -642,9 +773,9 @@ describe('model pricing SQLite contract', () => {
     await expect(
       replaceModelPricing({
         db,
-        models: snapshot.models,
-        sourceUrl: snapshot.sourceUrl,
-        fetchedAt: snapshot.fetchedAt,
+        models: firstSnapshot.models,
+        sourceUrl: firstSnapshot.sourceUrl,
+        fetchedAt: firstSnapshot.fetchedAt,
         syncGeneration: 'expired-owner-generation',
         lockToken: firstLock,
         now: firstNow
@@ -658,7 +789,7 @@ describe('model pricing SQLite contract', () => {
       ).trim(),
       10
     )
-    expect(currentCount).toBe(snapshot.models.length)
+    expect(currentCount).toBe(1)
     const expiredCount = Number.parseInt(
       runSql(
         dbPath,
@@ -934,6 +1065,20 @@ describe('model pricing SQLite contract', () => {
     expect(pages.map((model) => model.modelId)).toEqual(['zzzz', longModelId, '😄'])
   })
 })
+
+function mutatedFixture() {
+  const fixture = sourceFixture()
+  const models = fixture.openai.models as Record<string, unknown>
+  models['gpt-5.6-sol'] = pricedModel('gpt-5.6-sol', 'gpt-sol', 1_050_000, 6, 30)
+  return fixture
+}
+
+function repricedFixture() {
+  const fixture = sourceFixture()
+  const models = fixture.openai.models as Record<string, unknown>
+  models['gpt-5.6-sol'] = pricedModel('gpt-5.6-sol', 'gpt-sol', 1_050_000, 7, 30)
+  return fixture
+}
 
 function sourceFixture() {
   return {

@@ -7,6 +7,7 @@ import {
   listModelPricing,
   markModelPricingSyncFailure,
   markModelPricingSyncSuccess,
+  markModelPricingSyncUnchanged,
   readModelPricingSyncState,
   replaceModelPricing,
   type ModelPricingSyncState
@@ -37,6 +38,8 @@ export type ModelPricingSyncResult = {
   modelCount?: number
   sourceUpdatedAt?: string | null
   completedAt?: string
+  // False when the fetched catalogue was identical to the stored one and nothing was written.
+  changed?: boolean
 }
 
 export async function runModelPricingSync(input: {
@@ -74,7 +77,7 @@ export async function runModelPricingSync(input: {
       fetcher: input.fetcher
     })
     syncGeneration = randomId('pricing-generation')
-    await replaceModelPricing({
+    const diff = await replaceModelPricing({
       db: input.env.DB,
       models: snapshot.models,
       sourceUrl: snapshot.sourceUrl,
@@ -84,6 +87,27 @@ export async function runModelPricingSync(input: {
       now: logicalNow()
     })
     const completedAt = logicalNow()
+    if (diff.changes.length === 0 && diff.removals.length === 0 && !input.force) {
+      // Nothing to publish: bumping the generation would invalidate every active cursor and
+      // ETag for a catalogue that did not change. Release the lock and advance the success
+      // timestamp without touching the catalogue rows or the generation.
+      await markModelPricingSyncUnchanged({
+        db: input.env.DB,
+        lockToken,
+        sourceUrl: snapshot.sourceUrl,
+        now: completedAt,
+        leaseNow: completedAt,
+        sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
+        modelCount: snapshot.models.length
+      })
+      return {
+        status: 'success',
+        modelCount: snapshot.models.length,
+        sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
+        completedAt: completedAt.toISOString(),
+        changed: false
+      }
+    }
     await markModelPricingSyncSuccess({
       db: input.env.DB,
       lockToken,
@@ -92,13 +116,16 @@ export async function runModelPricingSync(input: {
       leaseNow: completedAt,
       sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
       modelCount: snapshot.models.length,
-      syncGeneration
+      syncGeneration,
+      changeCount: diff.changes.length,
+      removals: diff.removals
     })
     return {
       status: 'success',
       modelCount: snapshot.models.length,
       sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
-      completedAt: completedAt.toISOString()
+      completedAt: completedAt.toISOString(),
+      changed: diff.changes.length > 0 || diff.removals.length > 0
     }
   } catch (error) {
     const message = errorMessage(error)

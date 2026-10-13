@@ -40,6 +40,16 @@ Worker Cron trigger invokes the job, but the D1 state row enforces the interval 
 ownership lock. Concurrent Worker instances cannot overwrite each other's result. This is a
 server-side D1 update path; it does not create GitHub commits or pull requests.
 
+Each due sync diffs the normalized source against the stored active catalogue and publishes only
+the changed rows, plus explicit deactivations for rows the source no longer publishes. A day's
+upstream edits are a handful of models out of ~8,300 (measured 2026-10-13: 8 price changes, 3
+renames against an 8,319-row catalogue), so an unchanged or barely changed day writes one state
+row instead of rewriting the whole table through staging, the catalogue and its indexes, and a
+full-table `is_active` flip. A forced sync always publishes — and so bumps the generation for
+cursor and ETag invalidation — even when the diff is empty. Rows whose content did not change
+keep the `fetched_at` and generation they were written with; the active view is served by
+`is_active`, not by the generation column.
+
 On first deployment, apply migrations `0030_model_pricing.sql` through
 `0034_drop_api_rate_limits_reset_index.sql` in order before publishing the Worker. Migration 0030
 creates the generation state column together with the sync state table; migration 0031 contains only
@@ -114,7 +124,8 @@ refresh budget while still slowing credential guessing. The invalid shield trust
 ownership lock. A rate-limited response is HTTP 429 and includes `Retry-After` in seconds.
 
 A manual request forces a refresh, but still uses the same due-check override, lock and atomic
-replacement path as the scheduled job. The protected manual response reports sync status, model
+publish path as the scheduled job (forced, so it republishes and bumps the generation even when
+the fetched catalogue is identical). The protected manual response reports sync status, model
 count, and a redacted sync state (it never returns the lock token); the public catalogue only
 returns model rows and the pagination cursor. A failed fetch or activation keeps the last
 successful generation and records the failure for the next scheduled retry.

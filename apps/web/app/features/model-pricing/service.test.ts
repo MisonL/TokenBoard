@@ -168,7 +168,7 @@ describe('model pricing service', () => {
     expect(result.state?.activeGeneration).toBe('generation-two')
     expect(result.models.map((model) => model.modelId)).toEqual(['generation-two'])
     expect(catalogueReads).toBe(2)
-    expect(queries.filter((query) => query.includes('sync_generation = ?'))).toHaveLength(2)
+    expect(queries.filter((query) => query.includes('is_active = 1'))).toHaveLength(2)
   })
 
   test('does not retry a catalogue read when only the sync lease timestamp changes', async () => {

@@ -30,6 +30,9 @@ const STATE_ID = 'global'
 const maxBatchStatements = 100
 const modelPricingLeaseDurationMs = 10 * 60 * 1000
 export const modelPricingFailureRetryDelayMs = 60 * 60 * 1000
+// 48 keys per deactivation statement: two bound parameters each, plus the three guard
+// parameters, keeps the statement at 99 — one below the D1 limit of 100.
+const maxRemovalKeysPerStatement = 48
 
 export async function claimModelPricingSync(input: {
   db: D1Database
@@ -147,9 +150,16 @@ export async function replaceModelPricing(input: {
     .bind(input.syncGeneration, STATE_ID, STATE_ID, input.lockToken, leaseNow())
     .run()
 
-  for (let offset = 0; offset < input.models.length; offset += maxBatchStatements) {
+  // Only the rows that actually differ from the stored catalogue are staged. The catalogue is
+  // rebuilt from `models.dev` on every due sync, but a day's worth of upstream edits is a
+  // handful of models out of ~8,300 (measured 2026-10-13: 8 price changes, 3 renames). Staging
+  // and publishing the whole directory for those is what burned the D1 free tier's entire
+  // `rows_written` budget — every row was rewritten through the staging table, the catalogue
+  // table and its three indexes, plus a full-table `is_active` flip, once a day.
+  const diff = await diffModelPricingCatalogue({ db: input.db, models: input.models, sourceUrl: input.sourceUrl })
+  for (let offset = 0; offset < diff.changes.length; offset += maxBatchStatements) {
     const batchLeaseNow = await renewLease()
-    const batch = input.models.slice(offset, offset + maxBatchStatements).map((model) =>
+    const batch = diff.changes.slice(offset, offset + maxBatchStatements).map((model) =>
       input.db
         .prepare(
           `
@@ -224,12 +234,156 @@ export async function replaceModelPricing(input: {
     const results = await runBatch(
       input.db,
       batch,
-      `staging rows ${offset + 1}-${Math.min(offset + maxBatchStatements, input.models.length)}`
+      `staging rows ${offset + 1}-${Math.min(offset + maxBatchStatements, diff.changes.length)}`
     )
     if (results.some((result) => Number(result.meta?.changes ?? 0) !== 1)) {
       throw new Error('Model pricing sync lock ownership was lost while writing staging rows')
     }
   }
+  return diff
+}
+
+// The catalogue diff, computed in the Worker against the rows the read path serves. The stored
+// row is compared field by field against the normalized source model; a row is republished when
+// any stored field differs, and a stored row with no source counterpart is deactivated. Field
+// comparison rather than a stored hash keeps this a pure read: no extra column, no migration,
+// and the stored REAL/INTEGER values round-trip exactly, so an unchanged model compares equal.
+export type ModelPricingDiff = {
+  changes: NormalizedModelPricing[]
+  removals: Array<{ provider: string; modelId: string }>
+}
+
+async function diffModelPricingCatalogue(input: {
+  db: D1Database
+  models: NormalizedModelPricing[]
+  sourceUrl: string
+}): Promise<ModelPricingDiff> {
+  const stored = await readActiveModelPricingRows(input.db)
+  const storedByKey = new Map(stored.map((row) => [catalogueKey(row.provider, row.modelId), row]))
+  const sourceKeys = new Set<string>()
+  const changes: NormalizedModelPricing[] = []
+  for (const model of input.models) {
+    const key = catalogueKey(model.provider, model.modelId)
+    sourceKeys.add(key)
+    const row = storedByKey.get(key)
+    // An inactive stored row that the source still publishes is a reactivation: it has to be
+    // written again so `is_active` returns to 1, even when its content never changed.
+    if (!row || !row.isActive || !storedRowMatchesModel(row, model, input.sourceUrl)) {
+      changes.push(model)
+    }
+  }
+  const removals = stored
+    .filter((row) => !sourceKeys.has(catalogueKey(row.provider, row.modelId)))
+    .map((row) => ({ provider: row.provider, modelId: row.modelId }))
+  return { changes, removals }
+}
+
+function storedRowMatchesModel(row: StoredCatalogueRow, model: NormalizedModelPricing, sourceUrl: string) {
+  return (
+    row.sourceUrl === sourceUrl &&
+    row.provider === model.provider &&
+    row.modelId === model.modelId &&
+    row.displayName === model.displayName &&
+    row.inputCostPerMillion === model.inputCostPerMillion &&
+    row.outputCostPerMillion === model.outputCostPerMillion &&
+    row.cacheReadCostPerMillion === model.cacheReadCostPerMillion &&
+    row.cacheWriteCostPerMillion === model.cacheWriteCostPerMillion &&
+    row.contextWindow === model.contextWindow &&
+    row.maxInputTokens === model.maxInputTokens &&
+    row.maxOutputTokens === model.maxOutputTokens &&
+    row.releaseDate === model.releaseDate &&
+    row.sourceUpdatedAt === model.sourceUpdatedAt &&
+    row.officialDocsUrl === model.officialDocsUrl &&
+    row.pricingJson === model.pricingJson &&
+    row.isDeprecated === model.isDeprecated
+  )
+}
+
+type StoredCatalogueRow = NormalizedModelPricing & { sourceUrl: string; isActive: boolean }
+
+// `readActiveModelPricingRows` walks the active catalogue in primary-key order so each read stays
+// bounded. The walk is capped rather than unbounded: a catalogue that somehow grew past every
+// sane ceiling must fail loudly instead of looping the sync forever.
+const catalogueDiffPageSize = 1_000
+const catalogueDiffMaxRows = 200_000
+
+async function readActiveModelPricingRows(db: D1Database): Promise<StoredCatalogueRow[]> {
+  const rows: StoredCatalogueRow[] = []
+  let cursor: { provider: string; modelId: string } | null = null
+  while (rows.length < catalogueDiffMaxRows) {
+    const predicates = ['is_active = 1']
+    const bindings: unknown[] = []
+    if (cursor) {
+      predicates.push('(provider > ? OR (provider = ? AND model_id > ?))')
+      bindings.push(cursor.provider, cursor.provider, cursor.modelId)
+    }
+    const result = await db
+      .prepare(
+        `
+          SELECT
+            provider,
+            model_id as modelId,
+            display_name as displayName,
+            input_cost_per_million as inputCostPerMillion,
+            output_cost_per_million as outputCostPerMillion,
+            cache_read_cost_per_million as cacheReadCostPerMillion,
+            cache_write_cost_per_million as cacheWriteCostPerMillion,
+            context_window as contextWindow,
+            max_input_tokens as maxInputTokens,
+            max_output_tokens as maxOutputTokens,
+            release_date as releaseDate,
+            source_updated_at as sourceUpdatedAt,
+            official_docs_url as officialDocsUrl,
+            source_url as sourceUrl,
+            pricing_json as pricingJson,
+            is_deprecated as isDeprecated
+          FROM model_pricing
+          WHERE ${predicates.join(' AND ')}
+          ORDER BY provider ASC, model_id ASC
+          LIMIT ?
+        `
+      )
+      .bind(...bindings, catalogueDiffPageSize)
+      .all<Record<string, unknown>>()
+    for (const raw of result.results) {
+      rows.push({
+        provider: requiredString(raw.provider, 'provider'),
+        modelId: requiredString(raw.modelId, 'modelId'),
+        displayName: requiredString(raw.displayName, 'displayName'),
+        inputCostPerMillion: requiredNonNegativeNumber(raw.inputCostPerMillion, 'inputCostPerMillion'),
+        outputCostPerMillion: requiredNonNegativeNumber(raw.outputCostPerMillion, 'outputCostPerMillion'),
+        cacheReadCostPerMillion: nullableNonNegativeNumber(raw.cacheReadCostPerMillion, 'cacheReadCostPerMillion'),
+        cacheWriteCostPerMillion: nullableNonNegativeNumber(raw.cacheWriteCostPerMillion, 'cacheWriteCostPerMillion'),
+        contextWindow: requiredNonNegativeInteger(raw.contextWindow, 'contextWindow'),
+        maxInputTokens: nullableNonNegativeInteger(raw.maxInputTokens, 'maxInputTokens'),
+        maxOutputTokens: nullableNonNegativeInteger(raw.maxOutputTokens, 'maxOutputTokens'),
+        releaseDate: nullableString(raw.releaseDate, 'releaseDate'),
+        sourceUpdatedAt: nullableString(raw.sourceUpdatedAt, 'sourceUpdatedAt'),
+        officialDocsUrl: requiredString(raw.officialDocsUrl, 'officialDocsUrl'),
+        sourceUrl: requiredString(raw.sourceUrl, 'sourceUrl'),
+        pricingJson: requiredString(raw.pricingJson, 'pricingJson'),
+        isDeprecated: readStoredFlag(raw.isDeprecated, 'isDeprecated'),
+        isActive: true
+      })
+    }
+    if (result.results.length < catalogueDiffPageSize) break
+    const last = result.results.at(-1)
+    if (!last) break
+    const lastProvider = requiredString(last.provider, 'provider')
+    const lastModelId = requiredString(last.modelId, 'modelId')
+    if (cursor && cursor.provider === lastProvider && cursor.modelId === lastModelId) break
+    cursor = { provider: lastProvider, modelId: lastModelId }
+  }
+  if (rows.length >= catalogueDiffMaxRows) {
+    throw new Error(`Model pricing catalogue exceeded ${catalogueDiffMaxRows} active rows while diffing`)
+  }
+  return rows
+}
+
+// A key that cannot collide across the provider/model boundary even for legacy ids that contain
+// the delimiter: JSON encodes the two fields as separate array entries.
+function catalogueKey(provider: string, modelId: string) {
+  return JSON.stringify([provider, modelId])
 }
 
 export async function markModelPricingSyncSuccess(input: {
@@ -241,9 +395,30 @@ export async function markModelPricingSyncSuccess(input: {
   sourceUpdatedAt: string | null
   modelCount: number
   syncGeneration: string
+  changeCount: number
+  removals: Array<{ provider: string; modelId: string }>
 }) {
   const nowIso = input.now.toISOString()
   const leaseNowIso = (input.leaseNow ?? input.now).toISOString()
+  // Deactivating a removed model must not rewrite a row that is already inactive: an UPDATE
+  // that sets a column to its current value still counts as a row written, and the whole
+  // point of the incremental publish is to touch only rows whose served state changes.
+  const deactivationStatements = chunkRemovals(input.removals).map((batch) =>
+    input.db
+      .prepare(
+        `
+        UPDATE model_pricing
+        SET is_active = 0
+        WHERE is_active = 1
+          AND (${batch.map(() => '(provider = ? AND model_id = ?)').join(' OR ')})
+          AND EXISTS (
+            SELECT 1 FROM model_pricing_sync_state
+            WHERE id = ? AND status = 'success' AND active_generation = ? AND lock_token IS NULL
+          )
+      `
+      )
+      .bind(...batch.flatMap((removal) => [removal.provider, removal.modelId]), STATE_ID, input.syncGeneration)
+  )
   const statements = [
     input.db
       .prepare(
@@ -280,7 +455,7 @@ export async function markModelPricingSyncSuccess(input: {
         input.lockToken,
         leaseNowIso,
         input.syncGeneration,
-        input.modelCount
+        input.changeCount
       ),
     input.db
       .prepare(
@@ -324,19 +499,11 @@ export async function markModelPricingSyncSuccess(input: {
       `
       )
       .bind(input.syncGeneration, STATE_ID, input.syncGeneration),
-    input.db
-      .prepare(
-        `
-        UPDATE model_pricing
-        SET is_active = CASE WHEN sync_generation = ? THEN 1 ELSE 0 END
-        WHERE (is_active = 1 OR sync_generation = ?)
-          AND EXISTS (
-            SELECT 1 FROM model_pricing_sync_state
-            WHERE id = ? AND status = 'success' AND active_generation = ? AND lock_token IS NULL
-          )
-      `
-      )
-      .bind(input.syncGeneration, input.syncGeneration, STATE_ID, input.syncGeneration),
+    // Deactivations are explicit per-removed-key updates rather than a full-table
+    // `is_active` flip: rows the source still publishes keep their stored state, so an
+    // unchanged catalogue touches no catalogue rows at all. Chunks of 48 keys keep each
+    // statement at 99 bound parameters, below the D1 limit of 100.
+    ...deactivationStatements,
     input.db
       .prepare(
         `
@@ -350,7 +517,12 @@ export async function markModelPricingSyncSuccess(input: {
       )
       .bind(input.syncGeneration, STATE_ID, input.syncGeneration)
   ]
-  const results = await runBatch(input.db, statements, 'activate pricing generation')
+  const results: D1Result<unknown>[] = []
+  for (let index = 0; index < statements.length; index += maxBatchStatements) {
+    results.push(
+      ...(await runBatch(input.db, statements.slice(index, index + maxBatchStatements), 'activate pricing generation'))
+    )
+  }
   const stateResult = results[0]
   if (Number(stateResult?.meta?.changes ?? 0) !== 1) {
     const [state, stagingCount] = await Promise.all([
@@ -382,9 +554,9 @@ export async function markModelPricingSyncSuccess(input: {
       typeof state.lockedUntil === 'string' &&
       Date.parse(state.lockedUntil) > Date.parse(leaseNowIso)
     const actualStagingCount = Number(stagingCount?.count ?? 0)
-    if (ownsLiveLock && actualStagingCount !== input.modelCount) {
+    if (ownsLiveLock && actualStagingCount !== input.changeCount) {
       throw new Error(
-        `Model pricing generation staging count ${actualStagingCount} does not match expected model count ${input.modelCount}`
+        `Model pricing generation staging count ${actualStagingCount} does not match expected change count ${input.changeCount}`
       )
     }
     if (ownsLiveLock) {
@@ -455,6 +627,55 @@ export async function markModelPricingSyncFailure(input: {
   )
   const result = results.at(-1)
   assertLockOwnership(result, 'failure')
+}
+
+// A due sync whose fetched catalogue is byte-for-byte the stored one still has to release the
+// ownership lock and advance `last_success_at`, or the next cron run would find the row stuck in
+// `running` and retry the fetch until the lease expires. It writes the state row and nothing
+// else — the catalogue, its generation and every served row stay exactly as they were.
+export async function markModelPricingSyncUnchanged(input: {
+  db: D1Database
+  lockToken: string
+  sourceUrl: string
+  now: Date
+  leaseNow?: Date
+  sourceUpdatedAt: string | null
+  modelCount: number
+}) {
+  const nowIso = input.now.toISOString()
+  const leaseNowIso = (input.leaseNow ?? input.now).toISOString()
+  const result = await input.db
+    .prepare(
+      `
+      UPDATE model_pricing_sync_state
+      SET status = 'success',
+          source_url = ?,
+          lock_token = NULL,
+          locked_until = NULL,
+          last_success_at = ?,
+          last_failure_at = NULL,
+          last_source_updated_at = ?,
+          model_count = ?,
+          last_error = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND status = 'running'
+        AND lock_token = ?
+        AND locked_until > ?
+    `
+    )
+    .bind(
+      input.sourceUrl,
+      nowIso,
+      input.sourceUpdatedAt,
+      input.modelCount,
+      nowIso,
+      STATE_ID,
+      input.lockToken,
+      leaseNowIso
+    )
+    .run()
+  assertLockOwnership(result, 'unchanged catalogue')
 }
 
 export async function readModelPricingSyncState(db: D1Database) {
@@ -544,12 +765,11 @@ export async function listModelPricing(
     bindings.push(provider)
   }
   if (input.activeOnly !== false) {
-    if (resolvedActiveGeneration) {
-      predicates.push('sync_generation = ?')
-      bindings.push(resolvedActiveGeneration)
-    } else {
-      predicates.push('is_active = 1')
-    }
+    // `is_active` is the served-state authority now that a publish touches only changed and
+    // removed rows: an unchanged row keeps the generation it was last written with, so a
+    // generation predicate would drop most of the catalogue. Cursor expiry still rides on the
+    // state row's `active_generation` below, unchanged.
+    predicates.push('is_active = 1')
   }
   const cursor = input.cursor ? decodeModelPricingCursor(input.cursor) : null
   if (cursor) {
@@ -846,6 +1066,14 @@ function assertLockOwnership(result: D1Result | undefined, phase: string) {
   if (Number(changes) !== 1) {
     throw new Error(`Model pricing sync lock ownership was lost while recording ${phase}`)
   }
+}
+
+function chunkRemovals(removals: Array<{ provider: string; modelId: string }>) {
+  const batches: Array<Array<{ provider: string; modelId: string }>> = []
+  for (let offset = 0; offset < removals.length; offset += maxRemovalKeysPerStatement) {
+    batches.push(removals.slice(offset, offset + maxRemovalKeysPerStatement))
+  }
+  return batches
 }
 
 async function runBatch(db: D1Database, statements: D1PreparedStatement[], phase: string) {
