@@ -401,8 +401,20 @@ function parseStoredRowContent(raw: Record<string, unknown>): (NormalizedModelPr
       pricingJson: requiredString(raw.pricingJson, 'pricingJson'),
       isDeprecated: readStoredFlag(raw.isDeprecated, 'isDeprecated')
     }
-  } catch {
-    return null
+  } catch (error) {
+    // Only validator output may degrade a row to "changed". Anything else is a programming
+    // error that must stay loud: swallowing it here would mark every row changed and mass-
+    // republish the catalogue without a signal.
+    if (
+      error instanceof Error &&
+      (error.message.startsWith('Stored model pricing contains an invalid') ||
+        error.message.startsWith('Stored model pricing has an invalid') ||
+        error.message.startsWith('Stored model pricing has invalid') ||
+        error.message.startsWith('Stored model pricing is missing'))
+    ) {
+      return null
+    }
+    throw error
   }
 }
 
