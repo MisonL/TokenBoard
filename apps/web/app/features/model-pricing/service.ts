@@ -38,7 +38,9 @@ export type ModelPricingSyncResult = {
   modelCount?: number
   sourceUpdatedAt?: string | null
   completedAt?: string
-  // False when the fetched catalogue was identical to the stored one and nothing was written.
+  // Whether the catalogue *content* changed (a row was published or a removal deactivated).
+  // A forced sync with an identical catalogue still publishes — it advances the generation,
+  // invalidating cursors and ETags — but reports changed: false, because no row was written.
   changed?: boolean
 }
 

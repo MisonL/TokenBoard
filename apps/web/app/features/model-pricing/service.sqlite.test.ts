@@ -220,6 +220,77 @@ describe('model pricing SQLite contract', () => {
     expect(restoredRow).toBe('1')
   })
 
+  test('a forced sync with an identical catalogue advances the generation but writes no rows', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+
+    await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+    const before = await getModelPricing({ db })
+    const rowSnapshot = runSql(
+      dbPath,
+      'SELECT model_id, fetched_at, sync_generation FROM model_pricing ORDER BY model_id'
+    )
+
+    const forced = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+
+    expect(forced).toMatchObject({ status: 'success', changed: false, modelCount: 4 })
+    const after = await getModelPricing({ db })
+    // The publish path always advances the generation (cursor/ETag invalidation contract),
+    // but with an empty diff no catalogue row is rewritten.
+    expect(after.state?.activeGeneration).not.toBe(before.state?.activeGeneration)
+    expect(runSql(dbPath, 'SELECT model_id, fetched_at, sync_generation FROM model_pricing ORDER BY model_id')).toBe(
+      rowSnapshot
+    )
+  })
+
+  test('a corrupted stored row is republished instead of freezing the sync', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+
+    await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+    // Only the sync writes catalogue rows, so this is exactly the state a historical bug or
+    // manual SQL could leave behind. The diff must treat the row as changed and let the
+    // publish overwrite it — failing closed here would freeze the catalogue forever.
+    runSql(dbPath, "UPDATE model_pricing SET input_cost_per_million = 'not-a-number' WHERE model_id = 'gpt-5.6-sol'")
+
+    const healed = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+
+    expect(healed).toMatchObject({ status: 'success', changed: true })
+    const catalogue = await getModelPricing({ db })
+    expect(catalogue.models.map((model) => model.modelId)).toEqual([
+      'claude-sonnet-5',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'grok-4.5'
+    ])
+    const healedInput = catalogue.models.find((model) => model.modelId === 'gpt-5.6-sol')
+    expect(healedInput?.inputCostPerMillion).toBe(5)
+  })
+
   test('keeps source-removed models as inactive history', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
     tempDirs.push(dir)

@@ -26,7 +26,10 @@ price value types, and responses larger than 16 MiB. A row is retained only when
 input and output token prices; modality-only rows without both token prices are omitted. Image,
 audio, embedding and other modality rows remain available when they also expose those numeric
 token prices. Missing or zero context limits are stored as `0` instead of inventing a context size.
-A failed sync never clears or partially replaces the last successful catalogue.
+A failed sync never clears or partially replaces the last successful catalogue. The diff publish
+is a single transactional batch up to the D1 statement limit; only a single sync removing more
+than ~4,650 models (over half the catalogue) would split it, and any later sync converges on
+whatever landed.
 
 The service stores prices in USD per one million tokens. The original normalized `pricing_json`
 keeps provider-specific tiers, including OpenAI's 272,000-token long-context tier, instead of

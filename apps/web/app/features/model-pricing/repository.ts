@@ -30,8 +30,8 @@ const STATE_ID = 'global'
 const maxBatchStatements = 100
 const modelPricingLeaseDurationMs = 10 * 60 * 1000
 export const modelPricingFailureRetryDelayMs = 60 * 60 * 1000
-// 48 keys per deactivation statement: two bound parameters each, plus the three guard
-// parameters, keeps the statement at 99 — one below the D1 limit of 100.
+// 48 keys per deactivation statement: two bound parameters each, plus the two guard
+// parameters, keeps the statement at 98 — below the D1 limit of 100.
 const maxRemovalKeysPerStatement = 48
 
 export async function claimModelPricingSync(input: {
@@ -266,9 +266,11 @@ async function diffModelPricingCatalogue(input: {
     const key = catalogueKey(model.provider, model.modelId)
     sourceKeys.add(key)
     const row = storedByKey.get(key)
-    // An inactive stored row that the source still publishes is a reactivation: it has to be
-    // written again so `is_active` returns to 1, even when its content never changed.
-    if (!row || !row.isActive || !storedRowMatchesModel(row, model, input.sourceUrl)) {
+    // `stored` only holds active rows, so a source model with no stored counterpart is either
+    // brand new or a reactivation of previously removed history — the upsert restores
+    // `is_active = 1` in both cases. Unparsable stored content (row.content null) is treated as
+    // changed so the publish overwrites it instead of freezing the sync.
+    if (!row || !row.content || !storedRowMatchesModel(row.content, model, input.sourceUrl)) {
       changes.push(model)
     }
   }
@@ -278,7 +280,11 @@ async function diffModelPricingCatalogue(input: {
   return { changes, removals }
 }
 
-function storedRowMatchesModel(row: StoredCatalogueRow, model: NormalizedModelPricing, sourceUrl: string) {
+function storedRowMatchesModel(
+  row: NormalizedModelPricing & { sourceUrl: string },
+  model: NormalizedModelPricing,
+  sourceUrl: string
+) {
   return (
     row.sourceUrl === sourceUrl &&
     row.provider === model.provider &&
@@ -299,7 +305,16 @@ function storedRowMatchesModel(row: StoredCatalogueRow, model: NormalizedModelPr
   )
 }
 
-type StoredCatalogueRow = NormalizedModelPricing & { sourceUrl: string; isActive: boolean }
+type StoredCatalogueRow = {
+  provider: string
+  modelId: string
+  // Null when the stored row could not be parsed into a catalogue model. Only the sync itself
+  // writes catalogue rows, so a corrupted row can never be repaired by anything else: the diff
+  // treats it as changed (or removes it when the source dropped the key) and the publish
+  // overwrites it. Failing closed here would freeze the whole catalogue behind one bad row —
+  // a durability regression the full-rebuild path never had, since it never read these rows.
+  content: (NormalizedModelPricing & { sourceUrl: string }) | null
+}
 
 // `readActiveModelPricingRows` walks the active catalogue in primary-key order so each read stays
 // bounded. The walk is capped rather than unbounded: a catalogue that somehow grew past every
@@ -346,25 +361,11 @@ async function readActiveModelPricingRows(db: D1Database): Promise<StoredCatalog
       .bind(...bindings, catalogueDiffPageSize)
       .all<Record<string, unknown>>()
     for (const raw of result.results) {
-      rows.push({
-        provider: requiredString(raw.provider, 'provider'),
-        modelId: requiredString(raw.modelId, 'modelId'),
-        displayName: requiredString(raw.displayName, 'displayName'),
-        inputCostPerMillion: requiredNonNegativeNumber(raw.inputCostPerMillion, 'inputCostPerMillion'),
-        outputCostPerMillion: requiredNonNegativeNumber(raw.outputCostPerMillion, 'outputCostPerMillion'),
-        cacheReadCostPerMillion: nullableNonNegativeNumber(raw.cacheReadCostPerMillion, 'cacheReadCostPerMillion'),
-        cacheWriteCostPerMillion: nullableNonNegativeNumber(raw.cacheWriteCostPerMillion, 'cacheWriteCostPerMillion'),
-        contextWindow: requiredNonNegativeInteger(raw.contextWindow, 'contextWindow'),
-        maxInputTokens: nullableNonNegativeInteger(raw.maxInputTokens, 'maxInputTokens'),
-        maxOutputTokens: nullableNonNegativeInteger(raw.maxOutputTokens, 'maxOutputTokens'),
-        releaseDate: nullableString(raw.releaseDate, 'releaseDate'),
-        sourceUpdatedAt: nullableString(raw.sourceUpdatedAt, 'sourceUpdatedAt'),
-        officialDocsUrl: requiredString(raw.officialDocsUrl, 'officialDocsUrl'),
-        sourceUrl: requiredString(raw.sourceUrl, 'sourceUrl'),
-        pricingJson: requiredString(raw.pricingJson, 'pricingJson'),
-        isDeprecated: readStoredFlag(raw.isDeprecated, 'isDeprecated'),
-        isActive: true
-      })
+      // The primary key is the only thing the diff cannot work around: it names the row in the
+      // changes/removals lists. Everything else degrades to "changed", which the publish heals.
+      const provider = requiredString(raw.provider, 'provider')
+      const modelId = requiredString(raw.modelId, 'modelId')
+      rows.push({ provider, modelId, content: parseStoredRowContent(raw) })
     }
     if (result.results.length < catalogueDiffPageSize) break
     const last = result.results.at(-1)
@@ -378,6 +379,31 @@ async function readActiveModelPricingRows(db: D1Database): Promise<StoredCatalog
     throw new Error(`Model pricing catalogue exceeded ${catalogueDiffMaxRows} active rows while diffing`)
   }
   return rows
+}
+
+function parseStoredRowContent(raw: Record<string, unknown>): (NormalizedModelPricing & { sourceUrl: string }) | null {
+  try {
+    return {
+      provider: requiredString(raw.provider, 'provider'),
+      modelId: requiredString(raw.modelId, 'modelId'),
+      displayName: requiredString(raw.displayName, 'displayName'),
+      inputCostPerMillion: requiredNonNegativeNumber(raw.inputCostPerMillion, 'inputCostPerMillion'),
+      outputCostPerMillion: requiredNonNegativeNumber(raw.outputCostPerMillion, 'outputCostPerMillion'),
+      cacheReadCostPerMillion: nullableNonNegativeNumber(raw.cacheReadCostPerMillion, 'cacheReadCostPerMillion'),
+      cacheWriteCostPerMillion: nullableNonNegativeNumber(raw.cacheWriteCostPerMillion, 'cacheWriteCostPerMillion'),
+      contextWindow: requiredNonNegativeInteger(raw.contextWindow, 'contextWindow'),
+      maxInputTokens: nullableNonNegativeInteger(raw.maxInputTokens, 'maxInputTokens'),
+      maxOutputTokens: nullableNonNegativeInteger(raw.maxOutputTokens, 'maxOutputTokens'),
+      releaseDate: nullableString(raw.releaseDate, 'releaseDate'),
+      sourceUpdatedAt: nullableString(raw.sourceUpdatedAt, 'sourceUpdatedAt'),
+      officialDocsUrl: requiredString(raw.officialDocsUrl, 'officialDocsUrl'),
+      sourceUrl: requiredString(raw.sourceUrl, 'sourceUrl'),
+      pricingJson: requiredString(raw.pricingJson, 'pricingJson'),
+      isDeprecated: readStoredFlag(raw.isDeprecated, 'isDeprecated')
+    }
+  } catch {
+    return null
+  }
 }
 
 // A key that cannot collide across the provider/model boundary even for legacy ids that contain
@@ -517,6 +543,11 @@ export async function markModelPricingSyncSuccess(input: {
       )
       .bind(input.syncGeneration, STATE_ID, input.syncGeneration)
   ]
+  // One `db.batch` is one transaction, so with up to 100 statements this publish is atomic.
+  // The split below only engages past that limit, which takes ~4,657 source removals in a
+  // single sync (48 keys per deactivation statement) — more than half the catalogue. A failure
+  // between split batches would leave earlier batches committed; the next due sync recomputes
+  // the diff against whatever landed and converges.
   const results: D1Result<unknown>[] = []
   for (let index = 0; index < statements.length; index += maxBatchStatements) {
     results.push(
