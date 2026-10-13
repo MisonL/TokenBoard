@@ -540,7 +540,7 @@ export async function markModelPricingSyncSuccess(input: {
     // Deactivations are explicit per-removed-key updates rather than a full-table
     // `is_active` flip: rows the source still publishes keep their stored state, so an
     // unchanged catalogue touches no catalogue rows at all. Chunks of 48 keys keep each
-    // statement at 99 bound parameters, below the D1 limit of 100.
+    // statement at 98 bound parameters, below the D1 limit of 100.
     ...deactivationStatements,
     input.db
       .prepare(
