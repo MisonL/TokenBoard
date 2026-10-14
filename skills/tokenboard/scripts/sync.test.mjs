@@ -755,23 +755,60 @@ test('scheduled collector output reaches the log with credentials redacted', asy
 })
 
 // Without a scheduled log the child inherits the terminal, so nothing is captured and no log
-// line is synthesized — the interactive run keeps its live output.
+// line is synthesized — the interactive run keeps its live output. The stub mimics the real
+// node:child_process spawn contract (an EventEmitter child), not the old spawnSync result
+// shape: an earlier stub returned `{ status: 3 }` directly and hid a regression where the
+// child process object was returned un-awaited and the exit code was lost.
 test('an unscheduled collector run inherits the terminal instead of capturing', async () => {
   const calls = []
+  const { EventEmitter } = await import('node:events')
+  const child = new EventEmitter()
   const result = await runCollectorProcess(
     { command: 'collector', args: ['--sync'], cwd: '/repo', env: { A: '1' }, shell: false },
     null,
     {
       spawn: (command, args, options) => {
         calls.push({ command, args, options })
-        return { status: 3 }
+        queueMicrotask(() => child.emit('exit', 3, null))
+        return child
       }
     }
   )
 
   assert.equal(result.status, 3)
+  assert.equal(result.error, null)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].options.stdio, 'inherit')
+})
+
+test('an unscheduled run reports a spawn failure and a zero exit as success', async () => {
+  const { EventEmitter } = await import('node:events')
+  const failed = new EventEmitter()
+  const spawnFailure = await runCollectorProcess(
+    { command: 'collector', args: [], cwd: '/repo', env: {}, shell: false },
+    null,
+    {
+      spawn: () => {
+        queueMicrotask(() => failed.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })))
+        return failed
+      }
+    }
+  )
+  assert.equal(spawnFailure.status, 1)
+  assert.match(spawnFailure.error.message, /ENOENT/)
+
+  const child = new EventEmitter()
+  const success = await runCollectorProcess(
+    { command: 'collector', args: [], cwd: '/repo', env: {}, shell: false },
+    null,
+    {
+      spawn: () => {
+        queueMicrotask(() => child.emit('exit', 0, null))
+        return child
+      }
+    }
+  )
+  assert.equal(success.status, 0)
 })
 
 test('writeRedactedOutput strips credentials before writing to the log', () => {

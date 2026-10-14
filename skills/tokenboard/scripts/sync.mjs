@@ -266,11 +266,17 @@ export async function runCollectorProcess(invocation, logs, options = {}) {
   const spawnChild = options.spawn || spawn
   const write = options.write || writeSync
   if (!logs) {
-    return spawnChild(invocation.command, invocation.args, {
+    // Interactive mode keeps the child on the real terminal, but the process must still be
+    // awaited: spawn returns a ChildProcess, not a result, and the caller reads `status`.
+    const child = spawnChild(invocation.command, invocation.args, {
       cwd: invocation.cwd,
       env: invocation.env,
       stdio: 'inherit',
       shell: invocation.shell
+    })
+    return await new Promise((resolve) => {
+      child.once('error', (error) => resolve({ status: 1, error }))
+      child.once('exit', (code, signal) => resolve({ status: code ?? (signal ? 1 : 0), error: null }))
     })
   }
 
