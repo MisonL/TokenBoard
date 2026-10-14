@@ -1368,6 +1368,57 @@ describe('runCollectorCli', () => {
     expect(result).toBe(1)
     expect(stderr).toEqual(['No valid Claude data directories found'])
   })
+
+  test('collapses repeated unpriced-model diagnostics into one summary per provider', async () => {
+    const stderr: string[] = []
+    const unpriced = (model: string) =>
+      `TokenBoard model pricing unavailable for Claude Code model ${model}; preserving ccusage result`
+
+    const collectClaudeCodeUsage = async (options?: { stderr?: (line: string) => void }) => {
+      options?.stderr?.(unpriced('a'))
+      options?.stderr?.(unpriced('a'))
+      options?.stderr?.(unpriced('b'))
+      return []
+    }
+
+    const result = await runCollectorCli(['preview', '--source', 'claude-code'], { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }, {
+      stdout: () => undefined,
+      stderr: (line) => stderr.push(line),
+      collectClaudeCodeUsage,
+      collectCodexUsage: async () => [],
+      uploadSnapshots: async () => ({ upserted: 0 })
+    })
+
+    expect(result).toBe(0)
+    const summaries = stderr.filter((line) => line.includes('model pricing unavailable'))
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0]).toContain('2 Claude Code models')
+    expect(summaries[0]).toContain('a, b')
+  })
+
+  test('a single unpriced-model diagnostic keeps its original single-model wording', async () => {
+    const stderr: string[] = []
+    const unpriced = (model: string) =>
+      `TokenBoard model pricing unavailable for Claude Code model ${model}; preserving ccusage result`
+
+    const collectClaudeCodeUsage = async (options?: { stderr?: (line: string) => void }) => {
+      options?.stderr?.(unpriced('only-model'))
+      return []
+    }
+
+    const result = await runCollectorCli(['preview', '--source', 'claude-code'], { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }, {
+      stdout: () => undefined,
+      stderr: (line) => stderr.push(line),
+      collectClaudeCodeUsage,
+      collectCodexUsage: async () => [],
+      uploadSnapshots: async () => ({ upserted: 0 })
+    })
+
+    expect(result).toBe(0)
+    expect(stderr.filter((line) => line.includes('model pricing unavailable'))).toEqual([
+      'TokenBoard model pricing unavailable for Claude Code model only-model; preserving ccusage result'
+    ])
+  })
 })
 
 // The entry guard must canonicalize both paths. Node resolves `import.meta.url` through symlinks

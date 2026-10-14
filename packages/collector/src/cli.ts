@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
 import { errorMessage } from './error-message'
+import { createPricingDiagnosticSink } from './pricing-diagnostics'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
 import {
   collectAntigravityIdeUsage,
@@ -111,6 +112,8 @@ export async function runCollectorCli(
   deps: CliDeps = defaultDeps
 ): Promise<number> {
   let command: CliCommand | undefined
+  const pricingDiagnostics = createPricingDiagnosticSink(deps.stderr)
+  const collectorDeps: CliDeps = { ...deps, stderr: pricingDiagnostics.stderr }
   try {
     const options = parseArgs(args, env)
     command = options.command
@@ -146,7 +149,7 @@ export async function runCollectorCli(
       since: options.since,
       until: options.until,
       cursorScope,
-      deps,
+      deps: collectorDeps,
       env: options.endpoint ? { ...env, TOKENBOARD_ENDPOINT: options.endpoint } : env
     }
     const collection = await collectSnapshots(options.source, collectionContext)
@@ -156,9 +159,9 @@ export async function runCollectorCli(
     const collectionFailed = hasFatalSourceFailure || shouldFailForSourceErrors
 
     if (options.command === 'preview') {
-      deps.stdout(JSON.stringify(collection.snapshots, null, 2))
+      collectorDeps.stdout(JSON.stringify(collection.snapshots, null, 2))
       if (collectionFailed) {
-        deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
+        collectorDeps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
         return 1
       }
       return 0
@@ -184,18 +187,20 @@ export async function runCollectorCli(
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since, options.until)
     deps.stdout(JSON.stringify(result, null, 2))
     if (collectionFailed) {
-      deps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
+      collectorDeps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
       return 1
     }
     return 0
   } catch (error) {
-    deps.stderr(errorMessage(error))
+    collectorDeps.stderr(errorMessage(error))
     // Only a non-hook sync run can be deferred: preview and warm-hooks report a
     // plain failure, and hook syncs are never retried by the scheduler.
     if (command === 'sync' && env.TOKENBOARD_HOOK_MODE !== '1' && isTransientNetworkError(error)) {
       return transientSyncExitCode
     }
     return 1
+  } finally {
+    pricingDiagnostics.flush()
   }
 }
 
