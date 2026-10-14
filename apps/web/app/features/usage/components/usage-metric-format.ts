@@ -27,8 +27,7 @@ export function formatUsageMetricInteger(value: number): UsageMetricValue {
 
   return {
     value: compactNumber(value),
-    exactValue,
-    detail: chineseMagnitude(value)
+    exactValue
   }
 }
 
@@ -38,8 +37,7 @@ export function formatUsageMetricUsd(value: number): UsageMetricValue {
 
   return {
     value: compactUsd(value),
-    exactValue,
-    detail: `${chineseMagnitude(value)} USD`
+    exactValue
   }
 }
 
@@ -96,16 +94,6 @@ function roundCompactValue(value: number) {
   return Math.round(value * compactRoundingFactor) / compactRoundingFactor
 }
 
-function chineseMagnitude(value: number) {
-  const absValue = Math.abs(value)
-  const prefix = value < 0 ? '-' : ''
-  if (absValue >= 10_000_000_000_000_000) return `${prefix}${formatChineseDecimal(absValue / 10_000_000_000_000_000)}京`
-  if (absValue >= 1_000_000_000_000) return `${prefix}${formatChineseDecimal(absValue / 1_000_000_000_000)}万亿`
-  if (absValue >= 100_000_000) return `${prefix}${formatChineseDecimal(absValue / 100_000_000)}亿`
-  if (absValue >= 10_000) return `${prefix}${formatChineseDecimal(absValue / 10_000)}万`
-  return formatInteger(value)
-}
-
 function formatInteger(value: number) {
   return new Intl.NumberFormat('en-US').format(value)
 }
@@ -113,12 +101,5 @@ function formatInteger(value: number) {
 function formatDecimal(value: number) {
   return new Intl.NumberFormat('en-US', {
     maximumFractionDigits: 2
-  }).format(value)
-}
-
-function formatChineseDecimal(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: 2,
-    useGrouping: false
   }).format(value)
 }
