@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { buildStatus } from './status.mjs'
+import { buildStatus, collectRecentRunSummary } from './status.mjs'
 import { scheduledRetryLegacyStatePath, scheduledRetryStatePath } from './scheduled-retry.mjs'
 import { scheduledSyncStatePath } from './scheduled-sync-state.mjs'
 
@@ -624,4 +624,60 @@ test('status surfaces the upgraded commit only when the config records one', () 
   })
   assert.equal(withCommit.lastUpgradedCommit, 'a'.repeat(40))
   assert.equal(withCommit.upgradedAt, '2026-10-14T01:00:00.000Z')
+})
+
+test('aggregates the last 7 days of run logs by filename prefix', () => {
+  const files = {
+    '2026-10-08T09-00-00.000Z-aaa111.json': JSON.stringify({ status: 'success' }),
+    '2026-10-12T09-00-00.000Z-bbb222.json': JSON.stringify({ status: 'success' }),
+    '2026-10-13T09-00-00.000Z-ccc333.json': JSON.stringify({ status: 'error' }),
+    '2026-10-13T10-00-00.000Z-ddd444.json': JSON.stringify({ status: 'skipped' }),
+    '2026-10-06T09-00-00.000Z-eee555.json': JSON.stringify({ status: 'error' })
+  }
+  const summary = collectRecentRunSummary('/state/runs', {
+    now: new Date('2026-10-14T00:00:00.000Z'),
+    readdir: () => Object.keys(files),
+    readFile: (path) => {
+      const name = path.split('/').pop()
+      if (!(name in files)) throw new Error('unexpected ' + name)
+      return files[name]
+    }
+  })
+  assert.deepEqual(summary, {
+    windowDays: 7,
+    total: 4,
+    success: 2,
+    error: 1,
+    skipped: 1,
+    invalid: 0,
+    lastErrorAt: '2026-10-13T09:00:00.000Z'
+  })
+})
+
+test('half-written run files count as invalid and never surface content', () => {
+  const summary = collectRecentRunSummary('/state/runs', {
+    now: new Date('2026-10-14T00:00:00.000Z'),
+    readdir: () => ['2026-10-13T09-00-00.000Z-ccc333.json'],
+    readFile: () => '{"status": "err' // truncated write
+  })
+  assert.equal(summary.invalid, 1)
+  assert.equal(summary.total, 1)
+  const serialized = JSON.stringify(summary)
+  assert.equal(serialized.includes('"status"'), false)
+  assert.equal(serialized.includes('status":"err'), false)
+})
+
+test('an absent runs directory omits the block', () => {
+  const summary = collectRecentRunSummary('/state/runs', {
+    now: new Date('2026-10-14T00:00:00.000Z'),
+    readdir: () => {
+      const error = new Error('no such dir')
+      error.code = 'ENOENT'
+      throw error
+    },
+    readFile: () => {
+      throw new Error('unreachable')
+    }
+  })
+  assert.equal(summary, null)
 })

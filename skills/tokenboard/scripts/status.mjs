@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { isMainModule } from './is-main.mjs'
 import { configPath, readConfig } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
@@ -16,7 +16,8 @@ export function buildStatus({
   hooks = hookStatus(),
   deviceLink = deviceLinkStatus(),
   scheduledRetry,
-  scheduledSync
+  scheduledSync,
+  recentRuns
 }) {
   return {
     configured: true,
@@ -32,8 +33,52 @@ export function buildStatus({
     ...(config.upgradedCommit ? { lastUpgradedCommit: config.upgradedCommit } : {}),
     ...(config.upgradedAt ? { upgradedAt: config.upgradedAt } : {}),
     ...(scheduledRetry ? { scheduledRetry: publicScheduledRetry(scheduledRetry) } : {}),
-    ...(scheduledSync ? { scheduledSync: publicScheduledSync(scheduledSync) } : {})
+    ...(scheduledSync ? { scheduledSync: publicScheduledSync(scheduledSync) } : {}),
+    ...(recentRuns ? { recentRuns } : {})
   }
+}
+
+// Aggregates the coordinator's bounded run-log directory (1024 files max) into per-status
+// counts for the last 7 days. Run logs contain local paths and full diagnostic output, so
+// this reports only counts and a timestamp — never file contents or error text. A half-written
+// file (run logs are written with a plain writeFile) counts as invalid rather than failing
+// status, mirroring how retry-state reads degrade.
+export function collectRecentRunSummary(runsDir, { now = new Date(), readdir = readdirSync, readFile = readFileSync } = {}) {
+  let names
+  try {
+    names = readdir(runsDir)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+  const windowStartMs = now.getTime() - 7 * 24 * 60 * 60 * 1000
+  const summary = { windowDays: 7, total: 0, success: 0, error: 0, skipped: 0, invalid: 0, lastErrorAt: null }
+  for (const name of names) {
+    const match = /^(\d{4}-\d{2}-\d{2})T/.exec(name)
+    if (!match || !name.endsWith('.json')) continue
+    const startedMs = Date.parse(`${match[1]}T00:00:00.000Z`)
+    if (!Number.isFinite(startedMs) || startedMs < windowStartMs) continue
+    summary.total += 1
+    try {
+      const parsed = JSON.parse(readFile(join(runsDir, name), 'utf8'))
+      if (parsed.status === 'success') summary.success += 1
+      else if (parsed.status === 'error') {
+        summary.error += 1
+        // runId embeds the ISO start time with ':' replaced by '-'; restore it just long
+        // enough to Date.parse the prefix before the random suffix.
+        const timestampPart = name.slice(0, name.indexOf('.json'))
+        const runStarted = Date.parse(timestampPart.slice(0, 24).replace(/T(\d{2})-(\d{2})-(\d{2})/, 'T$1:$2:$3'))
+        if (Number.isFinite(runStarted) && (!summary.lastErrorAt || runStarted > Date.parse(summary.lastErrorAt))) {
+          summary.lastErrorAt = new Date(runStarted).toISOString()
+        }
+      } else if (parsed.status === 'skipped') summary.skipped += 1
+      else summary.invalid += 1
+    } catch {
+      summary.invalid += 1
+    }
+  }
+  if (summary.lastErrorAt === null) delete summary.lastErrorAt
+  return summary
 }
 
 function publicScheduledSync(value) {
@@ -97,7 +142,8 @@ function runCli() {
         configPath: file,
         config,
         scheduledRetry: readScheduledRetry(file, source),
-        scheduledSync: readScheduledSync(source, stateDir)
+        scheduledSync: readScheduledSync(source, stateDir),
+        recentRuns: collectRecentRunSummary(join(dirname(file), 'runs'))
       }),
       null,
       2
