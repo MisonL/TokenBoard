@@ -607,3 +607,21 @@ test('status does not expose a legacy retry state belonging to another source', 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('status surfaces the upgraded commit only when the config records one', () => {
+  const base = {
+    activeServer: 'https://tokenboard.example',
+    timezone: 'Asia/Shanghai',
+    source: 'all'
+  }
+  const withoutCommit = buildStatus({ configPath: '/home/user/.tokenboard/config.json', config: base })
+  assert.equal('lastUpgradedCommit' in withoutCommit, false)
+  assert.equal('upgradedAt' in withoutCommit, false)
+
+  const withCommit = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: { ...base, upgradedCommit: 'a'.repeat(40), upgradedAt: '2026-10-14T01:00:00.000Z' }
+  })
+  assert.equal(withCommit.lastUpgradedCommit, 'a'.repeat(40))
+  assert.equal(withCommit.upgradedAt, '2026-10-14T01:00:00.000Z')
+})

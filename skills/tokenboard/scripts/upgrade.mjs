@@ -197,16 +197,28 @@ export function runUpgrade({
     })
   }
 
+  const previousCommit = config.upgradedCommit ?? null
+  const upgradedCommit = resolveCurrentCommit({ collectorDir: collector, spawn })
+
   mergeConfigFile({
     collectorDir: collector,
     repoUrl,
     repoRef,
     packageManager,
     skillDir,
+    upgradedCommit,
     upgradedAt: new Date().toISOString()
   })
-  log(`TokenBoard upgraded from ${repoUrl}${repoRef ? `#${repoRef}` : ''}`)
+  log(`TokenBoard upgraded from ${repoUrl}${repoRef ? `#${repoRef}` : ''} (commit ${previousCommit ?? 'unknown'} -> ${upgradedCommit ?? 'unknown'})`)
   return { collectorDir: collector, skillDir, repoUrl, repoRef, packageManager }
+}
+
+// Archive fallbacks and checkoutless installs have no HEAD to name; record null rather than
+// failing an otherwise successful upgrade.
+function resolveCurrentCommit({ collectorDir, spawn }) {
+  const result = spawn('git', ['rev-parse', 'HEAD'], { cwd: collectorDir, encoding: 'utf8' })
+  const commit = typeof result.stdout === 'string' ? result.stdout.trim() : ''
+  return result.status === 0 && /^[0-9a-f]{40}$/.test(commit) ? commit : null
 }
 
 function createUpgradeWorkDir(configDirectory, platform, exists) {

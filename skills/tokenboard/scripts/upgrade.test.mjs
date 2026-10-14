@@ -2447,3 +2447,74 @@ test('windows archive fallback retries a short tag ref after branch archive down
   )
   assert(calls.some((call) => call.command === 'mergeConfig'))
 })
+
+test('upgrade records the resolved commit and shows the from/to pair in the log', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const merged = []
+  const lines = []
+
+  runUpgrade({
+    flags: { 'repo-ref': 'master', 'skill-dir': `${collectorDir}/skills/tokenboard` },
+    env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+    readConfigFile: () => ({
+      collectorDir,
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'master',
+      packageManager: 'pnpm',
+      upgradedCommit: 'old0000000000000000000000000000000000000'
+    }),
+    mergeConfigFile: (patch) => merged.push(patch),
+    configDirectory: '/home/user/.tokenboard',
+    exists: (path) =>
+      path === collectorDir ||
+      path === `${collectorDir}/.git` ||
+      path === `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`,
+    spawn: (command, args) => {
+      if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
+      if (command === 'git' && args[0] === 'rev-parse') return { status: 0, stdout: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabeef00\n' }
+      return { status: 0, stdout: '' }
+    },
+    log: (line) => lines.push(line)
+  })
+
+  const patch = merged[merged.length - 1]
+  assert.equal(patch.upgradedCommit, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabeef00')
+  const upgradeLine = lines.find((line) => line.includes('upgraded'))
+  assert.match(upgradeLine, /old0000000000000000000000000000000000000/)
+  assert.match(upgradeLine, /beef00/)
+})
+
+test('archive-style upgrades leave upgradedCommit null when rev-parse fails', () => {
+  const collectorDir = '/home/user/.tokenboard/TokenBoard'
+  const merged = []
+
+  runUpgrade({
+    flags: { 'repo-ref': 'master', 'skill-dir': `${collectorDir}/skills/tokenboard` },
+    env: { TOKENBOARD_CONFIG_DIR: '/home/user/.tokenboard' },
+    readConfigFile: () => ({
+      collectorDir,
+      repoUrl: 'https://github.com/example/TokenBoard.git',
+      repoRef: 'master',
+      packageManager: 'pnpm'
+    }),
+    mergeConfigFile: (patch) => merged.push(patch),
+    configDirectory: '/home/user/.tokenboard',
+    exists: (path) =>
+      path === collectorDir ||
+      path === `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`,
+    mkdir: () => {},
+    copy: () => {},
+    remove: () => {},
+    rename: () => {},
+    readDir: () => [],
+    spawn: (command, args) => {
+      // The collector checkout is not a git repo (archive-style install), so the git plan
+      // runs the archive fallback; its extracted checkout also cannot resolve a commit.
+      if (command === 'git' && args[0] === 'rev-parse') return { status: 128, stdout: '', stderr: 'fatal: not a git repository' }
+      return { status: 0, stdout: '' }
+    },
+    log: () => {}
+  })
+
+  assert.equal(merged[merged.length - 1].upgradedCommit, null)
+})

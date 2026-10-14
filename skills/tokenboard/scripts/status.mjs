@@ -29,6 +29,8 @@ export function buildStatus({
     packageManager: config.packageManager || 'pnpm',
     scheduleTimes: Array.isArray(config.scheduleTimes) ? config.scheduleTimes : [],
     hooks: publicHookStatus(hooks),
+    ...(config.upgradedCommit ? { lastUpgradedCommit: config.upgradedCommit } : {}),
+    ...(config.upgradedAt ? { upgradedAt: config.upgradedAt } : {}),
     ...(scheduledRetry ? { scheduledRetry: publicScheduledRetry(scheduledRetry) } : {}),
     ...(scheduledSync ? { scheduledSync: publicScheduledSync(scheduledSync) } : {})
   }
