@@ -160,6 +160,78 @@ describe('collectChangedSessionFiles', () => {
     }
   })
 
+  test('skips rewriting the cursor when nothing changed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
+    const sessionsDir = join(root, 'sessions')
+    const cursorPath = join(root, 'codex-cursor.json')
+    const file = join(sessionsDir, '2026', '05', '22', 'session.jsonl')
+
+    try {
+      await writeSession(file, 'one', '2026-05-22T01:00:00.000Z')
+      const first = await collectChangedSessionFiles({ source: 'codex', sessionsDir, cursorPath })
+      await consumeFiles(first.files)
+      await first.commit()
+      const before = await stat(cursorPath)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const result = await collectChangedSessionFiles({ source: 'codex', sessionsDir, cursorPath })
+      expect(result.files).toEqual([])
+      await result.commit()
+
+      const after = await stat(cursorPath)
+      expect(after.mtimeMs).toBe(before.mtimeMs)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('persists pendingUpload marked on a changed file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
+    const sessionsDir = join(root, 'sessions')
+    const cursorPath = join(root, 'codex-cursor.json')
+    const file = join(sessionsDir, '2026', '05', '22', 'session.jsonl')
+
+    try {
+      await writeSession(file, 'one', '2026-05-22T01:00:00.000Z')
+      const result = await collectChangedSessionFiles({ source: 'codex', sessionsDir, cursorPath })
+      expect(result.files.map((item) => item.relativePath)).toEqual(['2026/05/22/session.jsonl'])
+      await consumeFiles(result.files)
+      result.markPendingUpload()
+      await result.commit()
+
+      expect(JSON.parse(await readFile(cursorPath, 'utf8')).files['2026/05/22/session.jsonl'].pendingUpload).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('writes the cursor when a session file actually changed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
+    const sessionsDir = join(root, 'sessions')
+    const cursorPath = join(root, 'codex-cursor.json')
+    const file = join(sessionsDir, '2026', '05', '22', 'session.jsonl')
+
+    try {
+      await writeSession(file, 'one', '2026-05-22T01:00:00.000Z')
+      const first = await collectChangedSessionFiles({ source: 'codex', sessionsDir, cursorPath })
+      await consumeFiles(first.files)
+      await first.commit()
+      const before = await stat(cursorPath)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      await writeSession(file, 'one\ntwo', '2026-05-22T02:00:00.000Z')
+      const result = await collectChangedSessionFiles({ source: 'codex', sessionsDir, cursorPath })
+      expect(result.files.map((item) => item.relativePath)).toEqual(['2026/05/22/session.jsonl'])
+      await consumeFiles(result.files)
+      await result.commit()
+
+      const after = await stat(cursorPath)
+      expect(after.mtimeMs).toBeGreaterThan(before.mtimeMs)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('fails visibly when cursor files have invalid file maps', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-'))
     const sessionsDir = join(root, 'sessions')

@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { UsageSnapshot } from '@tokenboard/usage-core'
 import { runCollectorCli } from './cli'
 import { AntigravityPartialUsageError } from './providers/antigravity-gui'
@@ -1113,13 +1116,16 @@ describe('runCollectorCli Antigravity source', () => {
   test('does not ack Antigravity cursors when upload fails', async () => {
     const stderr: string[] = []
     const acks: string[] = []
+    // The upload failure now records an upload-backoff state file, so the state
+    // directory must be writable; a temp dir keeps the assertion on acks exact.
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-cli-ack-'))
 
     const result = await runCollectorCli(
       ['sync', '--source', 'antigravity-cli'],
       {
         TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
         TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
-        TOKENBOARD_STATE_DIR: '/state'
+        TOKENBOARD_STATE_DIR: stateDir
       },
       deps({
         stderr: (line) => stderr.push(line),
@@ -1134,8 +1140,9 @@ describe('runCollectorCli Antigravity source', () => {
     )
 
     expect(result).toBe(1)
-    expect(stderr).toEqual(['upload failed'])
+    expect(stderr).toEqual(['TokenBoard upload failed (1 consecutive non-transient failures)', 'upload failed'])
     expect(acks).toEqual([])
+    await rm(stateDir, { recursive: true, force: true })
   })
 
   test('skips Antigravity sources in hook all mode', async () => {

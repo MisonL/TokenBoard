@@ -116,6 +116,7 @@ export async function collectChangedSessionFiles(input: CollectInput) {
       if (scan.unreadChangedFiles.size > 0) {
         throw new Error(`${input.source} session cursor cannot commit before all changed files are read`)
       }
+      if (cursorStatesEqual(current, next)) return Promise.resolve()
       return writeCursor(input.cursorPath, next)
     }
   }
@@ -992,6 +993,17 @@ function sameFile(left: CursorEntry, right: CursorFileMetadata & { sha256: strin
 
 function sameMetadata(left: CursorEntry, right: CursorFileMetadata) {
   return left.size === right.size && left.mtimeMs === right.mtimeMs
+}
+
+// Structural equality over what a scan actually mutates (the file map, the high-water mark,
+// and the codex hook profile hash). The scan rebuilds `next` from scratch with new
+// `updatedAt` timestamps on genuinely rewritten entries, so a JSON comparison against
+// `current` would never converge; comparing the mutated state instead lets an idle run
+// with the same high-water mark skip the cursor rewrite entirely.
+function cursorStatesEqual(current: CursorState, next: CursorState) {
+  if ((current.lastScanHighWaterMs ?? 0) !== (next.lastScanHighWaterMs ?? 0)) return false
+  if ((current.codexHookProfileHash ?? null) !== (next.codexHookProfileHash ?? null)) return false
+  return JSON.stringify(current.files) === JSON.stringify(next.files)
 }
 
 async function hashFile(filePath: string, endOffsetBytes?: number) {
