@@ -232,7 +232,7 @@ describe('hook sync collection', () => {
 
       expect(calls).toEqual([
         [
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           'codex',
           'daily',
           '--json',
@@ -247,7 +247,7 @@ describe('hook sync collection', () => {
           ...bundledCcusageConfigArgs
         ],
         [
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           'codex',
           'session',
           '--json',
@@ -337,7 +337,7 @@ describe('hook sync collection', () => {
 
       expect(calls.slice(2)).toEqual([
         [
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           'codex',
           'daily',
           '--json',
@@ -352,7 +352,7 @@ describe('hook sync collection', () => {
           ...bundledCcusageConfigArgs
         ],
         [
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           'codex',
           'session',
           '--json',
@@ -488,7 +488,7 @@ describe('hook sync collection', () => {
 
       expect(calls).toEqual([
         [
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           'codex',
           'daily',
           '--json',
@@ -503,7 +503,7 @@ describe('hook sync collection', () => {
           ...bundledCcusageConfigArgs
         ],
         [
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           'codex',
           'session',
           '--json',

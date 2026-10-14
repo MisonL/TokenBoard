@@ -61,11 +61,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.26', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.31', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.26', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.31', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -96,7 +96,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           '--',
           'ccusage',
           'claude',
@@ -114,7 +114,7 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.26',
+          'ccusage@20.0.31',
           '--',
           'ccusage',
           'claude',
@@ -143,7 +143,7 @@ describe('collectClaudeCodeUsage', () => {
 
     expect(calls).toEqual([
       [
-        'ccusage@20.0.26',
+        'ccusage@20.0.31',
         'claude',
         'daily',
         '--json',
@@ -152,7 +152,7 @@ describe('collectClaudeCodeUsage', () => {
         '20260501',
         ...bundledCcusageConfigArgs
       ],
-      ['ccusage@20.0.26', 'claude', 'session', '--json', '--since', '20260501', ...bundledCcusageConfigArgs]
+      ['ccusage@20.0.31', 'claude', 'session', '--json', '--since', '20260501', ...bundledCcusageConfigArgs]
     ])
   })
 
@@ -173,7 +173,7 @@ describe('collectClaudeCodeUsage', () => {
 
     expect(calls).toEqual([
       [
-        'ccusage@20.0.26',
+        'ccusage@20.0.31',
         'claude',
         'daily',
         '--json',
@@ -185,7 +185,7 @@ describe('collectClaudeCodeUsage', () => {
         ...bundledCcusageConfigArgs
       ],
       [
-        'ccusage@20.0.26',
+        'ccusage@20.0.31',
         'claude',
         'session',
         '--json',
@@ -237,11 +237,11 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.26', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.31', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.26', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.31', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
       }
     ])
   })

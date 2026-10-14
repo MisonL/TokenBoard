@@ -137,7 +137,7 @@ successful generation and records the failure for the next scheduled retry.
 
 ## Collector integration
 
-Claude Code and Codex usage is calculated locally by the pinned `ccusage@20.0.26` runtime. Before a
+Claude Code and Codex usage is calculated locally by the pinned `ccusage@20.0.31` runtime. Before a
 normal preview or sync, the collector derives the origin from `TOKENBOARD_ENDPOINT`, reads the
 paginated `/api/v1/model-pricing` compatibility alias, and writes a merged temporary `ccusage` config
 under `TOKENBOARD_STATE_DIR`. Dynamic catalogue prices override the bundled
@@ -165,7 +165,7 @@ performed and would require a separate, explicitly versioned migration because p
 semantics and exchange-rate assumptions can change independently of token counts.
 
 The override values are USD per token, so official USD-per-million values are divided by 1,000,000.
-`ccusage@20.0.26` exposes only fields named `*Above200kTokens`; those fields are intentionally not
+`ccusage@20.0.31` exposes only fields named `*Above200kTokens`; those fields are intentionally not
 used for GPT-5.x because the current long-context boundary is 272,000 tokens. Do not change that
 boundary without upgrading the collector runtime and adding a matching schema test.
 

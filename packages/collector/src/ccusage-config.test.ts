@@ -10,7 +10,7 @@ describe('ccusage pricing configuration', () => {
     expect(config.codex?.defaults?.speed).toBe('auto')
   })
 
-  test('uses ccusage 20.0.26-compatible Grok long-context fields', async () => {
+  test('uses ccusage 20.0.31-compatible Grok long-context fields', async () => {
     const config = await readConfig()
     const pricing = config.defaults.pricingOverrides
 
