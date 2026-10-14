@@ -813,7 +813,8 @@ describe('worker server', () => {
       expect(globalThis.fetch).toHaveBeenCalledOnce()
       expect(env.sqlStatements.join('\n')).toContain('model_pricing_sync_state')
       expect(env.sqlStatements.join('\n')).toContain('DELETE FROM pairing_codes')
-      expect(env.DB.batch).toHaveBeenCalledTimes(4)
+      // Publish batch + the separate post-publish staging cleanup batch.
+      expect(env.DB.batch).toHaveBeenCalledTimes(5)
     } finally {
       globalThis.fetch = originalFetch
     }
