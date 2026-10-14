@@ -391,7 +391,8 @@ async function writeCache(cachePath: string, cache: CacheState) {
   if (Buffer.byteLength(serialized) > maxCacheBytes) {
     const retained = trimCacheEntriesToSerializedSize(
       Object.entries(cache.entries).sort(
-        (left, right) => Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt) || left[0].localeCompare(right[0])
+        (left, right) =>
+          Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt) || left[0].localeCompare(right[0])
       ),
       cache.timezone,
       Math.floor(maxCacheBytes * 0.75)
@@ -451,7 +452,11 @@ export function retainCacheEntries(
   return Object.fromEntries(trimCacheEntriesToSerializedSize(selected, timezone))
 }
 
-function trimCacheEntriesToSerializedSize(entries: Array<[string, CacheEntry]>, timezone: string, budgetBytes = maxCacheBytes) {
+function trimCacheEntriesToSerializedSize(
+  entries: Array<[string, CacheEntry]>,
+  timezone: string,
+  budgetBytes = maxCacheBytes
+) {
   const serializedEntries = entries.map(([key, entry]) => ({
     entry: [key, entry] as [string, CacheEntry],
     bytes: Buffer.byteLength(`${JSON.stringify(key)}:${JSON.stringify(entry)}`)

@@ -17,7 +17,8 @@ export function buildStatus({
   deviceLink = deviceLinkStatus(),
   scheduledRetry,
   scheduledSync,
-  recentRuns
+  recentRuns,
+  uploadBackoff
 }) {
   return {
     configured: true,
@@ -34,7 +35,8 @@ export function buildStatus({
     ...(config.upgradedAt ? { upgradedAt: config.upgradedAt } : {}),
     ...(scheduledRetry ? { scheduledRetry: publicScheduledRetry(scheduledRetry) } : {}),
     ...(scheduledSync ? { scheduledSync: publicScheduledSync(scheduledSync) } : {}),
-    ...(recentRuns ? { recentRuns } : {})
+    ...(recentRuns ? { recentRuns } : {}),
+    ...(uploadBackoff ? { uploadBackoff } : {})
   }
 }
 
@@ -43,7 +45,10 @@ export function buildStatus({
 // this reports only counts and a timestamp — never file contents or error text. A half-written
 // file (run logs are written with a plain writeFile) counts as invalid rather than failing
 // status, mirroring how retry-state reads degrade.
-export function collectRecentRunSummary(runsDir, { now = new Date(), readdir = readdirSync, readFile = readFileSync } = {}) {
+export function collectRecentRunSummary(
+  runsDir,
+  { now = new Date(), readdir = readdirSync, readFile = readFileSync } = {}
+) {
   let names
   try {
     names = readdir(runsDir)
@@ -143,12 +148,29 @@ function runCli() {
         config,
         scheduledRetry: readScheduledRetry(file, source),
         scheduledSync: readScheduledSync(source, stateDir),
-        recentRuns: collectRecentRunSummary(join(dirname(file), 'runs'))
+        recentRuns: collectRecentRunSummary(join(dirname(file), 'runs')),
+        uploadBackoff: readUploadBackoff(stateDir)
       }),
       null,
       2
     )
   )
+}
+
+function readUploadBackoff(stateDir) {
+  try {
+    const parsed = JSON.parse(readFileSync(join(stateDir, 'upload-backoff.json'), 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const pausedUntil = typeof parsed.pausedUntil === 'string' ? parsed.pausedUntil : null
+    if (!pausedUntil) return null
+    if (!(Date.parse(pausedUntil) > Date.now())) return null
+    return {
+      pausedUntil,
+      consecutiveFailures: Number.isSafeInteger(parsed.consecutiveFailures) ? parsed.consecutiveFailures : null
+    }
+  } catch {
+    return null
+  }
 }
 
 function readScheduledSync(source, stateDir) {

@@ -342,10 +342,7 @@ function formatSyncFailure(result) {
   const lines = splitChildOutput(result).map((line) => redactUrlCredentials(line))
   const isNoise = (line) => expectedDiagnosticPrefixes.some((prefix) => prefix.test(line))
   const terminal = lines.find((line) => !isNoise(line))
-  const diagnostics = lines
-    .filter(isNoise)
-    .join('\n')
-    .slice(0, 8192)
+  const diagnostics = lines.filter(isNoise).join('\n').slice(0, 8192)
   return {
     message: terminal
       ? `TokenBoard hook sync failed with exit code ${exitCode}: ${terminal}`

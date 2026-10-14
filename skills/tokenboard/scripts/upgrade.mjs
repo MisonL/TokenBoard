@@ -209,7 +209,9 @@ export function runUpgrade({
     upgradedCommit,
     upgradedAt: new Date().toISOString()
   })
-  log(`TokenBoard upgraded from ${repoUrl}${repoRef ? `#${repoRef}` : ''} (commit ${previousCommit ?? 'unknown'} -> ${upgradedCommit ?? 'unknown'})`)
+  log(
+    `TokenBoard upgraded from ${repoUrl}${repoRef ? `#${repoRef}` : ''} (commit ${previousCommit ?? 'unknown'} -> ${upgradedCommit ?? 'unknown'})`
+  )
   return { collectorDir: collector, skillDir, repoUrl, repoRef, packageManager }
 }
 

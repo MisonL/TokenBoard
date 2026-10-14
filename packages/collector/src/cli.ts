@@ -25,6 +25,7 @@ import { clearPendingUploadCursors, cursorSnapshotGroupKey, warmHookCursorHighWa
 import { withCursorLock } from './providers/session-cursor-store'
 import { isTransientNetworkError } from './transient-error'
 import { uploadSnapshots } from './upload'
+import { isUploadPaused, recordUploadFailure, recordUploadSuccess } from './upload-backoff'
 import { assertValidTimeZone } from './timezone'
 import { isAllDateFilter } from './iso-calendar-date'
 
@@ -167,14 +168,44 @@ export async function runCollectorCli(
       return 0
     }
 
-    const result = await deps.uploadSnapshots(
-      {
-        endpoint: options.endpoint,
-        uploadToken: options.uploadToken,
-        timezone: options.timezone
-      },
-      collection.snapshots
-    )
+    const uploadStateDir = resolveStateDir(env)
+    const paused = await isUploadPaused(uploadStateDir)
+    if (paused) {
+      // Pending snapshots stay in the cursor; the pause only skips the futile upload
+      // round while the server keeps rejecting. Say so loudly instead of silently
+      // shrinking the run to a no-op.
+      collectorDeps.stderr(
+        `TokenBoard upload paused until ${paused.pausedUntil} after repeated non-transient failures; collected snapshots remain queued in the cursor`
+      )
+      return collectionFailed ? 1 : 0
+    }
+
+    let uploadSucceeded = false
+    let uploadError: unknown
+    let result: unknown
+    try {
+      result = await deps.uploadSnapshots(
+        {
+          endpoint: options.endpoint,
+          uploadToken: options.uploadToken,
+          timezone: options.timezone
+        },
+        collection.snapshots
+      )
+      uploadSucceeded = true
+    } catch (error) {
+      uploadError = error
+      if (!isTransientNetworkError(error)) {
+        const state = await recordUploadFailure(uploadStateDir, error)
+        collectorDeps.stderr(
+          `TokenBoard upload failed (${state.consecutiveFailures} consecutive non-transient failures` +
+            `${state.pausedUntil ? `; pausing uploads until ${state.pausedUntil}` : ''})`
+        )
+      }
+      throw error
+    }
+    if (uploadSucceeded) await recordUploadSuccess(uploadStateDir)
+
     await ackUploadCursors({
       collectedSources: collection.collectedSources,
       cursorScope,
@@ -185,7 +216,7 @@ export async function runCollectorCli(
       env
     })
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since, options.until)
-    deps.stdout(JSON.stringify(result, null, 2))
+    collectorDeps.stdout(JSON.stringify(result, null, 2))
     if (collectionFailed) {
       collectorDeps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
       return 1

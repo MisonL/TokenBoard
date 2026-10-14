@@ -2085,7 +2085,11 @@ describe('Codex session fingerprint memo', () => {
       await first.get(filePath)
       const spy = vi.spyOn(attributionCache, 'fingerprintCodexSessionFile')
       const second = createCodexSessionFingerprintMemo()
-      await discoverCodexContextPricingFiles({ codexHomes: [stateDir], captureFingerprints: true, fingerprintMemo: second })
+      await discoverCodexContextPricingFiles({
+        codexHomes: [stateDir],
+        captureFingerprints: true,
+        fingerprintMemo: second
+      })
       // A brand-new memo recomputes: memo state must not leak across collects.
       expect(spy).toHaveBeenCalledTimes(1)
       spy.mockRestore()

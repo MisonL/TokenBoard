@@ -681,3 +681,20 @@ test('an absent runs directory omits the block', () => {
   })
   assert.equal(summary, null)
 })
+
+test('status surfaces an active upload pause and omits an absent one', () => {
+  const base = { activeServer: 'https://tokenboard.example', timezone: 'Asia/Shanghai', source: 'all' }
+  const withoutBackoff = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: base,
+    uploadBackoff: null
+  })
+  assert.equal('uploadBackoff' in withoutBackoff, false)
+
+  const paused = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: base,
+    uploadBackoff: { pausedUntil: '2026-10-15T00:00:00.000Z', consecutiveFailures: 5 }
+  })
+  assert.deepEqual(paused.uploadBackoff, { pausedUntil: '2026-10-15T00:00:00.000Z', consecutiveFailures: 5 })
+})

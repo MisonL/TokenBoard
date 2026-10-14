@@ -518,7 +518,9 @@ describe('runCollectorCli', () => {
     )
 
     expect(result).toBe(1)
-    expect(stderr).toEqual(['Error'])
+    // The empty error message is not transient, so it counts toward the upload
+    // pause before the plain normalized line is printed.
+    expect(stderr).toEqual(['TokenBoard upload failed (1 consecutive non-transient failures)', 'Error'])
   })
 
   test('keeps the deferrable exit code in sync with the skill scripts', async () => {
@@ -1170,6 +1172,7 @@ describe('runCollectorCli', () => {
   test('does not ack hook cursor when upload fails', async () => {
     const stderr: string[] = []
     const acks: string[] = []
+    const stateDir = await mkdtemp(join(tmpdir(), 'cli-ack-fail-'))
 
     const result = await runCollectorCli(
       ['sync', '--source', 'codex'],
@@ -1178,7 +1181,7 @@ describe('runCollectorCli', () => {
         TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
         TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
         TOKENBOARD_HOOK_MODE: '1',
-        TOKENBOARD_STATE_DIR: '/state'
+        TOKENBOARD_STATE_DIR: stateDir
       },
       {
         stdout: () => undefined,
@@ -1195,8 +1198,13 @@ describe('runCollectorCli', () => {
     )
 
     expect(result).toBe(1)
-    expect(stderr).toEqual(['upload failed'])
+    // The non-transient failure records the backoff against the (writable) temp state
+    // directory before the normalized error is re-emitted.
+    expect(stderr.length).toBe(2)
+    expect(stderr[0]).toContain('1 consecutive non-transient failures')
+    expect(stderr[1]).toBe('upload failed')
     expect(acks).toEqual([])
+    await rm(stateDir, { recursive: true, force: true })
   })
 
   test('does not ack hook cursor when sync config is missing', async () => {
@@ -1381,13 +1389,17 @@ describe('runCollectorCli', () => {
       return []
     }
 
-    const result = await runCollectorCli(['preview', '--source', 'claude-code'], { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }, {
-      stdout: () => undefined,
-      stderr: (line) => stderr.push(line),
-      collectClaudeCodeUsage,
-      collectCodexUsage: async () => [],
-      uploadSnapshots: async () => ({ upserted: 0 })
-    })
+    const result = await runCollectorCli(
+      ['preview', '--source', 'claude-code'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage,
+        collectCodexUsage: async () => [],
+        uploadSnapshots: async () => ({ upserted: 0 })
+      }
+    )
 
     expect(result).toBe(0)
     const summaries = stderr.filter((line) => line.includes('model pricing unavailable'))
@@ -1406,13 +1418,17 @@ describe('runCollectorCli', () => {
       return []
     }
 
-    const result = await runCollectorCli(['preview', '--source', 'claude-code'], { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' }, {
-      stdout: () => undefined,
-      stderr: (line) => stderr.push(line),
-      collectClaudeCodeUsage,
-      collectCodexUsage: async () => [],
-      uploadSnapshots: async () => ({ upserted: 0 })
-    })
+    const result = await runCollectorCli(
+      ['preview', '--source', 'claude-code'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage,
+        collectCodexUsage: async () => [],
+        uploadSnapshots: async () => ({ upserted: 0 })
+      }
+    )
 
     expect(result).toBe(0)
     expect(stderr.filter((line) => line.includes('model pricing unavailable'))).toEqual([
@@ -1441,4 +1457,65 @@ test('runs when reached through a symlinked path', { timeout: 90_000 }, () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+describe('upload backoff integration', () => {
+  test('a paused upload skips uploading, keeps the cursor, and says so', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'cli-backoff-'))
+    const stderr: string[] = []
+    try {
+      // Five consecutive prior failures recorded through the real helper.
+      const { recordUploadFailure } = await import('./upload-backoff')
+      for (let index = 0; index < 5; index += 1) {
+        await recordUploadFailure(stateDir, new Error('status 400 from server'))
+      }
+      const result = await runCollectorCli(
+        ['sync', '--source', 'claude-code', '--endpoint', 'https://collector.example/api/v1/ingest'],
+        { TOKENBOARD_TIMEZONE: 'Asia/Shanghai', TOKENBOARD_UPLOAD_TOKEN: 'tb_test', TOKENBOARD_STATE_DIR: stateDir },
+        {
+          stdout: () => undefined,
+          stderr: (line) => stderr.push(line),
+          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectCodexUsage: async () => [],
+          uploadSnapshots: async () => {
+            throw new Error('upload must be skipped while paused')
+          },
+          clearPendingUploadCursors: async () => undefined
+        }
+      )
+      expect(result).toBe(0)
+      expect(stderr.some((line) => line.includes('upload paused until'))).toBe(true)
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a non-transient upload failure counts toward the pause; success clears', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'cli-backoff-count-'))
+    const stderr: string[] = []
+    try {
+      const uploadSnapshots = async () => {
+        throw new Error('status 400 from server')
+      }
+      const result = await runCollectorCli(
+        ['sync', '--source', 'claude-code', '--endpoint', 'https://collector.example/api/v1/ingest'],
+        { TOKENBOARD_TIMEZONE: 'Asia/Shanghai', TOKENBOARD_UPLOAD_TOKEN: 'tb_test', TOKENBOARD_STATE_DIR: stateDir },
+        {
+          stdout: () => undefined,
+          stderr: (line) => stderr.push(line),
+          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectCodexUsage: async () => [],
+          uploadSnapshots
+        }
+      )
+      expect(result).toBe(1)
+      expect(stderr.some((line) => line.includes('1 consecutive non-transient failures'))).toBe(true)
+      const { loadUploadBackoff, recordUploadSuccess } = await import('./upload-backoff')
+      expect((await loadUploadBackoff(stateDir))?.consecutiveFailures).toBe(1)
+      await recordUploadSuccess(stateDir)
+      expect(await loadUploadBackoff(stateDir)).toBeNull()
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
 })
