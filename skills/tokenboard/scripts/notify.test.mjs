@@ -1200,3 +1200,52 @@ test('reports a hook sync failure with no stderr without a dangling separator', 
     }
   )
 })
+
+// The terminal error must survive on its own in the thrown message and in run-log cycles;
+// expected diagnostics (pricing fallbacks, oversized-row skips) move to a separate
+// diagnostics field so a 25-minute failure is attributable without reading the noise.
+test('separates terminal sync errors from expected diagnostic noise', () => {
+  assert.throws(
+    () =>
+      executeTokenBoardSync('codex', {
+        lockToken: 'a'.repeat(32),
+        spawn: () => ({
+          status: 1,
+          error: undefined,
+          stderr: [
+            'TokenBoard model pricing unavailable for Codex model gpt-6-luna; preserving collected result',
+            'Skipped 310 oversized codex session JSONL rows without usage or subagent metadata (largest 8724765 bytes)',
+            'ccusage exited with code 2: cannot read config'
+          ].join('\n')
+        })
+      }),
+    (error) => {
+      assert.equal(error.message, 'TokenBoard hook sync failed with exit code 1: ccusage exited with code 2: cannot read config')
+      assert.match(error.diagnostics, /model gpt-6-luna/)
+      assert.match(error.diagnostics, /Skipped 310 oversized/)
+      assert.doesNotMatch(error.diagnostics, /ccusage exited/)
+      assert.ok(error.diagnostics.length <= 8192)
+      return true
+    }
+  )
+})
+
+test('all-noise stderr keeps the plain message and parks everything in diagnostics', () => {
+  assert.throws(
+    () =>
+      executeTokenBoardSync('codex', {
+        lockToken: 'a'.repeat(32),
+        spawn: () => ({
+          status: 1,
+          error: undefined,
+          stderr: 'TokenBoard model pricing unavailable for Codex model x; preserving collected result\nSkipping unavailable pi source: none'
+        })
+      }),
+    (error) => {
+      assert.equal(error.message, 'TokenBoard hook sync failed with exit code 1')
+      assert.match(error.diagnostics, /model x/)
+      assert.match(error.diagnostics, /Skipping unavailable pi source/)
+      return true
+    }
+  )
+})

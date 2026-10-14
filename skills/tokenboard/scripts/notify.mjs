@@ -79,7 +79,10 @@ export function executeTokenBoardSync(source, options = {}) {
     throw result.error
   }
   if (result.status !== 0) {
-    throw new Error(formatSyncFailure(result))
+    const failure = formatSyncFailure(result)
+    const error = new Error(failure.message)
+    if (failure.diagnostics) error.diagnostics = failure.diagnostics
+    throw error
   }
   return { source, exitCode: 0 }
 }
@@ -301,17 +304,38 @@ function trailingContinuationDelay(result, lockPath, runtime = trailingRuntime({
   return Number.isFinite(delayMs) && delayMs > 0 ? delayMs : null
 }
 
+// Expected diagnostics that a provider prints on every run (pricing fallbacks, bounded-scan
+// skips). They are noise around the real failure; the terminal line is the first stderr
+// line that does not start with one of these.
+const expectedDiagnosticPrefixes = [/^TokenBoard model pricing /, /^Skipped \d+ /, /^Skipping /]
+
+function splitChildOutput(result) {
+  const raw = Array.isArray(result.stderr) ? result.stderr.join('') : String(result.stderr || '')
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
 function formatSyncFailure(result) {
   const exitCode = result.status ?? 1
-  const stderr = normalizeChildOutput(result.stderr)
-  if (!stderr) {
-    return `TokenBoard hook sync failed with exit code ${exitCode}`
-  }
   // The child's stderr is echoed into the terminal (and may be pasted into a chat or a log),
   // so it must go through the same redaction every other output path uses. A provider or
   // `ccusage` error can echo `tb_upload_…` or `https://user:token@host/…`; without this the
   // secret lands in the scrollback intact.
-  return `TokenBoard hook sync failed with exit code ${exitCode}: ${redactUrlCredentials(stderr)}`
+  const lines = splitChildOutput(result).map((line) => redactUrlCredentials(line))
+  const isNoise = (line) => expectedDiagnosticPrefixes.some((prefix) => prefix.test(line))
+  const terminal = lines.find((line) => !isNoise(line))
+  const diagnostics = lines
+    .filter(isNoise)
+    .join('\n')
+    .slice(0, 8192)
+  return {
+    message: terminal
+      ? `TokenBoard hook sync failed with exit code ${exitCode}: ${terminal}`
+      : `TokenBoard hook sync failed with exit code ${exitCode}`,
+    diagnostics
+  }
 }
 
 function normalizeChildOutput(value) {

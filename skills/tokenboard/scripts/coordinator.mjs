@@ -287,7 +287,11 @@ function runLockedCycles(trigger, runtime, initialSources, lockToken) {
       } catch (cause) {
         error ||= errorMessage(cause)
         failedSources.add(source)
-        cycles.push({ source, error: errorMessage(cause) })
+        cycles.push({
+          source,
+          error: errorMessage(cause),
+          ...(cause?.diagnostics ? { diagnostics: cause.diagnostics } : {})
+        })
       }
     }
 
