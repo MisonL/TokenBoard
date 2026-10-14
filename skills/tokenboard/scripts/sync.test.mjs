@@ -669,6 +669,56 @@ test('scheduled sync runs the real top-level entry without a temporal dead zone'
   }
 })
 
+// A broken log directory (permissions, disk full) must not cancel the sync: the collector
+// still runs and its output still matters. The subprocess drives the real top-level entry so
+// the fallback in runCli itself is exercised, not a re-implementation.
+test('a scheduled sync continues without logs when the log directory cannot be created', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-sync-logfb-'))
+  try {
+    const collectorDir = join(root, 'collector')
+    mkdirSync(join(collectorDir, 'packages', 'collector'), { recursive: true })
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({
+        endpoint: 'http://127.0.0.1:1',
+        uploadToken: 'log-fallback-token',
+        timezone: 'Asia/Shanghai',
+        source: 'claude-code',
+        packageManager: 'pnpm',
+        collectorDir
+      })
+    )
+    // A file where the log directory belongs: mkdirSync fails with EEXIST/ENOTDIR.
+    writeFileSync(join(root, 'logs'), 'not a directory')
+
+    const result = spawnSync(
+      process.execPath,
+      [new URL('./sync.mjs', import.meta.url).pathname, '--scheduled', '--source', 'claude-code', '--skip-upgrade'],
+      {
+        encoding: 'utf8',
+        timeout: 60_000,
+        env: {
+          PATH: process.env.PATH,
+          HOME: root,
+          TMPDIR: root,
+          TOKENBOARD_CONFIG_DIR: root,
+          TOKENBOARD_COLLECTOR_DIR: collectorDir,
+          TOKENBOARD_LOG_DIR: join(root, 'logs', 'nested'),
+          TOKENBOARD_SKIP_UPGRADE: '1'
+        }
+      }
+    )
+
+    assert.ok(result.stderr.includes('continuing without them'), 'expected the log fallback warning')
+    // The sync itself proceeded far enough to attempt the collector (which fails, since the
+    // checkout is a stub), proving the log failure did not cancel the run.
+    assert.ok(/collector/i.test(result.stderr))
+    assert.notEqual(result.status, 0) // the stub collector fails, but not because of logs
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 // The scheduled log is the one artifact of a run that outlives its terminal, so the child's
 // output has to pass through the same redaction as the parent's log lines: a provider or
 // `ccusage` error echoing `tb_upload_…` or `https://user:token@host/…` would land there intact.

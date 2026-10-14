@@ -78,11 +78,21 @@ async function runCli() {
       nodePath: process.execPath,
       platform: process.platform
     })
-    logs = createScheduledLogRuntime({
-      env: process.env,
-      homeDir,
-      scheduled: flags.scheduled === true
-    })
+    try {
+      logs = createScheduledLogRuntime({
+        env: process.env,
+        homeDir,
+        scheduled: flags.scheduled === true
+      })
+    } catch (logError) {
+      // A broken log directory (permissions, disk full) must not cancel the sync itself:
+      // the collected usage matters more than the log file. Fall back to the terminal
+      // mode and keep going; the failure is still visible on stderr.
+      logs = null
+      console.error(
+        `TokenBoard could not open its scheduled logs, continuing without them: ${redactUrlCredentials(errorMessage(logError))}`
+      )
+    }
 
     return await runSyncInvocation({
       flags,
