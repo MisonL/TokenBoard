@@ -816,8 +816,14 @@ test('runCollectorProcess without a hookTimeoutMs never receives a timeout optio
 test('readHookSyncTimeoutMs parses the env override and rejects invalid values', () => {
   assert.equal(readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: '60000' }), 60_000)
   assert.equal(readHookSyncTimeoutMs({}), 30 * 60 * 1000)
-  assert.throws(() => readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: 'soon' }), /TOKENBOARD_HOOK_SYNC_TIMEOUT_MS must be/)
-  assert.throws(() => readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: '0' }), /TOKENBOARD_HOOK_SYNC_TIMEOUT_MS must be/)
+  assert.throws(
+    () => readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: 'soon' }),
+    /TOKENBOARD_HOOK_SYNC_TIMEOUT_MS must be/
+  )
+  assert.throws(
+    () => readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: '0' }),
+    /TOKENBOARD_HOOK_SYNC_TIMEOUT_MS must be/
+  )
 })
 
 test('a timed-out hook run resolves with an ETIMEDOUT error for runSync to report', async () => {
@@ -836,7 +842,10 @@ test('a timed-out hook run resolves with an ETIMEDOUT error for runSync to repor
   assert.equal(result.status, 1)
   assert.equal(result.error.code, 'ETIMEDOUT')
   // runSync prints the operator-facing line when it sees this shape.
-  assert.match(`TokenBoard hook sync timed out after 5 ms; the collector process was killed`, /hook sync timed out after/)
+  assert.match(
+    `TokenBoard hook sync timed out after 5 ms; the collector process was killed`,
+    /hook sync timed out after/
+  )
 })
 
 // The whole-buffer capture bound the run log to 64 MiB and lost everything if the process was

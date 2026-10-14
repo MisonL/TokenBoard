@@ -1220,7 +1220,10 @@ test('separates terminal sync errors from expected diagnostic noise', () => {
         })
       }),
     (error) => {
-      assert.equal(error.message, 'TokenBoard hook sync failed with exit code 1: ccusage exited with code 2: cannot read config')
+      assert.equal(
+        error.message,
+        'TokenBoard hook sync failed with exit code 1: ccusage exited with code 2: cannot read config'
+      )
       assert.match(error.diagnostics, /model gpt-6-luna/)
       assert.match(error.diagnostics, /Skipped 310 oversized/)
       assert.doesNotMatch(error.diagnostics, /ccusage exited/)
@@ -1238,7 +1241,8 @@ test('all-noise stderr keeps the plain message and parks everything in diagnosti
         spawn: () => ({
           status: 1,
           error: undefined,
-          stderr: 'TokenBoard model pricing unavailable for Codex model x; preserving collected result\nSkipping unavailable pi source: none'
+          stderr:
+            'TokenBoard model pricing unavailable for Codex model x; preserving collected result\nSkipping unavailable pi source: none'
         })
       }),
     (error) => {

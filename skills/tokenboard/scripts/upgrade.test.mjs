@@ -2471,7 +2471,8 @@ test('upgrade records the resolved commit and shows the from/to pair in the log'
       path === `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`,
     spawn: (command, args) => {
       if (command === 'git' && args[0] === 'status') return { status: 0, stdout: '' }
-      if (command === 'git' && args[0] === 'rev-parse') return { status: 0, stdout: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabeef00\n' }
+      if (command === 'git' && args[0] === 'rev-parse')
+        return { status: 0, stdout: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabeef00\n' }
       return { status: 0, stdout: '' }
     },
     log: (line) => lines.push(line)
@@ -2500,8 +2501,7 @@ test('archive-style upgrades leave upgradedCommit null when rev-parse fails', ()
     mergeConfigFile: (patch) => merged.push(patch),
     configDirectory: '/home/user/.tokenboard',
     exists: (path) =>
-      path === collectorDir ||
-      path === `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`,
+      path === collectorDir || path === `${collectorDir}/skills/tokenboard/scripts/refresh-notify-handler.mjs`,
     mkdir: () => {},
     copy: () => {},
     remove: () => {},
@@ -2510,7 +2510,8 @@ test('archive-style upgrades leave upgradedCommit null when rev-parse fails', ()
     spawn: (command, args) => {
       // The collector checkout is not a git repo (archive-style install), so the git plan
       // runs the archive fallback; its extracted checkout also cannot resolve a commit.
-      if (command === 'git' && args[0] === 'rev-parse') return { status: 128, stdout: '', stderr: 'fatal: not a git repository' }
+      if (command === 'git' && args[0] === 'rev-parse')
+        return { status: 128, stdout: '', stderr: 'fatal: not a git repository' }
       return { status: 0, stdout: '' }
     },
     log: () => {}

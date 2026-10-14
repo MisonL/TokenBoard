@@ -102,13 +102,13 @@ test('scheduled retry writes a failure state before rethrowing an infrastructure
 
   await assert.rejects(
     runScheduledRetry({
-        stateDir: '/state',
-        source: 'all',
-        runtime: fs.runtime,
-        runAttempt: () => {
-          throw new Error('config unreadable')
-        }
-      }),
+      stateDir: '/state',
+      source: 'all',
+      runtime: fs.runtime,
+      runAttempt: () => {
+        throw new Error('config unreadable')
+      }
+    }),
     /config unreadable/
   )
 
@@ -127,19 +127,19 @@ test('scheduled retry cleans the all-source primary lock when transition cleanup
 
   await assert.rejects(
     runScheduledRetry({
-        stateDir: '/state',
-        source: 'all',
-        runtime: {
-          ...fs.runtime,
-          unlink: (path) => {
-            if (memoryPathStartsWith(path, `${transitionPath}.release-`)) {
-              throw new Error('transition release failed')
-            }
-            unlink(path)
+      stateDir: '/state',
+      source: 'all',
+      runtime: {
+        ...fs.runtime,
+        unlink: (path) => {
+          if (memoryPathStartsWith(path, `${transitionPath}.release-`)) {
+            throw new Error('transition release failed')
           }
-        },
-        runAttempt: () => 0
-      }),
+          unlink(path)
+        }
+      },
+      runAttempt: () => 0
+    }),
     /transition release failed/
   )
 
@@ -158,16 +158,16 @@ test('scheduled retry preserves its legacy marker ownership when transition clea
 
   await assert.rejects(
     runScheduledRetry({
-        stateDir,
-        source: 'codex',
-        runtime: fs.runtime,
-        runAttempt: () => {
-          competingOwner = acquireLock(transitionPath, fs.runtime)
-          assert.ok(competingOwner)
-          firstMarker = readOnlyLegacyMarker(fs, legacyPath)
-          return 0
-        }
-      }),
+      stateDir,
+      source: 'codex',
+      runtime: fs.runtime,
+      runAttempt: () => {
+        competingOwner = acquireLock(transitionPath, fs.runtime)
+        assert.ok(competingOwner)
+        firstMarker = readOnlyLegacyMarker(fs, legacyPath)
+        return 0
+      }
+    }),
     /could not acquire the transition lock/
   )
 
@@ -283,14 +283,14 @@ test('scheduled retry reports unknown legacy fence entries instead of silently s
 
   await assert.rejects(
     runScheduledRetry({
-        stateDir,
-        source: 'all',
-        runtime: fs.runtime,
-        runAttempt: () => {
-          collected = true
-          return 0
-        }
-      }),
+      stateDir,
+      source: 'all',
+      runtime: fs.runtime,
+      runAttempt: () => {
+        collected = true
+        return 0
+      }
+    }),
     (error) => {
       assert.equal(error.code, 'TOKENBOARD_LEGACY_RETRY_FENCE_CORRUPTED')
       assert.match(error.message, /unexpected entries "unexpected\.tmp"/)
@@ -318,11 +318,11 @@ test('scheduled retry reports unknown legacy fence entries for a source-specific
 
   await assert.rejects(
     runScheduledRetry({
-        stateDir,
-        source: 'codex',
-        runtime: fs.runtime,
-        runAttempt: () => 0
-      }),
+      stateDir,
+      source: 'codex',
+      runtime: fs.runtime,
+      runAttempt: () => 0
+    }),
     (error) => {
       assert.equal(error.code, 'TOKENBOARD_LEGACY_RETRY_FENCE_CORRUPTED')
       return true
@@ -349,12 +349,12 @@ for (const source of ['all', 'codex']) {
     )
 
     await assert.rejects(
-    runScheduledRetry({
-          stateDir,
-          source,
-          runtime: fs.runtime,
-          runAttempt: () => 0
-        }),
+      runScheduledRetry({
+        stateDir,
+        source,
+        runtime: fs.runtime,
+        runAttempt: () => 0
+      }),
       (error) => {
         assert.equal(error.code, 'TOKENBOARD_LEGACY_RETRY_FENCE_CORRUPTED')
         assert.match(error.message, /corrupted marker files "source-999-truncated\.json"/)
@@ -714,20 +714,20 @@ test('scheduled retry surfaces retry-state write failures and releases its retry
 
   await assert.rejects(
     runScheduledRetry({
-        stateDir: '/state',
-        source: 'all',
-        runtime: {
-          ...fs.runtime,
-          writeFile: (path, value, options) => {
-            if (path.includes('scheduled-sync-retry.json.tmp-')) throw codeError('EACCES', path)
-            writeFile(path, value, options)
-          }
-        },
-        runAttempt: () => {
-          collected = true
-          return 0
+      stateDir: '/state',
+      source: 'all',
+      runtime: {
+        ...fs.runtime,
+        writeFile: (path, value, options) => {
+          if (path.includes('scheduled-sync-retry.json.tmp-')) throw codeError('EACCES', path)
+          writeFile(path, value, options)
         }
-      }),
+      },
+      runAttempt: () => {
+        collected = true
+        return 0
+      }
+    }),
     /EACCES/
   )
 
@@ -743,20 +743,20 @@ test('scheduled retry reports lock-release failures without hiding a completed c
 
   await assert.rejects(
     runScheduledRetry({
-        stateDir: '/state',
-        source: 'all',
-        runtime: {
-          ...fs.runtime,
-          unlink: (path) => {
-            if (!releaseFailed && memoryPathStartsWith(path, '/state/scheduled-sync-retry.lock.release-')) {
-              releaseFailed = true
-              throw new Error('retry lock release failed')
-            }
-            unlink(path)
+      stateDir: '/state',
+      source: 'all',
+      runtime: {
+        ...fs.runtime,
+        unlink: (path) => {
+          if (!releaseFailed && memoryPathStartsWith(path, '/state/scheduled-sync-retry.lock.release-')) {
+            releaseFailed = true
+            throw new Error('retry lock release failed')
           }
-        },
-        runAttempt: () => 0
-      }),
+          unlink(path)
+        }
+      },
+      runAttempt: () => 0
+    }),
     /TokenBoard scheduled retry lock release failed: retry lock release failed/
   )
 

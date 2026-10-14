@@ -128,13 +128,13 @@ test('direct sync reports missing state directory capabilities clearly', async (
   delete fs.runtime.chmod
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { mode: 'sync' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => 'unreachable'
-      }),
-      /state directory setup requires mkdir and chmod operations/
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => 'unreachable'
+    }),
+    /state directory setup requires mkdir and chmod operations/
   )
   assert.deepEqual(fs.directoryOps, [])
 })
@@ -148,13 +148,13 @@ test('direct sync refuses a symbolic-link state directory before changing permis
   })
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { mode: 'sync' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => 'unreachable'
-      }),
-      /state directory must not be a symbolic link/
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => 'unreachable'
+    }),
+    /state directory must not be a symbolic link/
   )
   assert.deepEqual(directoryOps, [])
 })
@@ -253,16 +253,16 @@ test('hook child cannot bypass a live coordinator lock with only the held marker
   let ran = false
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { hook: true, mode: 'sync' },
-        env: { TOKENBOARD_COORDINATOR_LOCK_HELD: '1' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => {
-          ran = true
-        }
-      }),
-      /Timed out waiting for TokenBoard sync lock/
+    runWithSyncLock({
+      flags: { hook: true, mode: 'sync' },
+      env: { TOKENBOARD_COORDINATOR_LOCK_HELD: '1' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        ran = true
+      }
+    }),
+    /Timed out waiting for TokenBoard sync lock/
   )
 
   assert.equal(ran, false)
@@ -282,19 +282,19 @@ test('hook child cannot bypass a live coordinator lock with a mismatched token',
   let ran = false
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { hook: true, mode: 'sync' },
-        env: {
-          TOKENBOARD_COORDINATOR_LOCK_HELD: '1',
-          TOKENBOARD_COORDINATOR_LOCK_TOKEN: 'different-token'
-        },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => {
-          ran = true
-        }
-      }),
-      /Timed out waiting for TokenBoard sync lock/
+    runWithSyncLock({
+      flags: { hook: true, mode: 'sync' },
+      env: {
+        TOKENBOARD_COORDINATOR_LOCK_HELD: '1',
+        TOKENBOARD_COORDINATOR_LOCK_TOKEN: 'different-token'
+      },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        ran = true
+      }
+    }),
+    /Timed out waiting for TokenBoard sync lock/
   )
 
   assert.equal(ran, false)
@@ -310,15 +310,15 @@ test('direct sync fails before collection when the coordinator lock stays busy',
   let ran = false
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { mode: 'sync' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => {
-          ran = true
-        }
-      }),
-      /Timed out waiting for TokenBoard sync lock/
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        ran = true
+      }
+    }),
+    /Timed out waiting for TokenBoard sync lock/
   )
 
   assert.equal(ran, false)
@@ -339,14 +339,14 @@ test('direct sync exposes a structurally damaged directory lock', async () => {
   let ran = false
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { mode: 'sync' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => {
-          ran = true
-        }
-      }),
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        ran = true
+      }
+    }),
     (error) => error.code === 'EISDIR'
   )
 
@@ -357,15 +357,15 @@ test('direct sync releases its coordinator lock when collection fails', async ()
   const fs = memoryLockRuntime()
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { mode: 'sync' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => {
-          throw new Error('collector failed')
-        }
-      }),
-      /collector failed/
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        throw new Error('collector failed')
+      }
+    }),
+    /collector failed/
   )
 
   assert.equal(fs.files.has('/state/sync.lock'), false)
@@ -385,14 +385,14 @@ test('direct sync preserves the primary error while reporting a lock release fai
   }
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { mode: 'sync' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => {
-          throw new Error('collector failed')
-        }
-      }),
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => {
+        throw new Error('collector failed')
+      }
+    }),
     (error) => {
       assert.equal(error instanceof AggregateError, true)
       assert.deepEqual(
@@ -419,13 +419,13 @@ test('direct sync fails visibly when its lock cannot be released after a success
   }
 
   await assert.rejects(
-      runWithSyncLock({
-        flags: { mode: 'sync' },
-        stateDir: '/state',
-        runtime: fs.runtime,
-        run: () => 'complete'
-      }),
-      /TokenBoard sync lock release failed: permission denied/
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => 'complete'
+    }),
+    /TokenBoard sync lock release failed: permission denied/
   )
   assert.equal(fs.files.has(lockPath), true)
 })
