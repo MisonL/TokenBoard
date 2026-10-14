@@ -1,15 +1,36 @@
-import { zstdDecompressSync } from 'node:zlib'
+import * as zlib from 'node:zlib'
 
 const zstdMagic = 0xfd2fb528
 const skippableMagicMin = 0x184d2a50
 const skippableMagicMax = 0x184d2a5f
 
+// A named import would make a trimmed third-party Node build (no zstd support) crash the
+// whole CLI at module-load time with an unhelpful SyntaxError. The namespace import yields
+// `undefined` instead, so the failure is confined to the DSH source at call time with an
+// actionable message; cli.ts already classifies that source as unavailable-and-skipped.
 export function decompressZstdFrame(
   buffer: Buffer,
   frame: ZstdFrameRange,
   options?: { maxOutputLength?: number }
 ): Buffer {
-  return zstdDecompressSync(buffer.subarray(frame.start, frame.end), options)
+  if (typeof currentZstdDecompressSync() !== 'function') {
+    throw new Error(
+      'This Node.js build lacks zstd support; DeepSeek Harness .zstd sessions need an official Node >= 22.15 build'
+    )
+  }
+  return currentZstdDecompressSync()(buffer.subarray(frame.start, frame.end), options)
+}
+
+// Mutable seam for tests: an ESM namespace object cannot be reassigned, so a trimmed Node
+// build is simulated by pointing this at undefined.
+let zstdDecompressOverride: typeof zlib.zstdDecompressSync | undefined | null = null
+
+export function setZstdDecompressOverride(value: typeof zlib.zstdDecompressSync | undefined | null) {
+  zstdDecompressOverride = value
+}
+
+function currentZstdDecompressSync(): typeof zlib.zstdDecompressSync {
+  return zstdDecompressOverride === null ? zlib.zstdDecompressSync : zstdDecompressOverride!
 }
 
 export type ZstdFrameRange = { start: number; end: number }

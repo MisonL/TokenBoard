@@ -1,7 +1,7 @@
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
 
-import { decompressZstdFrame, isZstdBuffer, scanZstdFrames } from './zstd-frames'
+import { decompressZstdFrame, isZstdBuffer, scanZstdFrames, setZstdDecompressOverride } from './zstd-frames'
 
 // DSH writes frames with a content checksum.
 const checksumOptions = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
@@ -15,6 +15,17 @@ function frame(text: string, options = {}) {
 // deepseek-harness reader and is exercised there through real session files;
 // re-deriving it here would test a copy that can drift from production.
 describe('zstd frames', () => {
+  test('a Node build without zstd support throws the actionable per-source error, not a module crash', () => {
+    const compressed = frame('hello')
+    const frames = scanZstdFrames(compressed)
+    setZstdDecompressOverride(undefined)
+    try {
+      expect(() => decompressZstdFrame(compressed, frames[0])).toThrow(/This Node.js build lacks zstd support/)
+    } finally {
+      setZstdDecompressOverride(null)
+    }
+  })
+
   test('decodes every frame of a concatenated stream', () => {
     // Node's own zstdDecompressSync stops after the first frame, which is why
     // frames are delimited here instead of decompressed in one call. Each frame

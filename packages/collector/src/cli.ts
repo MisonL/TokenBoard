@@ -738,7 +738,12 @@ function isOptionalSourceUnavailable(
   }
   if (source === 'pi') return message.includes('No Pi sessions found')
   if (source === 'grok-build') return message.includes('No Grok Build sessions found')
-  if (source === 'deepseek-harness') return message.includes('No DeepSeek Harness sessions found')
+  if (source === 'deepseek-harness') {
+    return (
+      message.includes('No DeepSeek Harness sessions found') ||
+      message.includes('This Node.js build lacks zstd support')
+    )
+  }
   if (!source.startsWith('antigravity')) return false
   return (
     message.includes('Antigravity SQLite reader unavailable') ||
