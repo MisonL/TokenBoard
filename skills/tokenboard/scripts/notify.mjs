@@ -323,7 +323,14 @@ function trailingContinuationDelay(result, lockPath, runtime = trailingRuntime({
 // Expected diagnostics that a provider prints on every run (pricing fallbacks, bounded-scan
 // skips). They are noise around the real failure; the terminal line is the first stderr
 // line that does not start with one of these.
-const expectedDiagnosticPrefixes = [/^TokenBoard model pricing /, /^Skipped \d+ /, /^Skipping /]
+// Broad `^Skipping ` would also swallow real warnings (the Codex subagent-usage correction
+// lines report usage that silently fell out of the sync), so only the known per-source
+// unavailability skips count as noise.
+const expectedDiagnosticPrefixes = [
+  /^TokenBoard model pricing /,
+  /^Skipped \d+ /,
+  /^Skipping (unavailable )?\S+ source: /
+]
 
 function splitChildOutput(result) {
   const raw = Array.isArray(result.stderr) ? result.stderr.join('') : String(result.stderr || '')
@@ -342,7 +349,12 @@ function formatSyncFailure(result) {
   const lines = splitChildOutput(result).map((line) => redactUrlCredentials(line))
   const isNoise = (line) => expectedDiagnosticPrefixes.some((prefix) => prefix.test(line))
   const terminal = lines.find((line) => !isNoise(line))
-  const diagnostics = lines.filter(isNoise).join('\n').slice(0, 8192)
+  // Everything that is not the terminal line still belongs in the run log — including
+  // substantive non-noise warnings that merely lost the first-line slot.
+  const diagnostics = lines
+    .filter((line) => line !== terminal)
+    .join('\n')
+    .slice(0, 8192)
   return {
     message: terminal
       ? `TokenBoard hook sync failed with exit code ${exitCode}: ${terminal}`

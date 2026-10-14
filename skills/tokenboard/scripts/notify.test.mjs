@@ -1254,6 +1254,26 @@ test('all-noise stderr keeps the plain message and parks everything in diagnosti
   )
 })
 
+test('a substantive Skipping warning reaches the terminal failure line instead of diagnostics', () => {
+  assert.throws(
+    () =>
+      executeTokenBoardSync('codex', {
+        lockToken: 'a'.repeat(32),
+        spawn: () => ({
+          status: 1,
+          error: undefined,
+          stderr:
+            'TokenBoard sync failed: ccusage exited with code 2\nSkipping Codex subagent usage correction for 2026-10-14/gpt-5: corrected usage exceeds session row'
+        })
+      }),
+    (error) => {
+      assert.match(error.message, /ccusage exited with code 2/)
+      assert.match(error.diagnostics ?? '', /Skipping Codex subagent usage correction/)
+      return true
+    }
+  )
+})
+
 test('config notifyCooldownMs applies when env is unset', () => {
   assert.equal(readNotifyCooldownMs(undefined, {}, 1_800_000), 1_800_000)
 })
