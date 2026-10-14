@@ -37,6 +37,22 @@ const defaultSyncLockTimeoutMs = 60_000
 // slipped through. See `runCollectorProcess` for what the value is for.
 const collectorOutputMaxBuffer = 64 * 1024 * 1024
 
+// Hook-mode runs get a wall-clock bound so a wedged scan cannot hold the sync lock or the
+// notify caller indefinitely. The default leaves generous room above the observed long tail
+// (a full Codex history scan measured at ~25 minutes on a 38 GB session tree); a shorter
+// value trades a lost hook cycle for faster failure visibility. Manual and scheduled runs
+// are never bounded.
+const defaultHookSyncTimeoutMs = 30 * 60 * 1000
+
+export function readHookSyncTimeoutMs(env = process.env) {
+  const configured = env.TOKENBOARD_HOOK_SYNC_TIMEOUT_MS
+  if (configured === undefined || configured === '') return defaultHookSyncTimeoutMs
+  if (!/^[1-9][0-9]*$/.test(configured)) {
+    throw new Error('TOKENBOARD_HOOK_SYNC_TIMEOUT_MS must be a positive integer number of milliseconds')
+  }
+  return Number(configured)
+}
+
 if (isMain()) {
   process.exit(runCli())
 }
@@ -211,10 +227,15 @@ function runSync({ flags, invocation, logs }) {
     return 1
   }
 
-  const result = runCollectorProcess(effectiveInvocation, logs)
+  const hookTimeoutMs = flags.hook === true ? readHookSyncTimeoutMs() : undefined
+  const result = runCollectorProcess(effectiveInvocation, logs, { hookTimeoutMs })
 
   if (result.error) {
-    console.error(`Failed to run ${effectiveInvocation.command}: ${errorMessage(result.error)}`)
+    if (result.error.code === 'ETIMEDOUT') {
+      console.error(`TokenBoard hook sync timed out after ${hookTimeoutMs} ms; the collector process was killed`)
+    } else {
+      console.error(`Failed to run ${effectiveInvocation.command}: ${errorMessage(result.error)}`)
+    }
     return 1
   }
 
@@ -246,7 +267,11 @@ export function runCollectorProcess(invocation, logs, options = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
     maxBuffer: collectorOutputMaxBuffer,
-    shell: invocation.shell
+    shell: invocation.shell,
+    // Only hook-mode callers pass a bound; manual and scheduled runs are never killed.
+    ...(options.hookTimeoutMs
+      ? { timeout: options.hookTimeoutMs, killSignal: 'SIGKILL' }
+      : {})
   })
   writeRedactedOutput(logs.stdoutFd, result.stdout, write)
   writeRedactedOutput(logs.stderrFd, result.stderr, write)

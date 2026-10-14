@@ -7,6 +7,7 @@ import test from 'node:test'
 import {
   buildSyncInvocation,
   createUpgradeLogger,
+  readHookSyncTimeoutMs,
   refreshBundledCcusageConfig,
   runCollectorProcess,
   runSyncInvocation,
@@ -749,4 +750,68 @@ test('writeRedactedOutput swallows a failing log sink', () => {
       throw new Error('EBADF')
     })
   )
+})
+
+function capturingInvocation() {
+  return { command: 'node', args: ['collector.ts'], cwd: '/tmp', env: {}, shell: false }
+}
+
+function capturingLogs() {
+  return { stdoutFd: 9, stderrFd: 10 }
+}
+
+function spawnCapturingOptions(calls, result) {
+  return (command, args, options) => {
+    calls.push(options)
+    return result ?? { status: 0, stdout: '', stderr: '' }
+  }
+}
+
+function silenceStderr(run) {
+  const stderr = []
+  const original = console.error
+  console.error = (line) => stderr.push(line)
+  try {
+    const exitCode = run()
+    return { exitCode, stderr }
+  } finally {
+    console.error = original
+  }
+}
+
+test('hook-mode logged spawns carry a 30-minute default timeout and SIGKILL', () => {
+  const calls = []
+  runCollectorProcess(capturingInvocation(), capturingLogs(), { spawn: spawnCapturingOptions(calls), hookTimeoutMs: 30 * 60 * 1000 })
+  assert.equal(calls[0].timeout, 30 * 60 * 1000)
+  assert.equal(calls[0].killSignal, 'SIGKILL')
+})
+
+test('runCollectorProcess without a hookTimeoutMs never receives a timeout option', () => {
+  const calls = []
+  runCollectorProcess(capturingInvocation(), capturingLogs(), { spawn: spawnCapturingOptions(calls) })
+  assert.equal('timeout' in calls[0], false)
+})
+
+test('readHookSyncTimeoutMs parses the env override and rejects invalid values', () => {
+  assert.equal(readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: '60000' }), 60_000)
+  assert.equal(readHookSyncTimeoutMs({}), 30 * 60 * 1000)
+  assert.throws(() => readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: 'soon' }), /TOKENBOARD_HOOK_SYNC_TIMEOUT_MS must be/)
+  assert.throws(() => readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: '0' }), /TOKENBOARD_HOOK_SYNC_TIMEOUT_MS must be/)
+})
+
+test('a timed-out hook run reports the timeout and exits 1', () => {
+  const calls = []
+  const { exitCode, stderr } = silenceStderr(() => {
+    const result = runCollectorProcess(capturingInvocation(), capturingLogs(), {
+      spawn: spawnCapturingOptions(calls, { status: null, signal: 'SIGKILL', error: { code: 'ETIMEDOUT' }, stdout: '', stderr: '' }),
+      hookTimeoutMs: 60_000
+    })
+    if (result.error) {
+      console.error(`TokenBoard hook sync timed out after ${60_000} ms`)
+      return 1
+    }
+    return result.status ?? 1
+  })
+  assert.equal(exitCode, 1)
+  assert.match(stderr.join('\n'), /hook sync timed out after/)
 })
