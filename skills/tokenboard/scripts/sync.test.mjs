@@ -813,6 +813,65 @@ test('runCollectorProcess without a hookTimeoutMs never receives a timeout optio
   assert.equal('timeout' in calls[0], false)
 })
 
+// Killing the direct child does not close the stdio pipes when an orphaned grandchild
+// (ccusage, tsx) inherited them: the 'end' events never fire and the awaited streams would
+// hang forever after the process is already gone. The parent must force the streams closed.
+test('an exited child whose output streams never end has them destroyed by the parent', async () => {
+  const { EventEmitter } = await import('node:events')
+  const child = new EventEmitter()
+  child.stdout = new (await import('node:stream')).Readable({ read() {} })
+  child.stderr = new (await import('node:stream')).Readable({ read() {} })
+  const destroyed = []
+  for (const stream of [child.stdout, child.stderr]) {
+    const original = stream.destroy.bind(stream)
+    stream.destroy = (error) => {
+      destroyed.push(stream)
+      original(error)
+    }
+  }
+  const result = await runCollectorProcess(capturingInvocation(), capturingLogs(), {
+    spawn: () => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from('partial line\n'))
+        child.emit('exit', 0, null)
+        // No push(null): the grandchild still holds the pipe open.
+      })
+      return child
+    },
+    streamDrainTimeoutMs: 50,
+    write: () => {}
+  })
+
+  assert.equal(result.status, 0)
+  assert.equal(destroyed.length, 2)
+})
+
+// readline destroys the underlying stream on natural 'end', so a destroy counter cannot
+// distinguish the guard from normal shutdown; the observable contract for a healthy run is
+// that it settles as soon as the pipes end, never waiting out the drain grace.
+test('a normally draining run settles without waiting out the drain grace', async () => {
+  const { EventEmitter } = await import('node:events')
+  const child = new EventEmitter()
+  child.stdout = new (await import('node:stream')).Readable({ read() {} })
+  child.stderr = new (await import('node:stream')).Readable({ read() {} })
+  const startedAt = Date.now()
+  const result = await runCollectorProcess(capturingInvocation(), capturingLogs(), {
+    spawn: () => {
+      queueMicrotask(() => {
+        child.stdout.push(null)
+        child.stderr.push(null)
+        child.emit('exit', 0, null)
+      })
+      return child
+    },
+    streamDrainTimeoutMs: 5_000,
+    write: () => {}
+  })
+
+  assert.equal(result.status, 0)
+  assert.ok(Date.now() - startedAt < 5_000, 'drain should not wait out the full grace period')
+})
+
 test('readHookSyncTimeoutMs parses the env override and rejects invalid values', () => {
   assert.equal(readHookSyncTimeoutMs({ TOKENBOARD_HOOK_SYNC_TIMEOUT_MS: '60000' }), 60_000)
   assert.equal(readHookSyncTimeoutMs({}), 30 * 60 * 1000)

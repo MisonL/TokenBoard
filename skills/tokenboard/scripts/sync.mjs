@@ -270,9 +270,8 @@ export async function runCollectorProcess(invocation, logs, options = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: invocation.shell
   })
-  const stdoutLines = pipeRedacted(child.stdout, logs.stdoutFd, write)
-  const stderrLines = pipeRedacted(child.stderr, logs.stderrFd, write)
-
+  const stdoutPipe = pipeRedacted(child.stdout, logs.stdoutFd, write)
+  const stderrPipe = pipeRedacted(child.stderr, logs.stderrFd, write)
   let timedOut = false
   let timer
   if (options.hookTimeoutMs) {
@@ -288,7 +287,7 @@ export async function runCollectorProcess(invocation, logs, options = {}) {
     child.once('exit', (code, signal) => resolve({ code, signal }))
   })
   clearTimeout(timer)
-  await Promise.all([stdoutLines, stderrLines])
+  await drainPipes([stdoutPipe, stderrPipe], options.streamDrainTimeoutMs)
 
   if (outcome.error) return { status: 1, error: outcome.error, stdout: '', stderr: '' }
   if (timedOut) {
@@ -305,7 +304,7 @@ export async function runCollectorProcess(invocation, logs, options = {}) {
 }
 
 function pipeRedacted(stream, fd, write) {
-  return new Promise((resolve) => {
+  const pipe = new Promise((resolve) => {
     if (!stream) {
       resolve()
       return
@@ -314,6 +313,33 @@ function pipeRedacted(stream, fd, write) {
     createInterface({ input: stream }).on('line', (line) => writeRedactedOutput(fd, line, write))
     stream.once('end', resolve)
     stream.once('error', resolve)
+  })
+  pipe.stream = stream
+  return pipe
+}
+
+// After the child exits, the stdio pipes stay open as long as any orphaned grandchild
+// (ccusage, tsx) that inherited them is still running: the 'end' events never fire and the
+// run would hang forever on a process that is already gone. The logs already hold everything
+// the child printed, so once the drain grace elapses the parent destroys whichever pipes have
+// not settled; their 'error'/'end' handlers in pipeRedacted then resolve the promises. A
+// destroy call on its own proves nothing (readline also destroys the stream on natural
+// 'end'), which is why the guard watches the pipe promises, not the stream events.
+function drainPipes(pipes, streamDrainTimeoutMs) {
+  const graceMs = streamDrainTimeoutMs ?? 5_000
+  return new Promise((resolve) => {
+    let done = false
+    const settle = () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      for (const pipe of pipes) pipe.stream?.destroy?.()
+      settle()
+    }, graceMs)
+    Promise.all(pipes).then(settle, settle)
   })
 }
 
