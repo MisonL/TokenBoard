@@ -33,7 +33,7 @@ export const transientSyncExitCode = 75
 const scheduledRetryGuardSources = ['antigravity', 'antigravity-cli', 'antigravity-ide', 'claude-code', 'codex']
 const scheduledRetryTransitionLockFileName = 'scheduled-sync-retry.transition.lock'
 
-export function runScheduledRetry(options = {}) {
+export async function runScheduledRetry(options = {}) {
   if (typeof options.runAttempt !== 'function') {
     throw new Error('runScheduledRetry requires runAttempt')
   }
@@ -54,7 +54,7 @@ export function runScheduledRetry(options = {}) {
   let result
   let primaryError
   try {
-    result = executeScheduledRetry({
+    result = await executeScheduledRetry({
       source,
       maxAttempts,
       delayMs,
@@ -129,7 +129,7 @@ export function runScheduledRetry(options = {}) {
   return result
 }
 
-function executeScheduledRetry({ source, maxAttempts, delayMs, runAttempt, runtime, progress }) {
+async function executeScheduledRetry({ source, maxAttempts, delayMs, runAttempt, runtime, progress }) {
   writeRetryState(
     retryState({
       source,
@@ -156,7 +156,7 @@ function executeScheduledRetry({ source, maxAttempts, delayMs, runAttempt, runti
     )
 
     try {
-      const exitCode = readExitCode(runAttempt({ attempt }))
+      const exitCode = readExitCode(await runAttempt({ attempt }))
       if (exitCode !== transientSyncExitCode) {
         writeRetryState(
           retryState({

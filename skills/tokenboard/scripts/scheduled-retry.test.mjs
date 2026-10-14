@@ -22,11 +22,11 @@ import {
   sameMemoryPath
 } from './coordinator-test-helpers.mjs'
 
-test('scheduled retry records deferred lock contention and then completion', () => {
+test('scheduled retry records deferred lock contention and then completion', async () => {
   const fs = memoryRuntime()
   let calls = 0
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir: '/state',
     source: 'all',
     runtime: fs.runtime,
@@ -54,11 +54,11 @@ test('scheduled retry records deferred lock contention and then completion', () 
   })
 })
 
-test('scheduled retry stops after its bounded lock-timeout budget', () => {
+test('scheduled retry stops after its bounded lock-timeout budget', async () => {
   const fs = memoryRuntime()
   let calls = 0
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir: '/state',
     source: 'all',
     runtime: fs.runtime,
@@ -81,10 +81,10 @@ test('scheduled retry stops after its bounded lock-timeout budget', () => {
   assert.match(state.error, /Timed out waiting for TokenBoard sync lock/)
 })
 
-test('scheduled retry stops immediately on a real collector failure', () => {
+test('scheduled retry stops immediately on a real collector failure', async () => {
   const fs = memoryRuntime()
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir: '/state',
     source: 'all',
     runtime: fs.runtime,
@@ -97,12 +97,11 @@ test('scheduled retry stops immediately on a real collector failure', () => {
   assert.equal(fs.files.has(scheduledRetryTransitionLockPath('/state')), false)
 })
 
-test('scheduled retry writes a failure state before rethrowing an infrastructure error', () => {
+test('scheduled retry writes a failure state before rethrowing an infrastructure error', async () => {
   const fs = memoryRuntime()
 
-  assert.throws(
-    () =>
-      runScheduledRetry({
+  await assert.rejects(
+    runScheduledRetry({
         stateDir: '/state',
         source: 'all',
         runtime: fs.runtime,
@@ -121,14 +120,13 @@ test('scheduled retry writes a failure state before rethrowing an infrastructure
   assert.equal(fs.files.has(scheduledRetryTransitionLockPath('/state')), false)
 })
 
-test('scheduled retry cleans the all-source primary lock when transition cleanup fails', () => {
+test('scheduled retry cleans the all-source primary lock when transition cleanup fails', async () => {
   const fs = memoryRuntime()
   const transitionPath = scheduledRetryTransitionLockPath('/state')
   const unlink = fs.runtime.unlink
 
-  assert.throws(
-    () =>
-      runScheduledRetry({
+  await assert.rejects(
+    runScheduledRetry({
         stateDir: '/state',
         source: 'all',
         runtime: {
@@ -150,7 +148,7 @@ test('scheduled retry cleans the all-source primary lock when transition cleanup
   assert.equal(fs.files.has(scheduledRetryLockPath('/state', 'claude-code')), false)
 })
 
-test('scheduled retry preserves its legacy marker ownership when transition cleanup is contended', () => {
+test('scheduled retry preserves its legacy marker ownership when transition cleanup is contended', async () => {
   const fs = memoryRuntime()
   const stateDir = '/state/scheduled-retry-transition-contention'
   const transitionPath = scheduledRetryTransitionLockPath(stateDir)
@@ -158,9 +156,8 @@ test('scheduled retry preserves its legacy marker ownership when transition clea
   let competingOwner
   let firstMarker
 
-  assert.throws(
-    () =>
-      runScheduledRetry({
+  await assert.rejects(
+    runScheduledRetry({
         stateDir,
         source: 'codex',
         runtime: fs.runtime,
@@ -180,7 +177,7 @@ test('scheduled retry preserves its legacy marker ownership when transition clea
   assert.equal(JSON.parse(fs.files.get(scheduledRetryStatePath(stateDir, 'codex'))).status, 'failed')
 
   assert.equal(releaseLock(transitionPath, fs.runtime, competingOwner), true)
-  const secondResult = runScheduledRetry({
+  const secondResult = await runScheduledRetry({
     stateDir,
     source: 'codex',
     runtime: fs.runtime,
@@ -194,7 +191,7 @@ test('scheduled retry preserves its legacy marker ownership when transition clea
   assert.equal(fs.directories.has(legacyPath), false)
 })
 
-test('scheduled retry coalesces while another retry loop owns its lock', () => {
+test('scheduled retry coalesces while another retry loop owns its lock', async () => {
   const fs = memoryRuntime({
     '/state/scheduled-sync-retry.lock': JSON.stringify({
       pid: 999,
@@ -204,7 +201,7 @@ test('scheduled retry coalesces while another retry loop owns its lock', () => {
   })
   let collected = false
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir: '/state',
     source: 'all',
     runtime: fs.runtime,
@@ -219,7 +216,7 @@ test('scheduled retry coalesces while another retry loop owns its lock', () => {
   assert.equal(fs.files.has(scheduledRetryTransitionLockPath('/state')), false)
 })
 
-test('scheduled retry respects an active legacy lock while preserving source isolation', () => {
+test('scheduled retry respects an active legacy lock while preserving source isolation', async () => {
   const stateDir = '/state/scheduled-retry-active-legacy'
   const fs = memoryRuntime({
     [scheduledRetryLegacyLockPath(stateDir)]: JSON.stringify({
@@ -230,7 +227,7 @@ test('scheduled retry respects an active legacy lock while preserving source iso
   })
   let collected = false
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'codex',
     runtime: fs.runtime,
@@ -247,7 +244,7 @@ test('scheduled retry respects an active legacy lock while preserving source iso
   assert.equal(fs.files.has(scheduledRetryLegacyLockPath(stateDir)), true)
 })
 
-test('scheduled retry leaves an active legacy lock untouched when the legacy fence blocks a source retry', () => {
+test('scheduled retry leaves an active legacy lock untouched when the legacy fence blocks a source retry', async () => {
   const stateDir = '/state/scheduled-retry-source-blocked'
   const fs = memoryRuntime({
     [scheduledRetryLegacyLockPath(stateDir)]: JSON.stringify({
@@ -257,7 +254,7 @@ test('scheduled retry leaves an active legacy lock untouched when the legacy fen
     })
   })
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'codex',
     runtime: fs.runtime,
@@ -272,7 +269,7 @@ test('scheduled retry leaves an active legacy lock untouched when the legacy fen
   assert.equal(fs.files.has(scheduledRetryTransitionLockPath(stateDir)), false)
 })
 
-test('scheduled retry reports unknown legacy fence entries instead of silently skipping all sources', () => {
+test('scheduled retry reports unknown legacy fence entries instead of silently skipping all sources', async () => {
   const stateDir = '/state/scheduled-retry-corrupt-legacy-fence'
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   const fs = memoryRuntime(
@@ -284,9 +281,8 @@ test('scheduled retry reports unknown legacy fence entries instead of silently s
   )
   let collected = false
 
-  assert.throws(
-    () =>
-      runScheduledRetry({
+  await assert.rejects(
+    runScheduledRetry({
         stateDir,
         source: 'all',
         runtime: fs.runtime,
@@ -309,7 +305,7 @@ test('scheduled retry reports unknown legacy fence entries instead of silently s
   assert.equal(fs.files.has(scheduledRetryLockPath(stateDir, 'codex')), false)
 })
 
-test('scheduled retry reports unknown legacy fence entries for a source-specific retry', () => {
+test('scheduled retry reports unknown legacy fence entries for a source-specific retry', async () => {
   const stateDir = '/state/scheduled-retry-corrupt-source-fence'
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   const fs = memoryRuntime(
@@ -320,9 +316,8 @@ test('scheduled retry reports unknown legacy fence entries for a source-specific
     }
   )
 
-  assert.throws(
-    () =>
-      runScheduledRetry({
+  await assert.rejects(
+    runScheduledRetry({
         stateDir,
         source: 'codex',
         runtime: fs.runtime,
@@ -341,7 +336,7 @@ test('scheduled retry reports unknown legacy fence entries for a source-specific
 })
 
 for (const source of ['all', 'codex']) {
-  test(`scheduled retry preserves a corrupted legacy marker for ${source}`, () => {
+  test(`scheduled retry preserves a corrupted legacy marker for ${source}`, async () => {
     const stateDir = `/state/scheduled-retry-corrupt-marker-${source}`
     const legacyPath = scheduledRetryLegacyLockPath(stateDir)
     const markerPath = join(legacyPath, 'source-999-truncated.json')
@@ -353,9 +348,8 @@ for (const source of ['all', 'codex']) {
       }
     )
 
-    assert.throws(
-      () =>
-        runScheduledRetry({
+    await assert.rejects(
+    runScheduledRetry({
           stateDir,
           source,
           runtime: fs.runtime,
@@ -375,7 +369,7 @@ for (const source of ['all', 'codex']) {
   })
 }
 
-test('all-source retry keeps a live marker whose start identity was unavailable', () => {
+test('all-source retry keeps a live marker whose start identity was unavailable', async () => {
   const stateDir = '/state/scheduled-retry-unknown-marker-identity'
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   const markerPath = join(legacyPath, 'source-999-unknown.json')
@@ -389,7 +383,7 @@ test('all-source retry keeps a live marker whose start identity was unavailable'
     }
   )
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'all',
     runtime: fs.runtime,
@@ -403,7 +397,7 @@ test('all-source retry keeps a live marker whose start identity was unavailable'
   assert.equal(fs.files.has(markerPath), true)
 })
 
-test('all-source retry keeps an unidentifiable live marker that shares its pid', () => {
+test('all-source retry keeps an unidentifiable live marker that shares its pid', async () => {
   const stateDir = '/state/scheduled-retry-unknown-current-pid'
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   const markerPath = join(legacyPath, 'source-101-unknown.json')
@@ -417,7 +411,7 @@ test('all-source retry keeps an unidentifiable live marker that shares its pid',
     }
   )
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'all',
     runtime: fs.runtime,
@@ -431,14 +425,14 @@ test('all-source retry keeps an unidentifiable live marker that shares its pid',
   assert.equal(fs.files.has(markerPath), true)
 })
 
-test('source retry omits an unavailable process start identity from its marker', () => {
+test('source retry omits an unavailable process start identity from its marker', async () => {
   const fs = memoryRuntime()
   const stateDir = '/state/scheduled-retry-omit-unknown-identity'
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   delete fs.runtime.processStartIdentity
   fs.runtime.readProcessStartIdentity = () => ({ status: 'unknown' })
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'codex',
     runtime: fs.runtime,
@@ -453,7 +447,7 @@ test('source retry omits an unavailable process start identity from its marker',
   assert.equal(fs.directories.has(legacyPath), false)
 })
 
-test('source retry holds a legacy compatibility lock for its whole lifecycle', () => {
+test('source retry holds a legacy compatibility lock for its whole lifecycle', async () => {
   const fs = memoryRuntime()
   const stateDir = '/state/scheduled-retry-legacy-lifecycle'
   let lockObservedDuringAttempt = false
@@ -461,7 +455,7 @@ test('source retry holds a legacy compatibility lock for its whole lifecycle', (
   let sourceLock
   const writeFile = fs.runtime.writeFile
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'codex',
     runtime: {
@@ -487,14 +481,14 @@ test('source retry holds a legacy compatibility lock for its whole lifecycle', (
   assert.equal(fs.directories.has(scheduledRetryLegacyLockPath(stateDir)), false)
 })
 
-test('source retry skips when a legacy process claims the lock during preparation', () => {
+test('source retry skips when a legacy process claims the lock during preparation', async () => {
   const fs = memoryRuntime()
   const stateDir = '/state/scheduled-retry-legacy-race'
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   let injected = false
   const mkdir = fs.runtime.mkdir
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'codex',
     runtime: {
@@ -525,18 +519,18 @@ test('source retry skips when a legacy process claims the lock during preparatio
   assert.equal(fs.files.has(legacyPath), true)
 })
 
-test('scheduled retries isolate concurrent sources instead of dropping the second retry', () => {
+test('scheduled retries isolate concurrent sources instead of dropping the second retry', async () => {
   const fs = memoryRuntime()
   const stateDir = mkdtempSync(join(tmpdir(), 'tokenboard-scheduled-retry-'))
   let nestedResult
 
   try {
-    const result = runScheduledRetry({
+    const result = await runScheduledRetry({
       stateDir,
       source: 'codex',
       runtime: fs.runtime,
-      runAttempt: () => {
-        nestedResult = runScheduledRetry({
+      runAttempt: async () => {
+        nestedResult = await runScheduledRetry({
           stateDir,
           source: 'claude-code',
           runtime: fs.runtime,
@@ -558,7 +552,7 @@ test('scheduled retries isolate concurrent sources instead of dropping the secon
   }
 })
 
-test('independent source retry processes share the legacy fence without serializing', () => {
+test('independent source retry processes share the legacy fence without serializing', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'tokenboard-scheduled-retry-independent-'))
   const files = memoryFileMap()
   const directories = memoryPathSet()
@@ -578,12 +572,12 @@ test('independent source retry processes share the legacy fence without serializ
   let nestedResult
 
   try {
-    const result = runScheduledRetry({
+    const result = await runScheduledRetry({
       stateDir,
       source: 'codex',
       runtime: first.runtime,
-      runAttempt: () => {
-        nestedResult = runScheduledRetry({
+      runAttempt: async () => {
+        nestedResult = await runScheduledRetry({
           stateDir,
           source: 'claude-code',
           runtime: second.runtime,
@@ -601,7 +595,7 @@ test('independent source retry processes share the legacy fence without serializ
   }
 })
 
-test('source retry reclaims a legacy fence marker left by a stopped process', () => {
+test('source retry reclaims a legacy fence marker left by a stopped process', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'tokenboard-scheduled-retry-stale-marker-'))
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   const files = memoryFileMap([
@@ -622,7 +616,7 @@ test('source retry reclaims a legacy fence marker left by a stopped process', ()
   let fenceObserved = false
 
   try {
-    const result = runScheduledRetry({
+    const result = await runScheduledRetry({
       stateDir,
       source: 'codex',
       runtime: fs.runtime,
@@ -640,7 +634,7 @@ test('source retry reclaims a legacy fence marker left by a stopped process', ()
   }
 })
 
-test('all-source retry reclaims a marker when the pid is reused by a different process', () => {
+test('all-source retry reclaims a marker when the pid is reused by a different process', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'tokenboard-scheduled-retry-pid-reuse-'))
   const legacyPath = scheduledRetryLegacyLockPath(stateDir)
   const files = memoryFileMap([
@@ -667,7 +661,7 @@ test('all-source retry reclaims a marker when the pid is reused by a different p
   )
 
   try {
-    const result = runScheduledRetry({
+    const result = await runScheduledRetry({
       stateDir,
       source: 'all',
       runtime: fs.runtime,
@@ -681,18 +675,18 @@ test('all-source retry reclaims a marker when the pid is reused by a different p
   }
 })
 
-test('scheduled retries prevent all-source execution from racing with a source retry', () => {
+test('scheduled retries prevent all-source execution from racing with a source retry', async () => {
   const fs = memoryRuntime()
   const stateDir = '/state/scheduled-retry-all-race'
   let nestedResult
   let nestedCollected = false
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir,
     source: 'codex',
     runtime: fs.runtime,
-    runAttempt: () => {
-      nestedResult = runScheduledRetry({
+    runAttempt: async () => {
+      nestedResult = await runScheduledRetry({
         stateDir,
         source: 'all',
         runtime: fs.runtime,
@@ -713,14 +707,13 @@ test('scheduled retries prevent all-source execution from racing with a source r
   assert.equal(fs.files.has(scheduledRetryTransitionLockPath(stateDir)), false)
 })
 
-test('scheduled retry surfaces retry-state write failures and releases its retry lock', () => {
+test('scheduled retry surfaces retry-state write failures and releases its retry lock', async () => {
   const fs = memoryRuntime()
   const writeFile = fs.runtime.writeFile
   let collected = false
 
-  assert.throws(
-    () =>
-      runScheduledRetry({
+  await assert.rejects(
+    runScheduledRetry({
         stateDir: '/state',
         source: 'all',
         runtime: {
@@ -743,14 +736,13 @@ test('scheduled retry surfaces retry-state write failures and releases its retry
   assert.equal(fs.files.has(scheduledRetryTransitionLockPath('/state')), false)
 })
 
-test('scheduled retry reports lock-release failures without hiding a completed collection', () => {
+test('scheduled retry reports lock-release failures without hiding a completed collection', async () => {
   const fs = memoryRuntime()
   const unlink = fs.runtime.unlink
   let releaseFailed = false
 
-  assert.throws(
-    () =>
-      runScheduledRetry({
+  await assert.rejects(
+    runScheduledRetry({
         stateDir: '/state',
         source: 'all',
         runtime: {
@@ -776,7 +768,7 @@ test('scheduled retry reports lock-release failures without hiding a completed c
   assert.equal(fs.files.has(scheduledRetryTransitionLockPath('/state')), false)
 })
 
-test('sync invocation retries only scheduled lock timeouts and skips upgrade during recovery', () => {
+test('sync invocation retries only scheduled lock timeouts and skips upgrade during recovery', async () => {
   const retries = []
   const invocation = {
     source: 'all',
@@ -784,7 +776,7 @@ test('sync invocation retries only scheduled lock timeouts and skips upgrade dur
   }
   const initialFlags = { mode: 'sync', scheduled: true }
 
-  const exitCode = runSyncInvocation({
+  const exitCode = await runSyncInvocation({
     flags: initialFlags,
     invocation,
     stateDir: '/state',
@@ -792,9 +784,9 @@ test('sync invocation retries only scheduled lock timeouts and skips upgrade dur
       if (flags['skip-upgrade'] === true) return 0
       throw lockTimeout()
     },
-    runRetry: (options) => {
+    runRetry: async (options) => {
       retries.push(options)
-      return { exitCode: options.runAttempt({ attempt: 1 }), skipped: false, attempts: 1 }
+      return { exitCode: await options.runAttempt({ attempt: 1 }), skipped: false, attempts: 1 }
     }
   })
 
@@ -805,11 +797,11 @@ test('sync invocation retries only scheduled lock timeouts and skips upgrade dur
   assert.equal(initialFlags['skip-upgrade'], undefined)
 })
 
-test('scheduled retry re-attempts a transient collector exit code', () => {
+test('scheduled retry re-attempts a transient collector exit code', async () => {
   const fs = memoryRuntime()
   const attempts = []
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir: '/state',
     source: 'all',
     runtime: fs.runtime,
@@ -827,10 +819,10 @@ test('scheduled retry re-attempts a transient collector exit code', () => {
   assert.equal(JSON.parse(fs.files.get(scheduledRetryStatePath('/state'))).status, 'completed')
 })
 
-test('scheduled retry reports exhaustion after the transient budget is spent', () => {
+test('scheduled retry reports exhaustion after the transient budget is spent', async () => {
   const fs = memoryRuntime()
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir: '/state',
     source: 'all',
     runtime: fs.runtime,
@@ -846,10 +838,10 @@ test('scheduled retry reports exhaustion after the transient budget is spent', (
   assert.match(state.error, /transient code 75/)
 })
 
-test('scheduled retry still stops immediately on a non-transient collector failure', () => {
+test('scheduled retry still stops immediately on a non-transient collector failure', async () => {
   const fs = memoryRuntime()
 
-  const result = runScheduledRetry({
+  const result = await runScheduledRetry({
     stateDir: '/state',
     source: 'all',
     runtime: fs.runtime,
@@ -861,11 +853,11 @@ test('scheduled retry still stops immediately on a non-transient collector failu
   assert.deepEqual(fs.sleeps, [])
 })
 
-test('sync invocation defers a transient collector exit code and retries it', () => {
+test('sync invocation defers a transient collector exit code and retries it', async () => {
   const retries = []
   const attempts = []
 
-  const exitCode = runSyncInvocation({
+  const exitCode = await runSyncInvocation({
     flags: { mode: 'sync', scheduled: true },
     invocation: { source: 'all', env: { TOKENBOARD_CONFIG_DIR: '/config' } },
     stateDir: '/state',
@@ -873,9 +865,9 @@ test('sync invocation defers a transient collector exit code and retries it', ()
       attempts.push(flags['skip-upgrade'] === true)
       return flags['skip-upgrade'] === true ? 0 : transientSyncExitCode
     },
-    runRetry: (options) => {
+    runRetry: async (options) => {
       retries.push(options)
-      return { exitCode: options.runAttempt({ attempt: 1 }), skipped: false, attempts: 1 }
+      return { exitCode: await options.runAttempt({ attempt: 1 }), skipped: false, attempts: 1 }
     }
   })
 
@@ -886,9 +878,9 @@ test('sync invocation defers a transient collector exit code and retries it', ()
   assert.equal(retries[0].source, 'all')
 })
 
-test('sync invocation reports a plain failure when an unscheduled run exits transiently', () => {
+test('sync invocation reports a plain failure when an unscheduled run exits transiently', async () => {
   for (const flags of [{ mode: 'sync' }, { mode: 'sync', scheduled: false }]) {
-    const exitCode = runSyncInvocation({
+    const exitCode = await runSyncInvocation({
       flags,
       invocation: { source: 'all', env: {} },
       stateDir: '/state',
@@ -904,13 +896,13 @@ test('sync invocation reports a plain failure when an unscheduled run exits tran
   }
 })
 
-test('sync invocation never defers a transient exit code for hook or non-sync runs', () => {
+test('sync invocation never defers a transient exit code for hook or non-sync runs', async () => {
   for (const flags of [
     { mode: 'sync', scheduled: true, hook: true },
     { mode: 'preview', scheduled: true },
     { mode: 'sync' }
   ]) {
-    const exitCode = runSyncInvocation({
+    const exitCode = await runSyncInvocation({
       flags,
       invocation: { source: 'all', env: {} },
       stateDir: '/state',
@@ -927,24 +919,23 @@ test('sync invocation never defers a transient exit code for hook or non-sync ru
   }
 })
 
-test('sync invocation never retries a hook timeout or a non-sync mode', () => {
+test('sync invocation never retries a hook timeout or a non-sync mode', async () => {
   for (const flags of [
     { mode: 'sync', scheduled: true, hook: true },
     { mode: 'preview', scheduled: true }
   ]) {
-    assert.throws(
-      () =>
-        runSyncInvocation({
-          flags,
-          invocation: { source: 'all', env: {} },
-          stateDir: '/state',
-          runWithLock: () => {
-            throw lockTimeout()
-          },
-          runRetry: () => {
-            throw new Error('this invocation must not enter scheduled retry')
-          }
-        }),
+    await assert.rejects(
+      runSyncInvocation({
+        flags,
+        invocation: { source: 'all', env: {} },
+        stateDir: '/state',
+        runWithLock: () => {
+          throw lockTimeout()
+        },
+        runRetry: () => {
+          throw new Error('this invocation must not enter scheduled retry')
+        }
+      }),
       /Timed out waiting for TokenBoard sync lock/
     )
   }

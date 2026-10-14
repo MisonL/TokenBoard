@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import { createInterface } from 'node:readline'
 import {
   chmodSync,
   existsSync,
@@ -30,13 +31,6 @@ import { redactUrlCredentials } from './redact-credentials.mjs'
 
 const defaultSyncLockTimeoutMs = 60_000
 
-// Declared above the entry guard on purpose: the guard runs `runCli()` at module top level, so
-// a `const` placed further down the file is still in its temporal dead zone when a scheduled run
-// reads it. Only the logged branch of `runCollectorProcess` references this, and `--mode preview`
-// returns before that — so the failure appears only under `--scheduled`, which is how it once
-// slipped through. See `runCollectorProcess` for what the value is for.
-const collectorOutputMaxBuffer = 64 * 1024 * 1024
-
 // Hook-mode runs get a wall-clock bound so a wedged scan cannot hold the sync lock or the
 // notify caller indefinitely. The default leaves generous room above the observed long tail
 // (a full Codex history scan measured at ~25 minutes on a 38 GB session tree); a shorter
@@ -54,10 +48,15 @@ export function readHookSyncTimeoutMs(env = process.env) {
 }
 
 if (isMain()) {
-  process.exit(runCli())
+  runCli()
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      console.error(`TokenBoard sync failed: ${redactUrlCredentials(errorMessage(error))}`)
+      process.exit(1)
+    })
 }
 
-function runCli() {
+async function runCli() {
   if (
     printHelpIfRequested(
       process.argv.slice(2),
@@ -85,7 +84,7 @@ function runCli() {
       scheduled: flags.scheduled === true
     })
 
-    return runSyncInvocation({
+    return await runSyncInvocation({
       flags,
       invocation,
       logs,
@@ -99,7 +98,7 @@ function runCli() {
   }
 }
 
-export function runSyncInvocation({
+export async function runSyncInvocation({
   flags = {},
   invocation,
   logs,
@@ -134,7 +133,7 @@ export function runSyncInvocation({
       }
     }
   }
-  const run = (runFlags = flags) =>
+  const run = async (runFlags = flags) =>
     runWithLock({
       flags: runFlags,
       stateDir,
@@ -144,7 +143,7 @@ export function runSyncInvocation({
   let deferredBy
   try {
     recordState('running')
-    const result = run()
+    const result = await run()
     const exitCode = typeof result === 'number' ? result : 0
     if (exitCode === transientSyncExitCode) {
       if (!canDeferScheduledRun(flags)) {
@@ -176,7 +175,7 @@ export function runSyncInvocation({
   const retryFlags = { ...flags, 'skip-upgrade': true }
   let result
   try {
-    result = runRetry({
+    result = await runRetry({
       stateDir,
       source,
       runAttempt: () => run(retryFlags)
@@ -206,7 +205,7 @@ export function runSyncInvocation({
   return exitCode
 }
 
-function runSync({ flags, invocation, logs }) {
+async function runSync({ flags, invocation, logs }) {
   if (shouldRunUpgrade({ flags, env: process.env })) {
     try {
       runUpgrade({
@@ -228,7 +227,7 @@ function runSync({ flags, invocation, logs }) {
   }
 
   const hookTimeoutMs = flags.hook === true ? readHookSyncTimeoutMs() : undefined
-  const result = runCollectorProcess(effectiveInvocation, logs, { hookTimeoutMs })
+  const result = await runCollectorProcess(effectiveInvocation, logs, { hookTimeoutMs })
 
   if (result.error) {
     if (result.error.code === 'ETIMEDOUT') {
@@ -248,12 +247,16 @@ function runSync({ flags, invocation, logs }) {
 // error echoing `tb_upload_…` or `https://user:token@host/…` would land there intact. Capture
 // instead and forward each line through `redactUrlCredentials`, the way `upgrade-utils` already
 // does for the git steps. The child still inherits the real terminal when there is no log file,
-// so interactive runs keep their live output. `collectorOutputMaxBuffer` bounds the capture.
-export function runCollectorProcess(invocation, logs, options = {}) {
-  const spawn = options.spawn || spawnSync
+// so interactive runs keep their live output.
+//
+// Output streams line by line instead of accumulating in a 64 MiB buffer: a run killed
+// mid-flight keeps everything it already printed, memory stays flat regardless of run length,
+// and per-line redaction is equivalent because every redact rule is single-line anchored.
+export async function runCollectorProcess(invocation, logs, options = {}) {
+  const spawnChild = options.spawn || spawn
   const write = options.write || writeSync
   if (!logs) {
-    return spawn(invocation.command, invocation.args, {
+    return spawnChild(invocation.command, invocation.args, {
       cwd: invocation.cwd,
       env: invocation.env,
       stdio: 'inherit',
@@ -261,21 +264,57 @@ export function runCollectorProcess(invocation, logs, options = {}) {
     })
   }
 
-  const result = spawn(invocation.command, invocation.args, {
+  const child = spawnChild(invocation.command, invocation.args, {
     cwd: invocation.cwd,
     env: invocation.env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    encoding: 'utf8',
-    maxBuffer: collectorOutputMaxBuffer,
-    shell: invocation.shell,
-    // Only hook-mode callers pass a bound; manual and scheduled runs are never killed.
-    ...(options.hookTimeoutMs
-      ? { timeout: options.hookTimeoutMs, killSignal: 'SIGKILL' }
-      : {})
+    shell: invocation.shell
   })
-  writeRedactedOutput(logs.stdoutFd, result.stdout, write)
-  writeRedactedOutput(logs.stderrFd, result.stderr, write)
-  return result
+  const stdoutLines = pipeRedacted(child.stdout, logs.stdoutFd, write)
+  const stderrLines = pipeRedacted(child.stderr, logs.stderrFd, write)
+
+  let timedOut = false
+  let timer
+  if (options.hookTimeoutMs) {
+    // Only hook-mode callers pass a bound; manual and scheduled runs are never killed.
+    timer = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, options.hookTimeoutMs)
+  }
+
+  const outcome = await new Promise((resolve) => {
+    child.once('error', (error) => resolve({ error }))
+    child.once('exit', (code, signal) => resolve({ code, signal }))
+  })
+  clearTimeout(timer)
+  await Promise.all([stdoutLines, stderrLines])
+
+  if (outcome.error) return { status: 1, error: outcome.error, stdout: '', stderr: '' }
+  if (timedOut) {
+    return {
+      status: 1,
+      error: Object.assign(new Error(`collector run exceeded the ${options.hookTimeoutMs} ms hook timeout`), {
+        code: 'ETIMEDOUT'
+      }),
+      stdout: '',
+      stderr: ''
+    }
+  }
+  return { status: outcome.code ?? (outcome.signal ? 1 : 0), stdout: '', stderr: '' }
+}
+
+function pipeRedacted(stream, fd, write) {
+  return new Promise((resolve) => {
+    if (!stream) {
+      resolve()
+      return
+    }
+    stream.setEncoding('utf8')
+    createInterface({ input: stream }).on('line', (line) => writeRedactedOutput(fd, line, write))
+    stream.once('end', resolve)
+    stream.once('error', resolve)
+  })
 }
 
 export function writeRedactedOutput(fd, text, write = writeSync) {
@@ -424,7 +463,7 @@ function normalizeUntilFlag(value) {
   return normalized
 }
 
-export function runWithSyncLock({ flags = {}, env = process.env, stateDir, runtime = syncLockRuntime(), run }) {
+export async function runWithSyncLock({ flags = {}, env = process.env, stateDir, runtime = syncLockRuntime(), run }) {
   if (typeof run !== 'function') {
     throw new Error('runWithSyncLock requires run')
   }
@@ -449,7 +488,7 @@ export function runWithSyncLock({ flags = {}, env = process.env, stateDir, runti
   let primaryError
   let primaryFailed = false
   try {
-    result = run()
+    result = await run()
   } catch (error) {
     primaryFailed = true
     primaryError = error
