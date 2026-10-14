@@ -40,7 +40,7 @@ describe('Codex subagent usage cache', () => {
     expect(Object.keys(retained)).toHaveLength(2_000)
   })
 
-  test('rejects an oversized cache before parsing it or invoking the correction callback', async () => {
+  test('discards an oversized cache and rebuilds instead of failing the sync', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-oversized-'))
     const cachePath = join(stateDir, 'codex-subagent-usage-cache.json')
     let callbackCalled = false
@@ -48,25 +48,25 @@ describe('Codex subagent usage cache', () => {
     try {
       await writeFile(cachePath, Buffer.alloc(8 * 1024 * 1024 + 1, 0x20))
 
-      await expect(
-        withCodexSubagentUsageCache({
-          stateDir,
-          timezone: 'UTC',
-          readChildUsageByDate: async () => [],
-          callback: async () => {
-            callbackCalled = true
-            return []
-          }
-        })
-      ).rejects.toThrow('Codex subagent usage cache exceeds the 8388608-byte limit')
+      await withCodexSubagentUsageCache({
+        stateDir,
+        timezone: 'UTC',
+        readChildUsageByDate: async () => [],
+        callback: async () => {
+          callbackCalled = true
+          return []
+        }
+      })
 
-      expect(callbackCalled).toBe(false)
+      expect(callbackCalled).toBe(true)
+      const rebuilt = await readFile(cachePath, 'utf8')
+      expect(rebuilt).toContain('"version"')
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
   })
 
-  test('rejects an oversized cache before persisting it', async () => {
+  test('evicts the oldest unused entries to 75% when a write would exceed the budget', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-write-oversized-'))
     const childPath = join(stateDir, 'child.jsonl')
     const cachePath = join(stateDir, 'codex-subagent-usage-cache.json')
@@ -83,20 +83,22 @@ describe('Codex subagent usage cache', () => {
         totalTokens: index * 4
       }))
 
-      await expect(
-        withCodexSubagentUsageCache({
-          stateDir,
-          timezone: 'UTC',
-          readChildUsageByDate: async () => oversizedUsages,
-          callback: async (reader) => {
-            callbackCalled = true
-            await reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
-          }
-        })
-      ).rejects.toThrow('Codex subagent usage cache exceeds the 8388608-byte limit')
+      await withCodexSubagentUsageCache({
+        stateDir,
+        timezone: 'UTC',
+        readChildUsageByDate: async () => oversizedUsages,
+        callback: async (reader) => {
+          callbackCalled = true
+          await reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
+        }
+      })
 
       expect(callbackCalled).toBe(true)
-      await expect(stat(cachePath)).rejects.toMatchObject({ code: 'ENOENT' })
+      const persisted = JSON.parse(await readFile(cachePath, 'utf8'))
+      // The single oversized entry (80k usages in one session) cannot be kept under the
+      // budget, so the write persists an empty cache instead of failing the sync; the
+      // corrections recompute from the session file on a later run.
+      expect(Object.keys(persisted.entries).length).toBe(0)
 
       let recoveryCallbackCalled = false
       const recovered = await withCodexSubagentUsageCache({

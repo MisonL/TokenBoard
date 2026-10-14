@@ -342,7 +342,12 @@ async function hashOpenFileRange(handle: Awaited<ReturnType<typeof open>>, size:
 
 async function readCache(cachePath: string, timezone: string): Promise<CacheState> {
   try {
-    const parsed = JSON.parse(await readBoundedCacheFile(cachePath)) as unknown
+    const content = await readBoundedCacheFile(cachePath)
+    // An oversized cache is stale by definition (the retain pass never writes one), so
+    // discarding it loses only recomputable fingerprints; failing here would wedge every
+    // sync until an operator deleted the file by hand.
+    if (content === null) return emptyCache(timezone)
+    const parsed = JSON.parse(content) as unknown
     if (!isCacheState(parsed)) throw new Error('Invalid Codex session attribution cache')
     if (parsed.timezone !== timezone) return emptyCache(timezone)
     return parsed
@@ -353,14 +358,13 @@ async function readCache(cachePath: string, timezone: string): Promise<CacheStat
   }
 }
 
-async function readBoundedCacheFile(cachePath: string) {
+// Returns null when the file exceeds maxCacheBytes; content is then never read into memory.
+async function readBoundedCacheFile(cachePath: string): Promise<string | null> {
   const handle = await open(cachePath, 'r')
   try {
     const before = await handle.stat()
     if (!before.isFile()) throw new Error('Invalid Codex session attribution cache')
-    if (before.size > maxCacheBytes) {
-      throw new Error('Codex session attribution cache exceeds the ' + maxCacheBytes + '-byte limit')
-    }
+    if (before.size > maxCacheBytes) return null
     const buffer = Buffer.alloc(before.size)
     let offset = 0
     while (offset < buffer.length) {
@@ -381,9 +385,22 @@ async function readBoundedCacheFile(cachePath: string) {
 }
 
 async function writeCache(cachePath: string, cache: CacheState) {
-  const serialized = JSON.stringify(cache) + '\n'
+  let serialized = JSON.stringify(cache) + '\n'
+  // The retain pass already trims to the budget; a write-side overflow means an external or
+  // legacy oversize slipped through the read path. Evict to 75% rather than failing the sync.
   if (Buffer.byteLength(serialized) > maxCacheBytes) {
-    throw new Error('Codex session attribution cache exceeds the ' + maxCacheBytes + '-byte limit')
+    const retained = trimCacheEntriesToSerializedSize(
+      Object.entries(cache.entries).sort(
+        (left, right) => Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt) || left[0].localeCompare(right[0])
+      ),
+      cache.timezone,
+      Math.floor(maxCacheBytes * 0.75)
+    )
+    cache.entries = Object.fromEntries(retained)
+    serialized = JSON.stringify(cache) + '\n'
+    if (Buffer.byteLength(serialized) > maxCacheBytes) {
+      throw new Error('Codex session attribution cache exceeds the ' + maxCacheBytes + '-byte limit')
+    }
   }
   // Private like the 0600 cache file it will hold: the state directory itself must not be
   // writable by others when this call creates it.
@@ -434,7 +451,7 @@ export function retainCacheEntries(
   return Object.fromEntries(trimCacheEntriesToSerializedSize(selected, timezone))
 }
 
-function trimCacheEntriesToSerializedSize(entries: Array<[string, CacheEntry]>, timezone: string) {
+function trimCacheEntriesToSerializedSize(entries: Array<[string, CacheEntry]>, timezone: string, budgetBytes = maxCacheBytes) {
   const serializedEntries = entries.map(([key, entry]) => ({
     entry: [key, entry] as [string, CacheEntry],
     bytes: Buffer.byteLength(`${JSON.stringify(key)}:${JSON.stringify(entry)}`)
@@ -445,7 +462,7 @@ function trimCacheEntriesToSerializedSize(entries: Array<[string, CacheEntry]>, 
   serializedBytes += serializedEntries.reduce((total, item) => total + item.bytes, 0)
   serializedBytes += Math.max(0, serializedEntries.length - 1)
 
-  while (serializedBytes > maxCacheBytes && serializedEntries.length > 0) {
+  while (serializedBytes > budgetBytes && serializedEntries.length > 0) {
     const removed = serializedEntries.pop()!
     serializedBytes -= removed.bytes
     if (serializedEntries.length > 0) serializedBytes -= 1

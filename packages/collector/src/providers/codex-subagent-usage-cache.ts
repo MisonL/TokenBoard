@@ -207,7 +207,11 @@ async function readStableChildUsage<T>(input: {
 
 async function readCache(cachePath: string, timezone: string, fallbackUpdatedAt: string): Promise<CacheState> {
   try {
-    const parsed = JSON.parse(await readBoundedCacheFile(cachePath)) as unknown
+    const content = await readBoundedCacheFile(cachePath)
+    // An oversized cache is stale by definition; discarding it loses only recomputable
+    // corrections, while failing here would wedge every hook sync.
+    if (content === null) return emptyCache(timezone)
+    const parsed = JSON.parse(content) as unknown
     if (!isSerializedCacheState(parsed)) {
       throw new Error('Invalid Codex subagent usage cache')
     }
@@ -229,14 +233,12 @@ async function readCache(cachePath: string, timezone: string, fallbackUpdatedAt:
   }
 }
 
-async function readBoundedCacheFile(cachePath: string) {
+async function readBoundedCacheFile(cachePath: string): Promise<string | null> {
   const handle = await open(cachePath, 'r')
   try {
     const before = await handle.stat()
     if (!before.isFile()) throw new Error('Invalid Codex subagent usage cache')
-    if (before.size > maxCacheBytes) {
-      throw new Error(`Codex subagent usage cache exceeds the ${maxCacheBytes}-byte limit`)
-    }
+    if (before.size > maxCacheBytes) return null
 
     const buffer = Buffer.alloc(before.size)
     let offset = 0
@@ -257,9 +259,15 @@ async function readBoundedCacheFile(cachePath: string) {
 }
 
 async function writeCache(cachePath: string, cache: CacheState) {
-  const serialized = `${JSON.stringify(cache, null, 2)}\n`
+  let serialized = `${JSON.stringify(cache, null, 2)}\n`
   if (Buffer.byteLength(serialized) > maxCacheBytes) {
-    throw new Error(`Codex subagent usage cache exceeds the ${maxCacheBytes}-byte limit`)
+    // The retain pass caps entries by count; a byte-size overflow still means a stale or
+    // external oversize. Evict oldest-first to 75% rather than failing the sync.
+    cache.entries = evictToSerializedSize(cache.entries, Math.floor(maxCacheBytes * 0.75))
+    serialized = `${JSON.stringify(cache, null, 2)}\n`
+    if (Buffer.byteLength(serialized) > maxCacheBytes) {
+      throw new Error(`Codex subagent usage cache exceeds the ${maxCacheBytes}-byte limit`)
+    }
   }
   // Private like the 0600 cache file it will hold: the state directory itself must not be
   // writable by others when this call creates it.
@@ -392,6 +400,20 @@ export function retainCacheEntries(entries: Record<string, CacheEntry>, usedKeys
     ...used.slice(0, maxCacheEntries),
     ...recent.slice(0, Math.max(0, maxCacheEntries - used.length))
   ])
+}
+
+function evictToSerializedSize(entries: Record<string, CacheEntry>, budgetBytes: number) {
+  const ordered = Object.entries(entries).sort(
+    (left, right) =>
+      Date.parse(right[1].updatedAt || '') - Date.parse(left[1].updatedAt || '') || left[0].localeCompare(right[0])
+  )
+  let bytes = Buffer.byteLength(JSON.stringify(entries))
+  let index = ordered.length
+  while (bytes > budgetBytes && index > 0) {
+    index -= 1
+    bytes -= Buffer.byteLength(JSON.stringify(ordered[index]))
+  }
+  return Object.fromEntries(ordered.slice(0, index))
 }
 
 function copyUsage(usage: DatedUsage): DatedUsage {

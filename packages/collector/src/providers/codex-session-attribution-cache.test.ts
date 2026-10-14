@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rename, rm, stat, symlink, unlink, writeFile } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
+import assert from 'node:assert/strict'
 
 const fingerprintRace = vi.hoisted(() => ({
   enabled: false,
@@ -397,18 +398,24 @@ describe('Codex session attribution cache', () => {
     }
   })
 
-  test('rejects an oversized cache before parsing it', async () => {
+  test('discards an oversized cache and rebuilds it instead of failing the sync', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
 
     try {
       await writeFile(join(stateDir, 'codex-session-attribution-cache.json'), 'x'.repeat(9 * 1024 * 1024))
-      await expect(
-        withCodexSessionAttributionCache({
-          stateDir,
-          timezone: 'Asia/Shanghai',
-          callback: async () => undefined
-        })
-      ).rejects.toThrow('Codex session attribution cache exceeds the 8388608-byte limit')
+      let ran = false
+      await withCodexSessionAttributionCache({
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        callback: async () => {
+          ran = true
+          return 'rebuilt'
+        }
+      })
+      assert.equal(ran, true)
+      // The rebuilt cache replaces the oversized file.
+      const rebuilt = await readFile(join(stateDir, 'codex-session-attribution-cache.json'), 'utf8')
+      assert.match(rebuilt, /"version"/)
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
