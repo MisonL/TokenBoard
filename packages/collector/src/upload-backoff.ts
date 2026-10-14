@@ -66,7 +66,7 @@ export async function recordUploadSuccess(stateDir: string): Promise<void> {
   await rm(join(stateDir, fileName), { force: true })
 }
 
-function summarize(error: unknown): string {
+export function summarize(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   return message.length > 200 ? `${message.slice(0, 197)}…` : message
 }

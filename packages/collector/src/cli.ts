@@ -24,8 +24,8 @@ import { normalizeCodexSymlinkRoots } from './providers/codex-symlink-policy'
 import { clearPendingUploadCursors, cursorSnapshotGroupKey, warmHookCursorHighWater } from './providers/session-cursor'
 import { withCursorLock } from './providers/session-cursor-store'
 import { isTransientNetworkError } from './transient-error'
+import { isUploadPaused, recordUploadFailure, recordUploadSuccess, summarize } from './upload-backoff'
 import { uploadSnapshots } from './upload'
-import { isUploadPaused, recordUploadFailure, recordUploadSuccess } from './upload-backoff'
 import { assertValidTimeZone } from './timezone'
 import { isAllDateFilter } from './iso-calendar-date'
 
@@ -196,11 +196,18 @@ export async function runCollectorCli(
     } catch (error) {
       uploadError = error
       if (!isTransientNetworkError(error)) {
-        const state = await recordUploadFailure(uploadStateDir, error)
-        collectorDeps.stderr(
-          `TokenBoard upload failed (${state.consecutiveFailures} consecutive non-transient failures` +
-            `${state.pausedUntil ? `; pausing uploads until ${state.pausedUntil}` : ''})`
-        )
+        // The backoff bookkeeping must not replace the original upload error: if
+        // recording the failure itself throws (disk full, permissions), swallow that
+        // secondary error and keep rethrowing the one that actually failed the sync.
+        try {
+          const state = await recordUploadFailure(uploadStateDir, error)
+          collectorDeps.stderr(
+            `TokenBoard upload failed (${state.consecutiveFailures} consecutive non-transient failures` +
+              `${state.pausedUntil ? `; pausing uploads until ${state.pausedUntil}` : ''})`
+          )
+        } catch (backoffError) {
+          collectorDeps.stderr(`TokenBoard upload failure could not be recorded: ${summarize(backoffError)}`)
+        }
       }
       throw error
     }

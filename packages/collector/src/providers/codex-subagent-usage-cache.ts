@@ -262,8 +262,10 @@ async function writeCache(cachePath: string, cache: CacheState) {
   let serialized = `${JSON.stringify(cache, null, 2)}\n`
   if (Buffer.byteLength(serialized) > maxCacheBytes) {
     // The retain pass caps entries by count; a byte-size overflow still means a stale or
-    // external oversize. Evict oldest-first to 75% rather than failing the sync.
-    cache.entries = evictToSerializedSize(cache.entries, Math.floor(maxCacheBytes * 0.75))
+    // external oversize. Evict oldest-first to 75% rather than failing the sync. The
+    // eviction must measure in the same pretty serialization this write uses, so the
+    // budget it targets is the real file size, not the smaller compact form.
+    cache.entries = evictToSerializedSize(cache.entries, Math.floor(maxCacheBytes * 0.75), true)
     serialized = `${JSON.stringify(cache, null, 2)}\n`
     if (Buffer.byteLength(serialized) > maxCacheBytes) {
       throw new Error(`Codex subagent usage cache exceeds the ${maxCacheBytes}-byte limit`)
@@ -402,16 +404,21 @@ export function retainCacheEntries(entries: Record<string, CacheEntry>, usedKeys
   ])
 }
 
-function evictToSerializedSize(entries: Record<string, CacheEntry>, budgetBytes: number) {
+function evictToSerializedSize(entries: Record<string, CacheEntry>, budgetBytes: number, pretty = false) {
   const ordered = Object.entries(entries).sort(
     (left, right) =>
       Date.parse(right[1].updatedAt || '') - Date.parse(left[1].updatedAt || '') || left[0].localeCompare(right[0])
   )
-  let bytes = Buffer.byteLength(JSON.stringify(entries))
+  // Byte accounting must match the caller's final serialization. The compact pass costs
+  // one stringify per entry; the pretty pass measures each entry the way writeCache embeds
+  // it (2-space indent plus trailing comma/newline), so the 75% budget is the real limit.
+  let bytes = Buffer.byteLength(JSON.stringify(entries, pretty ? null : undefined, pretty ? 2 : undefined))
   let index = ordered.length
   while (bytes > budgetBytes && index > 0) {
     index -= 1
-    bytes -= Buffer.byteLength(JSON.stringify(ordered[index]))
+    bytes -= Buffer.byteLength(
+      JSON.stringify(ordered[index], pretty ? null : undefined, pretty ? 2 : undefined) + (index > 1 ? ',' : '')
+    )
   }
   return Object.fromEntries(ordered.slice(0, index))
 }
