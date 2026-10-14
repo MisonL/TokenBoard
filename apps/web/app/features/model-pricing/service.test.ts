@@ -28,7 +28,8 @@ describe('model pricing service', () => {
 
     expect(result).toMatchObject({ status: 'success', modelCount: 3 })
     expect(fetcher).toHaveBeenCalledOnce()
-    expect(db.batch).toHaveBeenCalledTimes(2)
+    // Publish batch + the separate post-publish staging cleanup batch.
+    expect(db.batch).toHaveBeenCalledTimes(3)
     expect(db.sql.join('\n')).toContain('UPDATE model_pricing_sync_state')
     expect(db.sql.join('\n')).toContain("status = 'success'")
   })

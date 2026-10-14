@@ -541,19 +541,7 @@ export async function markModelPricingSyncSuccess(input: {
     // `is_active` flip: rows the source still publishes keep their stored state, so an
     // unchanged catalogue touches no catalogue rows at all. Chunks of 48 keys keep each
     // statement at 98 bound parameters, below the D1 limit of 100.
-    ...deactivationStatements,
-    input.db
-      .prepare(
-        `
-        DELETE FROM model_pricing_staging
-        WHERE generation_id = ?
-          AND EXISTS (
-            SELECT 1 FROM model_pricing_sync_state
-            WHERE id = ? AND status = 'success' AND active_generation = ? AND lock_token IS NULL
-          )
-      `
-      )
-      .bind(input.syncGeneration, STATE_ID, input.syncGeneration)
+    ...deactivationStatements
   ]
   // One `db.batch` is one transaction, so with up to 100 statements this publish is atomic.
   // The split below only engages past that limit, which takes ~4,657 source removals in a
@@ -566,6 +554,28 @@ export async function markModelPricingSyncSuccess(input: {
       ...(await runBatch(input.db, statements.slice(index, index + maxBatchStatements), 'activate pricing generation'))
     )
   }
+  // Staging cleanup runs as its own guarded batch only after every publish batch committed.
+  // Inside the split it could be skipped by a mid-split failure while the state row was
+  // already 'success', stranding this generation's staging rows forever: the next sync's
+  // opener skips any generation matching active_generation.
+  await runBatch(
+    input.db,
+    [
+      input.db
+        .prepare(
+          `
+        DELETE FROM model_pricing_staging
+        WHERE generation_id = ?
+          AND EXISTS (
+            SELECT 1 FROM model_pricing_sync_state
+            WHERE id = ? AND status = 'success' AND active_generation = ? AND lock_token IS NULL
+          )
+      `
+        )
+        .bind(input.syncGeneration, STATE_ID, input.syncGeneration)
+    ],
+    'activate pricing generation'
+  )
   const stateResult = results[0]
   if (Number(stateResult?.meta?.changes ?? 0) !== 1) {
     const [state, stagingCount] = await Promise.all([
