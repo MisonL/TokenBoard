@@ -2,7 +2,7 @@ import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
+import { usageSources, ccusageToolSources, type UsageSource, type UsageSnapshot } from '@tokenboard/usage-core'
 import { errorMessage } from './error-message'
 import { createPricingDiagnosticSink } from './pricing-diagnostics'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
@@ -14,6 +14,7 @@ import {
 import { isUnavailableLanguageServerError } from './providers/antigravity-gui-environment'
 import { collectClaudeCodeUsage } from './providers/claude-code'
 import { collectCodexUsage } from './providers/codex'
+import { collectCcusageToolUsage } from './providers/ccusage-tools'
 import { resolveCodexHomes as resolveConfiguredCodexHomes } from './providers/codex-homes'
 import { collectDeepSeekHarnessUsage } from './providers/deepseek-harness'
 import { collectGrokBuildUsage } from './providers/grok-build'
@@ -74,6 +75,7 @@ type CliDeps = {
   collectPiUsage?: typeof collectPiUsage
   collectGrokBuildUsage?: typeof collectGrokBuildUsage
   collectDeepSeekHarnessUsage?: typeof collectDeepSeekHarnessUsage
+  collectCcusageToolUsage?: typeof collectCcusageToolUsage
   uploadSnapshots: typeof uploadSnapshots
   clearPendingUploadCursors?: typeof clearPendingUploadCursors
   warmHookCursorHighWater?: typeof warmHookCursorHighWater
@@ -92,6 +94,7 @@ const defaultDeps: CliDeps = {
   collectPiUsage,
   collectGrokBuildUsage,
   collectDeepSeekHarnessUsage,
+  collectCcusageToolUsage,
   uploadSnapshots,
   clearPendingUploadCursors,
   warmHookCursorHighWater,
@@ -462,6 +465,20 @@ async function collectAllSnapshots(context: CollectionContext) {
     deps,
     optionalSourceOptions
   )
+  // ccusage tool family: each spawns the pinned ccusage runtime with the tool's own
+  // subcommand and exits 0 with an empty report when the tool is not installed, which
+  // the provider turns into no snapshots rather than an unavailable-source error.
+  for (const toolSource of ccusageToolSources) {
+    await collectOptionalSource(
+      toolSource,
+      () => readCcusageToolCollector(deps)(toolSource, standardContext),
+      snapshots,
+      collectedSources,
+      sourceFailures,
+      deps,
+      optionalSourceOptions
+    )
+  }
   return { snapshots, collectedSources, sourceFailures }
 }
 
@@ -479,6 +496,10 @@ function readGrokBuildCollector(deps: CliDeps) {
 
 function readDeepSeekHarnessCollector(deps: CliDeps) {
   return deps.collectDeepSeekHarnessUsage ?? noopCollector
+}
+
+function readCcusageToolCollector(deps: CliDeps) {
+  return deps.collectCcusageToolUsage ?? collectCcusageToolUsage
 }
 
 async function noopCollector(): Promise<UsageSnapshot[]> {
@@ -519,6 +540,9 @@ function collectSingleSource(source: ConcreteCliSource, context: CollectionConte
   if (source === 'pi') return readPiCollector(deps)(standardContext)
   if (source === 'grok-build') return readGrokBuildCollector(deps)(standardContext)
   if (source === 'deepseek-harness') return readDeepSeekHarnessCollector(deps)(standardContext)
+  if ((ccusageToolSources as readonly string[]).includes(source)) {
+    return readCcusageToolCollector(deps)(source as Exclude<UsageSource, 'claude-code' | 'codex'>, standardContext)
+  }
   const antigravityContext = { timezone, since, stateDir: resolveStateDir(env), cursorScope, stderr: deps.stderr }
   if (source === 'antigravity-cli') return readAntigravityCollector(deps)(antigravityContext)
   if (source === 'antigravity') return readAntigravityGuiCollector(deps)(antigravityContext)

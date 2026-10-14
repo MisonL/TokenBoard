@@ -1222,6 +1222,7 @@ function deps(overrides: Partial<Parameters<typeof runCollectorCli>[2]> = {}) {
     stderr: () => undefined,
     collectClaudeCodeUsage: async () => [],
     collectCodexUsage: async () => [],
+    collectCcusageToolUsage: async () => [],
     uploadSnapshots: async () => ({ upserted: 0, skipped: 0 }),
     ...overrides
   }

@@ -44,6 +44,7 @@ describe('runCollectorCli', () => {
         stderr: () => undefined,
         collectClaudeCodeUsage: async () => [claudeSnapshot],
         collectCodexUsage: async () => [codexSnapshot],
+        collectCcusageToolUsage: async () => [],
         uploadSnapshots: async (_config, snapshots) => uploaded.push(snapshots)
       }
     )
@@ -51,6 +52,97 @@ describe('runCollectorCli', () => {
     expect(result).toBe(0)
     expect(JSON.parse(stdout[0])).toEqual([claudeSnapshot, codexSnapshot])
     expect(uploaded).toEqual([])
+  })
+
+  test('collects a ccusage tool source through the shared provider and reports it as collected', async () => {
+    const stdout: string[] = []
+    const kimiSnapshot: UsageSnapshot = { ...claudeSnapshot, source: 'kimi', model: 'kimi-k3' }
+    const collected: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'kimi'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('kimi-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async () => {
+          throw new Error('kimi-only test must not collect Codex')
+        },
+        collectCcusageToolUsage: async (source) => {
+          collected.push(source)
+          return [kimiSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(collected).toEqual(['kimi'])
+    expect(JSON.parse(stdout[0])).toEqual([kimiSnapshot])
+  })
+
+  test('skips an empty ccusage tool source as collected with no snapshots', async () => {
+    const stdout: string[] = []
+    const collected: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'zcode'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('zcode-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async () => {
+          throw new Error('zcode-only test must not collect Codex')
+        },
+        collectCcusageToolUsage: async (source) => {
+          collected.push(source)
+          return []
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(collected).toEqual(['zcode'])
+    expect(JSON.parse(stdout[0])).toEqual([])
+  })
+
+  test('reports a ccusage tool failure as a source failure instead of crashing the run', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'amp'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => {
+          throw new Error('amp-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async () => {
+          throw new Error('amp-only test must not collect Codex')
+        },
+        collectCcusageToolUsage: async () => {
+          throw new Error('ccusage amp command failed')
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+    expect(stderr.join('\n')).toContain('amp')
   })
 
   test('passes explicit date bounds to the Codex provider', async () => {
@@ -132,6 +224,7 @@ describe('runCollectorCli', () => {
           received.push({ source: 'codex', until: options?.until })
           return [codexSnapshot]
         },
+        collectCcusageToolUsage: async () => [],
         uploadSnapshots: async () => {
           throw new Error('preview must not upload')
         }
@@ -158,6 +251,9 @@ describe('runCollectorCli', () => {
           stderr: () => undefined,
           collectClaudeCodeUsage: async () => [claudeSnapshot],
           collectCodexUsage: async () => [codexSnapshot],
+          // A per-source run only invokes this for the ccusage tool family; the real
+          // default would spawn the pinned ccusage binary inside the test.
+          collectCcusageToolUsage: async () => [],
           uploadSnapshots: async () => {
             throw new Error('preview must not upload')
           }
@@ -419,6 +515,7 @@ describe('runCollectorCli', () => {
         collectCodexUsage: async () => {
           throw new Error('Codex collector should not be entered with invalid roots')
         },
+        collectCcusageToolUsage: async () => [],
         uploadSnapshots: async () => {
           throw new Error('preview must not upload')
         }
@@ -1274,6 +1371,7 @@ describe('runCollectorCli', () => {
           throw new Error('No valid Claude data directories found')
         },
         collectCodexUsage: async () => [codexSnapshot],
+        collectCcusageToolUsage: async () => [],
         uploadSnapshots: async (_config, snapshots) => {
           uploaded.push(snapshots)
           return { upserted: snapshots.length }
@@ -1305,6 +1403,7 @@ describe('runCollectorCli', () => {
           throw new Error('No valid Claude data directories found')
         },
         collectCodexUsage: async () => [codexSnapshot],
+        collectCcusageToolUsage: async () => [],
         uploadSnapshots: async (_config, snapshots) => {
           uploaded.push(snapshots)
           return { upserted: snapshots.length }
