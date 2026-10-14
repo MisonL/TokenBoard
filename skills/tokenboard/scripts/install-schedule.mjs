@@ -90,6 +90,10 @@ function installWindows(runtime, scheduleTimes) {
     scheduleTimes
   })) {
     runOrThrow(runtime, 'schtasks.exe', task.args)
+    // schtasks /Create registers tasks that are skipped silently when the machine is
+    // asleep or off at the scheduled time; the settings patch restores catch-up parity
+    // with launchd and systemd's Persistent=true.
+    runOrThrow(runtime, 'powershell.exe', task.startWhenAvailableArgs)
   }
   runOrThrow(runtime, 'powershell.exe', buildWindowsStaleTaskCleanupArgs(scheduleTimes))
   return { platform: 'win32', scheduleTimes }

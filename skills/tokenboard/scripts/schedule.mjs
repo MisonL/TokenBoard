@@ -17,17 +17,10 @@ export function buildWindowsTaskArgs({
   taskName = windowsTaskName(dailyScheduleTimes[0]),
   startTime = dailyScheduleTimes[0]
 }) {
-  const command =
-    taskCommand ||
-    buildWindowsTaskCommand({
-      nodePath,
-      scriptPath,
-      packageManager,
-      pathEnv,
-      homeDir,
-      configDir
-    })
-  return ['/Create', '/F', '/SC', 'DAILY', '/TN', taskName, '/TR', command, '/ST', startTime]
+  if (!taskCommand) {
+    throw new Error('A Windows task requires the wrapper .cmd path as taskCommand')
+  }
+  return ['/Create', '/F', '/SC', 'DAILY', '/TN', taskName, '/TR', taskCommand, '/ST', startTime]
 }
 
 export function buildWindowsTaskDefinitions({
@@ -40,20 +33,35 @@ export function buildWindowsTaskDefinitions({
   taskCommand,
   scheduleTimes = dailyScheduleTimes
 }) {
-  return scheduleTimes.map((startTime) => ({
-    name: windowsTaskName(startTime),
-    args: buildWindowsTaskArgs({
-      nodePath,
-      scriptPath,
-      packageManager,
-      pathEnv,
-      homeDir,
-      configDir,
-      taskCommand,
-      taskName: windowsTaskName(startTime),
-      startTime
-    })
-  }))
+  return scheduleTimes.map((startTime) => {
+    const taskName = windowsTaskName(startTime)
+    return {
+      name: taskName,
+      args: buildWindowsTaskArgs({
+        nodePath,
+        scriptPath,
+        packageManager,
+        pathEnv,
+        homeDir,
+        configDir,
+        taskCommand,
+        taskName,
+        startTime
+      }),
+      startWhenAvailableArgs: buildWindowsStartWhenAvailableArgs(taskName)
+    }
+  })
+}
+
+export function buildWindowsStartWhenAvailableArgs(taskName) {
+  // schtasks /Create cannot express StartWhenAvailable, so a run missed while asleep or
+  // powered off is silently skipped: the only one of the three schedulers without catch-up.
+  // The PowerShell settings patch adds it right after each task is created.
+  const script = [
+    '$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable',
+    `Set-ScheduledTask -TaskName '${taskName}' -Settings $settings`
+  ].join('; ')
+  return ['-NoProfile', '-NonInteractive', '-Command', script]
 }
 
 export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, pathEnv, homeDir, configDir }) {
@@ -74,23 +82,6 @@ export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, p
     syncCommand,
     ''
   ].join('\r\n')
-}
-
-export function buildWindowsTaskCommand({ nodePath, scriptPath, packageManager, pathEnv, homeDir, configDir }) {
-  const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter: ';' })
-  const stateDir = configDir || tokenboardDirForDelimiter(homeDir, ';')
-  const logDir = joinForDelimiter(stateDir, 'logs', '', ';').replace(/[\\/]$/, '')
-  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --scheduled`
-  const command = [
-    `set "TOKENBOARD_CONFIG_DIR=${escapeWindowsCmdValue(stateDir)}"`,
-    `set "TOKENBOARD_PACKAGE_MANAGER=${escapeWindowsCmdValue(packageManager)}"`,
-    'set "TOKENBOARD_SCHEDULED_SYNC=1"',
-    `set "TOKENBOARD_LOG_DIR=${escapeWindowsCmdValue(logDir)}"`,
-    `set "PATH=${escapeWindowsCmdValue(normalizedPath)}"`,
-    syncCommand
-  ].join(' && ')
-
-  return `cmd.exe /d /s /c ${quoteWindowsArg(command)}`
 }
 
 export function buildMacLaunchAgentPlist({

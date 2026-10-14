@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildLinuxSystemdUnits,
+  buildWindowsStartWhenAvailableArgs,
   buildMacLaunchAgentPlist,
   buildWindowsTaskArgs,
   buildWindowsTaskScript,
@@ -14,25 +15,30 @@ import {
 test('builds the Windows scheduled task shape with time-suffixed names', () => {
   const args = buildWindowsTaskArgs({
     nodePath: 'C:\\Program Files\\nodejs\\node.exe',
-    scriptPath: 'C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs'
+    scriptPath: 'C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs',
+    taskName: 'TokenBoardDailySync0900',
+    taskCommand: '"C:\\tokenboard-daily-sync.cmd"'
   })
 
   assert.deepEqual(args.slice(0, 7), ['/Create', '/F', '/SC', 'DAILY', '/TN', 'TokenBoardDailySync0900', '/TR'])
-  assert.match(args[7], /cmd\.exe \/d \/s \/c/)
-  assert.match(args[7], /TOKENBOARD_PACKAGE_MANAGER=pnpm/)
-  assert.match(args[7], /TOKENBOARD_SCHEDULED_SYNC=1/)
-  assert.doesNotMatch(args[7], /""TOKENBOARD_/)
-  assert.match(args[7], /--mode sync --scheduled/)
-  // The schedule must not pin a source: sync.mjs resolves it at run time from the config
-  // `source` field, so editing that field retargets scheduled syncs without reinstalling.
-  assert.doesNotMatch(args[7], /--source/)
+  assert.match(args[7], /tokenboard-daily-sync\.cmd/)
   assert.deepEqual(args.slice(8), ['/ST', '09:00'])
+})
+
+test('builds a settings patch that makes a missed Windows task run at the next wake', () => {
+  const args = buildWindowsStartWhenAvailableArgs('TokenBoardDailySync0900')
+
+  assert.equal(args[0], '-NoProfile')
+  assert.match(args.join(' '), /Set-ScheduledTask/)
+  assert.match(args.join(' '), /Settings.+StartWhenAvailable.+i\$true|StartWhenAvailable/s)
+  assert.match(args.join(' '), /TokenBoardDailySync0900/)
 })
 
 test('builds Windows scheduled task definitions for every daily sync time', () => {
   const tasks = buildWindowsTaskDefinitions({
     nodePath: 'C:\\Program Files\\nodejs\\node.exe',
-    scriptPath: 'C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs'
+    scriptPath: 'C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs',
+    taskCommand: '"C:\\tokenboard-daily-sync.cmd"'
   })
 
   assert.deepEqual(
@@ -184,6 +190,7 @@ test('builds schedules with custom daily sync times', () => {
   const windowsTasks = buildWindowsTaskDefinitions({
     nodePath: 'C:\\Program Files\\nodejs\\node.exe',
     scriptPath: 'C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs',
+    taskCommand: '"C:\\tokenboard-daily-sync.cmd"',
     scheduleTimes
   })
   const macPlist = buildMacLaunchAgentPlist({
@@ -290,19 +297,10 @@ test('Windows scheduled commands escape percent specifiers', () => {
     homeDir: 'C:\\Users\\tokenboard',
     configDir: 'D:\\Token%Board'
   })
-  const args = buildWindowsTaskArgs({
-    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
-    scriptPath: 'C:\\TokenBoard\\sync.mjs',
-    packageManager: 'pnpm%test',
-    pathEnv: 'C:\\Windows\\System32;C:\\Tools%Bin',
-    homeDir: 'C:\\Users\\tokenboard',
-    configDir: 'D:\\Token%Board'
-  })
 
   assert.match(script, /TOKENBOARD_CONFIG_DIR=D:\\Token%%Board/)
   assert.match(script, /TOKENBOARD_PACKAGE_MANAGER=pnpm%%test/)
   assert.match(script, /PATH=.*C:\\Tools%%Bin/)
-  assert.match(args[args.indexOf('/TR') + 1], /TOKENBOARD_CONFIG_DIR=D:\\Token%%Board/)
 })
 
 test('normalizePathEnv prepends missing local and node bin directories once', () => {
@@ -335,30 +333,6 @@ test('normalizePathEnv preserves Windows PATH separators and drive letters', () 
     }),
     'C:\\Users\\tokenboard\\.bun\\bin;C:\\Users\\tokenboard\\.local\\bin;C:\\Program Files\\nodejs;C:\\Windows\\System32'
   )
-})
-
-test('builds Windows scheduled task command with explicit runtime environment', () => {
-  const args = buildWindowsTaskArgs({
-    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
-    scriptPath: 'C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync.mjs',
-    packageManager: 'bun',
-    pathEnv: 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
-    homeDir: 'C:\\Users\\tokenboard'
-  })
-  const taskCommand = args[args.indexOf('/TR') + 1]
-
-  assert.match(taskCommand, /^cmd\.exe \/d \/s \/c /)
-  assert.doesNotMatch(taskCommand, /""TOKENBOARD_/)
-  assert.match(taskCommand, /TOKENBOARD_PACKAGE_MANAGER=bun/)
-  assert.match(taskCommand, /TOKENBOARD_SCHEDULED_SYNC=1/)
-  assert.match(taskCommand, /TOKENBOARD_LOG_DIR=C:\\Users\\tokenboard\\.tokenboard\\logs/)
-  assert.match(
-    taskCommand,
-    /PATH=C:\\Users\\tokenboard\\.bun\\bin;C:\\Users\\tokenboard\\.local\\bin;C:\\Program Files\\nodejs;C:\\Windows\\System32/
-  )
-  assert.match(taskCommand, /C:\\Program Files\\nodejs\\node\.exe/)
-  assert.match(taskCommand, /C:\\Users\\tokenboard\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\sync\.mjs/)
-  assert.match(taskCommand, /--mode sync --scheduled/)
 })
 
 test('builds Windows scheduled task args with a short wrapper command', () => {

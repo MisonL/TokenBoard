@@ -159,10 +159,14 @@ test('creates Windows scheduled tasks through an isolated schtasks harness', () 
       /schtasks\.exe \/Create \/F \/SC DAILY \/TN TokenBoardDailySync0815 \/TR ".+tokenboard-daily-sync\.cmd" \/ST 08:15/
     )
     assert.ok(calls[1].length < 261)
-    assert.match(calls[2], /TokenBoardDailySync2145/)
-    assert.match(calls[2], /tokenboard-daily-sync\.cmd" \/ST 21:45/)
+    // Each created task gets the StartWhenAvailable patch so runs missed while asleep
+    // still fire at the next wake, matching launchd and systemd Persistent=true.
+    assert.match(calls[2], /Set-ScheduledTask -TaskName 'TokenBoardDailySync0815'/)
+    assert.match(calls[2], /StartWhenAvailable/)
+    assert.match(calls[3], /schtasks\.exe \/Create .*TokenBoardDailySync2145/)
+    assert.match(calls[4], /Set-ScheduledTask -TaskName 'TokenBoardDailySync2145'/)
     assert.equal(
-      calls[3],
+      calls[5],
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $current = @('TokenBoardDailySync0815','TokenBoardDailySync2145'); Get-ScheduledTask -TaskPath '\\' | Where-Object { (($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' })) -and $current -notcontains $_.TaskName } | Unregister-ScheduledTask -Confirm:$false"
     )
     const wrapperPath = join(harness.options.configDir, 'tokenboard-daily-sync.cmd')
