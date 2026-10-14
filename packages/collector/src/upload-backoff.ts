@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { renameAtomic } from './rename-atomic'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 
@@ -76,7 +77,7 @@ async function writeState(stateDir: string, state: UploadBackoffState) {
   const tempPath = join(stateDir, `${fileName}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`)
   try {
     await writeFile(tempPath, JSON.stringify(state, null, 2), { mode: 0o600 })
-    await rename(tempPath, join(stateDir, fileName))
+    await renameAtomic(tempPath, join(stateDir, fileName))
   } catch (error) {
     await rm(tempPath, { force: true })
     throw error

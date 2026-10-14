@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, rm, writeFile } from 'node:fs/promises'
+import { renameAtomic } from '../rename-atomic'
 import { dirname, join } from 'node:path'
 import { assertValidIsoCalendarDate } from '../iso-calendar-date'
 import { assertCursorWriteOwnership, withCursorLock } from './session-cursor-store'
@@ -410,7 +411,7 @@ async function writeCache(cachePath: string, cache: CacheState) {
   try {
     await writeFile(tempPath, serialized, { mode: 0o600 })
     await assertCursorWriteOwnership(cachePath)
-    await rename(tempPath, cachePath)
+    await renameAtomic(tempPath, cachePath)
   } catch (error) {
     await rm(tempPath, { force: true })
     throw error

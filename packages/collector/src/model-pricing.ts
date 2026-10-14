@@ -1,4 +1,5 @@
-import { readFile, rename, mkdir, rm, writeFile } from 'node:fs/promises'
+import { readFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { renameAtomic } from './rename-atomic'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -478,7 +479,7 @@ async function writeJsonAtomically(path: string, value: unknown, mode = 0o600) {
   const tempPath = `${path}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`
   try {
     await writeFile(tempPath, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode })
-    await rename(tempPath, path)
+    await renameAtomic(tempPath, path)
   } catch (error) {
     await rm(tempPath, { force: true })
     throw error

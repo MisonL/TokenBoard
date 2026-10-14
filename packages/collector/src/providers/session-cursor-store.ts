@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { link, mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { renameAtomic } from '../rename-atomic'
 import { dirname } from 'node:path'
 import { usageSources, type UsageSnapshot, type UsageSource } from '@tokenboard/usage-core'
 import { isValidAntigravityFileScanState, type AntigravityFileScanState } from './antigravity-file-scan'
@@ -89,7 +90,7 @@ export async function writeCursor(cursorPath: string, cursor: CursorState) {
   try {
     await writeFile(tempPath, `${JSON.stringify(cursor, null, 2)}\n`, { mode: 0o600 })
     await assertCursorWriteOwnership(cursorPath)
-    await rename(tempPath, cursorPath)
+    await renameAtomic(tempPath, cursorPath)
   } catch (error) {
     await rm(tempPath, { force: true })
     throw error
