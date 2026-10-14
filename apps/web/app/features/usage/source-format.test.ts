@@ -37,6 +37,30 @@ describe('source-format', () => {
     expect(formatSource('unknown-tool')).toBe('unknown-tool')
   })
 
+  // ccusage subcommand names are upstream brand spellings; the display label may differ
+  // (e.g. amp's official name), but the raw source string is the safe fallback.
+  test('formats the ccusage tool sources', () => {
+    expect(formatSource('amp')).toBe('Amp')
+    expect(formatSource('droid')).toBe('Droid')
+    expect(formatSource('codebuff')).toBe('Codebuff')
+    expect(formatSource('hermes')).toBe('Hermes')
+    expect(formatSource('goose')).toBe('Goose')
+    expect(formatSource('kilo')).toBe('Kilo')
+    expect(formatSource('copilot')).toBe('GitHub Copilot CLI')
+    expect(formatSource('gemini-cli')).toBe('Gemini CLI')
+    expect(formatSource('kimi')).toBe('Kimi')
+    expect(formatSource('qwen')).toBe('Qwen Code')
+    expect(formatSource('openclaw')).toBe('OpenClaw')
+    expect(formatSource('zcode')).toBe('ZCode')
+  })
+
+  test('does not mark ccusage tool sources as cost-unavailable', () => {
+    for (const source of ['amp', 'droid', 'codebuff', 'hermes', 'goose', 'kilo', 'copilot', 'gemini-cli', 'kimi', 'qwen', 'openclaw', 'zcode']) {
+      expect(formatSourceCostNote(source)).toBe('')
+      expect(hasUnavailableCostSource([{ source }])).toBe(false)
+    }
+  })
+
   test('treats Grok Build and DeepSeek Harness cost as unavailable', () => {
     expect(hasUnavailableCostSource([{ source: 'grok-build' }])).toBe(true)
     expect(hasUnavailableCostSource([{ source: 'deepseek-harness' }])).toBe(true)
