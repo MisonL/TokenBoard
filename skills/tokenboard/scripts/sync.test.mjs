@@ -1053,7 +1053,10 @@ test('hook timeout kills a streamed run and reports itself', async () => {
     { stdoutFd: 11, stderrFd: 12 },
     { spawn, write: () => {}, hookTimeoutMs: 10 }
   )
-  assert.equal(spawned[0].timeoutMs, 10)
+  // The bound is enforced by the parent-side timer (which kills the child), not by spawn
+  // options — the same contract the option-capturing test above pins down.
+  assert.equal('timeoutMs' in spawned[0], false)
+  assert.equal('timeout' in spawned[0], false)
   assert.equal(result.status, 1)
   assert.equal(result.error.code, 'ETIMEDOUT')
 })
