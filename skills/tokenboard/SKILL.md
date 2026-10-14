@@ -108,7 +108,9 @@ starting repeated immediate reconciliations.
 The hook-only cooldown defaults to 15 minutes to avoid repeatedly reconciling a large active Codex
 history. Set `TOKENBOARD_NOTIFY_COOLDOWN_MS` to an integer number of milliseconds from `60000`
 through `3600000` to tune the maximum delay after the most recent successful TokenBoard reconciliation when
-no shared sync lock is contended. The hook handler persists its signal before the background notifier
+no shared sync lock is contended; hook hosts cannot inject that env var reliably, so the same
+range can be configured durably as the `notifyCooldownMs` key in the TokenBoard config file
+(env wins when both are set). The hook handler persists its signal before the background notifier
 validates this setting; shared lock timeouts still schedule a one-minute retry.
 
 When a scheduled sync cannot acquire that lock within its timeout, it writes a private deferred

@@ -26,7 +26,7 @@ export function runNotify(options = {}) {
   const trigger = { kind: 'notify', source }
   return coordinatedSync(trigger, {
     stateDir,
-    cooldownMs: readNotifyCooldownMs(options.cooldownMs, env),
+    cooldownMs: readNotifyCooldownMs(options.cooldownMs, env, options.configCooldownMs),
     version: options.version || 'unknown',
     now: options.now,
     mkdir: options.mkdir,
@@ -225,6 +225,7 @@ export async function runNotifyCli(options = {}) {
           configDir: configuredDir,
           stateDir: env.TOKENBOARD_STATE_DIR || configuredDir,
           env,
+          configCooldownMs: config.notifyCooldownMs,
           trailingProcess: Boolean(trailingLockPath) || delayMs > 0,
           version: config.updatedAt || config.createdAt || 'unknown'
         })
@@ -259,7 +260,10 @@ export async function runNotifyCli(options = {}) {
   return exitCode
 }
 
-export function readNotifyCooldownMs(explicitValue, env = process.env) {
+// Cooldown precedence: explicit (test injection) > env (hook hosts cannot set it reliably)
+// > config.json `notifyCooldownMs` (what an operator can actually set) > default. All three
+// configured layers share the same format and range validation.
+export function readNotifyCooldownMs(explicitValue, env = process.env, configValue) {
   if (explicitValue !== undefined) {
     if (!Number.isSafeInteger(explicitValue) || explicitValue < 0) {
       throw new Error('TokenBoard notify cooldown must be a nonnegative integer')
@@ -268,16 +272,28 @@ export function readNotifyCooldownMs(explicitValue, env = process.env) {
   }
 
   const configuredValue = env.TOKENBOARD_NOTIFY_COOLDOWN_MS
-  if (configuredValue === undefined || configuredValue === '') return defaultNotifyCooldownMs
-  if (!/^[1-9][0-9]*$/.test(configuredValue)) {
-    throw new Error('TOKENBOARD_NOTIFY_COOLDOWN_MS must be an integer number of milliseconds')
+  if (configuredValue !== undefined && configuredValue !== '') {
+    return parseCooldownMs(configuredValue, 'TOKENBOARD_NOTIFY_COOLDOWN_MS must be')
   }
+  if (configValue !== undefined && configValue !== '') {
+    return parseCooldownMs(configValue, 'config notifyCooldownMs must be')
+  }
+  return defaultNotifyCooldownMs
+}
 
-  const cooldownMs = Number(configuredValue)
+function parseCooldownMs(value, errorPrefix) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(`${errorPrefix} an integer number of milliseconds`)
+    }
+  } else {
+    if (!/^[1-9][0-9]*$/.test(value)) {
+      throw new Error(`${errorPrefix} an integer number of milliseconds`)
+    }
+  }
+  const cooldownMs = Number(value)
   if (!Number.isSafeInteger(cooldownMs) || cooldownMs < minNotifyCooldownMs || cooldownMs > maxNotifyCooldownMs) {
-    throw new Error(
-      `TOKENBOARD_NOTIFY_COOLDOWN_MS must be between ${minNotifyCooldownMs} and ${maxNotifyCooldownMs} milliseconds`
-    )
+    throw new Error(`${errorPrefix} between ${minNotifyCooldownMs} and ${maxNotifyCooldownMs} milliseconds`)
   }
   return cooldownMs
 }

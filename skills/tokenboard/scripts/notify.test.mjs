@@ -1249,3 +1249,17 @@ test('all-noise stderr keeps the plain message and parks everything in diagnosti
     }
   )
 })
+
+test('config notifyCooldownMs applies when env is unset', () => {
+  assert.equal(readNotifyCooldownMs(undefined, {}, 1_800_000), 1_800_000)
+})
+
+test('env overrides config; explicit overrides both', () => {
+  assert.equal(readNotifyCooldownMs(undefined, { TOKENBOARD_NOTIFY_COOLDOWN_MS: '900000' }, 1_800_000), 900_000)
+  assert.equal(readNotifyCooldownMs(60_000, { TOKENBOARD_NOTIFY_COOLDOWN_MS: '900000' }, 1_800_000), 60_000)
+})
+
+test('invalid config value throws the same range error naming the config key', () => {
+  assert.throws(() => readNotifyCooldownMs(undefined, {}, 100), /notifyCooldownMs must be between/)
+  assert.throws(() => readNotifyCooldownMs(undefined, {}, 'soon'), /notifyCooldownMs must be an integer/)
+})
