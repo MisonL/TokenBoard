@@ -68,12 +68,54 @@ test('installs Linux user systemd timer through an isolated systemd harness', ()
     assert.match(timer, /OnCalendar=21:45/)
     assert.doesNotMatch(timer, /OnCalendar=09:00/)
     assert.deepEqual(harness.calls.map(commandLine), [
-      'systemctl --user --version',
+      'systemctl --user is-system-running',
       'systemctl --user daemon-reload',
       'systemctl --user enable --now tokenboard-daily-sync.timer',
       'loginctl --version',
       'loginctl enable-linger tokenboard-test'
     ])
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('Linux install fails with a diagnostic message when the user systemd bus is not running', () => {
+  const harness = createHarness('linux')
+  try {
+    harness.options.spawn = (command, args) => {
+      harness.calls.push({ command, args })
+      if (args.join(' ') === '--user is-system-running') return { status: 1 }
+      return { status: 0 }
+    }
+    assert.throws(
+      () => installSchedule({ ...harness.options, argv: ['--schedule-times', '08:15'] }),
+      /not booted with systemd|user systemd bus/i
+    )
+    // The install must stop before writing units or touching the timer.
+    assert.ok(!harness.calls.some((call) => call.args.includes('daemon-reload')))
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('a failed enable-linger logs a warning instead of failing the install', () => {
+  const harness = createHarness('linux')
+  const logs = []
+  try {
+    harness.options.log = (line) => logs.push(line)
+    harness.options.spawn = (command, args) => {
+      harness.calls.push({ command, args })
+      if (args[0] === 'enable-linger') return { status: 1, stderr: 'not authorized' }
+      return { status: 0 }
+    }
+
+    installSchedule({ ...harness.options, argv: ['--schedule-times', '08:15'] })
+
+    assert.equal(harness.calls[harness.calls.length - 1].args[0], 'enable-linger')
+    assert.ok(
+      logs.some((line) => /linger/i.test(line) && /without linger|logged in/i.test(line)),
+      `expected a linger warning, got: ${logs.join(' | ')}`
+    )
   } finally {
     harness.cleanup()
   }
@@ -91,7 +133,7 @@ test('installs Linux timer when USER is not exported', () => {
     })
 
     assert.deepEqual(harness.calls.map(commandLine), [
-      'systemctl --user --version',
+      'systemctl --user is-system-running',
       'systemctl --user daemon-reload',
       'systemctl --user enable --now tokenboard-daily-sync.timer',
       'loginctl --version',

@@ -170,16 +170,28 @@ function requireCommand(runtime, command) {
 }
 
 function requireUserSystemd(runtime) {
-  const result = spawnCommand(runtime, 'systemctl', ['--user', '--version'], { stdio: 'ignore' })
+  // `systemctl --version` only prints the client version and succeeds even where the user
+  // systemd bus is not running (WSL without systemd, containers), deferring the failure to
+  // an opaque daemon-reload error. `is-system-running` actually probes the bus; a zero exit
+  // means degraded or running, both of which schedule user timers.
+  const result = spawnCommand(runtime, 'systemctl', ['--user', 'is-system-running'], { stdio: 'ignore' })
   if (result.status !== 0) {
-    throw new Error('User systemd is not available for automatic TokenBoard scheduling.')
+    throw new Error(
+      'The user systemd bus is not running (for example WSL without systemd or a container); ' +
+        'automatic TokenBoard scheduling needs a systemd user session.'
+    )
   }
 }
 
 function enableLinger(runtime) {
   requireCommand(runtime, 'loginctl')
   const user = resolveLingerUser(runtime)
-  runOrThrow(runtime, 'loginctl', user ? ['enable-linger', user] : ['enable-linger'])
+  const result = spawnCommand(runtime, 'loginctl', user ? ['enable-linger', user] : ['enable-linger'])
+  if (result.status !== 0) {
+    // Without linger the timer only fires while a session is active. That is still a
+    // working install for an interactive machine, so warn instead of failing the install.
+    runtime.log('TokenBoard could not enable linger for this user; the sync timer only runs while you are logged in.')
+  }
 }
 
 function resolveLingerUser(runtime) {
