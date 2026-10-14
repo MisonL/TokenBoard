@@ -61,10 +61,11 @@ export function formatUsageMetricUsdWithCostAvailability(
 ): UsageMetricValue {
   const metric = formatUsageMetricUsd(value)
   if (costAvailable) return metric
-  const detailNotice = notice || defaultCostUnavailableNotice
+  // formatUsageMetricUsd carries no detail anymore (the magnitude line is gone), so the
+  // unavailable-cost notice is always the sole detail.
   return {
     ...metric,
-    detail: metric.detail ? `${metric.detail}, ${detailNotice}` : detailNotice
+    detail: notice || defaultCostUnavailableNotice
   }
 }
 
