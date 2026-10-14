@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import * as attributionCache from './codex-session-attribution-cache'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { dirname, join, resolve } from 'node:path'
+import { describe, expect, test, vi } from 'vitest'
 import { maxSnapshotCostUsd } from '@tokenboard/usage-core'
 import { maxCodexChildSessionLineBytes } from './codex-subagent-usage-child'
 import {
@@ -11,6 +12,8 @@ import {
   collectCodexContextPricingCostsFromFiles,
   collectCodexContextPricingCostsFromHomes,
   collectCodexContextPricingUsagesFromFiles,
+  createCodexSessionFingerprintMemo,
+  discoverCodexContextPricingFiles,
   isUnresolvedCodexContextPricingSnapshot,
   maxCodexContextPricingFiles,
   normalizeModelId,
@@ -2016,3 +2019,78 @@ async function writeJsonl(filePath: string, rows: unknown[]) {
   await mkdir(dirname(filePath), { recursive: true })
   await writeFile(filePath, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`)
 }
+
+describe('Codex session fingerprint memo', () => {
+  test('computes each file once across repeated discovery in one collect', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-fp-memo-'))
+    try {
+      const sessionsDir = join(stateDir, 'sessions')
+      await mkdir(sessionsDir, { recursive: true })
+      const sessionPath = join(sessionsDir, 'session.jsonl')
+      await writeFile(sessionPath, '{"type":"event_msg"}\n')
+      // Count real fingerprint computations, not memo lookups: the memo may be consulted
+      // once per discovery while the underlying file is fingerprinted only once.
+      const spy = vi.spyOn(attributionCache, 'fingerprintCodexSessionFile')
+      const memo = createCodexSessionFingerprintMemo()
+      const first = await discoverCodexContextPricingFiles({
+        codexHomes: [stateDir],
+        captureFingerprints: true,
+        fingerprintMemo: memo
+      })
+      const second = await discoverCodexContextPricingFiles({
+        codexHomes: [stateDir],
+        captureFingerprints: true,
+        fingerprintMemo: memo
+      })
+      expect(spy).toHaveBeenCalledTimes(1)
+      expect(second.fingerprints.get(resolve(first.filePaths[0]))).toBeDefined()
+      spy.mockRestore()
+
+      // Control: the same two discoveries without a memo do compute twice, so the
+      // assertion above is actually testing memoization and not vacuous.
+      const control = vi.spyOn(attributionCache, 'fingerprintCodexSessionFile')
+      await discoverCodexContextPricingFiles({ codexHomes: [stateDir], captureFingerprints: true })
+      await discoverCodexContextPricingFiles({ codexHomes: [stateDir], captureFingerprints: true })
+      expect(control).toHaveBeenCalledTimes(2)
+      control.mockRestore()
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a changed file recomputes through the memo stat identity check', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-fp-memo-change-'))
+    try {
+      const filePath = join(stateDir, 'session.jsonl')
+      await writeFile(filePath, '{"type":"event_msg"}\n')
+      const memo = createCodexSessionFingerprintMemo()
+      const before = await memo.get(filePath)
+      await writeFile(filePath, '{"type":"event_msg"}\n{"type":"event_msg"}\n')
+      const after = await memo.get(filePath)
+      expect(after.size).not.toBe(before.size)
+      expect(after.tailSha256).not.toBe(before.tailSha256)
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a fresh memo recomputes — memo state never crosses collects', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-fp-memo-fresh-'))
+    try {
+      const sessionsDir = join(stateDir, 'sessions')
+      await mkdir(sessionsDir, { recursive: true })
+      const filePath = join(sessionsDir, 'session.jsonl')
+      await writeFile(filePath, '{"type":"event_msg"}\n')
+      const first = createCodexSessionFingerprintMemo()
+      await first.get(filePath)
+      const spy = vi.spyOn(attributionCache, 'fingerprintCodexSessionFile')
+      const second = createCodexSessionFingerprintMemo()
+      await discoverCodexContextPricingFiles({ codexHomes: [stateDir], captureFingerprints: true, fingerprintMemo: second })
+      // A brand-new memo recomputes: memo state must not leak across collects.
+      expect(spy).toHaveBeenCalledTimes(1)
+      spy.mockRestore()
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+})

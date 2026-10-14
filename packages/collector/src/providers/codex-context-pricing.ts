@@ -1,3 +1,4 @@
+import { lstat } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { maxSnapshotCostUsd } from '@tokenboard/usage-core'
@@ -73,6 +74,49 @@ const oversizedContextPricingRowPattern =
 
 export type CodexContextPricingModelHints = ReadonlyMap<string, ReadonlySet<string>>
 export type CodexContextPricingFileModelHints = ReadonlyMap<string, string>
+
+// Memoizes fingerprint computation within a single collect: the same file set is
+// fingerprinted up to three times per run (initial discovery plus two inventory-stability
+// assertions), and each fingerprint opens the file and hashes its tail. A memo hit still
+// verifies the stat identity (size/mtime/ctime/ino) first, so a file changed between passes
+// recomputes and the stability assertion keeps its teeth. The memo lives for one collect
+// only — cross-run reuse would weaken the changed-while-collecting detection.
+export type CodexSessionFingerprintMemo = {
+  get: (filePath: string) => Promise<CodexSessionFileFingerprint>
+}
+
+export function createCodexSessionFingerprintMemo(): CodexSessionFingerprintMemo {
+  const memo = new Map<string, CodexSessionFileFingerprint>()
+  return {
+    async get(filePath: string) {
+      const cached = memo.get(filePath)
+      if (cached) {
+        try {
+          const current = await lstat(filePath)
+          if (sameStatIdentity(current, cached)) return cached
+        } catch {
+          // fall through to recompute; a vanished file surfaces the same error it would
+          // have without the memo.
+        }
+      }
+      const fingerprint = await fingerprintCodexSessionFile(filePath)
+      memo.set(filePath, fingerprint)
+      return fingerprint
+    }
+  }
+}
+
+function sameStatIdentity(
+  current: { size: number; mtimeMs: number; ctimeMs: number; ino: number },
+  fingerprint: CodexSessionFileFingerprint
+) {
+  return (
+    current.size === fingerprint.size &&
+    current.mtimeMs === fingerprint.mtimeMs &&
+    current.ctimeMs === fingerprint.ctimeMs &&
+    current.ino === fingerprint.ino
+  )
+}
 
 export type CodexContextPricingFileInventory = {
   filePaths: string[]
@@ -538,6 +582,7 @@ export async function discoverCodexContextPricingFiles(input: {
   codexSymlinkRoots?: readonly string[]
   captureFingerprints?: boolean
   allowFileOverflow?: boolean
+  fingerprintMemo?: CodexSessionFingerprintMemo
 }): Promise<CodexContextPricingFileInventory> {
   const fileCandidates = new Map<
     string,
@@ -592,7 +637,8 @@ export async function discoverCodexContextPricingFiles(input: {
   const fingerprints = new Map<string, CodexSessionFileFingerprint>()
   if (input.captureFingerprints && !overflow) {
     for (const filePath of filePaths) {
-      fingerprints.set(resolve(filePath), await fingerprintCodexSessionFile(filePath))
+      const fingerprint = await (input.fingerprintMemo?.get(resolve(filePath)) ?? fingerprintCodexSessionFile(filePath))
+      fingerprints.set(resolve(filePath), fingerprint)
     }
   }
   for (const candidate of fileCandidates.values()) {

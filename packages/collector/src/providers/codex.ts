@@ -32,6 +32,7 @@ import {
   applyCodexContextPricingCosts,
   applyCodexContextPricingUsageModelHints,
   collectCodexContextPricingUsagesFromFiles,
+  createCodexSessionFingerprintMemo,
   discoverCodexContextPricingFiles,
   isCodexContextPricingModel,
   isUnresolvedCodexContextPricingSnapshot,
@@ -452,6 +453,7 @@ async function collectCodexCcusageRangeAttempt(input: {
   codexHomes?: string[]
   codexSymlinkRoots?: readonly string[]
 }) {
+  const fingerprintMemo = createCodexSessionFingerprintMemo()
   let inventory: CodexContextPricingFileInventory | null = null
   let inventoryError: unknown = null
   try {
@@ -459,7 +461,8 @@ async function collectCodexCcusageRangeAttempt(input: {
       codexHomes: input.codexHomes ?? resolveCodexHomesFromOptions(input.options),
       codexSymlinkRoots: input.codexSymlinkRoots,
       captureFingerprints: true,
-      allowFileOverflow: true
+      allowFileOverflow: true,
+      fingerprintMemo
     })
   } catch (error) {
     if (isRejectedSessionRootSymlink(error)) inventoryError = error
@@ -548,7 +551,8 @@ async function collectCodexCcusageRangeAttempt(input: {
       codexHomes: input.codexHomes ?? resolveCodexHomesFromOptions(input.options),
       codexSymlinkRoots: input.codexSymlinkRoots,
       captureFingerprints: true,
-      allowFileOverflow: true
+      allowFileOverflow: true,
+      fingerprintMemo
     })
   )
   const rawUsages = await collectCodexContextPricingUsagesFromFiles({
@@ -572,7 +576,8 @@ async function collectCodexCcusageRangeAttempt(input: {
       codexHomes: input.codexHomes ?? resolveCodexHomesFromOptions(input.options),
       codexSymlinkRoots: input.codexSymlinkRoots,
       captureFingerprints: true,
-      allowFileOverflow: true
+      allowFileOverflow: true,
+      fingerprintMemo
     })
   )
   return applyCollectedCodexContextPricing({
