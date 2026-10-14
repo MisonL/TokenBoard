@@ -55,6 +55,12 @@ export async function collectCcusageToolUsage(
     ]),
     commandOptions
   )
+  // ccusage exits 0 with an empty report for a tool that is not installed, so most
+  // machines would pay a second spawn per run for nothing. Session counts only
+  // matter when there is usage to attribute, so an empty daily report ends here.
+  if (!hasDailyRows(daily)) {
+    return []
+  }
   const sessions = await runner(
     packageRunner.command,
     packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', [
@@ -107,4 +113,10 @@ function readPackageCommandRetries(env: NodeJS.ProcessEnv = process.env) {
     return value
   }
   return DEFAULT_PACKAGE_COMMAND_RETRIES
+}
+
+function hasDailyRows(daily: unknown) {
+  if (!daily || typeof daily !== 'object') return false
+  const rows = (daily as { daily?: unknown }).daily
+  return Array.isArray(rows) && rows.length > 0
 }

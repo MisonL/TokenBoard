@@ -191,6 +191,23 @@ describe('ccusage tool providers', () => {
     expect(snapshots).toEqual([])
   })
 
+  // ccusage exits 0 with an empty daily report for a tool that is not installed, so
+  // most machines would pay the second spawn for nothing on every run.
+  test('skips the session report when the daily report is empty', async () => {
+    const packageCalls: string[] = []
+    const runner = recordingRunner(
+      new Map<string, unknown>([['zcode daily --json --timezone Asia/Shanghai', { daily: [], totals: null }]]),
+      []
+    )
+    const snapshots = await collectCcusageToolUsage('zcode', {
+      ...baseOptions,
+      runner,
+      packageRunner: recordingPackageRunner(packageCalls)
+    })
+    expect(snapshots).toEqual([])
+    expect(packageCalls).toEqual(['zcode daily --json --timezone Asia/Shanghai'])
+  })
+
   test('rejects a source outside the ccusage tool family', async () => {
     await expect(
       collectCcusageToolUsage('deepseek-harness' as never, {
