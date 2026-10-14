@@ -55,7 +55,20 @@ describe('source-format', () => {
   })
 
   test('does not mark ccusage tool sources as cost-unavailable', () => {
-    for (const source of ['amp', 'droid', 'codebuff', 'hermes', 'goose', 'kilo', 'copilot', 'gemini-cli', 'kimi', 'qwen', 'openclaw', 'zcode']) {
+    for (const source of [
+      'amp',
+      'droid',
+      'codebuff',
+      'hermes',
+      'goose',
+      'kilo',
+      'copilot',
+      'gemini-cli',
+      'kimi',
+      'qwen',
+      'openclaw',
+      'zcode'
+    ]) {
       expect(formatSourceCostNote(source)).toBe('')
       expect(hasUnavailableCostSource([{ source }])).toBe(false)
     }
