@@ -28,10 +28,14 @@ test('builds the Windows scheduled task shape with time-suffixed names', () => {
 test('builds a settings patch that makes a missed Windows task run at the next wake', () => {
   const args = buildWindowsStartWhenAvailableArgs('TokenBoardDailySync0900')
 
+  const command = args.at(-1)
   assert.equal(args[0], '-NoProfile')
-  assert.match(args.join(' '), /Set-ScheduledTask/)
-  assert.match(args.join(' '), /Settings.+StartWhenAvailable.+i\$true|StartWhenAvailable/s)
-  assert.match(args.join(' '), /TokenBoardDailySync0900/)
+  // The existing settings object is mutated in place; a fresh New-ScheduledTaskSettingsSet
+  // would reset the battery and execution-limit settings schtasks just wrote.
+  assert.match(command, /Get-ScheduledTask -TaskName 'TokenBoardDailySync0900'/)
+  assert.match(command, /\$task\.Settings\.StartWhenAvailable = \$true/)
+  assert.match(command, /Set-ScheduledTask -TaskName 'TokenBoardDailySync0900' -Settings \$task\.Settings/)
+  assert.doesNotMatch(command, /New-ScheduledTaskSettingsSet/)
 })
 
 test('builds Windows scheduled task definitions for every daily sync time', () => {

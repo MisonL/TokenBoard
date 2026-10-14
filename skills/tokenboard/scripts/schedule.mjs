@@ -56,10 +56,13 @@ export function buildWindowsTaskDefinitions({
 export function buildWindowsStartWhenAvailableArgs(taskName) {
   // schtasks /Create cannot express StartWhenAvailable, so a run missed while asleep or
   // powered off is silently skipped: the only one of the three schedulers without catch-up.
-  // The PowerShell settings patch adds it right after each task is created.
+  // The patch mutates the existing settings object in place instead of building a fresh one:
+  // New-ScheduledTaskSettingsSet alone would reset every other setting (battery policy,
+  // execution limits) schtasks just wrote.
   const script = [
-    '$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable',
-    `Set-ScheduledTask -TaskName '${taskName}' -Settings $settings`
+    `$task = Get-ScheduledTask -TaskName '${taskName}'`,
+    '$task.Settings.StartWhenAvailable = $true',
+    `Set-ScheduledTask -TaskName '${taskName}' -Settings $task.Settings`
   ].join('; ')
   return ['-NoProfile', '-NonInteractive', '-Command', script]
 }
