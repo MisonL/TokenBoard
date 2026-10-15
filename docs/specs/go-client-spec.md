@@ -1,0 +1,128 @@
+# TokenBoard Go 客户端（clients/go）实施规格
+
+状态：**已批准待开工**（2026-10-15 用户确认方向）。上游依据：`docs/research/client-binary-zig-gui-research.md`（调研终稿）。
+本 spec 是实施契约：实施过程中偏离此处必须先更新本文件。
+
+## 0. 已批准的决策（用户拍板，不重开）
+
+| # | 决策 | 内容 |
+|---|---|---|
+| D1 | 语言 | **Go**，Web 端（apps/web）留 TS 不动 |
+| D2 | 仓库 | **不拆库**：Go client 长期住在 `clients/go/`，无拆仓里程碑 |
+| D3 | 依赖策略 | **能用最新就用最新**：依赖跟随 latest，靠「升级门禁」（见 §5）兜底，不做长期 pin |
+| D4 | 交付形态 | 单二进制，GoReleaser × 5 平台（darwin/linux/win32 × x64/arm64），免 CGO |
+| D5 | ccusage | 捆绑 > 探测 > 下载（fail-closed）；ccusage 是 Rust 静态二进制（npm 平台包分发，MIT，sha512 可 pin） |
+| D6 | GUI | 与 CLI 解耦另行立项，不进本 spec |
+| D7 | Zig | 不采用 |
+| D8 | 前置沟通 | 开工前与上游作者对齐（skill 是上游核心资产，client Go 化改变交付模式） |
+
+## 1. 目标与非目标
+
+**目标**
+- `clients/go/` 提供 `tokenboard` 二进制，行为与现有 TS collector（`packages/collector`）等价：preview / sync / warm-hooks / hook 模式，同一 env 契约（`TOKENBOARD_*`）。
+- 迁移完成后 TS collector 进入 deprecated，skill 脚本默认 spawn Go 二进制；`perSource` 开关支持逐来源回滚。
+- 升级通道从 git-clone 换成 GitHub Releases + `tokenboard self-update`（rename-swap 保留回滚）。
+
+**非目标**
+- 不改服务端（Worker/API/D1 schema）；不改上传协议。
+- 不替换 ccusage 的解析职责（继续 spawn 其二进制读 Claude Code/Codex 等来源）。
+- 不做 GUI；不做自建定价源；不改 hook 语义（含「hook 模式禁联网」纪律）。
+- 迁移期不改 TS collector 的行为语义（冻结只收 bugfix，避免影子基线移动）。
+
+## 2. 仓库布局
+
+```
+clients/go/
+  cmd/tokenboard/main.go            # 入口，极薄
+  internal/
+    cli/                            # preview/sync/warm-hooks/hook/self-update 子命令（cobra）
+    collect/                        # 编排：source 分类、失败语义、exit 75 瞬态契约
+      providers/                    # grokbuild/ deepseekharness/ pi/ opencode/
+                                    # antigravitycli/ antigravity/ antigravityide/
+                                    # claudecode/ codex/
+      sessioncursor/                # cursor JSON v1 读写、增量读取（对应 session-cursor*.ts）
+      jsonl/ sqlite/ zstd/          # 共享底层
+    upload/                         # ingest/check/重试/退避 pause
+    pricing/                        # 定价目录 fetch/cache/静态、ccusage override 生成
+    contract/                       # UsageSnapshot + 全部 fail-closed 校验（对应 usage-core）
+      contract.json                 # 由 packages/usage-core 导出的 JSON Schema（生成类型）
+      goldens/                      # 金样本：TS 导出的接受/拒绝+哈希清单
+    state/                          # 状态目录、renameAtomic、flock
+    platform/                       # launchd/systemd/schtasks、symlink 守卫
+    ccusage/                        # 捆绑/探测/下载三层获取器（见 §4）
+  testdata/                         # 与 packages/collector 共用语义的 fixture（影子验证输入）
+```
+
+## 3. 硬契约（每条都要有专门测试，违反即 bug）
+
+1. **snapshotHashPayload 字节级一致**：SHA-256 输入是键序固定、无空格的规范化 JSON。Go 侧**手工拼键序**，禁止依赖 `encoding/json` 的 map 序列化。金样本覆盖：全字段/缺字段/costUnavailable 来源/unicode 模型名。
+2. **cursor JSON v1 双向兼容**：TS 写 → Go 读 → Go 写 → TS 读，内容零差异（含 sha256+mtime+size+offset+pendingUpload、codexHookProfileHash、commit 前校验、缺失文件清理）。这是 per-source 灰度的前提。
+3. **usage-core 全部校验语义**：cacheRead≤total、costUnavailable 来源 costUsd 必须 0、token/cost 上限、时区校验（嵌入 `time/tzdata`；金样本覆盖 Intl 边界，如 `Etc/GMT+5` 反号）。
+4. **env 契约不变**：`TOKENBOARD_ENDPOINT/UPLOAD_TOKEN/TIMEZONE/SOURCE/SINCE/UNTIL/HOOK_MODE/STATE_DIR/FAIL_ON_SOURCE_ERROR/CCUSAGE_CONFIG/CODEX_SYMLINK_ROOTS_JSON/…` 与 TS 逐一同名同义；`transientSyncExitCode=75` 保留。
+5. **stderr 行为契约**：skill 脚本按行解析 stderr（脱敏、进度、跳过形态），Go 输出格式对齐。
+6. **providers 语义陷阱清单**（平移时逐条带 fixture 测试）：Pi cacheWrite+cacheWrite1h 双档与 entry-id 去重；Grok 面值入账+cachedRead 拆 fresh；DSH 多帧 zstd+尾帧截断容忍+seq 去重；OpenCode SQL 投影+只读打开；Antigravity 原文不落盘+bounded 扫描+cursor 上限；Codex 混合模型对账+重试消息前缀耦合+symlink 策略；costUnavailable fail-closed。
+
+## 4. ccusage 集成（三层，fail-closed）
+
+优先级：**捆绑 > 探测 > 下载**。
+1. **捆绑**：CI 从 npm registry 下载 `@ccusage/ccusage-<platform>-<arch>@<version>` tarball，验 `dist.integrity`（sha512），随 GoReleaser tarball 分发；安装脚本放 `~/.tokenboard/bin/`。MIT 再分发需附许可声明。
+2. **探测**：PATH 上已有 ccusage 可用；版本与 client 期望不符 → stderr 告警（不拒绝）。
+3. **下载**：`tokenboard doctor` / sync 时检测两者皆无 → 下载期望版本到 `~/.tokenboard/bin/`，sha512 不符即拒用。**hook 模式禁止下载**（禁联网纪律），只用已有版本否则该 source unavailable。
+- 版本策略（D3）：`clients/go/internal/ccusage/version.go` 记录期望版本；升级依赖时跑 §5 门禁。期望版本一般等于 TS 侧 package.json 的版本（升级同 PR 双改）。
+
+## 5. 依赖升级门禁（D3 的兜底机制）
+
+`clients/go/scripts/check-deps.sh`（CI 跑）：
+1. 对 ccusage：取 fixture 会话树，分别用旧/新版本二进制跑 `daily --json`/`session --json`，**规范化 diff 输出**；shape 变化 → CI 红，人工审后更新金样本。
+2. 对 Go 依赖：常规 `go build`+ 全量测试即为门禁；`go.mod` 无 pin 压力，常规 dependabot/手动升级。
+- JSON 输出上游无 schemaVersion、无 CHANGELOG —— 此门禁是唯一防线，不可省。
+
+## 6. 影子验证（语义等价的保证，三层）
+
+1. **fixture 测试平移**：TS 测试的输入文件树（JSONL/SQLite）直接复用为 Go golden 输入，期望值提取为 golden JSON；按 provider 分批。
+2. **`tokenboard shadow` 命令**：同 env 下运行 TS `preview` 与 Go 采集（`TOKENBOARD_SHADOW=1`：cursor commit 变 no-op、不网络上传），两组快照按 snapshotKey 排序规范化 diff（剔除 collectedAt），非空即 exit 1 输出结构化差异。CI 中全部 home/工具目录 env 指向 fixture（`XDG_DATA_HOME/CODEX_HOME/DSH_HOME/GROK_HOME/PI_CODING_AGENT_DIR/…`），不依赖真实用户数据。
+3. **生产双跑**：本机 crontab TS 上传 + Go shadow 7 天，人审无 diff 后切换。
+- 限制：影子只覆盖全量 preview 语义；hook 增量路径靠单测 + 切换后小流量观察。
+
+## 7. 灰度切换（per-source）
+
+- config 增 `perSource: {"pi":"go","codex":"ts",...}`（缺省全 `ts`）；`sync.mjs buildSyncInvocation` 据此 spawn TS（`node --import tsx …`）或 Go 二进制；env 构造代码两端共用不复制。
+- 回滚 = 字段改回 `ts`。**未通过 §3.2 双向兼容测试的 source 不许切**。
+- 全部 source 走 Go 且稳定 2 周 → 默认值翻转为 `go`，TS collector 标记 deprecated。
+
+## 8. 升级通道
+
+- GoReleaser：5 平台 tarball + checksums.txt；`tokenboard self-update`：查 Releases → 比较 → 下载 → 验 checksum → rename-swap（新版先 `.new` 落地、`--version` 验证后替换、旧版留 backup）。
+- 定时升级路径改调 `self-update --scheduled`，**解耦 git 工作树状态**（消解「安装目录=开发仓库→脏树→升级永久跳过」死结）。
+- 现存 git-clone 用户：upgrade.mjs 迁移分支——装二进制 + `config.clientType:'binary'`，不删旧 checkout；`clientType` 缺省 `'git'` 保持兼容。
+- 包管理器（brew/scoop/winget）：二期，检测到包管理器安装时 self-update 提示改用之，避免双头更新。
+
+## 9. 里程碑（出口可验证）
+
+| 阶段 | 内容 | 人日 | 出口 |
+|---|---|---|---|
+| M0 | 骨架 + 契约层（JSON Schema 生成、金样本、cursor 双向兼容） | 5–6 | §3.1/3.2 测试全绿 |
+| M1 | upload/编排/state/锁 | 5 | fixture sync dry-run 与 TS 对照一致 |
+| M2 | grok/dsh/pi/opencode + zstd 分帧 | 7 | 影子 diff=0（该批） |
+| M3 | antigravity 三源 + 不落盘专项 | 10 | 同上 |
+| M4 | claude-code + ccusage 集成层 | 7 | hook 离线行为验证 |
+| M5 | codex 全家（context-pricing 对账最大项） | 12–14 | codex 影子 diff=0 |
+| M6 | GoReleaser/self-update/skill 改造 | 6 | 干净机 install→sync→self-update 端到端 |
+| M7 | per-source 灰度 + 双跑 + 切换 | 6–7 | 全 source 走 Go，TS deprecated |
+
+合计 ~10–11 周单人；providers 批次可并行压缩。**每批出口标准统一：Go 测试数 ≥ 对应 TS 测试数、影子 diff=0、该批 per-source 切换可用。**
+
+## 10. 风险与缓解（top5，完整 11 项见调研报告）
+
+1. codex 对账语义走样（高×高）→ M5 单列、逐测试平移、禁止「Go 里更好写」式语义优化
+2. cursor 兼容破坏→全量重扫/漏传（中×高）→ M0 双向契约测试 + 真实数据双读验证后才许切
+3. snapshotHash 漂移→check 去重失效烧 D1 配额（中×高）→ 手工拼键序 + 字节级金样本
+4. 迁移期 TS 变更→影子基线移动（高×中）→ **迁移期 TS collector 冻结只收 bugfix**（硬纪律）
+5. modernc/sqlite 行为差异（中×中）→ SQL 输出对照测试；硬伤再评估分平台 CGO
+
+## 11. 当前状态与下一步
+
+- [x] 调研完成（见 research 报告）；ccusage 已升 20.0.33（2cc5249，PR #24）
+- [ ] **前置：与上游作者对齐（D8）** —— 开工条件
+- [ ] M0 契约层开工（第一周产出：金样本 + cursor 双向兼容测试）
+- [ ] 确认 Go 工具链版本基线（go.mod 声明，选当前 latest stable）
