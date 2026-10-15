@@ -407,7 +407,9 @@ function removeContextPricingRuleForModel(
  * one representative: prefer the official vendor row (a known provider id)
  * and fall back to input order. All-zero rows only collapse with other
  * all-zero rows — a free-tier promo must not leak into a priced group, and
- * a priced row must not be dragged to zero by a promo row.
+ * a priced row must not be dragged to zero by a promo row. The representative
+ * is picked from the same group the agreement check compares, so an official
+ * vendor's $0 placeholder row can never represent a group that has real prices.
  */
 export function selectUnambiguousDynamicPricingModels<T extends CollectorPricingModelLike>(models: readonly T[]) {
   const byModelId = new Map<string, T[]>()
@@ -424,7 +426,7 @@ export function selectUnambiguousDynamicPricingModels<T extends CollectorPricing
       continue
     }
     if (!dynamicPriceRowsAgree(entries)) continue
-    collapsed.set(key, pickCollapsedRepresentative(entries))
+    collapsed.set(key, pickCollapsedRepresentative(dynamicPriceAgreementGroup(entries)))
   }
   return models.filter((model) => collapsed.get(model.modelId.trim().toLowerCase()) === model)
 }
@@ -441,10 +443,20 @@ type CollectorPricingModelLike = {
 
 /** Rows agree when their priced signature is identical; all-zero rows compare only with all-zero rows. */
 function dynamicPriceRowsAgree(entries: readonly CollectorPricingModelLike[]) {
-  const priced = entries.filter((entry) => priceRowIsPositive(entry))
-  const group = priced.length > 0 ? priced : entries
+  const group = dynamicPriceAgreementGroup(entries)
   const signature = priceRowSignature(group[0])
   return group.every((entry) => priceRowSignature(entry) === signature)
+}
+
+/**
+ * The rows the agreement check and the representative choice both see. When any row carries a
+ * real price, zero rows drop out of the group entirely — including an official vendor's $0
+ * placeholder row, which would otherwise win the representative pick and silently price the
+ * model as free. Only when the whole group is zero-priced do zero rows compare with each other.
+ */
+function dynamicPriceAgreementGroup<T extends CollectorPricingModelLike>(entries: readonly T[]): readonly T[] {
+  const priced = entries.filter((entry) => priceRowIsPositive(entry))
+  return priced.length > 0 ? priced : entries
 }
 
 function priceRowIsPositive(entry: CollectorPricingModelLike) {

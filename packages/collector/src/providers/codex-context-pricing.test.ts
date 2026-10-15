@@ -2182,6 +2182,22 @@ describe('dynamic pricing model selection', () => {
     expect(selectUnambiguousDynamicPricingModels(models)).toHaveLength(0)
   })
 
+  test('a zero-priced official row must not represent a group that has a positive-priced row', () => {
+    const models = [
+      priced({
+        provider: 'openai',
+        modelId: 'placeholder',
+        inputCostPerMillion: 0,
+        outputCostPerMillion: 0,
+        cacheReadCostPerMillion: 0
+      }),
+      priced({ provider: 'reseller', modelId: 'placeholder' })
+    ]
+    const selected = selectUnambiguousDynamicPricingModels(models)
+    expect(selected).toHaveLength(1)
+    expect(selected[0]).toMatchObject({ provider: 'reseller', inputCostPerMillion: 2 })
+  })
+
   test('prefers the official vendor row as the collapsed representative', () => {
     const models = [priced({ provider: 'zreseller', modelId: 'gpt' }), priced({ provider: 'openai', modelId: 'gpt' })]
     const selected = selectUnambiguousDynamicPricingModels(models)
