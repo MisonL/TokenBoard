@@ -1,0 +1,42 @@
+[
+  {
+    "name": "base",
+    "key": "codex\u00002026-05-09\u0000gpt-5",
+    "hashPayload": "{\"source\":\"codex\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Asia/Shanghai\",\"model\":\"gpt-5\",\"inputTokens\":10,\"outputTokens\":2,\"cacheCreationTokens\":0,\"cacheReadTokens\":5,\"totalTokens\":17,\"costUsd\":0.01,\"sessionCount\":1}"
+  },
+  {
+    "name": "with-correction",
+    "key": "codex\u00002026-05-09\u0000gpt-5",
+    "hashPayload": "{\"source\":\"codex\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Asia/Shanghai\",\"model\":\"gpt-5\",\"inputTokens\":10,\"outputTokens\":2,\"cacheCreationTokens\":0,\"cacheReadTokens\":5,\"totalTokens\":17,\"costUsd\":0.01,\"sessionCount\":1,\"correction\":\"codex-context-pricing\"}"
+  },
+  {
+    "name": "cost-unavailable-grok",
+    "key": "grok-build\u00002026-05-09\u0000gpt-5",
+    "hashPayload": "{\"source\":\"grok-build\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Asia/Shanghai\",\"model\":\"gpt-5\",\"inputTokens\":10,\"outputTokens\":2,\"cacheCreationTokens\":0,\"cacheReadTokens\":5,\"totalTokens\":17,\"costUsd\":0,\"sessionCount\":1}"
+  },
+  {
+    "name": "all-zero",
+    "key": "codex\u00002026-05-09\u0000gpt-5",
+    "hashPayload": "{\"source\":\"codex\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Asia/Shanghai\",\"model\":\"gpt-5\",\"inputTokens\":0,\"outputTokens\":0,\"cacheCreationTokens\":0,\"cacheReadTokens\":0,\"totalTokens\":0,\"costUsd\":0,\"sessionCount\":0}"
+  },
+  {
+    "name": "unicode-model",
+    "key": "codex\u00002026-05-09\u0000módel/中文-模型",
+    "hashPayload": "{\"source\":\"codex\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Asia/Shanghai\",\"model\":\"módel/中文-模型\",\"inputTokens\":10,\"outputTokens\":2,\"cacheCreationTokens\":0,\"cacheReadTokens\":5,\"totalTokens\":17,\"costUsd\":0.01,\"sessionCount\":1}"
+  },
+  {
+    "name": "extreme-tokens",
+    "key": "codex\u00002026-05-09\u0000gpt-5",
+    "hashPayload": "{\"source\":\"codex\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Asia/Shanghai\",\"model\":\"gpt-5\",\"inputTokens\":1000000000000,\"outputTokens\":2,\"cacheCreationTokens\":0,\"cacheReadTokens\":5,\"totalTokens\":1000000000000,\"costUsd\":0.01,\"sessionCount\":1}"
+  },
+  {
+    "name": "fractional-cost",
+    "key": "codex\u00002026-05-09\u0000gpt-5",
+    "hashPayload": "{\"source\":\"codex\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Asia/Shanghai\",\"model\":\"gpt-5\",\"inputTokens\":10,\"outputTokens\":2,\"cacheCreationTokens\":0,\"cacheReadTokens\":5,\"totalTokens\":17,\"costUsd\":0.30000000000000004,\"sessionCount\":1}"
+  },
+  {
+    "name": "timezone-etc-gmt",
+    "key": "codex\u00002026-05-09\u0000gpt-5",
+    "hashPayload": "{\"source\":\"codex\",\"usageDate\":\"2026-05-09\",\"timezone\":\"Etc/GMT+5\",\"model\":\"gpt-5\",\"inputTokens\":10,\"outputTokens\":2,\"cacheCreationTokens\":0,\"cacheReadTokens\":5,\"totalTokens\":17,\"costUsd\":0.01,\"sessionCount\":1}"
+  }
+]

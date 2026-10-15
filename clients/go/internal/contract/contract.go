@@ -1,0 +1,330 @@
+// Package contract mirrors packages/usage-core: the UsageSnapshot shape, its
+// fail-closed validation, and the exact serialization the server's dedup hash
+// is computed over. Byte-level drift here breaks ingest dedup and burns D1
+// quota, so the goldens in goldens/ are produced by the TypeScript
+// implementation and must never be edited by hand (see goldens/README.md).
+package contract
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	// Embedded so timezone validation works on Windows and in slim containers
+	// that ship no system zone database.
+	_ "time/tzdata"
+)
+
+// Source is one usage origin. The string values are wire-format: they appear
+// in snapshots uploaded to the server and must stay in lockstep with
+// usage-core's usageSources.
+type Source string
+
+const (
+	SourceClaudeCode      Source = "claude-code"
+	SourceCodex           Source = "codex"
+	SourceAntigravityCLI  Source = "antigravity-cli"
+	SourceAntigravity     Source = "antigravity"
+	SourceAntigravityIDE  Source = "antigravity-ide"
+	SourceOpenCode        Source = "opencode"
+	SourcePi              Source = "pi"
+	SourceGrokBuild       Source = "grok-build"
+	SourceDeepSeekHarness Source = "deepseek-harness"
+)
+
+// Correction marks snapshots whose cost was re-derived from request-level
+// token counts rather than taken from the tool's own cost figure.
+type Correction string
+
+const CorrectionCodexContextPricing Correction = "codex-context-pricing"
+
+// UsageSources is the closed set of valid sources.
+var usageSources = map[Source]bool{
+	SourceClaudeCode: true, SourceCodex: true,
+	SourceAntigravityCLI: true, SourceAntigravity: true, SourceAntigravityIDE: true,
+	SourceOpenCode: true, SourcePi: true, SourceGrokBuild: true, SourceDeepSeekHarness: true,
+}
+
+// costUnavailableSources cannot report a cost: the collector uploads
+// costUsd=0 and every consumer labels the cost as unavailable rather than
+// "$0.00". Deriving one from a pricing table would be a guess.
+var costUnavailableSources = map[Source]string{
+	SourceAntigravityCLI:  "Antigravity source costs are unavailable; costUsd must be 0",
+	SourceAntigravity:     "Antigravity source costs are unavailable; costUsd must be 0",
+	SourceAntigravityIDE:  "Antigravity source costs are unavailable; costUsd must be 0",
+	SourceGrokBuild:       "Grok Build source costs are unavailable; costUsd must be 0",
+	SourceDeepSeekHarness: "DeepSeek Harness source costs are unavailable; costUsd must be 0",
+}
+
+// Ceilings mirror usage-core. Both guard server-side int64 SUMs: one extreme
+// row would abort a leaderboard statement for every tenant.
+const (
+	MaxSnapshotTokens  = 1_000_000_000_000
+	MaxSnapshotCostUSD = 1_000_000_000
+
+	MaxUsageTimezoneLength  = 80
+	MaxUsageModelNameLength = 160
+)
+
+// Snapshot is one normalized usage record. Field names follow the wire format
+// (snake_case in JSON); the Go names drop the redundant Snapshot suffix.
+type Snapshot struct {
+	Source        Source     `json:"source"`
+	UsageDate     string     `json:"usageDate"`
+	Timezone      string     `json:"timezone"`
+	Model         string     `json:"model"`
+	InputTokens   int64      `json:"inputTokens"`
+	OutputTokens  int64      `json:"outputTokens"`
+	CacheCreation int64      `json:"cacheCreationTokens"`
+	CacheRead     int64      `json:"cacheReadTokens"`
+	TotalTokens   int64      `json:"totalTokens"`
+	CostUSD       float64    `json:"costUsd"`
+	SessionCount  int64      `json:"sessionCount"`
+	Correction    Correction `json:"correction,omitempty"`
+	CollectedAt   string     `json:"collectedAt"`
+}
+
+// IsCostUnavailableSource reports whether the source cannot report a cost, so
+// costUsd carries no meaning and must be zero.
+func IsCostUnavailableSource(source Source) bool {
+	_, ok := costUnavailableSources[source]
+	return ok
+}
+
+// SnapshotKey builds the server's upsert lookup key: source, date and model
+// joined by NUL. It excludes timezone and every counter by design — those
+// describe the row, not its identity.
+func SnapshotKey(source Source, usageDate, model string) string {
+	return string(source) + "\x00" + usageDate + "\x00" + model
+}
+
+// HashPayload serializes the snapshot exactly as TypeScript's
+// JSON.stringify({source, usageDate, ...}) does: fixed key order, no
+// whitespace, shortest round-trip float form, omitted only when correction is
+// unset (JSON.stringify drops undefined). encoding/json is deliberately not
+// used: its float formatting and map handling are not guaranteed stable
+// across Go versions, and a byte of drift here defeats server-side dedup.
+func (s Snapshot) HashPayload() string {
+	var b strings.Builder
+	b.WriteString(`{"source":`)
+	b.WriteString(quoteJSONString(string(s.Source)))
+	b.WriteString(`,"usageDate":`)
+	b.WriteString(quoteJSONString(s.UsageDate))
+	b.WriteString(`,"timezone":`)
+	b.WriteString(quoteJSONString(s.Timezone))
+	b.WriteString(`,"model":`)
+	b.WriteString(quoteJSONString(s.Model))
+	b.WriteString(`,"inputTokens":`)
+	b.WriteString(strconv.FormatInt(s.InputTokens, 10))
+	b.WriteString(`,"outputTokens":`)
+	b.WriteString(strconv.FormatInt(s.OutputTokens, 10))
+	b.WriteString(`,"cacheCreationTokens":`)
+	b.WriteString(strconv.FormatInt(s.CacheCreation, 10))
+	b.WriteString(`,"cacheReadTokens":`)
+	b.WriteString(strconv.FormatInt(s.CacheRead, 10))
+	b.WriteString(`,"totalTokens":`)
+	b.WriteString(strconv.FormatInt(s.TotalTokens, 10))
+	b.WriteString(`,"costUsd":`)
+	b.WriteString(formatJSONFloat(s.CostUSD))
+	b.WriteString(`,"sessionCount":`)
+	b.WriteString(strconv.FormatInt(s.SessionCount, 10))
+	if s.Correction != "" {
+		b.WriteString(`,"correction":`)
+		b.WriteString(quoteJSONString(string(s.Correction)))
+	}
+	b.WriteString("}")
+	return b.String()
+}
+
+// formatJSONFloat emits the shortest decimal that round-trips the double —
+// the same choice JSON.stringify makes. Integers keep no ".0"; exponent forms
+// match JS for the extreme values the schema allows.
+func formatJSONFloat(f float64) string {
+	// Go's 'g' with precision -1 produces shortest round-trip but formats
+	// large/small magnitudes with exponents at different thresholds than JS
+	// (JS switches at 1e21 / 1e-7). The schema's ceilings keep costs below
+	// 1e9, so plain decimal is always correct here; fall back to 'g' outside
+	// the range instead of silently wrong output.
+	s := strconv.FormatFloat(f, 'f', -1, 64)
+	if !strings.Contains(s, "e") {
+		return s
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+// quoteJSONString applies JSON escaping with the same rules as
+// JSON.stringify: control characters as \u00XX except the short escapes,
+// and the literal characters passed through unchanged. Go's
+// encoding/json differs (it escapes <, >, & and U+2028/9), so strings are
+// escaped by hand.
+func quoteJSONString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\f':
+			b.WriteString(`\f`)
+		default:
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+var (
+	isoDateRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
+)
+
+// IsValidIsoDate mirrors usage-core isValidIsoDate: canonical YYYY-MM-DD and
+// a real calendar date.
+func IsValidIsoDate(value string) bool {
+	m := isoDateRe.FindStringSubmatch(value)
+	if m == nil {
+		return false
+	}
+	year, _ := strconv.Atoi(m[1])
+	month, _ := strconv.Atoi(m[2])
+	day, _ := strconv.Atoi(m[3])
+	if month < 1 || month > 12 || day < 1 {
+		return false
+	}
+	// daysIn: the Go idiom for "did this calendar day exist" — roll to the
+	// first of the next month and step back. time.Date normalizes overflow,
+	// so December 32nd becomes January 1st and would fail the round-trip.
+	t := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	return t.Year() == year && t.Month() == time.Month(month) && t.Day() == day
+}
+
+// MinUploadIsoDate is the fixed history floor (AI tools did not exist before
+// 2023); MaxUploadIsoDate allows one day of headroom for UTC+14 collectors.
+const MinUploadIsoDate = "2023-01-01"
+
+func MaxUploadIsoDate(now time.Time) string {
+	return now.UTC().Add(24 * time.Hour).Format("2006-01-02")
+}
+
+// UploadIsoDateIssue classifies why a date is outside the accepted window.
+type UploadIsoDateIssue string
+
+const (
+	IssueInvalid            UploadIsoDateIssue = "invalid"
+	IssueTooFarFuture       UploadIsoDateIssue = "too-far-future"
+	IssueBeforeHistoryWindw UploadIsoDateIssue = "before-history-window"
+)
+
+func UploadIsoDateIssueFor(value string, now time.Time) UploadIsoDateIssue {
+	if !IsValidIsoDate(value) {
+		return IssueInvalid
+	}
+	if value > MaxUploadIsoDate(now) {
+		return IssueTooFarFuture
+	}
+	if value < MinUploadIsoDate {
+		return IssueBeforeHistoryWindw
+	}
+	return ""
+}
+
+var (
+	timezoneMu       sync.RWMutex
+	timezoneValid    = map[string]bool{}
+	timezoneCacheLen = 0
+)
+
+// IsValidTimezone mirrors usage-core isValidTimezone: non-empty, no leading
+// or trailing whitespace, within the length bound, and loadable as an IANA
+// zone. Valid names are cached case-insensitively like the TS Set does.
+func IsValidTimezone(value string) bool {
+	timezone := strings.TrimSpace(value)
+	if timezone == "" || timezone != value || len(timezone) > MaxUsageTimezoneLength {
+		return false
+	}
+	cacheKey := strings.ToLower(timezone)
+	timezoneMu.RLock()
+	ok, cached := timezoneValid[cacheKey]
+	timezoneMu.RUnlock()
+	if cached {
+		return ok
+	}
+	_, err := time.LoadLocation(timezone)
+	// The TS side additionally caches the resolved canonical name; Go's
+	// LoadLocation already normalizes, so caching the requested name covers it.
+	timezoneMu.Lock()
+	timezoneValid[cacheKey] = err == nil
+	timezoneCacheLen = len(timezoneValid)
+	timezoneMu.Unlock()
+	return err == nil
+}
+
+// Validate applies the full fail-closed rule set the server's Zod schema
+// enforces, with the same error messages where they are semantic
+// (cost-unavailability, cross-field rules).
+func (s Snapshot) Validate() error {
+	if !usageSources[s.Source] {
+		return fmt.Errorf("source: unknown usage source %q", string(s.Source))
+	}
+	if !IsValidIsoDate(s.UsageDate) {
+		return fmt.Errorf("usageDate: invalid ISO date %q", s.UsageDate)
+	}
+	if !IsValidTimezone(s.Timezone) {
+		return fmt.Errorf("timezone: invalid timezone %q", s.Timezone)
+	}
+	if s.Model == "" || len(s.Model) > MaxUsageModelNameLength {
+		return fmt.Errorf("model: length must be 1..%d", MaxUsageModelNameLength)
+	}
+	for _, check := range []struct {
+		name  string
+		value int64
+	}{
+		{"inputTokens", s.InputTokens},
+		{"outputTokens", s.OutputTokens},
+		{"cacheCreationTokens", s.CacheCreation},
+		{"cacheReadTokens", s.CacheRead},
+		{"totalTokens", s.TotalTokens},
+		{"sessionCount", s.SessionCount},
+	} {
+		if check.value < 0 || check.value > MaxSnapshotTokens {
+			return fmt.Errorf("%s: must be an integer in 0..%d", check.name, MaxSnapshotTokens)
+		}
+	}
+	if s.CostUSD < 0 || s.CostUSD > MaxSnapshotCostUSD || math.IsNaN(s.CostUSD) || math.IsInf(s.CostUSD, 0) {
+		return fmt.Errorf("costUsd: must be a finite number in 0..%d", MaxSnapshotCostUSD)
+	}
+	if s.CacheRead > s.TotalTokens {
+		return errors.New("cacheReadTokens must not exceed totalTokens")
+	}
+	if msg, blocked := costUnavailableSources[s.Source]; blocked && s.CostUSD > 0 {
+		return errors.New(msg)
+	}
+	switch s.Correction {
+	case "", CorrectionCodexContextPricing:
+	default:
+		return fmt.Errorf("correction: unknown literal %q", string(s.Correction))
+	}
+	if _, err := time.Parse(time.RFC3339Nano, s.CollectedAt); err != nil {
+		return fmt.Errorf("collectedAt: must be an RFC3339 timestamp: %v", err)
+	}
+	return nil
+}
