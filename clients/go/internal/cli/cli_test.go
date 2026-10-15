@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func run(t *testing.T, env map[string]string, args ...string) (int, string, string) {
@@ -250,5 +251,63 @@ func TestWarmHooksReportsPlannedSources(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "claude-code") || !strings.Contains(stdout, "codex") {
 		t.Errorf("warm-hooks output %q", stdout)
+	}
+}
+
+// A request deadline must defer (75), not count as a plain failure: the
+// scheduled runner retries transient exits on its next tick.
+func TestSyncRequestTimeoutExits75(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{"upserted": 0})
+	}))
+	defer server.Close()
+
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	t.Setenv("TOKENBOARD_FETCH_TIMEOUT_MS", "80")
+	code, _, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     server.URL,
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+	}, "sync", "--source", "pi")
+	if code != ExitTransient {
+		t.Errorf("timeout must exit %d, got %d (stderr %q)", ExitTransient, code, stderr)
+	}
+	if !strings.Contains(stderr, "request timed out") {
+		t.Errorf("stderr must name the timeout: %q", stderr)
+	}
+}
+
+// warm-hooks reports every concrete source as warmed, matching the TS
+// expandSources — including non-hook sources whose warm step is a no-op.
+func TestWarmHooksReportsConcreteNonHookSource(t *testing.T) {
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, stdout, _ := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":  "UTC",
+		"TOKENBOARD_STATE_DIR": stateDir,
+	}, "warm-hooks", "--source", "pi")
+	if code != ExitOK {
+		t.Fatalf("code=%d", code)
+	}
+	if !strings.Contains(stdout, `"pi"`) || strings.Contains(stdout, "null") {
+		t.Errorf("warm-hooks output %q", stdout)
+	}
+}
+
+// A bare flag with no value must be a usage error, never a silent fallback
+// to the environment default.
+func TestBareFlagIsMissingValueError(t *testing.T) {
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, _, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":  "UTC",
+		"TOKENBOARD_STATE_DIR": stateDir,
+		"TOKENBOARD_SOURCE":    "pi",
+	}, "preview", "--source")
+	if code != ExitUsage || !strings.Contains(stderr, "Missing value for --source") {
+		t.Errorf("code=%d stderr=%q", code, stderr)
 	}
 }

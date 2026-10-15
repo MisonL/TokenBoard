@@ -36,7 +36,23 @@ func ProbeLiveness(pid int, ownerIdentity string) Liveness {
 		return LivenessDead
 	}
 	if pid == os.Getpid() {
-		return LivenessAlive
+		// A record claiming our own pid with a token we did not write:
+		// compare the start identity exactly like the TS probe — a mismatch
+		// means the record is stale (a leftover that happens to carry our
+		// pid), a match is a lock from this very process. Without a recorded
+		// identity the TS probe also treats the record as stale (its
+		// in-memory owner set plays that role), and Go mirrors that since it
+		// never re-acquires within a process either.
+		if ownerIdentity != "" {
+			if identity, err := ProcessStartIdentity(pid); err == nil && identity != "" {
+				if identity != ownerIdentity {
+					return LivenessDead
+				}
+				return LivenessAlive
+			}
+			return LivenessAlive // identity probe failed: conservative
+		}
+		return LivenessDead
 	}
 	err := platformSignalZero(pid)
 	switch {

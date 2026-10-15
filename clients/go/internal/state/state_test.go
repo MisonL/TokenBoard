@@ -89,22 +89,119 @@ func TestStaleLockOfDeadPidIsCleared(t *testing.T) {
 	_ = lock.Release()
 }
 
-// A lock held by a live process (here: our own pid, a foreign token) must
-// never be stolen, whatever the probe reads.
-func TestLiveForeignLockIsNotStolen(t *testing.T) {
+// A record claiming our own pid is ours only if its start identity matches;
+// anything else is a leftover that happens to carry our pid and must be
+// cleared, exactly as the TS probe decides.
+func TestOwnPidLockStalenessMatchesTSProbe(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.lock")
 	_ = os.Chmod(filepath.Dir(path), 0o700)
-	payload := fmt.Sprintf(`{"pid":%d,"startedAt":"2026-05-09T10:00:00.000Z","token":"foreign"}`, os.Getpid())
-	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+	identity, identityErr := ProcessStartIdentity(os.Getpid())
+	if identityErr != nil {
+		t.Skipf("identity unavailable: %v", identityErr)
+	}
+
+	// Same pid, our real identity, foreign token: a lock from this process —
+	// never stolen.
+	writeLock(t, path, fmt.Sprintf(
+		`{"pid":%d,"startedAt":"2026-05-09T10:00:00.000Z","token":"foreign","processStartIdentity":%q}`,
+		os.Getpid(), identity))
+	if lock, err := Acquire(path, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	} else if lock != nil {
+		_ = lock.Release()
+		t.Fatal("a lock carrying our pid and identity must not be stolen")
+	}
+
+	// Same pid, a different identity: a stale record from another process
+	// that recycled our pid — cleared.
+	writeLock(t, path, fmt.Sprintf(
+		`{"pid":%d,"startedAt":"2026-05-09T10:00:00.000Z","token":"foreign","processStartIdentity":"darwin:1:1"}`,
+		os.Getpid()))
+	if lock, err := Acquire(path, time.Second); err != nil {
+		t.Fatal(err)
+	} else if lock == nil {
+		t.Fatal("an own-pid record with a mismatched identity must be cleared")
+	} else {
+		_ = lock.Release()
+	}
+
+	// Same pid, no identity: the TS probe treats this as stale (its
+	// in-memory owner set is what vouches for a real own lock).
+	writeLock(t, path, fmt.Sprintf(
+		`{"pid":%d,"startedAt":"2026-05-09T10:00:00.000Z","token":"foreign"}`, os.Getpid()))
+	if lock, err := Acquire(path, time.Second); err != nil {
+		t.Fatal(err)
+	} else if lock == nil {
+		t.Fatal("an own-pid record with no identity must be cleared")
+	} else {
+		_ = lock.Release()
+	}
+}
+
+// Release must leave a foreign lock alone: another process may have cleared
+// our stale lock and re-locked between our acquire and release.
+func TestReleaseDoesNotDeleteForeignLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.lock")
+	_ = os.Chmod(filepath.Dir(path), 0o700)
+	lock, err := Acquire(path, time.Second)
+	if err != nil || lock == nil {
+		t.Fatalf("acquire: lock=%v err=%v", lock, err)
+	}
+	foreign := `{"pid":424242,"startedAt":"2026-05-09T10:00:00.000Z","token":"someone-else"}`
+	writeLock(t, path, foreign)
+	if err := lock.Release(); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := Acquire(path, 100*time.Millisecond)
+	remaining, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("foreign lock was deleted: %v", err)
+	}
+	if string(remaining) != foreign {
+		t.Errorf("foreign lock altered: %q", remaining)
+	}
+}
+
+// removeLockRecord must not remove a file whose bytes changed after the
+// staleness decision — the race where a contender clears the stale lock and
+// re-locks before we act on our (now outdated) observation.
+func TestRemoveLockRecordVerifiesBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.lock")
+	stale := []byte(`{"pid":1,"token":"stale"}`)
+	writeLock(t, path, string(stale))
+
+	// Simulate the winner's re-lock in the window before we remove.
+	reLocked := `{"pid":2,"token":"fresh"}`
+	writeLock(t, path, reLocked)
+
+	removed, err := removeLockRecord(path, stale)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lock != nil {
-		_ = lock.Release()
-		t.Fatal("a live holder's lock must not be stolen")
+	if removed {
+		t.Fatal("a lock whose bytes changed must not be removed")
+	}
+	remaining, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-locked file was lost: %v", err)
+	}
+	if string(remaining) != reLocked {
+		t.Errorf("re-locked file altered: %q", remaining)
+	}
+
+	// With matching bytes it does remove.
+	removed, err = removeLockRecord(path, []byte(reLocked))
+	if err != nil || !removed {
+		t.Fatalf("matching record must be removed: removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("lock file should be gone, stat err=%v", err)
+	}
+}
+
+func writeLock(t *testing.T, path, payload string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

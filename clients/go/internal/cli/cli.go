@@ -79,24 +79,29 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 
 	switch options.Command {
 	case "warm-hooks":
-		// No provider registers a hook cursor yet; report the sources that
-		// would be warmed, like the TS collector reports its plan.
-		sources := expandWarmHookSources(options.Source)
-		payload, _ := json.MarshalIndent(map[string]any{"warmed": sources}, "", "  ")
-		fmt.Fprintln(stdout, string(payload))
-		return ExitOK
+		return withRunLock(stateDir, stderr, func() int {
+			// No provider registers a hook cursor yet; report the sources the
+			// TS collector would report as warmed — every concrete source,
+			// not just the hook-installed two.
+			sources := expandWarmHookSources(options.Source)
+			payload, _ := json.MarshalIndent(map[string]any{"warmed": sources}, "", "  ")
+			fmt.Fprintln(stdout, string(payload))
+			return ExitOK
+		})
 	case "preview":
-		snapshots, failures := collectAll(ctx, options, env)
-		if snapshots == nil {
-			snapshots = []contract.Snapshot{}
-		}
-		payload, _ := json.MarshalIndent(snapshots, "", "  ")
-		fmt.Fprintln(stdout, string(payload))
-		if len(failures) > 0 {
-			fmt.Fprintf(stderr, "One or more sources failed: %s\n", strings.Join(failures, "; "))
-			return ExitFailure
-		}
-		return ExitOK
+		return withRunLock(stateDir, stderr, func() int {
+			snapshots, failures := collectAll(ctx, options, env)
+			if snapshots == nil {
+				snapshots = []contract.Snapshot{}
+			}
+			payload, _ := json.MarshalIndent(snapshots, "", "  ")
+			fmt.Fprintln(stdout, string(payload))
+			if len(failures) > 0 {
+				fmt.Fprintf(stderr, "One or more sources failed: %s\n", strings.Join(failures, "; "))
+				return ExitFailure
+			}
+			return ExitOK
+		})
 	case "sync":
 		return runSync(ctx, options, env, stateDir, stdout, stderr)
 	default:
@@ -105,13 +110,10 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 	}
 }
 
-func runSync(ctx context.Context, options Options, env Env, stateDir string, stdout, stderr io.Writer) int {
-	missing := requiredSyncConfig(options)
-	if len(missing) > 0 {
-		fmt.Fprintf(stderr, "Missing required config for sync: %s\n", strings.Join(missing, ", "))
-		return ExitFailure
-	}
-
+// withRunLock serializes the command on collector-run.lock. The TS CLI takes
+// this lock for all three commands, not just sync, so a preview cannot race
+// a running sync's cursor writes.
+func withRunLock(stateDir string, stderr io.Writer, body func() int) int {
 	lock, err := state.Acquire(filepath.Join(stateDir, "collector-run.lock"), 35*time.Second)
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
@@ -122,7 +124,21 @@ func runSync(ctx context.Context, options Options, env Env, stateDir string, std
 		return ExitFailure
 	}
 	defer func() { _ = lock.Release() }()
+	return body()
+}
 
+func runSync(ctx context.Context, options Options, env Env, stateDir string, stdout, stderr io.Writer) int {
+	missing := requiredSyncConfig(options)
+	if len(missing) > 0 {
+		fmt.Fprintf(stderr, "Missing required config for sync: %s\n", strings.Join(missing, ", "))
+		return ExitFailure
+	}
+	return withRunLock(stateDir, stderr, func() int {
+		return syncLocked(ctx, options, env, stateDir, stdout, stderr)
+	})
+}
+
+func syncLocked(ctx context.Context, options Options, env Env, stateDir string, stdout, stderr io.Writer) int {
 	snapshots, failures := collectAll(ctx, options, env)
 	collectionFailed := len(failures) > 0 && (options.FailOnSourceErr || options.Source != "all")
 
@@ -214,14 +230,15 @@ func expandSources(source string, hookMode bool) []contract.Source {
 	return contract.AllSources()
 }
 
+// expandWarmHookSources mirrors the TS expandSources for warm-hooks: every
+// concrete source is reported as warmed, including the non-hook sources
+// whose warm step is currently a no-op. Only "all" narrows to the two
+// hook-installed sources.
 func expandWarmHookSources(source string) []string {
 	if source == "all" {
 		return []string{string(contract.SourceClaudeCode), string(contract.SourceCodex)}
 	}
-	if source == string(contract.SourceClaudeCode) || source == string(contract.SourceCodex) {
-		return []string{source}
-	}
-	return nil
+	return []string{source}
 }
 
 func requiredSyncConfig(options Options) []string {
@@ -296,26 +313,28 @@ func supportsUntil(options Options) bool {
 		(options.Source == string(contract.SourceClaudeCode) || options.Source == string(contract.SourceCodex))
 }
 
-// readFlags accepts `--key value`, `--key=value` and `--key` (bare boolean,
-// ignored here since the CLI has no boolean flags that need a value).
+// readFlags mirrors the TS readFlags: non-flag arguments are silently
+// ignored, every flag must be followed by a value, and a flag at the end of
+// the line or right before another flag is a usage error ("Missing value
+// for --key") — a bare flag must never fall back to the environment default.
+// `--key=value` is a deliberate Go extension the TS parser does not accept.
 func readFlags(args []string) (map[string]string, error) {
 	flags := map[string]string{}
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
 		if !strings.HasPrefix(arg, "--") {
-			return nil, fmt.Errorf("unexpected argument: %s", arg)
+			continue
 		}
 		body := strings.TrimPrefix(arg, "--")
 		if key, value, found := strings.Cut(body, "="); found {
 			flags[key] = value
 			continue
 		}
-		if index+1 < len(args) && !strings.HasPrefix(args[index+1], "--") {
-			flags[body] = args[index+1]
-			index++
-			continue
+		if index+1 >= len(args) || strings.HasPrefix(args[index+1], "--") {
+			return nil, fmt.Errorf("Missing value for --%s", body)
 		}
-		flags[body] = ""
+		flags[body] = args[index+1]
+		index++
 	}
 	return flags, nil
 }
@@ -341,8 +360,12 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// localTimezone mirrors the TS default: the machine's IANA zone (TS reads it
+// from Intl, which honors TZ). time.Local resolves TZ or /etc/localtime the
+// same way; when the runtime cannot name a zone ("Local") it falls back to
+// UTC rather than failing the run.
 func localTimezone() string {
-	if name := os.Getenv("TZ"); name != "" {
+	if name := time.Local.String(); name != "" && name != "Local" && contract.IsValidTimezone(name) {
 		return name
 	}
 	return "UTC"
@@ -357,7 +380,7 @@ func assertValidTimezone(value string) error {
 	}
 	if !contract.IsValidTimezone(timezone) {
 		return fmt.Errorf(
-			"Invalid timezone: %s. If the zone is spelled correctly, this build may lack timezone data; set TOKENBOARD_TIMEZONE explicitly",
+			"Invalid timezone: %s. If the zone is spelled correctly, the runtime may lack ICU timezone data; set TOKENBOARD_TIMEZONE explicitly or use a full-icu runtime",
 			timezone)
 	}
 	return nil

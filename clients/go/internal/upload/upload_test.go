@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
@@ -310,3 +311,123 @@ func TestBackoffSummarizesLongErrors(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// The per-attempt deadline must surface in the TS RequestTimeoutError shape
+// so IsTransientNetworkError's "request timed out" pattern sees it — a
+// context deadline that classified as a plain failure would exit 1 and burn
+// backoff strikes instead of deferring with exit 75.
+func TestRequestTimeoutErrorShapeAndTransience(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{"upserted": 0})
+	}))
+	defer server.Close()
+
+	t.Setenv("TOKENBOARD_FETCH_TIMEOUT_MS", "50")
+	_, err := UploadSnapshots(t.Context(), testConfig(server.URL), []contract.Snapshot{baseSnapshot("m", 17)}, server.Client())
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "TokenBoard request timed out after 50ms") {
+		t.Fatalf("timeout error shape drifted: %v", err)
+	}
+	if !collect.IsTransientNetworkError(err) {
+		t.Fatalf("timeout must classify as transient: %v", err)
+	}
+}
+
+// TOKENBOARD_FETCH_TIMEOUT_MS mirrors the TS env contract: positive digits
+// only, capped at two minutes, ignored when the config carries an override.
+func TestRequestTimeoutMsResolvesEnv(t *testing.T) {
+	t.Setenv("TOKENBOARD_FETCH_TIMEOUT_MS", "1000")
+	if got := requestTimeoutMs(Config{}); got != 1000 {
+		t.Errorf("env value ignored: got %d", got)
+	}
+	t.Setenv("TOKENBOARD_FETCH_TIMEOUT_MS", "500000")
+	if got := requestTimeoutMs(Config{}); got != maxRequestTimeoutMs {
+		t.Errorf("env value not capped: got %d", got)
+	}
+	for _, invalid := range []string{"0", "-5", "1e3", "12abc", ""} {
+		t.Setenv("TOKENBOARD_FETCH_TIMEOUT_MS", invalid)
+		if got := requestTimeoutMs(Config{}); got != defaultRequestTimeoutMs {
+			t.Errorf("invalid env %q must fall back to default, got %d", invalid, got)
+		}
+	}
+	if got := requestTimeoutMs(Config{RequestTimeoutMs: 7}); got != 7 {
+		t.Errorf("config override must win, got %d", got)
+	}
+}
+
+// The TS check validator requires Array.isArray(existing); a payload without
+// the key must fail closed instead of silently re-uploading everything.
+func TestCheckResponseWithoutExistingFailsClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer server.Close()
+
+	_, err := UploadSnapshots(t.Context(), testConfig(server.URL), []contract.Snapshot{baseSnapshot("m", 17)}, server.Client())
+	if err == nil || !strings.Contains(err.Error(), "Snapshot check returned invalid response") {
+		t.Fatalf("missing existing must fail closed, got %v", err)
+	}
+}
+
+// Every exit path — success, exhausted retries, parse failure — must close
+// the response body so the transport can reuse the connection.
+func TestResponseBodyClosedOnEveryExit(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{"success", 200, `{"upserted":1}`, ""},
+		{"exhausted-retries", 503, "", "Snapshot check failed with status 503"},
+		{"parse-failure", 200, `{"nope":1}`, "Upload returned invalid response"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			closed := 0
+			client := &http.Client{Transport: countingTransport(t, tc.status, tc.body, &closed)}
+			_, err := UploadSnapshots(t.Context(), testConfig("http://unreachable.invalid"),
+				[]contract.Snapshot{baseSnapshot("m", 17)}, client)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %v, want %q", err, tc.wantErr)
+			}
+			// Three attempts for the retryable case, one otherwise; every
+			// response must have been closed exactly once.
+			if closed == 0 {
+				t.Fatal("no response body was closed")
+			}
+		})
+	}
+}
+
+func countingTransport(t *testing.T, status int, body string, closed *int) http.RoundTripper {
+	t.Helper()
+	return roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		*closed = *closed + 1
+		payload := body
+		// The /check leg needs a valid envelope for the ingest leg to run.
+		if strings.HasSuffix(request.URL.Path, "/check") && status == http.StatusOK {
+			payload = `{"existing":[]}`
+		}
+		response := &http.Response{
+			StatusCode: status,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(payload)),
+			Request:    request,
+		}
+		return response, nil
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}

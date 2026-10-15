@@ -211,6 +211,12 @@ func parseCheckResponse(response *http.Response) (parsedResponse, error) {
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return parsedResponse{}, fmt.Errorf("Snapshot check returned invalid response")
 	}
+	// The TS validator requires Array.isArray(value.existing); a missing key
+	// is a contract breakage, not an empty history — treating it as empty
+	// would silently re-upload everything.
+	if payload.Existing == nil {
+		return parsedResponse{}, fmt.Errorf("Snapshot check returned invalid response")
+	}
 	for _, row := range payload.Existing {
 		if !contract.IsValidIsoDate(row.UsageDate) || row.Model == "" ||
 			len(row.Model) > contract.MaxUsageModelNameLength || !snapshotHashPattern.MatchString(row.SnapshotHash) ||
@@ -241,11 +247,12 @@ var snapshotHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // postWithRetries mirrors fetchWithRetries: up to three attempts, retrying
 // transport errors and the transient statuses (408/429/5xx), honoring
-// Retry-After capped at 5s, with a per-attempt deadline.
+// Retry-After capped at 5s. The per-attempt deadline covers body consumption
+// too, matching the TS deadline around fetch plus consumeResponse.
 func postWithRetries(ctx context.Context, config Config, url string, body []byte, client *http.Client, parse responseParser) (parsedResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < transientFetchAttempts; attempt++ {
-		response, err := postOnce(ctx, config, url, body, client)
+		response, cancel, err := postOnce(ctx, config, url, body, client)
 		if err != nil {
 			lastErr = err
 			if attempt < transientFetchAttempts-1 {
@@ -254,17 +261,24 @@ func postWithRetries(ctx context.Context, config Config, url string, body []byte
 			continue
 		}
 		if isRetryableStatus(response.StatusCode) {
+			drainAndClose(response)
+			cancel()
 			if attempt == transientFetchAttempts-1 {
 				return parsedResponse{}, statusError(url, response.StatusCode)
 			}
 			sleepWithContext(ctx, retryDelay(response, attempt, config.RetryDelayMs))
 			continue
 		}
-		parsed, err := parse(response)
+		parsed, err := consumeParsed(response, cancel, parse)
 		if err != nil {
 			// A well-formed response with an unexpected body is a contract
 			// breakage, not a transient condition: no retry, like the TS
-			// ResponseParsingError path.
+			// ResponseParsingError path. The exception is a body read the
+			// deadline cut short — that is a timeout, reported in the TS
+			// RequestTimeoutError shape so it classifies as transient.
+			if timedOut := requestDeadlineExceeded(ctx, config, err); timedOut != nil {
+				return parsedResponse{}, timedOut
+			}
 			return parsedResponse{}, err
 		}
 		return parsed, nil
@@ -275,23 +289,64 @@ func postWithRetries(ctx context.Context, config Config, url string, body []byte
 	return parsedResponse{}, errors.New("upload: retries exhausted")
 }
 
-func postOnce(ctx context.Context, config Config, url string, body []byte, client *http.Client) (*http.Response, error) {
-	timeout := time.Duration(config.RequestTimeoutMs) * time.Millisecond
-	if timeout <= 0 {
-		timeout = defaultRequestTimeoutMs * time.Millisecond
-	}
-	if maxTimeout := maxRequestTimeoutMs * time.Millisecond; timeout > maxTimeout {
-		timeout = maxTimeout
-	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+// consumeParsed runs the parser and drains the body inside the per-attempt
+// deadline. cancel must only fire after the body is fully consumed: a cancel
+// before the read would surface large or slow responses as spurious
+// canceled-read parse failures instead of timeouts.
+func consumeParsed(response *http.Response, cancel context.CancelFunc, parse responseParser) (parsedResponse, error) {
 	defer cancel()
+	parsed, err := parse(response)
+	drainAndClose(response)
+	return parsed, err
+}
+
+// requestDeadlineExceeded reports the TS-shaped timeout error when err was
+// caused by the per-attempt deadline (and not the caller's context). The
+// wording matches RequestTimeoutError so IsTransientNetworkError's
+// "request timed out" pattern sees it and the scheduled runner retries.
+func requestDeadlineExceeded(parent context.Context, config Config, err error) error {
+	if !errors.Is(err, context.DeadlineExceeded) || parent.Err() != nil {
+		return nil
+	}
+	return fmt.Errorf("TokenBoard request timed out after %dms", requestTimeoutMs(config))
+}
+
+func postOnce(ctx context.Context, config Config, url string, body []byte, client *http.Client) (*http.Response, context.CancelFunc, error) {
+	timeoutMs := requestTimeoutMs(config)
+	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		cancel()
+		return nil, nil, err
 	}
 	request.Header.Set("authorization", "Bearer "+config.UploadToken)
 	request.Header.Set("content-type", "application/json")
-	return client.Do(request)
+	response, err := client.Do(request)
+	if err != nil {
+		cancel()
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, nil, fmt.Errorf("TokenBoard request timed out after %dms", timeoutMs)
+		}
+		return nil, nil, err
+	}
+	return response, cancel, nil
+}
+
+// requestTimeoutMs resolves the per-request deadline: the Config override
+// first, then TOKENBOARD_FETCH_TIMEOUT_MS (strictly positive digits, like
+// the TS env check), capped at two minutes, else the 30s default.
+var positiveDigitsPattern = regexp.MustCompile(`^[1-9]\d*$`)
+
+func requestTimeoutMs(config Config) int {
+	if config.RequestTimeoutMs > 0 {
+		return min(config.RequestTimeoutMs, maxRequestTimeoutMs)
+	}
+	if raw := strings.TrimSpace(os.Getenv("TOKENBOARD_FETCH_TIMEOUT_MS")); raw != "" && positiveDigitsPattern.MatchString(raw) {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			return min(parsed, maxRequestTimeoutMs)
+		}
+	}
+	return defaultRequestTimeoutMs
 }
 
 func isRetryableStatus(status int) bool {
@@ -314,6 +369,11 @@ func statusError(url string, status int) error {
 func retryDelay(response *http.Response, attempt, configuredMs int) time.Duration {
 	if response != nil {
 		if header := response.Header.Get("Retry-After"); header != "" {
+			// Numeric seconds are accepted the same way as TS, but a
+			// non-numeric value is parsed more strictly: http.ParseTime
+			// understands the three HTTP date forms while the TS side
+			// falls back to Date.parse, so an unusual date the server sends
+			// fails here and drops to the default backoff instead.
 			if seconds, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && seconds >= 0 && !math.IsInf(seconds, 0) {
 				return min(time.Duration(seconds*float64(time.Second)), maxRetryDelayMs*time.Millisecond)
 			}
@@ -388,7 +448,9 @@ func LoadBackoff(stateDir string) *BackoffState {
 		return nil
 	}
 	var state BackoffState
-	if json.Unmarshal(data, &state) != nil || state.LastErrorSummary == "" {
+	// The TS loader only requires lastErrorSummary to be a string; an empty
+	// one is a valid (if odd) state, not an absent one.
+	if json.Unmarshal(data, &state) != nil {
 		return nil
 	}
 	return &state
@@ -448,12 +510,14 @@ func writeBackoff(stateDir string, state BackoffState) {
 	}
 }
 
-// Summarize truncates an error message to 200 bytes with an ellipsis, the
-// same shape the TS backoff stores.
+// Summarize truncates an error message to 200 characters with an ellipsis,
+// the same shape the TS backoff stores. The cut counts runes, not bytes:
+// slicing bytes could split a multi-byte character and store invalid UTF-8.
 func Summarize(uploadErr error) string {
 	message := uploadErr.Error()
-	if len(message) > 200 {
-		return message[:197] + "…"
+	runes := []rune(message)
+	if len(runes) > 200 {
+		return string(runes[:197]) + "…"
 	}
 	return message
 }

@@ -8,6 +8,7 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,9 +137,13 @@ func newOwner() (LockOwner, error) {
 	}, nil
 }
 
-// Release removes the lock only if it still carries our token (another
-// process may have cleared a stale version and re-locked). Mirrors
-// releaseLock's token check.
+// Release removes the lock only if it still carries our token and pid
+// (another process may have cleared a stale version and re-locked). The
+// check and the removal are made atomic by removeLockRecord's
+// quarantine-rename: only the process that wins the rename gets to inspect
+// and delete the file, so a foreign lock acquired in between is restored,
+// never overwritten. Mirrors the TS releaseLock token/pid checks and its
+// removeLockRecord cleanup.
 func (l *Lock) Release() error {
 	if l == nil || l.released {
 		return nil
@@ -152,15 +157,19 @@ func (l *Lock) Release() error {
 		return err
 	}
 	var owner LockOwner
-	if err := json.Unmarshal(data, &owner); err != nil || owner.Token != l.Owner.Token {
+	if err := json.Unmarshal(data, &owner); err != nil ||
+		owner.Token != l.Owner.Token || owner.PID != os.Getpid() {
 		// Not ours anymore; leaving it alone is correct.
 		return nil
 	}
-	return os.Remove(l.Path)
+	_, err = removeLockRecord(l.Path, data)
+	return err
 }
 
 // removeStale clears the lock file when its owner is provably dead. A live
 // or indeterminate holder is left in place (conservative, like the TS probe).
+// The removal itself goes through removeLockRecord so a lock another process
+// acquired after we observed this one is never deleted.
 func removeStale(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -173,16 +182,64 @@ func removeStale(path string) error {
 	if err := json.Unmarshal(data, &record); err != nil {
 		// Unparseable lock file: nothing can vouch for it. Removing is what
 		// the TS side does when the record is unreadable.
-		return os.Remove(path)
+		_, err = removeLockRecord(path, data)
+		return err
 	}
 	if record.PID <= 0 {
-		return os.Remove(path)
+		_, err = removeLockRecord(path, data)
+		return err
 	}
-	status := ProbeLiveness(record.PID, record.ProcessStartIdentity)
-	if status == LivenessDead {
-		return os.Remove(path)
+	if ProbeLiveness(record.PID, record.ProcessStartIdentity) != LivenessDead {
+		return nil // alive or indeterminate: keep waiting
 	}
-	return nil // alive or indeterminate: keep waiting
+	_, err = removeLockRecord(path, data)
+	return err
+}
+
+// removeLockRecord removes path only when its bytes still equal the raw
+// content observed before the decision to remove was made. It renames the
+// file to a private quarantine name (atomic and exclusive), re-reads it
+// there, restores it via link on any mismatch, and unlinks only on a match.
+// This is the TS removeLockRecord's protection against the classic race:
+// two contenders both see a stale lock, one removes and re-locks, and a
+// plain os.Remove by the other would delete the new holder's live lock.
+func removeLockRecord(path string, expectedRaw []byte) (bool, error) {
+	aside := quarantinePath(path)
+	if err := os.Rename(path, aside); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	current, err := os.ReadFile(aside)
+	if err != nil || !bytes.Equal(current, expectedRaw) {
+		restoreAside(path, aside)
+		return false, nil
+	}
+	if err := os.Remove(aside); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		restoreAside(path, aside)
+		return false, err
+	}
+	return true, nil
+}
+
+// quarantinePath is unique per caller so concurrent releases in one process
+// never share a quarantine name.
+func quarantinePath(path string) string {
+	return fmt.Sprintf("%s.release-%d-%d", path, os.Getpid(), time.Now().UnixNano())
+}
+
+// restoreAside puts a quarantined file back. link, not rename: when another
+// process re-created the lock at path while this copy was quarantined, link
+// fails with EEXIST and that other lock is left untouched. Every other
+// failure is tolerable too (the next staleness pass re-evaluates), so the
+// error is deliberately ignored after best effort.
+func restoreAside(path, aside string) {
+	_ = os.Link(aside, path)
+	_ = os.Remove(aside)
 }
 
 func hexEncode(data []byte) string {
