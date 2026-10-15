@@ -780,16 +780,59 @@ describe('worker server', () => {
     expect(statements).toContain('GROUP BY user_id, usage_date, source, model')
     expect(statements).toContain('INSERT INTO daily_usage_summary')
     expect(statements).toContain('FROM webhook_subscriptions')
+    // The 10:00 run is outside the daily maintenance window, so the retention prunes and the
+    // rate-limit cleanup stay idle: they only run once per UTC day.
+    expect(statements).not.toContain('DELETE FROM api_rate_limits')
+    expect(statements).not.toContain('DELETE FROM pairing_codes')
+    expect(statements).not.toContain('DELETE FROM audit_logs')
+    expect(statements).not.toContain('aggregate_usage AS')
+    expect(env.boundValues.some((values) => values.includes('2026-04-29T10:00:00.000Z'))).toBe(true)
+    expect(env.boundValues.some((values) => values.at(-1) === 76)).toBe(true)
+    // One batch from the summary backfill; rate-limit cleanup, device retention and the empty
+    // webhook queue do not call D1 batch outside the daily window.
+    expect(env.DB.batch).toHaveBeenCalledTimes(1)
+  })
+
+  test('scheduled handler runs the daily prunes in the first maintenance window of the UTC day', async () => {
+    const env = createEnv({ dueSubscription: false })
+    const ctx = createExecutionContext()
+
+    worker.scheduled?.(
+      {
+        scheduledTime: Date.parse('2026-04-29T00:00:00.000Z'),
+        cron: '*/15 * * * *',
+        noRetry() {}
+      },
+      env,
+      ctx
+    )
+    expect(ctx.waitUntilPromises).toHaveLength(1)
+    await Promise.all(ctx.waitUntilPromises)
+
+    const statements = env.sqlStatements.join('\n')
     expect(statements).toContain('DELETE FROM api_rate_limits')
-    expect(statements).toContain('julianday(reset_at) IS NULL OR julianday(reset_at) <= julianday(?)')
     expect(statements).toContain('DELETE FROM pairing_codes')
     expect(statements).toContain('DELETE FROM audit_logs')
-    expect(statements).not.toContain('aggregate_usage AS')
-    expect(env.boundValues).toContainEqual(['2026-04-29T10:00:00.000Z'])
-    expect(env.boundValues.some((values) => values.at(-1) === 76)).toBe(true)
-    // One batch from the summary backfill plus one from device-retention (its two deletes run
-    // together); rate-limit cleanup and the empty webhook queue do not call D1 batch.
-    expect(env.DB.batch).toHaveBeenCalledTimes(2)
+  })
+
+  test('the daily maintenance window is skipped on later ticks of the same hour', async () => {
+    const env = createEnv({ dueSubscription: false })
+    const ctx = createExecutionContext()
+
+    worker.scheduled?.(
+      {
+        scheduledTime: Date.parse('2026-04-29T00:30:00.000Z'),
+        cron: '*/15 * * * *',
+        noRetry() {}
+      },
+      env,
+      ctx
+    )
+    await Promise.all(ctx.waitUntilPromises)
+
+    const statements = env.sqlStatements.join('\n')
+    expect(statements).not.toContain('DELETE FROM api_rate_limits')
+    expect(statements).not.toContain('DELETE FROM pairing_codes')
   })
 
   test('scheduled handler refreshes the model pricing catalogue when enabled', async () => {
@@ -812,9 +855,10 @@ describe('worker server', () => {
 
       expect(globalThis.fetch).toHaveBeenCalledOnce()
       expect(env.sqlStatements.join('\n')).toContain('model_pricing_sync_state')
-      expect(env.sqlStatements.join('\n')).toContain('DELETE FROM pairing_codes')
+      // 10:00 is outside the daily maintenance window, so the retention prunes stay idle.
+      expect(env.sqlStatements.join('\n')).not.toContain('DELETE FROM pairing_codes')
       // Publish batch + the separate post-publish staging cleanup batch.
-      expect(env.DB.batch).toHaveBeenCalledTimes(5)
+      expect(env.DB.batch).toHaveBeenCalledTimes(4)
     } finally {
       globalThis.fetch = originalFetch
     }
