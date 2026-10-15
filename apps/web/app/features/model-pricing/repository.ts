@@ -251,6 +251,8 @@ export async function replaceModelPricing(input: {
 export type ModelPricingDiff = {
   changes: NormalizedModelPricing[]
   removals: Array<{ provider: string; modelId: string }>
+  /** Keys whose stored row was positively priced and the source now reports 0/0. */
+  zeroFlips: string[]
 }
 
 async function diffModelPricingCatalogue(input: {
@@ -262,6 +264,7 @@ async function diffModelPricingCatalogue(input: {
   const storedByKey = new Map(stored.map((row) => [catalogueKey(row.provider, row.modelId), row]))
   const sourceKeys = new Set<string>()
   const changes: NormalizedModelPricing[] = []
+  const zeroFlips: string[] = []
   for (const model of input.models) {
     const key = catalogueKey(model.provider, model.modelId)
     sourceKeys.add(key)
@@ -272,12 +275,32 @@ async function diffModelPricingCatalogue(input: {
     // changed so the publish overwrites it instead of freezing the sync.
     if (!row || !row.content || !storedRowMatchesModel(row.content, model, input.sourceUrl)) {
       changes.push(model)
+      // A legitimate free launch and an upstream 0-price regression look identical here, so
+      // the publish still applies the source — but the flip is reported instead of passing
+      // silently, because weeks of zeroed collector costs are how the regression gets noticed.
+      if (row?.content && storedRowIsPositive(row.content) && !sourceRowIsPositive(model)) {
+        zeroFlips.push(key)
+      }
     }
   }
   const removals = stored
     .filter((row) => !sourceKeys.has(catalogueKey(row.provider, row.modelId)))
     .map((row) => ({ provider: row.provider, modelId: row.modelId }))
-  return { changes, removals }
+  return { changes, removals, zeroFlips }
+}
+
+function storedRowIsPositive(row: NormalizedModelPricing) {
+  const pricing = readRowPricing(row)
+  return pricing.input > 0 || pricing.output > 0
+}
+
+function sourceRowIsPositive(model: NormalizedModelPricing) {
+  const pricing = readRowPricing(model)
+  return pricing.input > 0 || pricing.output > 0
+}
+
+function readRowPricing(row: NormalizedModelPricing): { input: number; output: number } {
+  return { input: row.inputCostPerMillion, output: row.outputCostPerMillion }
 }
 
 function storedRowMatchesModel(

@@ -872,7 +872,8 @@ describe('worker server', () => {
       status: 'success',
       modelCount: 1,
       sourceUpdatedAt: null,
-      completedAt: executionTime.toISOString()
+      completedAt: executionTime.toISOString(),
+      zeroFlips: []
     }))
 
     try {

@@ -56,7 +56,7 @@ describe('model pricing sync route', () => {
     mockedVerify.mockResolvedValue(true)
     mockedParse.mockReturnValue('secret')
     mockedEnabled.mockReturnValue(true)
-    mockedRun.mockResolvedValue({ status: 'success', modelCount: 3, sourceUpdatedAt: '2026-08-07' })
+    mockedRun.mockResolvedValue({ status: 'success', modelCount: 3, sourceUpdatedAt: '2026-08-07', zeroFlips: [] })
     mockedState.mockResolvedValue({
       status: 'success',
       sourceUrl: 'https://models.dev/api.json',
@@ -252,7 +252,7 @@ describe('model pricing sync route', () => {
     mockedParse.mockReturnValue('secret')
     mockedRateLimitAvailable.mockResolvedValue()
     mockedEnabled.mockReturnValue(true)
-    mockedRun.mockResolvedValue({ status: 'success', modelCount: 0, sourceUpdatedAt: null })
+    mockedRun.mockResolvedValue({ status: 'success', modelCount: 0, sourceUpdatedAt: null, zeroFlips: [] })
     mockedState.mockResolvedValue(null)
     const request = new Request('https://tokenboard.example/api/v1/model-pricing/sync', {
       method: 'POST',

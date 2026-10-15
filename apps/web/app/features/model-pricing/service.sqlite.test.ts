@@ -51,7 +51,7 @@ describe('model pricing SQLite contract', () => {
           return new Response(JSON.stringify(sourceFixture()))
         }
       })
-    ).resolves.toEqual({ status: 'skipped', reason: 'not-due' })
+    ).resolves.toEqual({ status: 'skipped', reason: 'not-due', zeroFlips: [] })
     expect(fetchCount).toBe(1)
 
     const recovered = await runModelPricingSync({
@@ -88,7 +88,7 @@ describe('model pricing SQLite contract', () => {
     const catalogue = await getModelPricing({ db })
 
     expect(first).toMatchObject({ status: 'success', modelCount: 4 })
-    expect(second).toEqual({ status: 'skipped', reason: 'not-due' })
+    expect(second).toEqual({ status: 'skipped', reason: 'not-due', zeroFlips: [] })
     expect(catalogue.state).toMatchObject({ status: 'success', modelCount: 4 })
     expect(catalogue.models.map((model) => model.modelId)).toEqual([
       'claude-sonnet-5',
@@ -182,6 +182,63 @@ describe('model pricing SQLite contract', () => {
         "SELECT model_id, fetched_at, sync_generation FROM model_pricing WHERE model_id != 'gpt-5.6-sol' ORDER BY model_id"
       )
     ).toBe(untouched)
+  })
+
+  // A models.dev upstream regression that reports 0/0 for a previously priced row would
+  // silently reprice every collector to free. The publish still applies the source (a
+  // legitimate free launch looks identical), but the sync result names the flipped models
+  // so the operator sees it instead of discovering a zeroed bill weeks later.
+  test('reports rows whose positive price the source flipped to zero', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+
+    await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(sourceFixture()))
+    })
+    const zeroed = sourceFixture()
+    const sol = (zeroed.openai.models as Record<string, unknown>)['gpt-5.6-sol'] as { cost: Record<string, number> }
+    sol.cost.input = 0
+    sol.cost.output = 0
+    const result = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(zeroed))
+    })
+
+    expect(result.status).toBe('success')
+    expect(result.zeroFlips).toEqual([JSON.stringify(['openai', 'gpt-5.6-sol'])])
+  })
+
+  test('a zero-priced row that stays zero is not reported as a flip', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+    const zeroed = sourceFixture()
+    const sol = (zeroed.openai.models as Record<string, unknown>)['gpt-5.6-sol'] as { cost: Record<string, number> }
+    sol.cost.input = 0
+    sol.cost.output = 0
+
+    const first = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(zeroed))
+    })
+    const second = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(zeroed))
+    })
+    expect(first.zeroFlips).toEqual([])
+    expect(second.zeroFlips ?? []).toEqual([])
   })
 
   test('reactivates a previously removed model when the source republishes it', async () => {
@@ -573,7 +630,7 @@ describe('model pricing SQLite contract', () => {
           throw new Error('should not fetch while completion interval is current')
         }
       })
-      expect(second).toEqual({ status: 'skipped', reason: 'not-due' })
+      expect(second).toEqual({ status: 'skipped', reason: 'not-due', zeroFlips: [] })
     } finally {
       dateNow.mockRestore()
     }

@@ -42,6 +42,10 @@ export type ModelPricingSyncResult = {
   // A forced sync with an identical catalogue still publishes — it advances the generation,
   // invalidating cursors and ETags — but reports changed: false, because no row was written.
   changed?: boolean
+  // Catalogue keys a previously positively-priced source row now reports as 0/0: a legitimate
+  // free launch and an upstream regression are indistinguishable here, so the publish applies
+  // the source and this list names what flipped for the operator to verify.
+  zeroFlips: string[]
 }
 
 export async function runModelPricingSync(input: {
@@ -68,7 +72,7 @@ export async function runModelPricingSync(input: {
   })
   if (!claimed) {
     const locked = await isModelPricingSyncLocked(input.env.DB, now)
-    return { status: 'skipped', reason: locked ? 'locked' : 'not-due' }
+    return { status: 'skipped', reason: locked ? 'locked' : 'not-due', zeroFlips: [] }
   }
 
   let syncGeneration: string | null = null
@@ -107,7 +111,8 @@ export async function runModelPricingSync(input: {
         modelCount: snapshot.models.length,
         sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
         completedAt: completedAt.toISOString(),
-        changed: false
+        changed: false,
+        zeroFlips: []
       }
     }
     await markModelPricingSyncSuccess({
@@ -127,7 +132,8 @@ export async function runModelPricingSync(input: {
       modelCount: snapshot.models.length,
       sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
       completedAt: completedAt.toISOString(),
-      changed: diff.changes.length > 0 || diff.removals.length > 0
+      changed: diff.changes.length > 0 || diff.removals.length > 0,
+      zeroFlips: diff.zeroFlips
     }
   } catch (error) {
     const message = errorMessage(error)

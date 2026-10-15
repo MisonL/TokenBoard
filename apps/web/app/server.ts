@@ -211,7 +211,14 @@ function isDailyMaintenanceWindow(now: Date) {
 async function runScheduledModelPricing(env: Bindings) {
   try {
     if (!modelPricingSyncEnabled(env)) return
-    await runModelPricingSync({ env, now: new Date() })
+    const result = await runModelPricingSync({ env, now: new Date() })
+    if (result.status === 'success' && result.zeroFlips.length > 0) {
+      console.error(
+        `TokenBoard model pricing sync: ${result.zeroFlips.length} model(s) flipped to a zero price by the source — ` +
+          'a legitimate free launch or an upstream regression; verify before trusting the affected costs: ' +
+          result.zeroFlips.join(', ')
+      )
+    }
   } catch (error) {
     console.error(`TokenBoard model pricing sync failed: ${errorMessage(error)}`)
     throw error

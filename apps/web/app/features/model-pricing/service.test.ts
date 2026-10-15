@@ -44,7 +44,7 @@ describe('model pricing service', () => {
         now: new Date('2026-08-07T00:00:00.000Z'),
         fetcher
       })
-    ).resolves.toEqual({ status: 'skipped', reason: 'locked' })
+    ).resolves.toEqual({ status: 'skipped', reason: 'locked', zeroFlips: [] })
     expect(fetcher).not.toHaveBeenCalled()
     expect(db.batch).not.toHaveBeenCalled()
   })
@@ -58,7 +58,7 @@ describe('model pricing service', () => {
         now: new Date('2026-08-07T00:00:00.000Z'),
         fetcher: vi.fn()
       })
-    ).resolves.toEqual({ status: 'skipped', reason: 'not-due' })
+    ).resolves.toEqual({ status: 'skipped', reason: 'not-due', zeroFlips: [] })
   })
 
   test('preserves the old rows when the source fails and records the failure', async () => {
