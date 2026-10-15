@@ -50,6 +50,30 @@ describe('ccusage pricing configuration', () => {
 
     expect(config.defaults.pricingOverrides['gpt-5.4-pro']).not.toHaveProperty('cacheReadInputTokenCost')
   })
+
+  // Static fallback pricing is only pinned for models a single authoritative source prices
+  // (or that are free), so a bundled number cannot drift away from a multi-provider market.
+  test('pins only unambiguous fallback prices for the free and single-source models', async () => {
+    const config = await readConfig()
+    const pricing = config.defaults.pricingOverrides
+
+    expect(pricing['LongCat-2.5-Preview']).toEqual({
+      inputCostPerToken: 0.75 / 1_000_000,
+      outputCostPerToken: 2.95 / 1_000_000,
+      cacheReadInputTokenCost: 0.015 / 1_000_000,
+      maxInputTokens: 1_000_000
+    })
+    expect(pricing['deepseek-flash']).toEqual({
+      inputCostPerToken: 0.15 / 1_000_000,
+      outputCostPerToken: 0.6 / 1_000_000,
+      cacheReadInputTokenCost: 0.003 / 1_000_000,
+      maxInputTokens: 1_000_000
+    })
+    expect(pricing['deepseek/deepseek-flash']).toEqual(pricing['deepseek-flash'])
+    for (const free of ['longcat-2.5-preview-free', 'MiniMax-M3.1-Flash-Preview', 'step-5-preview-free']) {
+      expect(pricing[free]).toMatchObject({ inputCostPerToken: 0, outputCostPerToken: 0 })
+    }
+  })
 })
 
 async function readConfig() {
