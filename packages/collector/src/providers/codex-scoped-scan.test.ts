@@ -356,7 +356,7 @@ describe('collectCodexUsage scoped since scans', () => {
       {
         command: '/opt/bin/bunx',
         args: [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'codex',
           'daily',
           '--json',
@@ -370,7 +370,7 @@ describe('collectCodexUsage scoped since scans', () => {
       {
         command: '/opt/bin/bunx',
         args: [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'codex',
           'session',
           '--json',
@@ -384,7 +384,7 @@ describe('collectCodexUsage scoped since scans', () => {
       {
         command: '/opt/bin/bunx',
         args: [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'codex',
           'session',
           '--json',
@@ -558,7 +558,7 @@ function codexCall(report: 'daily' | 'session') {
   return {
     command: platformCommand('npx'),
     args: [
-      'ccusage@20.0.31',
+      'ccusage@20.0.33',
       'codex',
       report,
       '--json',

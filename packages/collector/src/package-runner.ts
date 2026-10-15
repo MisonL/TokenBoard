@@ -7,7 +7,7 @@ export type PackageRunner = {
   runPackageArgs(packageName: string, binaryName: string, packageArgs: string[]): string[]
 }
 
-export const ccusagePackageSpecifier = 'ccusage@20.0.31'
+export const ccusagePackageSpecifier = 'ccusage@20.0.33'
 
 export function resolvePackageRunner(
   packageManager: string | undefined = undefined,

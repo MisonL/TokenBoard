@@ -82,7 +82,7 @@ describe('Claude hook sync collection', () => {
 
       expect(calls).toEqual([
         [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'claude',
           'daily',
           '--json',
@@ -96,7 +96,7 @@ describe('Claude hook sync collection', () => {
           ...bundledCcusageConfigArgs
         ],
         [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'claude',
           'session',
           '--json',
@@ -201,7 +201,7 @@ describe('Claude hook sync collection', () => {
 
       expect(calls).toEqual([
         [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'claude',
           'daily',
           '--json',
@@ -215,7 +215,7 @@ describe('Claude hook sync collection', () => {
           ...bundledCcusageConfigArgs
         ],
         [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'claude',
           'session',
           '--json',
@@ -313,7 +313,7 @@ describe('Claude hook sync collection', () => {
 
       expect(calls).toEqual([
         [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'claude',
           'daily',
           '--json',
@@ -327,7 +327,7 @@ describe('Claude hook sync collection', () => {
           ...bundledCcusageConfigArgs
         ],
         [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'claude',
           'session',
           '--json',

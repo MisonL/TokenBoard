@@ -76,7 +76,7 @@ describe('collectCodexUsage', () => {
         {
           command: platformCommand('npx'),
           args: [
-            'ccusage@20.0.31',
+            'ccusage@20.0.33',
             'codex',
             'daily',
             '--json',
@@ -89,7 +89,7 @@ describe('collectCodexUsage', () => {
         {
           command: platformCommand('npx'),
           args: [
-            'ccusage@20.0.31',
+            'ccusage@20.0.33',
             'codex',
             'session',
             '--json',
@@ -1219,7 +1219,7 @@ describe('collectCodexUsage', () => {
       {
         command: platformCommand('npx'),
         args: [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'codex',
           'daily',
           '--json',
@@ -1233,7 +1233,7 @@ describe('collectCodexUsage', () => {
       {
         command: platformCommand('npx'),
         args: [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'codex',
           'session',
           '--json',
@@ -1247,7 +1247,7 @@ describe('collectCodexUsage', () => {
       {
         command: platformCommand('npx'),
         args: [
-          'ccusage@20.0.31',
+          'ccusage@20.0.33',
           'codex',
           'session',
           '--json',
@@ -1286,7 +1286,7 @@ describe('collectCodexUsage', () => {
 
     expect(calls).toEqual([
       [
-        'ccusage@20.0.31',
+        'ccusage@20.0.33',
         'codex',
         'daily',
         '--json',
@@ -1301,7 +1301,7 @@ describe('collectCodexUsage', () => {
         ...bundledCcusageConfigArgs
       ],
       [
-        'ccusage@20.0.31',
+        'ccusage@20.0.33',
         'codex',
         'session',
         '--json',
@@ -1316,7 +1316,7 @@ describe('collectCodexUsage', () => {
         ...bundledCcusageConfigArgs
       ],
       [
-        'ccusage@20.0.31',
+        'ccusage@20.0.33',
         'codex',
         'session',
         '--json',
