@@ -44,6 +44,12 @@ type Snapshot struct {
 // Entry is one tracked session file, or one synthetic key for the Antigravity
 // sources. Booleans that are optional in the format are pointers so an absent
 // field stays absent through a round trip.
+//
+// Known boundary: unmodelled fields *inside* an entry or snapshot are dropped
+// on write (only top-level unknown fields are preserved, via State.extra).
+// Safe today because the cursor writer only ever stores the stripCollectedAt
+// projection plus the fields modelled here; if a future TypeScript collector
+// adds an entry-level field, this struct must gain it too.
 type Entry struct {
 	Size              float64    `json:"size"`
 	MtimeMs           float64    `json:"mtimeMs"`
