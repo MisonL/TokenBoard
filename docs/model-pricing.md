@@ -55,6 +55,12 @@ cursor and ETag invalidation — even when the diff is empty. Rows whose content
 keep the `fetched_at` and generation they were written with; the active view is served by
 `is_active`, not by the generation column.
 
+The sync also reports zero-price flips. A source row that previously carried a positive price and
+now reports 0/0 is applied like any other change — a legitimate free launch and an upstream
+regression are indistinguishable in the diff — and is listed in the sync result's `zeroFlips` (and
+logged by the scheduled handler) so the operator can verify the affected costs before trusting them.
+A row that was already zero-priced is not reported again.
+
 On first deployment, apply migrations `0030_model_pricing.sql` through
 `0034_drop_api_rate_limits_reset_index.sql` in order before publishing the Worker. Migration 0030
 creates the generation state column together with the sync state table; migration 0031 contains only
@@ -146,6 +152,13 @@ priority layer. The generated config is passed through `TOKENBOARD_DYNAMIC_CCUSA
 same package-runner entry point for local binaries, npx, npm, pnpm, and bun.
 For Codex request-level repricing, models explicitly listed in the user's `pricingOverrides` are
 excluded from catalogue and static context rules so the explicit prices remain authoritative.
+
+The catalogue is provider-scoped while usage records carry only a model id. When several provider
+rows share one model id, they are kept only when every positive-priced row agrees exactly on
+input/output/cache prices (and pricing metadata); otherwise the id stays unresolved rather than
+guessing which row applies. Agreeing rows collapse to one representative — preferring the
+official vendor's row for its spec metadata — and zero-priced rows never join a group that has a
+real price, so an official vendor's $0 placeholder cannot silently price a model as free.
 
 The catalogue cache is `TOKENBOARD_STATE_DIR/model-pricing-cache.json`, is written atomically, and
 has a 24-hour TTL. A regular or manual sync refreshes an expired cache with ETag support. Hook mode
