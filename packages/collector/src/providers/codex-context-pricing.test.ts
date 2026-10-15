@@ -19,8 +19,10 @@ import {
   normalizeModelId,
   priceCodexRequest,
   priceCodexContextPricingUsages,
+  selectUnambiguousDynamicPricingModels,
   withCodexContextPricingRules
 } from './codex-context-pricing'
+import type { CollectorPricingModel } from '../model-pricing'
 
 describe('Codex context pricing', () => {
   test('rejects an unbounded full-history scan before opening files', async () => {
@@ -2096,5 +2098,93 @@ describe('Codex session fingerprint memo', () => {
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('dynamic pricing model selection', () => {
+  const priced = (overrides: Partial<CollectorPricingModel> = {}): CollectorPricingModel => ({
+    provider: 'reseller',
+    modelId: 'test-model',
+    inputCostPerMillion: 2,
+    outputCostPerMillion: 10,
+    cacheReadCostPerMillion: 0.1,
+    cacheWriteCostPerMillion: null,
+    contextWindow: 1_000_000,
+    maxInputTokens: null,
+    pricing: {},
+    ...overrides
+  })
+
+  test('keeps single rows and conflicting multi-provider rows as before', () => {
+    const models = [
+      priced({ provider: 'openai', modelId: 'solo-model' }),
+      priced({ provider: 'a', modelId: 'split-model', inputCostPerMillion: 2 }),
+      priced({ provider: 'b', modelId: 'split-model', inputCostPerMillion: 3 })
+    ]
+    const selected = selectUnambiguousDynamicPricingModels(models)
+    // The conflicting id drops out entirely (pre-existing behavior); only the solo row survives.
+    expect(selected.map((model) => model.provider)).toEqual(['openai'])
+  })
+
+  test('collapses multi-provider rows whose non-zero prices all agree', () => {
+    const models = [
+      priced({ provider: 'openai', modelId: 'sol' }),
+      priced({ provider: 'reseller-a', modelId: 'sol' }),
+      priced({ provider: 'reseller-b', modelId: 'sol' })
+    ]
+    const selected = selectUnambiguousDynamicPricingModels(models)
+    expect(selected).toHaveLength(1)
+    expect(selected[0]).toMatchObject({ provider: 'openai', inputCostPerMillion: 2 })
+  })
+
+  test('ignores free-tier zero rows when a positive-priced row exists', () => {
+    const models = [
+      priced({ provider: 'vendor', modelId: 'k3' }),
+      priced({
+        provider: 'promo',
+        modelId: 'k3',
+        inputCostPerMillion: 0,
+        outputCostPerMillion: 0,
+        cacheReadCostPerMillion: 0
+      })
+    ]
+    const selected = selectUnambiguousDynamicPricingModels(models)
+    expect(selected).toHaveLength(1)
+    expect(selected[0]).toMatchObject({ provider: 'vendor' })
+  })
+
+  test('a zero row only collapses with another zero row', () => {
+    const models = [
+      priced({
+        provider: 'promo-a',
+        modelId: 'free-tier',
+        inputCostPerMillion: 0,
+        outputCostPerMillion: 0,
+        cacheReadCostPerMillion: 0
+      }),
+      priced({
+        provider: 'promo-b',
+        modelId: 'free-tier',
+        inputCostPerMillion: 0,
+        outputCostPerMillion: 0,
+        cacheReadCostPerMillion: 0
+      })
+    ]
+    const selected = selectUnambiguousDynamicPricingModels(models)
+    expect(selected).toHaveLength(1)
+  })
+
+  test('cache prices must agree too, not just input/output', () => {
+    const models = [
+      priced({ provider: 'a', modelId: 'cached' }),
+      priced({ provider: 'b', modelId: 'cached', cacheReadCostPerMillion: 0.2 })
+    ]
+    expect(selectUnambiguousDynamicPricingModels(models)).toHaveLength(0)
+  })
+
+  test('prefers the official vendor row as the collapsed representative', () => {
+    const models = [priced({ provider: 'zreseller', modelId: 'gpt' }), priced({ provider: 'openai', modelId: 'gpt' })]
+    const selected = selectUnambiguousDynamicPricingModels(models)
+    expect(selected[0].provider).toBe('openai')
   })
 })

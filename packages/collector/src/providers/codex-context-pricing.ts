@@ -401,10 +401,15 @@ function removeContextPricingRuleForModel(
 
 /**
  * The catalogue is provider-scoped while Codex records only carry a model id.
- * Do not choose one provider's price when more than one catalogue row can
- * describe the same id; leave the id to the static fallback (or unresolved).
+ * Rows for the same id whose prices disagree cannot be told apart, so the id
+ * stays with the static fallback (or unresolved). When every priced row
+ * agrees exactly, though, no information is lost by collapsing the group to
+ * one representative: prefer the official vendor row (a known provider id)
+ * and fall back to input order. All-zero rows only collapse with other
+ * all-zero rows — a free-tier promo must not leak into a priced group, and
+ * a priced row must not be dragged to zero by a promo row.
  */
-export function selectUnambiguousDynamicPricingModels<T extends { modelId: string }>(models: readonly T[]) {
+export function selectUnambiguousDynamicPricingModels<T extends CollectorPricingModelLike>(models: readonly T[]) {
   const byModelId = new Map<string, T[]>()
   for (const model of models) {
     const key = model.modelId.trim().toLowerCase()
@@ -412,7 +417,69 @@ export function selectUnambiguousDynamicPricingModels<T extends { modelId: strin
     entries.push(model)
     byModelId.set(key, entries)
   }
-  return models.filter((model) => (byModelId.get(model.modelId.trim().toLowerCase())?.length ?? 0) === 1)
+  const collapsed = new Map<string, T>()
+  for (const [key, entries] of byModelId) {
+    if (entries.length === 1) {
+      collapsed.set(key, entries[0])
+      continue
+    }
+    if (!dynamicPriceRowsAgree(entries)) continue
+    collapsed.set(key, pickCollapsedRepresentative(entries))
+  }
+  return models.filter((model) => collapsed.get(model.modelId.trim().toLowerCase()) === model)
+}
+
+type CollectorPricingModelLike = {
+  modelId: string
+  provider?: string
+  inputCostPerMillion: number
+  outputCostPerMillion: number
+  cacheReadCostPerMillion: number | null
+  cacheWriteCostPerMillion: number | null
+  pricing: Readonly<Record<string, unknown>>
+}
+
+/** Rows agree when their priced signature is identical; all-zero rows compare only with all-zero rows. */
+function dynamicPriceRowsAgree(entries: readonly CollectorPricingModelLike[]) {
+  const priced = entries.filter((entry) => priceRowIsPositive(entry))
+  const group = priced.length > 0 ? priced : entries
+  const signature = priceRowSignature(group[0])
+  return group.every((entry) => priceRowSignature(entry) === signature)
+}
+
+function priceRowIsPositive(entry: CollectorPricingModelLike) {
+  return entry.inputCostPerMillion > 0 || entry.outputCostPerMillion > 0
+}
+
+function priceRowSignature(entry: CollectorPricingModelLike) {
+  return JSON.stringify([
+    entry.inputCostPerMillion,
+    entry.outputCostPerMillion,
+    entry.cacheReadCostPerMillion,
+    entry.cacheWriteCostPerMillion,
+    entry.pricing ?? null
+  ])
+}
+
+const officialVendorProviderIds = new Set([
+  'openai',
+  'anthropic',
+  'google',
+  'deepseek',
+  'moonshotai',
+  'zhipuai',
+  'zai',
+  'xiaomi',
+  'alibaba',
+  'xai',
+  'minimax',
+  'nvidia',
+  'longcat'
+])
+
+function pickCollapsedRepresentative<T extends CollectorPricingModelLike>(entries: readonly T[]): T {
+  const official = entries.find((entry) => officialVendorProviderIds.has((entry.provider ?? '').trim().toLowerCase()))
+  return official ?? entries[0]
 }
 
 export function isCodexContextPricingModel(model: string) {
