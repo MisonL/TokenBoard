@@ -198,10 +198,11 @@ async function runScheduledTasks(env: Bindings, now: Date) {
 }
 
 /**
- * The cron fires every 15 minutes, but a DELETE that matches nothing still counts against
- * D1's daily rows-written budget. The once-per-day prunes (rate limits, device retention)
- * therefore run only in the first tick of the UTC day; a missed tick just delays them to
- * the next UTC day, which is fine for retention windows measured in days.
+ * The cron fires every 15 minutes, but a DELETE that matches nothing still costs a scheduled
+ * query. The once-per-day prunes (rate limits, device retention) therefore run only in the
+ * first tick of the UTC day; a missed tick just delays them to the next UTC day, which is
+ * fine for retention windows measured in days. This predicate assumes the cron interval is
+ * at least 15 minutes — a tighter schedule would re-enter the window within hour 0.
  */
 function isDailyMaintenanceWindow(now: Date) {
   return now.getUTCHours() === 0 && now.getUTCMinutes() < 15
