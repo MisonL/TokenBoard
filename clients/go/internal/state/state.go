@@ -68,6 +68,8 @@ type Lock struct {
 
 // Acquire takes the lock at path, waiting up to timeout for a stale holder to
 // be cleared. It returns nil when the lock could not be acquired in time.
+// The wait polls at the peer's cadence: the TS lock guarding this same file
+// (session-cursor-store's withCursorLock) retries every 25ms.
 func Acquire(path string, timeout time.Duration) (*Lock, error) {
 	if err := EnsurePrivateDir(filepath.Dir(path)); err != nil {
 		return nil, err
@@ -84,9 +86,13 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 		if time.Now().After(deadline) {
 			return nil, nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(lockRetryInterval)
 	}
 }
+
+// lockRetryInterval is the poll cadence, matching the TS cursor lock's 25ms
+// so a Go run picks up a released lock at the same latency the TS peer does.
+const lockRetryInterval = 25 * time.Millisecond
 
 func tryAcquire(path string) (*Lock, bool, error) {
 	owner, err := newOwner()

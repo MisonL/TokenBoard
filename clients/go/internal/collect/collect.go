@@ -9,18 +9,16 @@ import (
 )
 
 // Options is what a provider needs to collect: the timezone to attribute
-// dates by, and the optional date window.
-//
-// M1 gap to close before the first provider lands: the TS collector also
-// passes a cursor scope derived from the endpoint origin
-// (cursorScopeFromEndpoint in cli.ts) so cursors from one server are never
-// mistaken for another's. Go has no equivalent field yet; add it here and
-// thread it from the CLI before porting any provider that writes cursors,
-// or a machine pointed at two endpoints will cross-contaminate state.
+// dates by, the optional date window, and the cursor scope. The scope is the
+// endpoint origin for sync runs (empty for preview and warm-hooks), so the
+// cursor file a provider reads and writes is per-server — a machine pointed
+// at two endpoints never mixes state. Providers derive their cursor path
+// with sessioncursor.FileName(source, options.CursorScope).
 type Options struct {
-	Timezone string
-	Since    string
-	Until    string
+	Timezone    string
+	Since       string
+	Until       string
+	CursorScope string
 }
 
 // Provider reads one source's local usage records and normalizes them. It

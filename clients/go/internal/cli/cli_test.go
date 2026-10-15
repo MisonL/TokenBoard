@@ -311,3 +311,48 @@ func TestBareFlagIsMissingValueError(t *testing.T) {
 		t.Errorf("code=%d stderr=%q", code, stderr)
 	}
 }
+
+// cursorScopeFromEndpoint mirrors the TS new URL(endpoint).origin: lowercased
+// host, default port dropped, path/query stripped; empty for no endpoint.
+func TestCursorScopeFromEndpoint(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		want     string
+		wantErr  bool
+	}{
+		{"https://TB.Example/a/b?x=1", "https://tb.example", false},
+		{"https://tokenboard.example", "https://tokenboard.example", false},
+		{"https://h.example:8443/x", "https://h.example:8443", false},
+		{"http://h.example:80/x", "http://h.example", false},
+		{"https://h.example:443", "https://h.example", false},
+		{"", "", false},
+		{"not a url", "", true},
+		{"/only/a/path", "", true},
+	}
+	for _, tc := range cases {
+		got, err := cursorScopeFromEndpoint(tc.endpoint)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("%q: err=%v wantErr=%v", tc.endpoint, err, tc.wantErr)
+			continue
+		}
+		if !tc.wantErr && got != tc.want {
+			t.Errorf("%q: got %q want %q", tc.endpoint, got, tc.want)
+		}
+	}
+}
+
+// An unparseable endpoint aborts the sync rather than silently unscooping the
+// cursor, matching the TS new URL() throw.
+func TestSyncRejectsInvalidEndpoint(t *testing.T) {
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, _, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     "not a url",
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+	}, "sync", "--source", "pi")
+	if code != ExitFailure || !strings.Contains(stderr, "Invalid endpoint URL") {
+		t.Errorf("code=%d stderr=%q", code, stderr)
+	}
+}

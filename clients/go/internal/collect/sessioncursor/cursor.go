@@ -12,6 +12,8 @@
 package sessioncursor
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -467,6 +469,26 @@ func marshal(state State) ([]byte, error) {
 	document["source"] = source
 	document["files"] = files
 	return json.MarshalIndent(document, "", "  ")
+}
+
+// FileName mirrors the TS cursorFileName: the per-source cursor file name,
+// suffixed with the sha256 of the scope (the endpoint origin, or the Codex
+// profile home) so a machine pointed at two servers — or two Codex homes —
+// never shares one cursor. An empty scope names the unscooped legacy file.
+func FileName(source contract.Source, scope string) string {
+	base := string(source) + "-cursor.json"
+	if source == contract.SourceClaudeCode {
+		base = "claude-code-cursor.json"
+	}
+	if scope == "" {
+		return base
+	}
+	sum := sha256.Sum256([]byte(scope))
+	label := "server"
+	if source == contract.SourceCodex {
+		label = "profile"
+	}
+	return strings.TrimSuffix(base, ".json") + "." + label + "-" + hex.EncodeToString(sum[:]) + ".json"
 }
 
 // utf16Length counts UTF-16 code units, which is what JavaScript's

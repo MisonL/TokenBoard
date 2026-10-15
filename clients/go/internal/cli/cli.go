@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +91,7 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 		})
 	case "preview":
 		return withRunLock(stateDir, stderr, func() int {
-			snapshots, failures := collectAll(ctx, options, env)
+			snapshots, failures := collectAll(ctx, options, env, "")
 			if snapshots == nil {
 				snapshots = []contract.Snapshot{}
 			}
@@ -139,7 +140,12 @@ func runSync(ctx context.Context, options Options, env Env, stateDir string, std
 }
 
 func syncLocked(ctx context.Context, options Options, env Env, stateDir string, stdout, stderr io.Writer) int {
-	snapshots, failures := collectAll(ctx, options, env)
+	cursorScope, err := cursorScopeFromEndpoint(options.Endpoint)
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return ExitFailure
+	}
+	snapshots, failures := collectAll(ctx, options, env, cursorScope)
 	collectionFailed := len(failures) > 0 && (options.FailOnSourceErr || options.Source != "all")
 
 	if pausedUntil, paused := upload.IsPaused(stateDir, time.Now()); paused {
@@ -193,8 +199,10 @@ func classifyFailure(cause error, options Options, env Env) int {
 
 // collectAll gathers snapshots from the registered providers. No provider is
 // registered yet, so every source reports as unavailable — the same outcome
-// as a source whose tool is not installed on this machine.
-func collectAll(ctx context.Context, options Options, env Env) ([]contract.Snapshot, []string) {
+// as a source whose tool is not installed on this machine. The cursor scope
+// is the endpoint origin for sync (empty for preview), mirroring the TS
+// collection context.
+func collectAll(ctx context.Context, options Options, env Env, cursorScope string) ([]contract.Snapshot, []string) {
 	sources := expandSources(options.Source, options.HookMode)
 	_ = ctx
 	var snapshots []contract.Snapshot
@@ -205,9 +213,10 @@ func collectAll(ctx context.Context, options Options, env Env) ([]contract.Snaps
 			continue // unavailable, not a failure
 		}
 		collected, err := provider.Collect(ctx, collect.Options{
-			Timezone: options.Timezone,
-			Since:    options.Since,
-			Until:    options.Until,
+			Timezone:    options.Timezone,
+			Since:       options.Since,
+			Until:       options.Until,
+			CursorScope: cursorScope,
 		})
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", source, err))
@@ -239,6 +248,29 @@ func expandWarmHookSources(source string) []string {
 		return []string{string(contract.SourceClaudeCode), string(contract.SourceCodex)}
 	}
 	return []string{source}
+}
+
+// cursorScopeFromEndpoint mirrors the TS cursorScopeFromEndpoint: the
+// endpoint URL's origin (lowercased host, default port dropped), or empty
+// when there is no endpoint. An endpoint that does not parse is a failure —
+// the TS new URL() throws and aborts the run the same way.
+func cursorScopeFromEndpoint(endpoint string) (string, error) {
+	if endpoint == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("Invalid endpoint URL: %s", endpoint)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if port := parsed.Port(); port != "" && !isDefaultPort(parsed.Scheme, port) {
+		host = host + ":" + port
+	}
+	return parsed.Scheme + "://" + host, nil
+}
+
+func isDefaultPort(scheme, port string) bool {
+	return (scheme == "https" && port == "443") || (scheme == "http" && port == "80")
 }
 
 func requiredSyncConfig(options Options) []string {
