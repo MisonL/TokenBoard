@@ -276,3 +276,56 @@ func TestTzdataEmbedded(t *testing.T) {
 		t.Fatalf("embedded tzdata missing: %v", err)
 	}
 }
+
+// formatJSONFloat must reproduce JavaScript's Number#toString across the
+// notation switch points; every expectation here was printed by Node.
+func TestFormatJSONFloatMatchesJavaScript(t *testing.T) {
+	cases := []struct {
+		value float64
+		want  string
+	}{
+		{0, "0"},
+		{0.01, "0.01"},
+		{0.30000000000000004, "0.30000000000000004"},
+		{123.456, "123.456"},
+		{1e-6, "0.000001"},
+		{0.00000123456, "0.00000123456"},
+		{5e-7, "5e-7"},
+		{1e-7, "1e-7"},
+		{1e21, "1e+21"},
+		{1e20, "100000000000000000000"},
+		{999999999, "999999999"},
+	}
+	// Runtime arithmetic so the constant folder cannot round for us.
+	for _, tc := range cases {
+		one := tc.value
+		if got := formatJSONFloat(one); got != tc.want {
+			t.Errorf("formatJSONFloat(%v) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+// IsValidCollectedAt mirrors Zod datetime() exactly; every expectation here
+// was probed against the real schema.
+func TestIsValidCollectedAtMatchesZod(t *testing.T) {
+	accepted := []string{
+		"2026-05-09T10:00:00Z", "2026-05-09T10:00:00.000Z", "2026-05-09T10:00:00.000000Z",
+		"2026-05-09T10:00:00.1Z",
+	}
+	rejected := []string{
+		"2026-05-09T10:00:00+08:00", "2026-05-09T10:00:00-05:00", "2026-05-09T10:00:00",
+		"2026-05-09 10:00:00Z", "2026-05-09T24:00:00Z", "2026-05-09T10:60:00Z",
+		"2026-02-30T10:00:00Z", "2026-05-09T10:00:60Z", "2026-05-09T10:00:00.Z",
+		"2026-05-09T10:00:00,000Z", "2026-05-09t10:00:00Z", "2026-05-09T10:00:00.000z",
+	}
+	for _, value := range accepted {
+		if !IsValidCollectedAt(value) {
+			t.Errorf("%q should be accepted", value)
+		}
+	}
+	for _, value := range rejected {
+		if IsValidCollectedAt(value) {
+			t.Errorf("%q should be rejected", value)
+		}
+	}
+}

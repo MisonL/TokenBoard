@@ -162,20 +162,34 @@ func (s Snapshot) HashPayload() string {
 	return b.String()
 }
 
-// formatJSONFloat emits the shortest decimal that round-trips the double —
-// the same choice JSON.stringify makes. Integers keep no ".0"; exponent forms
-// match JS for the extreme values the schema allows.
+// formatJSONFloat emits the string JavaScript's Number#toString (and thus
+// JSON.stringify) produces for the same double: the shortest round-tripping
+// decimal, written in fixed notation while 1e-6 <= |x| < 1e21 and in
+// exponential notation outside that range, with a signed exponent that has no
+// leading zeros ("1e-7", "1e+21"). Go's own formatters use different
+// thresholds and pad the exponent, which would silently drift the dedup hash.
 func formatJSONFloat(f float64) string {
-	// Go's 'g' with precision -1 produces shortest round-trip but formats
-	// large/small magnitudes with exponents at different thresholds than JS
-	// (JS switches at 1e21 / 1e-7). The schema's ceilings keep costs below
-	// 1e9, so plain decimal is always correct here; fall back to 'g' outside
-	// the range instead of silently wrong output.
-	s := strconv.FormatFloat(f, 'f', -1, 64)
-	if !strings.Contains(s, "e") {
-		return s
+	if f == 0 {
+		return "0" // also covers -0, which JS prints as "0"
 	}
-	return strconv.FormatFloat(f, 'g', -1, 64)
+	abs := math.Abs(f)
+	if abs >= 1e-6 && abs < 1e21 {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	mantissa, exponent, found := strings.Cut(strconv.FormatFloat(f, 'e', -1, 64), "e")
+	if !found {
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	sign := "+"
+	if strings.HasPrefix(exponent, "-") {
+		sign = "-"
+		exponent = exponent[1:]
+	}
+	exponent = strings.TrimLeft(strings.TrimPrefix(exponent, "+"), "0")
+	if exponent == "" {
+		exponent = "0"
+	}
+	return mantissa + "e" + sign + exponent
 }
 
 // quoteJSONString applies JSON escaping with the same rules as
@@ -216,7 +230,27 @@ func quoteJSONString(s string) string {
 
 var (
 	isoDateRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})$`)
+	// Zod's z.string().datetime() with no options: uppercase T and Z, an
+	// optional fractional part of one or more digits, and no numeric offset
+	// or missing Z (both of which Go's RFC3339 parser would happily accept).
+	dateTimeUTCRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?Z$`)
 )
+
+// IsValidCollectedAt mirrors Zod's datetime() exactly: UTC-only, real
+// calendar date, hour/minute/second in range.
+func IsValidCollectedAt(value string) bool {
+	match := dateTimeUTCRe.FindStringSubmatch(value)
+	if match == nil {
+		return false
+	}
+	if !IsValidIsoDate(match[1] + "-" + match[2] + "-" + match[3]) {
+		return false
+	}
+	hour, _ := strconv.Atoi(match[4])
+	minute, _ := strconv.Atoi(match[5])
+	second, _ := strconv.Atoi(match[6])
+	return hour <= 23 && minute <= 59 && second <= 59
+}
 
 // IsValidIsoDate mirrors usage-core isValidIsoDate: canonical YYYY-MM-DD and
 // a real calendar date.
@@ -344,8 +378,8 @@ func (s Snapshot) Validate() error {
 	default:
 		return fmt.Errorf("correction: unknown literal %q", string(s.Correction))
 	}
-	if _, err := time.Parse(time.RFC3339Nano, s.CollectedAt); err != nil {
-		return fmt.Errorf("collectedAt: must be an RFC3339 timestamp: %v", err)
+	if !IsValidCollectedAt(s.CollectedAt) {
+		return fmt.Errorf("collectedAt: must be an RFC3339 UTC timestamp (Z suffix)")
 	}
 	return nil
 }
