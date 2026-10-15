@@ -19,6 +19,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf16"
+
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 // Snapshot is the cursor-carried projection of a usage snapshot: everything
@@ -168,7 +171,10 @@ func parse(data []byte, source string) (State, error) {
 	}
 
 	filesRaw, ok := raw["files"]
-	if !ok {
+	if !ok || string(filesRaw) == "null" {
+		// TS rejects a null files map loudly (`files !== null` check); Go must
+		// not silently treat it as empty — that would hide corruption and
+		// trigger a full rescan on overwrite.
 		return State{}, fmt.Errorf("files is required")
 	}
 	var files map[string]json.RawMessage
@@ -189,12 +195,26 @@ func parse(data []byte, source string) (State, error) {
 	return state, nil
 }
 
+// maxSafeInteger is Number.MAX_SAFE_INTEGER: the TS validator uses
+// Number.isSafeInteger, which rejects anything beyond it.
+const maxSafeInteger = 1<<53 - 1
+
 var (
 	sha256Pattern         = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	kebabKindPattern      = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	usageDatePattern      = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	scanGenerationPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+	scanGenerationPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 )
+
+// isSafeInteger mirrors Number.isSafeInteger.
+func isSafeInteger(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value == math.Trunc(value) &&
+		math.Abs(value) <= maxSafeInteger
+}
+
+func isFiniteNumber(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
 
 // validateTopLevel mirrors the TypeScript validator's per-field rules for the
 // fields Go does not model. A field both sides know must never bypass
@@ -207,24 +227,26 @@ func validateTopLevel(key string, value json.RawMessage) error {
 			return fmt.Errorf("%s must be a sha256 hex digest", key)
 		}
 	case "lastScanHighWaterMs":
+		// TS isFiniteTimestampMs requires >= 0 as well as finite.
 		var n float64
-		if err := decode(value, &n); err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
-			return fmt.Errorf("%s must be a finite number", key)
+		if err := decode(value, &n); err != nil || !isFiniteNumber(n) || n < 0 {
+			return fmt.Errorf("%s must be a finite non-negative number", key)
 		}
 	case "lastScanOffsetBytes":
 		var n float64
-		if err := decode(value, &n); err != nil || n < 0 || n != math.Trunc(n) {
-			return fmt.Errorf("%s must be a non-negative integer", key)
+		if err := decode(value, &n); err != nil || !isSafeInteger(n) || n < 0 {
+			return fmt.Errorf("%s must be a non-negative safe integer", key)
 		}
 	case "lastScanGeneration":
+		// TS: /^[a-f0-9]{32}$/, not an arbitrary slug.
 		var s string
 		if err := decode(value, &s); err != nil || !scanGenerationPattern.MatchString(s) {
-			return fmt.Errorf("%s has an invalid shape", key)
+			return fmt.Errorf("%s must be a 32-character lowercase hex string", key)
 		}
 	case "pendingSnapshotRetryCursor":
 		var s string
-		if err := decode(value, &s); err != nil || len(s) > 4096 {
-			return fmt.Errorf("%s must be a string of at most 4096 bytes", key)
+		if err := decode(value, &s); err != nil || utf16Length(s) > 4096 {
+			return fmt.Errorf("%s must be a string of at most 4096 UTF-16 code units", key)
 		}
 	case "antigravityHistoryReplayReady", "antigravityStatuslineReplayReady",
 		"antigravityHistoryReplayCompacted", "antigravityStatuslineReplayCompacted",
@@ -240,16 +262,79 @@ func validateTopLevel(key string, value json.RawMessage) error {
 		}
 	case "antigravityCliMeteringVersion":
 		var n float64
-		if err := decode(value, &n); err != nil || n < 1 || n != math.Trunc(n) {
-			return fmt.Errorf("%s must be an integer of at least 1", key)
+		if err := decode(value, &n); err != nil || !isSafeInteger(n) || n < 1 {
+			return fmt.Errorf("%s must be a safe integer of at least 1", key)
 		}
-	case "antigravityDbFileScan", "antigravityCascadeFileScan", "antigravityHistoryAliasMtimes":
-		var probe any
-		if err := decode(value, &probe); err != nil {
-			return fmt.Errorf("%s must be an object", key)
+	case "antigravityDbFileScan", "antigravityCascadeFileScan":
+		return validateAntigravityFileScan(key, value)
+	case "antigravityHistoryAliasMtimes":
+		return validateAntigravityAliasMtimes(key, value)
+	}
+	return nil
+}
+
+// validateAntigravityFileScan mirrors isValidAntigravityFileScanState: a safe
+// non-negative nextSequence, and a files map keyed by sha256 whose entries
+// carry finite non-negative mtime/size, a boolean hasDatabaseFile, and a safe
+// non-negative checkedSequence.
+func validateAntigravityFileScan(key string, value json.RawMessage) error {
+	var shape struct {
+		NextSequence *float64                   `json:"nextSequence"`
+		Files        map[string]json.RawMessage `json:"files"`
+	}
+	if err := json.Unmarshal(value, &shape); err != nil {
+		return fmt.Errorf("%s must be an object", key)
+	}
+	if shape.NextSequence == nil || !isSafeInteger(*shape.NextSequence) || *shape.NextSequence < 0 {
+		return fmt.Errorf("%s.nextSequence must be a non-negative safe integer", key)
+	}
+	if shape.Files == nil {
+		return fmt.Errorf("%s.files must be an object", key)
+	}
+	for fileKey, entryRaw := range shape.Files {
+		if !sha256Pattern.MatchString(fileKey) {
+			return fmt.Errorf("%s.files key %q must be a sha256 hex digest", key, fileKey)
 		}
-		if _, isObject := probe.(map[string]any); !isObject {
-			return fmt.Errorf("%s must be an object", key)
+		var entry struct {
+			MtimeMs         *float64 `json:"mtimeMs"`
+			Size            *float64 `json:"size"`
+			HasDatabaseFile *bool    `json:"hasDatabaseFile"`
+			CheckedSequence *float64 `json:"checkedSequence"`
+		}
+		if err := json.Unmarshal(entryRaw, &entry); err != nil {
+			return fmt.Errorf("%s.files[%q] must be an object", key, fileKey)
+		}
+		if entry.MtimeMs == nil || !isFiniteNumber(*entry.MtimeMs) || *entry.MtimeMs < 0 ||
+			entry.Size == nil || !isFiniteNumber(*entry.Size) || *entry.Size < 0 ||
+			entry.HasDatabaseFile == nil ||
+			entry.CheckedSequence == nil || !isSafeInteger(*entry.CheckedSequence) || *entry.CheckedSequence < 0 {
+			return fmt.Errorf("%s.files[%q] has an invalid entry shape", key, fileKey)
+		}
+	}
+	return nil
+}
+
+// validateAntigravityAliasMtimes mirrors isValidAntigravityHistoryAliasMtimes:
+// sha256 keys, each a non-empty-typed array of finite numbers.
+func validateAntigravityAliasMtimes(key string, value json.RawMessage) error {
+	var shape map[string][]float64
+	if err := json.Unmarshal(value, &shape); err != nil {
+		return fmt.Errorf("%s must be an object of number arrays", key)
+	}
+	if shape == nil {
+		return fmt.Errorf("%s must not be null", key)
+	}
+	for aliasKey, mtimes := range shape {
+		if !sha256Pattern.MatchString(aliasKey) {
+			return fmt.Errorf("%s key %q must be a sha256 hex digest", key, aliasKey)
+		}
+		if mtimes == nil {
+			return fmt.Errorf("%s[%q] must be an array of numbers", key, aliasKey)
+		}
+		for _, mtime := range mtimes {
+			if !isFiniteNumber(mtime) {
+				return fmt.Errorf("%s[%q] must contain only finite numbers", key, aliasKey)
+			}
 		}
 	}
 	return nil
@@ -281,6 +366,11 @@ func parseEntry(raw json.RawMessage) (Entry, error) {
 		return Entry{}, fmt.Errorf("antigravityOrigin must be database or language-server")
 	}
 	for i, snapshot := range entry.Snapshots {
+		// TS isValidCursorSnapshot also requires the source to be one of the
+		// usage sources; a cursor entry with an unknown source is corruption.
+		if !contract.IsValidSource(snapshot.Source) {
+			return Entry{}, fmt.Errorf("snapshots[%d].source %q is not a usage source", i, snapshot.Source)
+		}
 		for _, check := range []struct {
 			name  string
 			value float64
@@ -293,7 +383,7 @@ func parseEntry(raw json.RawMessage) (Entry, error) {
 			{"costUsd", snapshot.CostUSD},
 			{"sessionCount", snapshot.SessionCount},
 		} {
-			if math.IsNaN(check.value) || math.IsInf(check.value, 0) {
+			if !isFiniteNumber(check.value) {
 				return Entry{}, fmt.Errorf("snapshots[%d].%s must be a finite number", i, check.name)
 			}
 		}
@@ -371,4 +461,11 @@ func marshal(state State) ([]byte, error) {
 	document["source"] = source
 	document["files"] = files
 	return json.MarshalIndent(document, "", "  ")
+}
+
+// utf16Length counts UTF-16 code units, which is what JavaScript's
+// String#length measures. A byte count would reject CJK-heavy strings the TS
+// side accepts.
+func utf16Length(s string) int {
+	return len(utf16.Encode([]rune(s)))
 }

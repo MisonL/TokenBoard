@@ -20,7 +20,7 @@ const tsCursorFixture = `{
   "antigravityCliHistoryComplete": true,
   "antigravityCliHistoryCompacted": true,
   "antigravityCliHistoryCompactedThroughDate": "2026-06-20",
-  "antigravityDbFileScan": {"cursor": {"db": 5}, "completed": true},
+  "antigravityDbFileScan": {"nextSequence": 65, "files": {"c71d62777a159cec520e4398361086231fe461e27a6605757f852b8cef5c8ffc": {"mtimeMs": 1785452424196.7156, "size": 208896, "hasDatabaseFile": true, "checkedSequence": 64}}},
   "files": {
     "aggregate 3c57847bb04f5600b4dadb22ffc57f564ca44b8f1c6b901969": {
       "size": 1234,
@@ -220,4 +220,37 @@ func stripNewline(v map[string]any) map[string]any {
 	// DeepEqual on maps; this exists as a hook if key-order matters later.
 	_ = sort.Strings
 	return v
+}
+
+// The D-series drifts the review found: Go was looser than the TS validator.
+func TestRejectsValuesTSRejects(t *testing.T) {
+	valid := `{"version":1,"source":"pi","files":{}}`
+	cases := map[string]string{
+		"files is null":                 `{"version":1,"source":"pi","files":null}`,
+		"unknown snapshot source":       `{"version":1,"source":"pi","files":{"ok.json":{"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[{"source":"bogus","usageDate":"2026-05-09","timezone":"UTC","model":"m","inputTokens":1,"outputTokens":1,"cacheCreationTokens":0,"cacheReadTokens":0,"totalTokens":2,"costUsd":0,"sessionCount":1}],"missingCost":false,"updatedAt":"x"}}}`,
+		"negative lastScanHighWaterMs":  `{"version":1,"source":"pi","lastScanHighWaterMs":-5,"files":{}}`,
+		"lastScanGeneration not 32-hex": `{"version":1,"source":"pi","lastScanGeneration":"garbage-1","files":{}}`,
+		"pendingUpload false is fine":   valid, // positive control below
+	}
+	for name, content := range cases {
+		if name == "pendingUpload false is fine" {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			path := writeTemp(t, content)
+			if _, err := Read(path, "pi"); err == nil {
+				t.Errorf("%s: expected rejection", name)
+			}
+		})
+	}
+	if _, err := Read(writeTemp(t, valid), "pi"); err != nil {
+		t.Errorf("minimal valid cursor rejected: %v", err)
+	}
+}
+
+func TestAcceptsLastScanGeneration32Hex(t *testing.T) {
+	content := `{"version":1,"source":"pi","lastScanGeneration":"0123456789abcdef0123456789abcdef","files":{}}`
+	if _, err := Read(writeTemp(t, content), "pi"); err != nil {
+		t.Errorf("32-hex generation rejected: %v", err)
+	}
 }

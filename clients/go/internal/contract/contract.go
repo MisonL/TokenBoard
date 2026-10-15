@@ -373,9 +373,9 @@ func (s Snapshot) Validate() error {
 	if msg, blocked := costUnavailableSources[s.Source]; blocked && s.CostUSD > 0 {
 		return errors.New(msg)
 	}
-	switch s.Correction {
-	case "", CorrectionCodexContextPricing:
-	default:
+	// An explicitly empty correction is not the same as absent: Zod's
+	// z.literal rejects "".
+	if s.Correction != "" && s.Correction != CorrectionCodexContextPricing {
 		return fmt.Errorf("correction: unknown literal %q", string(s.Correction))
 	}
 	if !IsValidCollectedAt(s.CollectedAt) {

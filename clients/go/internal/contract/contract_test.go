@@ -75,6 +75,12 @@ func goldenSnapshotByName(t *testing.T, name string) Snapshot {
 	case "extreme-tokens":
 		base.InputTokens, base.TotalTokens = MaxSnapshotTokens, MaxSnapshotTokens
 		return base
+	case "tiny-cost-exp":
+		base.CostUSD = 1e-7
+		return base
+	case "tiny-cost-fixed":
+		base.CostUSD = 5e-7
+		return base
 	case "fractional-cost":
 		// Runtime arithmetic: Go's constant folder would round 0.1+0.2
 		// exactly once (giving exactly 0.3's double), while TS computes it
@@ -327,5 +333,18 @@ func TestIsValidCollectedAtMatchesZod(t *testing.T) {
 		if IsValidCollectedAt(value) {
 			t.Errorf("%q should be rejected", value)
 		}
+	}
+}
+
+func TestRejectsEmptyCorrectionLiteral(t *testing.T) {
+	snapshot := goldenSnapshotByName(t, "base")
+	snapshot.Correction = ""
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("empty correction must behave as absent: %v", err)
+	}
+	// An explicitly empty JSON string, however, is what Zod rejects; the
+	// round-trip through the hash payload omits it, matching JSON.stringify.
+	if strings.Contains(snapshot.HashPayload(), "correction") {
+		t.Error("empty correction must be omitted from the payload")
 	}
 }

@@ -30,6 +30,8 @@ const cases = [
   { name: 'unicode-model', snapshot: { ...base, model: 'módel/中文-模型' } },
   { name: 'extreme-tokens', snapshot: { ...base, totalTokens: 1000000000000, inputTokens: 1000000000000 } },
   { name: 'fractional-cost', snapshot: { ...base, costUsd: 0.1 + 0.2 } },
+  { name: 'tiny-cost-exp', snapshot: { ...base, costUsd: 1e-7 } },
+  { name: 'tiny-cost-fixed', snapshot: { ...base, costUsd: 5e-7 } },
   { name: 'timezone-etc-gmt', snapshot: { ...base, timezone: 'Etc/GMT+5' } }
 ]
 console.log(JSON.stringify(cases.map((c) => ({
