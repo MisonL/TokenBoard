@@ -130,9 +130,14 @@ describe('notification config', () => {
     ).toThrow('TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 50')
   })
 
-  test('prunes webhook delivery logs during the UTC midnight hour by default', () => {
+  // The cron fires every 15 minutes; pruning on every tick of hour 0 would run the same
+  // DELETE four times a day. The gate matches the daily maintenance window used by the
+  // rate-limit and device-retention prunes: only the first tick of the UTC day.
+  test('prunes webhook delivery logs only in the first tick of the UTC day', () => {
     expect(shouldPruneWebhookDeliveryLogs(new Date('2026-04-29T00:00:00.000Z'))).toBe(true)
-    expect(shouldPruneWebhookDeliveryLogs(new Date('2026-04-29T00:15:00.000Z'))).toBe(true)
+    expect(shouldPruneWebhookDeliveryLogs(new Date('2026-04-29T00:14:59.000Z'))).toBe(true)
+    expect(shouldPruneWebhookDeliveryLogs(new Date('2026-04-29T00:15:00.000Z'))).toBe(false)
+    expect(shouldPruneWebhookDeliveryLogs(new Date('2026-04-29T00:45:00.000Z'))).toBe(false)
     expect(shouldPruneWebhookDeliveryLogs(new Date('2026-04-29T01:00:00.000Z'))).toBe(false)
   })
 

@@ -323,6 +323,47 @@ describe('model pricing SQLite contract', () => {
     )
   })
 
+  // 48 removal keys fit one deactivation statement (two binds each + two guard binds, under
+  // the D1 100-bind ceiling). A larger removal set must split into several statements that
+  // all deactivate inside the same publish batch — a partial deactivation would leave
+  // removed models still active until the next sync heals them.
+  test('deactivates more than 48 removed models across multiple statements in one publish', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
+    tempDirs.push(dir)
+    const dbPath = join(dir, 'pricing.db')
+    runSql(dbPath, migrationSql())
+    const db = createSqliteD1(dbPath)
+
+    const fixture = sourceFixture()
+    const models = fixture.openai.models as Record<string, unknown>
+    const removalCount = 120
+    for (let index = 0; index < removalCount; index += 1) {
+      models[`gpt-bulk/${index}`] = pricedModel(`gpt-bulk/${index}`, 'gpt-bulk', 128_000, 1, 2)
+    }
+    await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-07T00:00:00.000Z'),
+      fetcher: async () => new Response(JSON.stringify(fixture))
+    })
+
+    // Next sync drops every bulk model at once: 120 removals → 3 deactivation statements.
+    const next = sourceFixture()
+    const result = await runModelPricingSync({
+      env: { DB: db, TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '24' },
+      now: new Date('2026-08-08T00:00:00.000Z'),
+      force: true,
+      fetcher: async () => new Response(JSON.stringify(next))
+    })
+    expect(result).toMatchObject({ status: 'success' })
+
+    const active = await getModelPricing({ db })
+    expect(active.models).toHaveLength(4)
+    const all = await getModelPricing({ db, includeInactive: true, limit: 1_000 })
+    const bulkModels = all.models.filter((model) => model.modelId.startsWith('gpt-bulk/'))
+    expect(bulkModels).toHaveLength(removalCount)
+    expect(bulkModels.every((model) => !model.isActive)).toBe(true)
+  })
+
   test('fails visibly when a stored pricing object is corrupted', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-'))
     tempDirs.push(dir)

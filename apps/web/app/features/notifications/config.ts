@@ -67,8 +67,11 @@ export function webhookCronBatchSize(env: Pick<WebhookEnv, 'TOKENBOARD_WEBHOOK_C
   return size
 }
 
+// Only the first tick of the UTC day (00:00–00:15 with the 15-minute cron), matching the
+// daily maintenance window that gates the rate-limit and device-retention prunes in
+// server.ts. A tighter cron would re-enter this window within hour 0.
 export function shouldPruneWebhookDeliveryLogs(now: Date) {
-  return now.getUTCHours() === 0
+  return now.getUTCHours() === 0 && now.getUTCMinutes() < 15
 }
 
 export function requireEncryptionKey(env: Pick<WebhookEnv, 'WEBHOOK_ENCRYPTION_KEY'>) {
