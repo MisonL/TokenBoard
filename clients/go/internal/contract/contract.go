@@ -89,6 +89,27 @@ type Snapshot struct {
 	CollectedAt   string     `json:"collectedAt"`
 }
 
+// allSources is the ordered source list, matching usage-core's usageSources.
+var allSources = []Source{
+	SourceClaudeCode, SourceCodex,
+	SourceAntigravityCLI, SourceAntigravity, SourceAntigravityIDE,
+	SourceOpenCode, SourcePi, SourceGrokBuild, SourceDeepSeekHarness,
+}
+
+// AllSources returns the usage sources in their canonical order.
+func AllSources() []Source {
+	out := make([]Source, len(allSources))
+	copy(out, allSources)
+	return out
+}
+
+// IsValidSource reports whether the value is one of the closed set of usage
+// sources. Callers validating untrusted payloads use it before switching on a
+// source.
+func IsValidSource(source string) bool {
+	return usageSources[Source(source)]
+}
+
 // IsCostUnavailableSource reports whether the source cannot report a cost, so
 // costUsd carries no meaning and must be zero.
 func IsCostUnavailableSource(source Source) bool {

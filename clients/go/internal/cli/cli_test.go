@@ -2,46 +2,253 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func run(t *testing.T, args ...string) (int, string, string) {
+func run(t *testing.T, env map[string]string, args ...string) (int, string, string) {
 	t.Helper()
+	lookup := func(key string) string { return env[key] }
 	var stdout, stderr bytes.Buffer
-	code := Run(args, &stdout, &stderr)
+	code := RunWithEnv(context.Background(), args, lookup, &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
 func TestVersionExitsOK(t *testing.T) {
-	code, stdout, _ := run(t, "version")
-	if code != ExitOK {
-		t.Errorf("version exit = %d, want 0", code)
-	}
-	if !strings.Contains(stdout, "tokenboard") {
-		t.Errorf("version output %q lacks name", stdout)
+	code, stdout, _ := run(t, nil, "version")
+	if code != ExitOK || !strings.Contains(stdout, "tokenboard") {
+		t.Errorf("code=%d stdout=%q", code, stdout)
 	}
 }
 
 func TestUnknownCommandIsUsageError(t *testing.T) {
-	code, _, stderr := run(t, "nonsense")
-	if code != ExitUsage {
-		t.Errorf("exit = %d, want %d", code, ExitUsage)
-	}
-	if !strings.Contains(stderr, "unknown command") {
-		t.Errorf("stderr %q lacks diagnosis", stderr)
-	}
-}
-
-func TestNoArgsShowsUsageOnStderr(t *testing.T) {
-	code, stdout, stderr := run(t)
+	code, stdout, stderr := run(t, nil, "nonsense")
 	if code != ExitUsage {
 		t.Errorf("exit = %d, want %d", code, ExitUsage)
 	}
 	if stdout != "" {
-		t.Errorf("usage must go to stderr, got stdout %q", stdout)
+		t.Errorf("usage must not touch stdout: %q", stdout)
 	}
-	if !strings.Contains(stderr, "usage:") {
+	if !strings.Contains(stderr, "Usage:") {
 		t.Errorf("stderr %q lacks usage", stderr)
+	}
+}
+
+func TestNoArgsShowsUsageOnStderr(t *testing.T) {
+	code, stdout, stderr := run(t, nil)
+	if code != ExitUsage {
+		t.Errorf("exit = %d", code)
+	}
+	if stdout != "" || !strings.Contains(stderr, "Usage:") {
+		t.Errorf("stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestInvalidSourceIsUsageError(t *testing.T) {
+	code, _, stderr := run(t, nil, "preview", "--source", "kimi")
+	if code != ExitUsage || !strings.Contains(stderr, "Invalid source") {
+		t.Errorf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPreviewWithNoProvidersPrintsEmptyArray(t *testing.T) {
+	code, stdout, _ := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}, "preview", "--source", "pi")
+	if code != ExitOK {
+		t.Fatalf("code = %d", code)
+	}
+	if strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("preview output %q, want []", stdout)
+	}
+}
+
+func TestSyncRequiresEndpointAndToken(t *testing.T) {
+	code, _, stderr := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}, "sync")
+	if code != ExitFailure {
+		t.Errorf("code = %d", code)
+	}
+	if !strings.Contains(stderr, "TOKENBOARD_ENDPOINT") || !strings.Contains(stderr, "TOKENBOARD_UPLOAD_TOKEN") {
+		t.Errorf("stderr %q lacks both missing names", stderr)
+	}
+}
+
+func TestSyncUploadsAndReportsCounts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"upserted": 0})
+	}))
+	defer server.Close()
+
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, stdout, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     server.URL,
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+	}, "sync", "--source", "pi")
+	if code != ExitOK {
+		t.Fatalf("code = %d stderr=%q", code, stderr)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout not JSON: %q", stdout)
+	}
+	if _, ok := result["upserted"]; !ok {
+		t.Errorf("result lacks upserted: %v", result)
+	}
+}
+
+func TestSyncTransientFailureExits75(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, _, _ := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     server.URL,
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+	}, "sync", "--source", "pi")
+	if code != ExitTransient {
+		t.Errorf("transient 503 must exit %d, got %d", ExitTransient, code)
+	}
+}
+
+func TestSyncHookModeTransientFailureExits1(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, _, _ := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     server.URL,
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+		"TOKENBOARD_HOOK_MODE":    "1",
+	}, "sync", "--source", "pi")
+	if code != ExitFailure {
+		t.Errorf("hook mode must not defer: got %d", code)
+	}
+}
+
+func TestSyncNonTransientFailureExits1AndRecordsBackoff(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, _, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     server.URL,
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+	}, "sync", "--source", "pi")
+	if code != ExitFailure {
+		t.Errorf("401 must be a plain failure, got %d", code)
+	}
+	if !strings.Contains(stderr, "consecutive non-transient failures") {
+		t.Errorf("stderr %q lacks backoff note", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "upload-backoff.json")); err != nil {
+		t.Errorf("backoff state not recorded: %v", err)
+	}
+}
+
+func TestSyncReportsActivePause(t *testing.T) {
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	// Five consecutive failures create a pause.
+	for i := 0; i < 5; i++ {
+		viaUploadFailure(t, stateDir)
+	}
+	code, _, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     "http://127.0.0.1:1",
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+	}, "sync", "--source", "pi")
+	if code != ExitOK {
+		t.Errorf("paused run should not fail the sync: %d", code)
+	}
+	if !strings.Contains(stderr, "paused until") {
+		t.Errorf("stderr %q lacks pause notice", stderr)
+	}
+}
+
+func viaUploadFailure(t *testing.T, stateDir string) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	code, _, _ := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     server.URL,
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+	}, "sync", "--source", "pi")
+	if code != ExitFailure {
+		t.Fatalf("seed failure run exited %d", code)
+	}
+}
+
+func TestHookModeScansOnlyHookSources(t *testing.T) {
+	sources := expandSources("all", true)
+	if len(sources) != 2 {
+		t.Fatalf("hook mode sources %v", sources)
+	}
+	for _, source := range sources {
+		if source != "claude-code" && source != "codex" {
+			t.Errorf("hook mode must not scan %s", source)
+		}
+	}
+}
+
+func TestUntilRejectedForWarmHooksAndHookMode(t *testing.T) {
+	env := map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}
+	code, _, stderr := run(t, env, "warm-hooks", "--source", "codex", "--until", "2026-05-09")
+	if code != ExitUsage || !strings.Contains(stderr, "until") {
+		t.Errorf("warm-hooks --until: code=%d stderr=%q", code, stderr)
+	}
+	env["TOKENBOARD_HOOK_MODE"] = "1"
+	code, _, stderr = run(t, env, "sync", "--source", "codex", "--until", "2026-05-09")
+	if code != ExitUsage || !strings.Contains(stderr, "until") {
+		t.Errorf("hook --until: code=%d stderr=%q", code, stderr)
+	}
+	// A non-Claude/Codex source rejects it too.
+	delete(env, "TOKENBOARD_HOOK_MODE")
+	code, _, stderr = run(t, env, "preview", "--source", "pi", "--until", "2026-05-09")
+	if code != ExitUsage || !strings.Contains(stderr, "until") {
+		t.Errorf("pi --until: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestInvalidTimezoneIsUsageError(t *testing.T) {
+	code, _, stderr := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "Mars/Olympus"}, "preview", "--source", "pi")
+	if code != ExitUsage || !strings.Contains(stderr, "Invalid timezone") {
+		t.Errorf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestWarmHooksReportsPlannedSources(t *testing.T) {
+	code, stdout, _ := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}, "warm-hooks")
+	if code != ExitOK {
+		t.Fatalf("code=%d", code)
+	}
+	if !strings.Contains(stdout, "claude-code") || !strings.Contains(stdout, "codex") {
+		t.Errorf("warm-hooks output %q", stdout)
 	}
 }
