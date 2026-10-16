@@ -134,13 +134,13 @@ func SnapshotKey(source Source, usageDate, model string) string {
 func (s Snapshot) HashPayload() string {
 	var b strings.Builder
 	b.WriteString(`{"source":`)
-	b.WriteString(quoteJSONString(string(s.Source)))
+	b.WriteString(QuoteJSONString(string(s.Source)))
 	b.WriteString(`,"usageDate":`)
-	b.WriteString(quoteJSONString(s.UsageDate))
+	b.WriteString(QuoteJSONString(s.UsageDate))
 	b.WriteString(`,"timezone":`)
-	b.WriteString(quoteJSONString(s.Timezone))
+	b.WriteString(QuoteJSONString(s.Timezone))
 	b.WriteString(`,"model":`)
-	b.WriteString(quoteJSONString(s.Model))
+	b.WriteString(QuoteJSONString(s.Model))
 	b.WriteString(`,"inputTokens":`)
 	b.WriteString(strconv.FormatInt(s.InputTokens, 10))
 	b.WriteString(`,"outputTokens":`)
@@ -152,24 +152,24 @@ func (s Snapshot) HashPayload() string {
 	b.WriteString(`,"totalTokens":`)
 	b.WriteString(strconv.FormatInt(s.TotalTokens, 10))
 	b.WriteString(`,"costUsd":`)
-	b.WriteString(formatJSONFloat(s.CostUSD))
+	b.WriteString(FormatJSONFloat(s.CostUSD))
 	b.WriteString(`,"sessionCount":`)
 	b.WriteString(strconv.FormatInt(s.SessionCount, 10))
 	if s.Correction != "" {
 		b.WriteString(`,"correction":`)
-		b.WriteString(quoteJSONString(string(s.Correction)))
+		b.WriteString(QuoteJSONString(string(s.Correction)))
 	}
 	b.WriteString("}")
 	return b.String()
 }
 
-// formatJSONFloat emits the string JavaScript's Number#toString (and thus
+// FormatJSONFloat emits the string JavaScript's Number#toString (and thus
 // JSON.stringify) produces for the same double: the shortest round-tripping
 // decimal, written in fixed notation while 1e-6 <= |x| < 1e21 and in
 // exponential notation outside that range, with a signed exponent that has no
 // leading zeros ("1e-7", "1e+21"). Go's own formatters use different
 // thresholds and pad the exponent, which would silently drift the dedup hash.
-func formatJSONFloat(f float64) string {
+func FormatJSONFloat(f float64) string {
 	if f == 0 {
 		return "0" // also covers -0, which JS prints as "0"
 	}
@@ -193,12 +193,12 @@ func formatJSONFloat(f float64) string {
 	return mantissa + "e" + sign + exponent
 }
 
-// quoteJSONString applies JSON escaping with the same rules as
+// QuoteJSONString applies JSON escaping with the same rules as
 // JSON.stringify: control characters as \u00XX except the short escapes,
 // and the literal characters passed through unchanged. Go's
 // encoding/json differs (it escapes <, >, & and U+2028/9), so strings are
 // escaped by hand.
-func quoteJSONString(s string) string {
+func QuoteJSONString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
 	for _, r := range s {

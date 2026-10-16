@@ -305,8 +305,8 @@ func TestFormatJSONFloatMatchesJavaScript(t *testing.T) {
 	// Runtime arithmetic so the constant folder cannot round for us.
 	for _, tc := range cases {
 		one := tc.value
-		if got := formatJSONFloat(one); got != tc.want {
-			t.Errorf("formatJSONFloat(%v) = %q, want %q", tc.value, got, tc.want)
+		if got := FormatJSONFloat(one); got != tc.want {
+			t.Errorf("FormatJSONFloat(%v) = %q, want %q", tc.value, got, tc.want)
 		}
 	}
 }
