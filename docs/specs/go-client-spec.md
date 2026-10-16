@@ -124,6 +124,15 @@ clients/go/
 
 - [x] 调研完成（见 research 报告）；ccusage 已升 20.0.33（2cc5249，PR #24）
 - [ ] **前置：与上游作者对齐（D8）** —— 开工条件
+
+**M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：
+
+- 纯/无依赖（可直接平移，对应 Go 侧新包 `antigravityscan`）：`antigravity-file-scan.ts`（173 行，SHA-256 键 + 热/冷混合选择 + 从两端取样）、`antigravity-since.ts`（87 行，`since@时区` scope 解析 + `includesTimestamp/includesFileMtime` 谓词）。两者测试仅 3 条，但逻辑密集。
+- 数据层：`antigravity-history-db.ts`（632 行，SQLite `gen_metadata.data` 投影 + cursor 高水位 + 完整目录扫描断言）、`antigravity-history-protobuf.ts`（298 行，`.pb` 解析，M0 硬约束禁止直接作上传来源）。
+- Cursor 层：`antigravity-cli-cursor.ts`(543)、`antigravity-gui-cursor.ts`(543)、`antigravity-cli-db-cursor.ts`(154)、`antigravity-cli-history-authority.ts`(266)——legacy 迁移/重建/回滚。
+- Provider：`antigravity-cli.ts`(250，含 CLI 源 + status line 侧约束)、`antigravity-gui.ts`(529)、language server client `antigravity-gui-client.ts`(555，JSON-RPC over stdio)。
+- 注意：TS 侧 provider 把 cursor 读写内联进 `session-cursor-store.ts`，Go 侧 M0 已有 `internal/collect/sessioncursor`，三源 provider 须复用而非另写。
+- 风险：protobuf 层（298 行 + 529 行测试）和 language-server 层是 M3 主体工作量；「不落盘专项」= 硬约束「raw content 不得进 cursor/snapshot/日志/payload」需逐层测试覆盖（TS 已有 antigravity-gui-parser 66 行测试 + client 631 行测试可对照）。
 - [x] M0 契约层（6cca203；金样本 `clients/go/internal/contract/goldens/snapshot-hash.json`，由 `scripts/clients-go-gen-goldens.mjs` 从 TS 侧再生成；cursor 双向兼容验证在 50c4157）
 - [x] 确认 Go 工具链版本基线：`clients/go/go.mod` 声明 `go 1.27`，依赖为 `golang.org/x/sys` 与 `github.com/klauspost/compress`（M2 引入，Go 标准库的 `internal/zstd` 不可导入）
 - [x] M1 上传/运行锁/瞬态分类/sync CLI（9286438 + 9d6f6c4 + 50c4157；provider registry 尚为空，M2 起填充）
