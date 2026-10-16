@@ -17,6 +17,7 @@ import (
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers"
+	antigravityprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitycli"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 	"github.com/MisonL/TokenBoard/clients/go/internal/upload"
@@ -100,7 +101,7 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 		})
 	case "preview":
 		return withRunLock(stateDir, stderr, func() int {
-			snapshots, failures, abortErr := collectAll(ctx, options, env, stateDir, "", stderr)
+			snapshots, _, failures, abortErr := collectAll(ctx, options, env, stateDir, "", stderr)
 			if abortErr != nil {
 				fmt.Fprintln(stderr, abortErr.Error())
 				return ExitFailure
@@ -158,7 +159,7 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 		fmt.Fprintln(stderr, err.Error())
 		return ExitFailure
 	}
-	snapshots, failures, abortErr := collectAll(ctx, options, env, stateDir, cursorScope, stderr)
+	snapshots, collectedSources, failures, abortErr := collectAll(ctx, options, env, stateDir, cursorScope, stderr)
 	if abortErr != nil {
 		fmt.Fprintln(stderr, abortErr.Error())
 		return ExitFailure
@@ -197,6 +198,11 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 		return classifyFailure(uploadErr, options, env)
 	}
 
+	if err := acknowledgeUploadCursors(stateDir, collectedSources, snapshots, options, cursorScope); err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return ExitFailure
+	}
+
 	payload, _ := json.MarshalIndent(map[string]any{"upserted": result.Upserted, "skipped": result.Skipped}, "", "  ")
 	fmt.Fprintln(stdout, string(payload))
 	if collectionFailed {
@@ -222,17 +228,18 @@ func classifyFailure(cause error, options Options, env Env) int {
 // unavailable and keeps going. A source with no provider at all is not
 // implemented in this client yet: fatal for a concrete run, skipped for all.
 // The returned error is the fail-fast abort.
-func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorScope string, stderr io.Writer) ([]contract.Snapshot, []string, error) {
+func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorScope string, stderr io.Writer) ([]contract.Snapshot, []contract.Source, []string, error) {
 	sources := expandSources(options.Source, options.HookMode)
 	all := options.Source == "all"
 	_ = env
 	var snapshots []contract.Snapshot
+	var collectedSources []contract.Source
 	var failures []string
 	for _, source := range sources {
 		provider, ok := collect.Lookup(source)
 		if !ok {
 			if !all {
-				return nil, nil, fmt.Errorf("%s is not implemented in this client yet", source)
+				return nil, nil, nil, fmt.Errorf("%s is not implemented in this client yet", source)
 			}
 			fmt.Fprintf(stderr, "Skipping unavailable %s source: not implemented in this client yet\n", source)
 			continue
@@ -248,7 +255,7 @@ func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorS
 		})
 		if err != nil {
 			if !all {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			if collect.IsOptionalSourceUnavailable(source, err.Error()) {
 				fmt.Fprintf(stderr, "Skipping unavailable %s source: %v\n", source, err)
@@ -259,8 +266,9 @@ func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorS
 			continue
 		}
 		snapshots = append(snapshots, collected...)
+		collectedSources = append(collectedSources, source)
 	}
-	return snapshots, failures, nil
+	return snapshots, collectedSources, failures, nil
 }
 
 func expandSources(source string, hookMode bool) []contract.Source {
@@ -507,3 +515,40 @@ func versionString() string {
 
 // Version is stamped at build time via -ldflags; "dev" otherwise.
 var Version = "dev"
+
+// acknowledgeUploadCursors marks the just-uploaded snapshots as acknowledged
+// in each antigravity source's cursor, so they stop being re-emitted. Only an
+// upload that actually succeeded reaches here: acknowledging a failed run
+// would silently drop the usage it carried.
+func acknowledgeUploadCursors(
+	stateDir string,
+	collectedSources []contract.Source,
+	snapshots []contract.Snapshot,
+	options Options,
+	cursorScope string,
+) error {
+	for _, source := range collectedSources {
+		if source != contract.SourceAntigravityCLI &&
+			source != contract.SourceAntigravity && source != contract.SourceAntigravityIDE {
+			continue
+		}
+		acknowledged := map[string]bool{}
+		for _, snapshot := range snapshots {
+			if snapshot.Source != source {
+				continue
+			}
+			acknowledged[snapshot.AckGroupKey()] = true
+		}
+		if err := antigravityprovider.AcknowledgeSourceCursor(antigravityprovider.AcknowledgeSourceInput{
+			StateDir:           stateDir,
+			Source:             source,
+			CursorScope:        cursorScope,
+			AcknowledgedGroups: acknowledged,
+			Since:              options.Since,
+			Timezone:           options.Timezone,
+		}); err != nil {
+			return fmt.Errorf("%s cursor acknowledgement failed: %w", source, err)
+		}
+	}
+	return nil
+}

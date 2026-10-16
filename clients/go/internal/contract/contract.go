@@ -125,6 +125,13 @@ func SnapshotKey(source Source, usageDate, model string) string {
 	return string(source) + "\x00" + usageDate + "\x00" + model
 }
 
+// AckGroupKey is the cursor-side grouping of a snapshot: the source, day,
+// timezone and model. It is what an upload acknowledgement names, because the
+// cursor keys its pending entries by that group rather than by snapshot key.
+func (s Snapshot) AckGroupKey() string {
+	return string(s.Source) + "\x00" + s.UsageDate + "\x00" + s.Timezone + "\x00" + s.Model
+}
+
 // HashPayload serializes the snapshot exactly as TypeScript's
 // JSON.stringify({source, usageDate, ...}) does: fixed key order, no
 // whitespace, shortest round-trip float form, omitted only when correction is
