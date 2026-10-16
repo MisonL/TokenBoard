@@ -100,7 +100,7 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 		})
 	case "preview":
 		return withRunLock(stateDir, stderr, func() int {
-			snapshots, failures, abortErr := collectAll(ctx, options, env, "", stderr)
+			snapshots, failures, abortErr := collectAll(ctx, options, env, stateDir, "", stderr)
 			if abortErr != nil {
 				fmt.Fprintln(stderr, abortErr.Error())
 				return ExitFailure
@@ -158,7 +158,7 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 		fmt.Fprintln(stderr, err.Error())
 		return ExitFailure
 	}
-	snapshots, failures, abortErr := collectAll(ctx, options, env, cursorScope, stderr)
+	snapshots, failures, abortErr := collectAll(ctx, options, env, stateDir, cursorScope, stderr)
 	if abortErr != nil {
 		fmt.Fprintln(stderr, abortErr.Error())
 		return ExitFailure
@@ -222,7 +222,7 @@ func classifyFailure(cause error, options Options, env Env) int {
 // unavailable and keeps going. A source with no provider at all is not
 // implemented in this client yet: fatal for a concrete run, skipped for all.
 // The returned error is the fail-fast abort.
-func collectAll(ctx context.Context, options Options, env Env, cursorScope string, stderr io.Writer) ([]contract.Snapshot, []string, error) {
+func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorScope string, stderr io.Writer) ([]contract.Snapshot, []string, error) {
 	sources := expandSources(options.Source, options.HookMode)
 	all := options.Source == "all"
 	_ = env
@@ -242,6 +242,7 @@ func collectAll(ctx context.Context, options Options, env Env, cursorScope strin
 			Since:       options.Since,
 			Until:       options.Until,
 			CursorScope: cursorScope,
+			StateDir:    stateDir,
 			Stderr:      func(line string) { fmt.Fprintln(stderr, line) },
 			Env:         env,
 		})

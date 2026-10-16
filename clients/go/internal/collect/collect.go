@@ -21,6 +21,13 @@ type Options struct {
 	Since       string
 	Until       string
 	CursorScope string
+	// StateDir is where the source's cursor file lives. Providers that keep
+	// one read and write it themselves, the way the TS providers do; the CLI
+	// only owns the post-upload acknowledgement.
+	StateDir string
+	// HomeDir is the user's home directory, for a provider whose default
+	// source location is under it. Empty resolves the process home.
+	HomeDir string
 	// Stderr receives per-source diagnostics (skipped paths, unreadable
 	// entries). Nil discards them.
 	Stderr func(line string)
@@ -76,6 +83,10 @@ func IsOptionalSourceUnavailable(source contract.Source, message string) bool {
 	case contract.SourceDeepSeekHarness:
 		return strings.Contains(message, "No DeepSeek Harness sessions found") ||
 			strings.Contains(message, "This Node.js build lacks zstd support")
+	case contract.SourceAntigravityCLI, contract.SourceAntigravity, contract.SourceAntigravityIDE:
+		return strings.Contains(message, "Antigravity SQLite reader unavailable") ||
+			strings.Contains(message, "Antigravity conversations directory not found") ||
+			strings.Contains(message, "No Antigravity conversations found")
 	}
 	return false
 }
