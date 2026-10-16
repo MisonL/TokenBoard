@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/collate"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
@@ -117,7 +118,8 @@ func (a *Aggregate) Add(event Event) {
 	}
 }
 
-// Snapshots returns the folded rows sorted by (date, model).
+// Snapshots returns the folded rows sorted by (date, model), in the same
+// collation the TS aggregate uses — localeCompare, not byte order.
 func (a *Aggregate) Snapshots() []contract.Snapshot {
 	rows := make([]*aggregateRow, 0, len(a.rows))
 	for _, row := range a.rows {
@@ -125,9 +127,9 @@ func (a *Aggregate) Snapshots() []contract.Snapshot {
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].usageDate != rows[j].usageDate {
-			return rows[i].usageDate < rows[j].usageDate
+			return collate.Less(rows[i].usageDate, rows[j].usageDate)
 		}
-		return rows[i].model < rows[j].model
+		return collate.Less(rows[i].model, rows[j].model)
 	})
 	snapshots := make([]contract.Snapshot, 0, len(rows))
 	for _, row := range rows {
