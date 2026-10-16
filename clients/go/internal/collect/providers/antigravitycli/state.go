@@ -110,6 +110,12 @@ func cursorHistoryCompactedThroughDate(state sessioncursor.State) string {
 	return value
 }
 
+// setCursorHistoryCompactedThroughDate persists the date the CLI history was
+// compacted through.
+func setCursorHistoryCompactedThroughDate(state *sessioncursor.State, date string) error {
+	return state.SetExtra(cursorKeyHistoryCompactedThrough, date)
+}
+
 func cursorHistoryComplete(state sessioncursor.State) bool {
 	raw, ok := state.ExtraValue(cursorKeyHistoryComplete)
 	if !ok {
