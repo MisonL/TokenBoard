@@ -557,3 +557,32 @@ func TestNeverCarriesContentFieldsIntoTheEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestRawContentInADatabaseBlobNeverReachesTheEvent(t *testing.T) {
+	// A gen_metadata row's protobuf carries prompt and path fields beside the
+	// usage block; the projection must keep only the usage metadata.
+	secrets := []string{"a real prompt", "/Users/someone/secret/project"}
+	blob := metadataBlob(
+		usageMessage(usageSpec{inputTokens: 120, outputTokens: u64(24), responseID: "response-a"}),
+		message(timestampField(1_782_229_139, u64(863_115_000))),
+		fieldString(19, "gemini-3-flash-a"),
+		fieldString(3, secrets[0]),
+		fieldString(12, secrets[1]),
+	)
+	event, ok, err := ParseGeneratorMetadataBlob(blob, BlobOptions{CascadeID: "conversation-a", RowIndex: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("no event parsed from the blob")
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range secrets {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("blob-derived event leaked %q: %s", secret, encoded)
+		}
+	}
+}
