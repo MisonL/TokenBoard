@@ -133,6 +133,12 @@ clients/go/
 - Provider：`antigravity-cli.ts`(250，含 CLI 源 + status line 侧约束)、`antigravity-gui.ts`(529)、language server client `antigravity-gui-client.ts`(555，JSON-RPC over stdio)。
 - 注意：TS 侧 provider 把 cursor 读写内联进 `session-cursor-store.ts`，Go 侧 M0 已有 `internal/collect/sessioncursor`，三源 provider 须复用而非另写。
 - 风险：protobuf 层（298 行 + 529 行测试）和 language-server 层是 M3 主体工作量；「不落盘专项」= 硬约束「raw content 不得进 cursor/snapshot/日志/payload」需逐层测试覆盖（TS 已有 antigravity-gui-parser 66 行测试 + client 631 行测试可对照）。
+- [x] 数据层：`antigravityscan`（f0d7f5a + 6f478b7 目录列表 helper）、`antigravitymeta`（51b2426 parser + protobuf + 金样本级 blob 解析）、`antigravityhistory`（6f478b7），影子 diff 见下
+- [x] Cursor 层（CLI 侧）：`antigravity-cli-db-cursor`（62616f9，scope 复用/迁移/剪枝 + 无锚检测逐位对齐 TS 比较）、`antigravity-cli-cursor` + `antigravity-cli-history-authority`（83c6963，event/session/aggregate 三族键 + pending 重发 + 压缩边界 fail-closed + metering version 迁移 + 全量重建 prepare/restore + 零 correction）；`antigravity-gui-cursor` 待做
+- [ ] Provider 层：`antigravity-cli`（collect 编排：migration → rebuild → 读库 → push → mark → restore → complete 重发）、`antigravity-gui`、language-server client
+- [ ] 「不落盘专项」测试覆盖
+
+**M3 数据层影子 diff 口径（6f478b7）**：`clients/go/scripts/antigravity-fixture.mts` 生成 5 个 cascade DB（含 placeholder model、稀疏 usage、空 blob/NULL、损坏 blob、别名）；`antigravity-shadow-ts.mts` / `antigravity-shadow-incremental.mts` 跑 TS 侧，`cmd/tb-shadow-antigravity` 跑 Go 侧。六个场景全部一致（canonical 化后逐字段）：无界直读、有界直读（maxDbFiles=2）、三段携带状态增量（每段向 TS 自己写出的 state 追加一行到最热已处理库，另有未读库参与竞争）、删除已确认行后的 fail-closed（两侧抛同一 "metadata cursor reset detected …; rerun with --since all" 错误）。mtimeMs 必须与 Node `fs.Stats#mtimeMs` 逐位一致（写入共享 cursor 文件），故 `internal/collect/mtime` 复刻 Node 的先秒后纳秒算术；`UnixNano()/1e6` 单步除法末位差一 ulp（实测 1792153999246.4922 vs …492）。
 - [x] M0 契约层（6cca203；金样本 `clients/go/internal/contract/goldens/snapshot-hash.json`，由 `scripts/clients-go-gen-goldens.mjs` 从 TS 侧再生成；cursor 双向兼容验证在 50c4157）
 - [x] 确认 Go 工具链版本基线：`clients/go/go.mod` 声明 `go 1.27`，依赖为 `golang.org/x/sys` 与 `github.com/klauspost/compress`（M2 引入，Go 标准库的 `internal/zstd` 不可导入）
 - [x] M1 上传/运行锁/瞬态分类/sync CLI（9286438 + 9d6f6c4 + 50c4157；provider registry 尚为空，M2 起填充）
