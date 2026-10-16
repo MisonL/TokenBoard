@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
+	"os"
 	"sort"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/collate"
@@ -20,31 +23,109 @@ const maxSafeInteger = int64(1)<<53 - 1
 const UnboundedScanCapacity = -1
 
 // FileScanEntry is what one scan pass recorded about one conversation file.
+// The JSON tags match the TypeScript entry shape, because these values are
+// persisted inside the source's cursor file and read back by either collector.
 type FileScanEntry struct {
-	MtimeMs         float64
-	Size            int64
-	HasDatabaseFile bool
-	CheckedSequence int64
+	MtimeMs         float64 `json:"mtimeMs"`
+	Size            int64   `json:"size"`
+	HasDatabaseFile bool    `json:"hasDatabaseFile"`
+	CheckedSequence int64   `json:"checkedSequence"`
 	// SQLite-backed sources anchor incremental metadata cursors to the exact
-	// row that was last processed.
-	MetadataRowHighWater    *int64
-	MetadataCursorRowIndex  *int64
-	MetadataCursorRowSHA256 *string
+	// row that was last processed. They are pointers so an absent anchor is
+	// omitted rather than written as a zero that would look like a real index.
+	MetadataRowHighWater    *int64  `json:"metadataRowHighWater,omitempty"`
+	MetadataCursorRowIndex  *int64  `json:"metadataCursorRowIndex,omitempty"`
+	MetadataCursorRowSHA256 *string `json:"metadataCursorRowSha256,omitempty"`
 }
 
 // FileScanState is the persisted scan bookkeeping: which files have been seen,
 // when, and the rotation counter that decides discovery-vs-refresh fairness.
 type FileScanState struct {
-	NextSequence int64
+	NextSequence int64 `json:"nextSequence"`
 	// Files is keyed by the SHA-256 of the conversation id, so the key carries
 	// no user identifier even in the state file.
-	Files map[string]FileScanEntry
+	Files map[string]FileScanEntry `json:"files"`
 }
 
 // NewFileScanState is a valid empty state.
 func NewFileScanState() FileScanState {
 	return FileScanState{Files: map[string]FileScanEntry{}}
 }
+
+// DirectoryEntry is one entry from a conversations directory listing.
+type DirectoryEntry struct {
+	Name   string
+	IsFile bool
+}
+
+// ListDirectoryEntries walks directoryPath, calling yield for each entry.
+//
+// It is the Go counterpart of the TS side's AsyncIterable<AntigravityDirectoryEntry>:
+// yielding through a callback lets the caller's entry cap stop the walk, so an
+// abnormally large directory is never materialised in full.
+func ListDirectoryEntries(directoryPath string, yield func(DirectoryEntry) error) error {
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+
+	for {
+		entries, readErr := directory.ReadDir(readDirBatchSize)
+		for _, entry := range entries {
+			if err := yield(DirectoryEntry{Name: entry.Name(), IsFile: entry.Type().IsRegular()}); err != nil {
+				return err
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return readErr
+		}
+	}
+}
+
+// ListDirectoryEntryNames consumes a directory-entry stream and returns the
+// regular-file names, failing when more than MaxDirectoryEntries were read.
+//
+// The cap counts entries read, not files kept: a directory that is merely
+// large — even if most of it is not files — is exactly the shape a bounded
+// scan has to survive.
+func ListDirectoryEntryNames(entries func(yield func(DirectoryEntry) error) error) ([]string, error) {
+	names := []string{}
+	entriesRead := 0
+	err := entries(func(entry DirectoryEntry) error {
+		entriesRead++
+		if entriesRead > MaxDirectoryEntries {
+			return fmt.Errorf(
+				"Antigravity conversations directory exceeds the %d-entry scan limit", MaxDirectoryEntries)
+		}
+		if entry.IsFile {
+			names = append(names, entry.Name)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// ListDirectoryFileNames walks a real directory and returns its regular-file
+// names. A directory that is not there reports fs.ErrNotExist, which the
+// caller turns into "the tool is not installed here" rather than a failure.
+func ListDirectoryFileNames(directoryPath string) ([]string, error) {
+	return ListDirectoryEntryNames(func(yield func(DirectoryEntry) error) error {
+		return ListDirectoryEntries(directoryPath, yield)
+	})
+}
+
+// readDirBatchSize bounds how many directory entries are materialised at once.
+// The TS scanner yields entries from an open directory handle, so it never
+// holds the whole listing; batching keeps the same property here while the
+// entry cap above still bounds the total.
+const readDirBatchSize = 256
 
 // BeginFileScan consumes one sequence number. It fails on an invalid or
 // exhausted counter, so a corrupt cursor surfaces instead of silently

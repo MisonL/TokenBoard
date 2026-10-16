@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"sort"
 	"syscall"
+
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/mtime"
 )
 
 const (
@@ -127,7 +129,7 @@ func scanDirectory(currentDir string, options Options, depth int, visit func(Sca
 		}
 		if err := visit(ScannedSessionFile{
 			Path:    entryPath,
-			MtimeMs: float64(info.ModTime().UnixNano()) / 1e6,
+			MtimeMs: mtime.Millis(info.ModTime()),
 			Size:    info.Size(),
 		}); err != nil {
 			return err

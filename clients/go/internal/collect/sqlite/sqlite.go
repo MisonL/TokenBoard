@@ -30,6 +30,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/mtime"
 )
 
 // MaxOutputBytes is the default output ceiling, matching the TS reader's
@@ -391,7 +393,7 @@ func statMtimeMs(path string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return float64(info.ModTime().UnixNano()) / 1e6, nil
+	return mtime.Millis(info.ModTime()), nil
 }
 
 // IsMissingFileError reports whether an error is a missing file, which callers
