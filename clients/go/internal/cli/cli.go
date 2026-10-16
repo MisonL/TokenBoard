@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
+	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 	"github.com/MisonL/TokenBoard/clients/go/internal/upload"
@@ -99,7 +100,11 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 		})
 	case "preview":
 		return withRunLock(stateDir, stderr, func() int {
-			snapshots, failures := collectAll(ctx, options, env, "")
+			snapshots, failures, abortErr := collectAll(ctx, options, env, "", stderr)
+			if abortErr != nil {
+				fmt.Fprintln(stderr, abortErr.Error())
+				return ExitFailure
+			}
 			if snapshots == nil {
 				snapshots = []contract.Snapshot{}
 			}
@@ -153,7 +158,11 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 		fmt.Fprintln(stderr, err.Error())
 		return ExitFailure
 	}
-	snapshots, failures := collectAll(ctx, options, env, cursorScope)
+	snapshots, failures, abortErr := collectAll(ctx, options, env, cursorScope, stderr)
+	if abortErr != nil {
+		fmt.Fprintln(stderr, abortErr.Error())
+		return ExitFailure
+	}
 	collectionFailed := len(failures) > 0 && (options.FailOnSourceErr || options.Source != "all")
 
 	if pausedUntil, paused := upload.IsPaused(stateDir, time.Now()); paused {
@@ -207,34 +216,50 @@ func classifyFailure(cause error, options Options, env Env) int {
 	return ExitFailure
 }
 
-// collectAll gathers snapshots from the registered providers. No provider is
-// registered yet, so every source reports as unavailable — the same outcome
-// as a source whose tool is not installed on this machine. The cursor scope
-// is the endpoint origin for sync (empty for preview), mirroring the TS
-// collection context.
-func collectAll(ctx context.Context, options Options, env Env, cursorScope string) ([]contract.Snapshot, []string) {
+// collectAll gathers snapshots from the registered providers, mirroring the
+// TS collectOptionalSource semantics: a concrete --source run fails fast on
+// any error, while an all-source run treats a missing local store as
+// unavailable and keeps going. A source with no provider at all is not
+// implemented in this client yet: fatal for a concrete run, skipped for all.
+// The returned error is the fail-fast abort.
+func collectAll(ctx context.Context, options Options, env Env, cursorScope string, stderr io.Writer) ([]contract.Snapshot, []string, error) {
 	sources := expandSources(options.Source, options.HookMode)
-	_ = ctx
+	all := options.Source == "all"
+	_ = env
 	var snapshots []contract.Snapshot
 	var failures []string
 	for _, source := range sources {
 		provider, ok := collect.Lookup(source)
 		if !ok {
-			continue // unavailable, not a failure
+			if !all {
+				return nil, nil, fmt.Errorf("%s is not implemented in this client yet", source)
+			}
+			fmt.Fprintf(stderr, "Skipping unavailable %s source: not implemented in this client yet\n", source)
+			continue
 		}
 		collected, err := provider.Collect(ctx, collect.Options{
 			Timezone:    options.Timezone,
 			Since:       options.Since,
 			Until:       options.Until,
 			CursorScope: cursorScope,
+			Stderr:      func(line string) { fmt.Fprintln(stderr, line) },
+			Env:         env,
 		})
 		if err != nil {
+			if !all {
+				return nil, nil, err
+			}
+			if collect.IsOptionalSourceUnavailable(source, err.Error()) {
+				fmt.Fprintf(stderr, "Skipping unavailable %s source: %v\n", source, err)
+				continue
+			}
 			failures = append(failures, fmt.Sprintf("%s: %v", source, err))
+			fmt.Fprintf(stderr, "Skipping %s source: %v\n", source, err)
 			continue
 		}
 		snapshots = append(snapshots, collected...)
 	}
-	return snapshots, failures
+	return snapshots, failures, nil
 }
 
 func expandSources(source string, hookMode bool) []contract.Source {

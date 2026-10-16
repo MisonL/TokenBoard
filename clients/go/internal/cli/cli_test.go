@@ -34,6 +34,24 @@ func run(t *testing.T, env map[string]string, args ...string) (int, string, stri
 	return code, stdout.String(), stderr.String()
 }
 
+// grokHomeFixture writes a minimal Grok Build session tree and returns its
+// home, so a sync/preview run has a source that actually collects. Tests that
+// exercise upload, lock and pause behaviour use it instead of a source with no
+// provider, which would fail fast as unimplemented.
+func grokHomeFixture(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "enc-cwd", "session-1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	event := `{"method":"_x.ai/session/update","timestamp":1785498182,"params":{"update":{"sessionUpdate":"turn_completed","usage":{"inputTokens":1000,"outputTokens":10,"cachedReadTokens":0,"modelUsage":{"grok-4.5":{"inputTokens":1000,"outputTokens":10,"cachedReadTokens":0}}}}}}`
+	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), []byte(event+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func TestVersionExitsOK(t *testing.T) {
 	code, stdout, _ := run(t, nil, "version")
 	if code != ExitOK || !strings.Contains(stdout, "tokenboard") {
@@ -71,8 +89,22 @@ func TestInvalidSourceIsUsageError(t *testing.T) {
 	}
 }
 
-func TestPreviewWithNoProvidersPrintsEmptyArray(t *testing.T) {
-	code, stdout, _ := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}, "preview", "--source", "pi")
+// A concrete --source whose provider is not implemented in this client fails
+// fast, the way the TS CLI fails when a single source cannot be collected.
+func TestPreviewUnimplementedConcreteSourceFailsFast(t *testing.T) {
+	code, _, stderr := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}, "preview", "--source", "pi")
+	if code != ExitFailure || !strings.Contains(stderr, "not implemented") {
+		t.Errorf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+// An all-source preview over a home with no sessions prints an empty array:
+// every missing store is skipped as unavailable, not reported as a failure.
+func TestPreviewAllSourcesWithNoSessionsPrintsEmptyArray(t *testing.T) {
+	code, stdout, _ := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":  "UTC",
+		"TOKENBOARD_GROK_HOME": t.TempDir(),
+	}, "preview")
 	if code != ExitOK {
 		t.Fatalf("code = %d", code)
 	}
@@ -93,7 +125,11 @@ func TestSyncRequiresEndpointAndToken(t *testing.T) {
 
 func TestSyncUploadsAndReportsCounts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"upserted": 0})
+		if strings.HasSuffix(r.URL.Path, "/check") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"existing": []any{}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"upserted": 1})
 	}))
 	defer server.Close()
 
@@ -104,7 +140,8 @@ func TestSyncUploadsAndReportsCounts(t *testing.T) {
 		"TOKENBOARD_STATE_DIR":    stateDir,
 		"TOKENBOARD_ENDPOINT":     server.URL,
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
-	}, "sync", "--source", "pi")
+		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
+	}, "sync", "--source", "grok-build")
 	if code != ExitOK {
 		t.Fatalf("code = %d stderr=%q", code, stderr)
 	}
@@ -130,7 +167,8 @@ func TestSyncTransientFailureExits75(t *testing.T) {
 		"TOKENBOARD_STATE_DIR":    stateDir,
 		"TOKENBOARD_ENDPOINT":     server.URL,
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
-	}, "sync", "--source", "pi")
+		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
+	}, "sync", "--source", "grok-build")
 	if code != ExitTransient {
 		t.Errorf("transient 503 must exit %d, got %d", ExitTransient, code)
 	}
@@ -150,7 +188,8 @@ func TestSyncHookModeTransientFailureExits1(t *testing.T) {
 		"TOKENBOARD_ENDPOINT":     server.URL,
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
 		"TOKENBOARD_HOOK_MODE":    "1",
-	}, "sync", "--source", "pi")
+		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
+	}, "sync", "--source", "grok-build")
 	if code != ExitFailure {
 		t.Errorf("hook mode must not defer: got %d", code)
 	}
@@ -169,7 +208,8 @@ func TestSyncNonTransientFailureExits1AndRecordsBackoff(t *testing.T) {
 		"TOKENBOARD_STATE_DIR":    stateDir,
 		"TOKENBOARD_ENDPOINT":     server.URL,
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
-	}, "sync", "--source", "pi")
+		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
+	}, "sync", "--source", "grok-build")
 	if code != ExitFailure {
 		t.Errorf("401 must be a plain failure, got %d", code)
 	}
@@ -193,7 +233,8 @@ func TestSyncReportsActivePause(t *testing.T) {
 		"TOKENBOARD_STATE_DIR":    stateDir,
 		"TOKENBOARD_ENDPOINT":     "http://127.0.0.1:1",
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
-	}, "sync", "--source", "pi")
+		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
+	}, "sync", "--source", "grok-build")
 	if code != ExitOK {
 		t.Errorf("paused run should not fail the sync: %d", code)
 	}
@@ -213,7 +254,8 @@ func viaUploadFailure(t *testing.T, stateDir string) {
 		"TOKENBOARD_STATE_DIR":    stateDir,
 		"TOKENBOARD_ENDPOINT":     server.URL,
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
-	}, "sync", "--source", "pi")
+		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
+	}, "sync", "--source", "grok-build")
 	if code != ExitFailure {
 		t.Fatalf("seed failure run exited %d", code)
 	}
@@ -244,14 +286,14 @@ func TestUntilRejectedForWarmHooksAndHookMode(t *testing.T) {
 	}
 	// A non-Claude/Codex source rejects it too.
 	delete(env, "TOKENBOARD_HOOK_MODE")
-	code, _, stderr = run(t, env, "preview", "--source", "pi", "--until", "2026-05-09")
+	code, _, stderr = run(t, env, "preview", "--source", "grok-build", "--until", "2026-05-09")
 	if code != ExitUsage || !strings.Contains(stderr, "until") {
 		t.Errorf("pi --until: code=%d stderr=%q", code, stderr)
 	}
 }
 
 func TestInvalidTimezoneIsUsageError(t *testing.T) {
-	code, _, stderr := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "Mars/Olympus"}, "preview", "--source", "pi")
+	code, _, stderr := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "Mars/Olympus"}, "preview", "--source", "grok-build")
 	if code != ExitUsage || !strings.Contains(stderr, "Invalid timezone") {
 		t.Errorf("code=%d stderr=%q", code, stderr)
 	}
@@ -284,7 +326,8 @@ func TestSyncRequestTimeoutExits75(t *testing.T) {
 		"TOKENBOARD_STATE_DIR":    stateDir,
 		"TOKENBOARD_ENDPOINT":     server.URL,
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
-	}, "sync", "--source", "pi")
+		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
+	}, "sync", "--source", "grok-build")
 	if code != ExitTransient {
 		t.Errorf("timeout must exit %d, got %d (stderr %q)", ExitTransient, code, stderr)
 	}
@@ -301,11 +344,11 @@ func TestWarmHooksReportsConcreteNonHookSource(t *testing.T) {
 	code, stdout, _ := run(t, map[string]string{
 		"TOKENBOARD_TIMEZONE":  "UTC",
 		"TOKENBOARD_STATE_DIR": stateDir,
-	}, "warm-hooks", "--source", "pi")
+	}, "warm-hooks", "--source", "grok-build")
 	if code != ExitOK {
 		t.Fatalf("code=%d", code)
 	}
-	if !strings.Contains(stdout, `"pi"`) || strings.Contains(stdout, "null") {
+	if !strings.Contains(stdout, `"grok-build"`) || strings.Contains(stdout, "null") {
 		t.Errorf("warm-hooks output %q", stdout)
 	}
 }
@@ -364,7 +407,7 @@ func TestSyncRejectsInvalidEndpoint(t *testing.T) {
 		"TOKENBOARD_STATE_DIR":    stateDir,
 		"TOKENBOARD_ENDPOINT":     "not a url",
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
-	}, "sync", "--source", "pi")
+	}, "sync", "--source", "grok-build")
 	if code != ExitFailure || !strings.Contains(stderr, "Invalid endpoint URL") {
 		t.Errorf("code=%d stderr=%q", code, stderr)
 	}

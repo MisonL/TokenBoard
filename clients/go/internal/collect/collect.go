@@ -4,6 +4,8 @@ package collect
 
 import (
 	"context"
+	"os"
+	"strings"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
@@ -19,6 +21,22 @@ type Options struct {
 	Since       string
 	Until       string
 	CursorScope string
+	// Stderr receives per-source diagnostics (skipped paths, unreadable
+	// entries). Nil discards them.
+	Stderr func(line string)
+	// Env resolves provider configuration (TOKENBOARD_GROK_HOME, GROK_HOME,
+	// ...). The TS collection context threads its env the same way; nil
+	// falls back to the process environment.
+	Env func(string) string
+}
+
+// EnvValue resolves a key through Options.Env, falling back to the process
+// environment.
+func (o Options) EnvValue(key string) string {
+	if o.Env != nil {
+		return o.Env(key)
+	}
+	return os.Getenv(key)
 }
 
 // Provider reads one source's local usage records and normalizes them. It
@@ -41,4 +59,23 @@ func Register(source contract.Source, provider Provider) {
 func Lookup(source contract.Source) (Provider, bool) {
 	provider, ok := registry[source]
 	return provider, ok
+}
+
+// IsOptionalSourceUnavailable mirrors the TS isOptionalSourceUnavailable: the
+// "tool is not installed here" messages an all-source run skips instead of
+// reporting as a failure. Anything else is a real collection failure.
+func IsOptionalSourceUnavailable(source contract.Source, message string) bool {
+	switch source {
+	case contract.SourceOpenCode:
+		return strings.Contains(message, "OpenCode database not found") ||
+			strings.Contains(message, "OpenCode SQLite reader unavailable")
+	case contract.SourcePi:
+		return strings.Contains(message, "No Pi sessions found")
+	case contract.SourceGrokBuild:
+		return strings.Contains(message, "No Grok Build sessions found")
+	case contract.SourceDeepSeekHarness:
+		return strings.Contains(message, "No DeepSeek Harness sessions found") ||
+			strings.Contains(message, "This Node.js build lacks zstd support")
+	}
+	return false
 }
