@@ -321,7 +321,3 @@ func scopeFor(t *testing.T, since string) string {
 	// directly to avoid importing the whole scan option set here.
 	return value[0:4] + "-" + value[4:6] + "-" + value[6:8] + "@UTC"
 }
-
-func hashOf(value string) string {
-	return antigravitymeta.Hash(value)
-}

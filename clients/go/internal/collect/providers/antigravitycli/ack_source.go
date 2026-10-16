@@ -22,9 +22,9 @@ type AcknowledgeSourceInput struct {
 // AcknowledgeSourceCursor applies an upload acknowledgement to one source's
 // cursor file, under the same lock the collector uses.
 //
-// Only the CLI source's cursor is acknowledged here: the two GUI sources share
-// this package's key layout but their own provider (and its acknowledgement)
-// is not ported yet, so acknowledging them would write a cursor nothing reads.
+// Only the CLI source's cursor is handled here: the two GUI sources have their
+// own key families and compaction rules, so their acknowledgement lives in the
+// antigravitygui package, which the CLI resolves per source.
 func AcknowledgeSourceCursor(input AcknowledgeSourceInput) error {
 	if input.Source != contract.SourceAntigravityCLI {
 		return nil

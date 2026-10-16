@@ -5,6 +5,7 @@ package providers
 
 import (
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitycli"
+	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitygui"
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/deepseekharness"
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/grokbuild"
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/opencode"

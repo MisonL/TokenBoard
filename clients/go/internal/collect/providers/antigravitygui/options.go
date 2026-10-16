@@ -19,25 +19,52 @@ type Options struct {
 	Source          Source
 	Timezone        string
 	CollectedAt     string
+	Since           string
+	StateDir        string
+	CursorScope     string
 	ConversationDir string
 	SQLiteBin       *string
 	ReadSQLite      antigravityhistory.ReadSQLite
 	StatFile        antigravityhistory.StatFile
 	ListFiles       antigravityhistory.ListFiles
-	// MaxDbFiles is the per-run database budget. Nil means "unset": a bounded
-	// run keeps the reader's default and a full-history run reads everything.
-	MaxDbFiles *int
 	// ReadDbUsageEvents replaces the SQLite reader for tests and the shadow
 	// harness.
 	ReadDbUsageEvents func(antigravityhistory.Options) (antigravityhistory.Result, error)
 	// RequestGeneratorMetadata, when set, enables the language-server route
 	// and suppresses the SQLite read.
-	RequestGeneratorMetadata func(source Source, cascadeID string) (any, error)
+	RequestGeneratorMetadata func(request GeneratorMetadataRequest) (any, error)
+	// ListCascades replaces the conversations directory walk for the
+	// language-server route; ListCascadeIDs is its id-only form.
+	ListCascades   func() ([]CascadeRef, error)
+	ListCascadeIDs func() ([]string, error)
+	// LanguageServerPath overrides the server executable; empty resolves
+	// TOKENBOARD_ANTIGRAVITY_LANGUAGE_SERVER, then the macOS default.
+	LanguageServerPath string
+	// OverrideIdeVersion is passed to --override_ide_version.
+	OverrideIdeVersion string
+	// LanguageServerPort pins the server port; zero allocates one.
+	LanguageServerPort int
+	// MaxLanguageServerCascades bounds how many cascades one run may request.
+	// Nil means "unset" (the default budget); a value is used as given, so an
+	// explicit zero is the "ask nothing" the TS `0` is.
+	MaxLanguageServerCascades *int
+	// MaxDbFiles is the per-run database budget. Nil means "unset": a bounded
+	// run keeps the reader's default and a full-history run reads everything.
+	MaxDbFiles *int
 	// Stderr receives diagnostics. Nil discards them.
 	Stderr func(line string)
+	// Env resolves TOKENBOARD_SINCE and friends; nil means the process env.
+	Env func(string) string
 	// HomeDir is the default conversations directory's root. Empty resolves
 	// the process home.
 	HomeDir string
+}
+
+// getenv resolves through the process environment. Options.Env threads the
+// collection context's env in the TS side; the GUI provider reads only its own
+// overrides, so the plain environment matches for now.
+func getenv(key string) string {
+	return os.Getenv(key)
 }
 
 // defaultConversationDir mirrors the TS default: ~/.gemini/<source>/conversations.

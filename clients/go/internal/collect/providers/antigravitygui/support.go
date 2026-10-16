@@ -9,6 +9,7 @@ import (
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravityscan"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/collate"
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/mtime"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessionusage"
 )
@@ -94,4 +95,50 @@ func collectedAtOrNow(collectedAt string) string {
 // scope ordering.
 func collateLess(left, right string) bool {
 	return collate.Less(left, right)
+}
+
+// compareHashes orders two hex digests the way the TS localeCompare does.
+func compareHashes(left, right string) int {
+	if collate.Less(left, right) {
+		return -1
+	}
+	if left == right {
+		return 0
+	}
+	return 1
+}
+
+// mtimeMs converts a mod time the way the cursor values are stored.
+func mtimeMs(at time.Time) float64 {
+	return mtime.Millis(at)
+}
+
+// IsUnavailableDBError reports the "the tool is not installed here" read
+// failures an all-source run skips on.
+func IsUnavailableDBError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.HasPrefix(message, "Antigravity SQLite reader unavailable:") ||
+		strings.HasPrefix(message, "Antigravity conversations directory not found:")
+}
+
+// IsUnavailableLanguageServerError reports the language-server failures that
+// only mean the server is not here.
+func IsUnavailableLanguageServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "Antigravity language server exited before it was ready") ||
+		strings.Contains(message, "Timed out starting Antigravity language server") ||
+		strings.HasPrefix(message, "Antigravity metadata request failed for ") ||
+		strings.HasPrefix(message, "Antigravity metadata request transport failed for ") ||
+		strings.HasPrefix(message, "Antigravity metadata request timed out for ")
+}
+
+// collateCompare orders two strings the way the TS localeCompare does.
+func collateCompare(left, right string) int {
+	return compareHashes(left, right)
 }

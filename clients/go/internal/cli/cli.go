@@ -18,6 +18,7 @@ import (
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers"
 	antigravityprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitycli"
+	antigravityguiprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitygui"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 	"github.com/MisonL/TokenBoard/clients/go/internal/upload"
@@ -254,6 +255,25 @@ func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorS
 			Env:         env,
 		})
 		if err != nil {
+			// The Antigravity GUI sources can fail after the SQLite history was
+			// read: the partial error carries the snapshots, which upload, and
+			// its fatal flag decides whether the run still reports a failure.
+			if partial, ok := antigravityguiprovider.IsPartialUsageError(err); ok && len(partial.Snapshots) > 0 {
+				snapshots = append(snapshots, partial.Snapshots...)
+				collectedSources = append(collectedSources, source)
+				if !all {
+					failure := fmt.Sprintf("%s: %v", source, err)
+					if partial.Fatal {
+						return snapshots, collectedSources, []string{failure}, fmt.Errorf("%s", failure)
+					}
+					return snapshots, collectedSources, nil, nil
+				}
+				if partial.Fatal {
+					failures = append(failures, fmt.Sprintf("%s: %v", source, err))
+				}
+				fmt.Fprintf(stderr, "Antigravity collection partial for %s source: %v\n", source, err)
+				continue
+			}
 			if !all {
 				return nil, nil, nil, err
 			}
@@ -539,15 +559,31 @@ func acknowledgeUploadCursors(
 			}
 			acknowledged[snapshot.AckGroupKey()] = true
 		}
-		if err := antigravityprovider.AcknowledgeSourceCursor(antigravityprovider.AcknowledgeSourceInput{
-			StateDir:           stateDir,
-			Source:             source,
-			CursorScope:        cursorScope,
-			AcknowledgedGroups: acknowledged,
-			Since:              options.Since,
-			Timezone:           options.Timezone,
-		}); err != nil {
-			return fmt.Errorf("%s cursor acknowledgement failed: %w", source, err)
+		// The three Antigravity sources keep separate cursor key families and
+		// separate compaction rules, so each is acknowledged by its own
+		// package. The CLI source owns this one; the two GUI sources own theirs.
+		var ackErr error
+		if source == contract.SourceAntigravityCLI {
+			ackErr = antigravityprovider.AcknowledgeSourceCursor(antigravityprovider.AcknowledgeSourceInput{
+				StateDir:           stateDir,
+				Source:             source,
+				CursorScope:        cursorScope,
+				AcknowledgedGroups: acknowledged,
+				Since:              options.Since,
+				Timezone:           options.Timezone,
+			})
+		} else {
+			ackErr = antigravityguiprovider.AcknowledgeSourceCursor(antigravityguiprovider.AcknowledgeSourceInput{
+				StateDir:           stateDir,
+				Source:             source,
+				CursorScope:        cursorScope,
+				AcknowledgedGroups: acknowledged,
+				Since:              options.Since,
+				Timezone:           options.Timezone,
+			})
+		}
+		if ackErr != nil {
+			return fmt.Errorf("%s cursor acknowledgement failed: %w", source, ackErr)
 		}
 	}
 	return nil

@@ -7,6 +7,7 @@
 package antigravitygui
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 
@@ -477,13 +478,6 @@ type MarkDbCascadeRowsProcessedInput struct {
 	CollectedAt               string
 }
 
-// CascadeRef names one conversation file as the language server lists it.
-type CascadeRef struct {
-	ID      string
-	MtimeMs float64
-	Size    int64
-}
-
 // AssertGuiDbResetHasNoPendingDatabaseUsage refuses a reset that would discard
 // usage the server has not acknowledged.
 func AssertGuiDbResetHasNoPendingDatabaseUsage(cursor sessioncursor.State) error {
@@ -802,4 +796,39 @@ func sortedKeys(files map[string]sessioncursor.Entry) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// cursorCascadeFileScan reads the cascade-listing scan state (the
+// antigravityCascadeFileScan cursor field the language-server listing uses).
+func cursorCascadeFileScan(state sessioncursor.State) antigravityscan.FileScanState {
+	scan := antigravityscan.NewFileScanState()
+	raw, ok := state.ExtraValue("antigravityCascadeFileScan")
+	if !ok {
+		return scan
+	}
+	var shape struct {
+		NextSequence *int64                     `json:"nextSequence"`
+		Files        map[string]json.RawMessage `json:"files"`
+	}
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		return scan
+	}
+	if shape.NextSequence != nil && *shape.NextSequence >= 0 {
+		scan.NextSequence = *shape.NextSequence
+	}
+	for key, entryRaw := range shape.Files {
+		if !sha256HexPattern.MatchString(key) {
+			continue
+		}
+		var entry antigravityscan.FileScanEntry
+		if err := json.Unmarshal(entryRaw, &entry); err != nil {
+			continue
+		}
+		scan.Files[key] = entry
+	}
+	return scan
+}
+
+func setCursorCascadeFileScan(state *sessioncursor.State, scan antigravityscan.FileScanState) error {
+	return state.SetExtra("antigravityCascadeFileScan", scan)
 }
