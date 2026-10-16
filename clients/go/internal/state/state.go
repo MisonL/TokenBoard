@@ -30,20 +30,22 @@ func ResolveDir(env func(string) string, homeDir string) string {
 	return filepath.Join(homeDir, ".tokenboard")
 }
 
-// EnsurePrivateDir creates dir with 0700 when missing. The state directory
-// holds tokens and cursors; a world-readable directory would let any local
-// account swap them.
+// EnsurePrivateDir creates dir with 0700 when missing and tightens an
+// existing directory to 0700. The state directory holds tokens and cursors; a
+// world-readable directory would let any local account swap them. The
+// tightening is verified after the fact — if the mode still admits group or
+// world access (a filesystem that cannot express POSIX bits, a failed chmod),
+// the caller is refused rather than silently run against a loose directory.
 func EnsurePrivateDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	_ = os.Chmod(dir, 0o700)
 	info, err := os.Stat(dir)
 	if err != nil {
 		return err
 	}
-	// Best effort on platforms without POSIX bits; enforced where they exist.
-	_ = os.Chmod(dir, 0o700)
-	if info.Mode().Perm()&0o077 != 0 {
+	if hasGroupOrWorldAccess(info.Mode()) {
 		return fmt.Errorf("state directory %s is group/world accessible", dir)
 	}
 	return nil
@@ -62,8 +64,10 @@ type LockOwner struct {
 type Lock struct {
 	Path     string
 	Owner    LockOwner
-	waiting  bool
 	released bool
+
+	stopHeartbeat chan struct{}
+	heartbeatDone chan struct{}
 }
 
 // Acquire takes the lock at path, waiting up to timeout for a stale holder to
@@ -86,6 +90,9 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 		if time.Now().After(deadline) {
 			return nil, nil
 		}
+		if err := removeStale(path); err != nil {
+			return nil, err
+		}
 		time.Sleep(lockRetryInterval)
 	}
 }
@@ -93,6 +100,18 @@ func Acquire(path string, timeout time.Duration) (*Lock, error) {
 // lockRetryInterval is the poll cadence, matching the TS cursor lock's 25ms
 // so a Go run picks up a released lock at the same latency the TS peer does.
 const lockRetryInterval = 25 * time.Millisecond
+
+// lockStaleWindow is the age a lock file must reach before it may be
+// cleared, mirroring the TS cursorLockStaleMs. It fences the creation
+// window: a contender's O_CREATE file that has not received its payload yet
+// is "unparseable", and without an age floor that half-written file would be
+// deleted and re-locked, breaking mutual exclusion.
+const lockStaleWindow = 30 * time.Second
+
+// lockHeartbeatInterval refreshes the held lock's mtime so a holder doing
+// long work is never swept by the stale window. The TS peer heartbeats every
+// 5s; ours must stay under its 30s floor.
+const lockHeartbeatInterval = 5 * time.Second
 
 func tryAcquire(path string) (*Lock, bool, error) {
 	owner, err := newOwner()
@@ -108,11 +127,7 @@ func tryAcquire(path string) (*Lock, bool, error) {
 		if !errors.Is(err, os.ErrExist) {
 			return nil, false, err
 		}
-		// Held: clear it when provably stale, otherwise report contention.
-		if err := removeStale(path); err != nil {
-			return nil, false, err
-		}
-		return nil, false, nil
+		return nil, false, nil // held: the caller decides whether it is stale
 	}
 	if _, err := file.Write(payload); err != nil {
 		file.Close()
@@ -123,7 +138,9 @@ func tryAcquire(path string) (*Lock, bool, error) {
 		_ = os.Remove(path)
 		return nil, false, err
 	}
-	return &Lock{Path: path, Owner: owner}, true, nil
+	lock := &Lock{Path: path, Owner: owner}
+	lock.startHeartbeat()
+	return lock, true, nil
 }
 
 func newOwner() (LockOwner, error) {
@@ -155,6 +172,7 @@ func (l *Lock) Release() error {
 		return nil
 	}
 	l.released = true
+	l.stopHeartbeatLoop()
 	data, err := os.ReadFile(l.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -172,11 +190,73 @@ func (l *Lock) Release() error {
 	return err
 }
 
-// removeStale clears the lock file when its owner is provably dead. A live
-// or indeterminate holder is left in place (conservative, like the TS probe).
-// The removal itself goes through removeLockRecord so a lock another process
-// acquired after we observed this one is never deleted.
+// startHeartbeat refreshes the lock file's mtime every lockHeartbeatInterval
+// so a long-running hold is never swept by the stale window — the same
+// protection the TS peer's 5s utimes heartbeat provides.
+func (l *Lock) startHeartbeat() {
+	l.stopHeartbeat = make(chan struct{})
+	l.heartbeatDone = make(chan struct{})
+	go func() {
+		defer close(l.heartbeatDone)
+		ticker := time.NewTicker(lockHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-l.stopHeartbeat:
+				return
+			case <-ticker.C:
+				l.refreshMtime()
+			}
+		}
+	}()
+}
+
+// stopHeartbeatLoop halts the heartbeat and waits for it, so Release never
+// races a refresh against the unlink.
+func (l *Lock) stopHeartbeatLoop() {
+	if l.stopHeartbeat == nil {
+		return
+	}
+	close(l.stopHeartbeat)
+	<-l.heartbeatDone
+	l.stopHeartbeat = nil
+}
+
+// refreshMtime touches the lock only while it is still ours: extending a file
+// someone else has taken over would keep their lock alive past its real age.
+// A failed refresh is ignored — the stale window still guards the file, and a
+// lock we can no longer touch is no longer ours to keep.
+func (l *Lock) refreshMtime() {
+	data, err := os.ReadFile(l.Path)
+	if err != nil {
+		return
+	}
+	var owner LockOwner
+	if json.Unmarshal(data, &owner) != nil || owner.Token != l.Owner.Token {
+		return
+	}
+	now := time.Now()
+	_ = os.Chtimes(l.Path, now, now)
+}
+
+// removeStale clears a lock file that is provably stale, mirroring the TS
+// recoverStaleCursorLock. Three conditions must hold: the file has been
+// untouched for lockStaleWindow, its owner is dead (or the record is
+// unreadable, which vouches for nothing), and the exact bytes observed are
+// still in place when removeLockRecord re-checks them. The age floor is what
+// fences the creation window — a contender's O_CREATE file that has not
+// received its payload yet is unparseable but far too young to sweep.
 func removeStale(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if time.Since(info.ModTime()) < lockStaleWindow {
+		return nil // too fresh: live, or still being written
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -185,18 +265,13 @@ func removeStale(path string) error {
 		return err
 	}
 	var record LockOwner
-	if err := json.Unmarshal(data, &record); err != nil {
-		// Unparseable lock file: nothing can vouch for it. Removing is what
-		// the TS side does when the record is unreadable.
-		_, err = removeLockRecord(path, data)
-		return err
-	}
-	if record.PID <= 0 {
-		_, err = removeLockRecord(path, data)
-		return err
-	}
-	if ProbeLiveness(record.PID, record.ProcessStartIdentity) != LivenessDead {
-		return nil // alive or indeterminate: keep waiting
+	// An unreadable record (or one with no usable pid) vouches for nothing,
+	// matching the TS owner probe returning null; only a positively live
+	// owner blocks the sweep.
+	if err := json.Unmarshal(data, &record); err == nil && record.PID > 0 {
+		if ProbeLiveness(record.PID, record.ProcessStartIdentity) != LivenessDead {
+			return nil // alive or indeterminate: keep waiting
+		}
 	}
 	_, err = removeLockRecord(path, data)
 	return err
@@ -219,33 +294,50 @@ func removeLockRecord(path string, expectedRaw []byte) (bool, error) {
 	}
 	current, err := os.ReadFile(aside)
 	if err != nil || !bytes.Equal(current, expectedRaw) {
-		restoreAside(path, aside)
+		if restoreErr := restoreAside(path, aside); restoreErr != nil {
+			return false, restoreErr
+		}
 		return false, nil
 	}
 	if err := os.Remove(aside); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		restoreAside(path, aside)
+		if restoreErr := restoreAside(path, aside); restoreErr != nil {
+			return false, restoreErr
+		}
 		return false, err
 	}
 	return true, nil
 }
 
-// quarantinePath is unique per caller so concurrent releases in one process
-// never share a quarantine name.
+// quarantinePath is unique per caller. A random suffix, not just pid and
+// clock, is what the TS side uses (randomBytes(8)): two quarantines landing
+// in the same nanosecond would otherwise rename over each other.
 func quarantinePath(path string) string {
-	return fmt.Sprintf("%s.release-%d-%d", path, os.Getpid(), time.Now().UnixNano())
+	suffix := make([]byte, 8)
+	if _, err := randomFill(suffix); err != nil {
+		// Fall back to the clock alone; a collision here only risks one
+		// contender's quarantined copy, never the lock itself.
+		suffix = nil
+	}
+	return fmt.Sprintf("%s.release-%d-%d%s", path, os.Getpid(), time.Now().UnixNano(), hexEncode(suffix))
 }
 
 // restoreAside puts a quarantined file back. link, not rename: when another
 // process re-created the lock at path while this copy was quarantined, link
-// fails with EEXIST and that other lock is left untouched. Every other
-// failure is tolerable too (the next staleness pass re-evaluates), so the
-// error is deliberately ignored after best effort.
-func restoreAside(path, aside string) {
-	_ = os.Link(aside, path)
+// fails with EEXIST and that other lock is left untouched — the TS
+// restoreLockRecord behaves the same way. Any other failure keeps the
+// quarantined copy on disk rather than destroying it, matching the TS side's
+// throw-and-retain; the file is inert either way, and preserving it means an
+// operator can still see what was there.
+func restoreAside(path, aside string) error {
+	err := os.Link(aside, path)
+	if err != nil && !errors.Is(err, os.ErrExist) && !os.IsNotExist(err) {
+		return err
+	}
 	_ = os.Remove(aside)
+	return nil
 }
 
 func hexEncode(data []byte) string {

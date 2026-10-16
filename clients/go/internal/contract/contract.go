@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	// Embedded so timezone validation works on Windows and in slim containers
 	// that ship no system zone database.
@@ -303,9 +304,8 @@ func UploadIsoDateIssueFor(value string, now time.Time) UploadIsoDateIssue {
 }
 
 var (
-	timezoneMu       sync.RWMutex
-	timezoneValid    = map[string]bool{}
-	timezoneCacheLen = 0
+	timezoneMu    sync.RWMutex
+	timezoneValid = map[string]bool{}
 )
 
 // IsValidTimezone mirrors usage-core isValidTimezone: non-empty, no leading
@@ -313,10 +313,19 @@ var (
 // zone. Valid names are cached case-insensitively like the TS Set does.
 func IsValidTimezone(value string) bool {
 	timezone := strings.TrimSpace(value)
-	if timezone == "" || timezone != value || len(timezone) > MaxUsageTimezoneLength {
+	if timezone == "" || timezone != value || utf16Length(timezone) > MaxUsageTimezoneLength {
 		return false
 	}
+	// Go's zone loader accepts these two names (Local is the unnamed system
+	// zone, Factory is tzdata's placeholder); Intl rejects every case variant
+	// of both, so a value the TS side would refuse must not slip through
+	// here either. The lowercase comparison matches Intl's behavior, and on
+	// case-insensitive filesystems LoadLocation("factory") would otherwise
+	// resolve.
 	cacheKey := strings.ToLower(timezone)
+	if cacheKey == "local" || cacheKey == "factory" {
+		return false
+	}
 	timezoneMu.RLock()
 	ok, cached := timezoneValid[cacheKey]
 	timezoneMu.RUnlock()
@@ -328,9 +337,15 @@ func IsValidTimezone(value string) bool {
 	// LoadLocation already normalizes, so caching the requested name covers it.
 	timezoneMu.Lock()
 	timezoneValid[cacheKey] = err == nil
-	timezoneCacheLen = len(timezoneValid)
 	timezoneMu.Unlock()
 	return err == nil
+}
+
+// utf16Length counts UTF-16 code units, matching Zod's z.string().max(),
+// which measures JavaScript String#length. Byte counts would reject
+// CJK-heavy names the TS side accepts.
+func utf16Length(s string) int {
+	return len(utf16.Encode([]rune(s)))
 }
 
 // Validate applies the full fail-closed rule set the server's Zod schema
@@ -346,7 +361,7 @@ func (s Snapshot) Validate() error {
 	if !IsValidTimezone(s.Timezone) {
 		return fmt.Errorf("timezone: invalid timezone %q", s.Timezone)
 	}
-	if s.Model == "" || len(s.Model) > MaxUsageModelNameLength {
+	if s.Model == "" || utf16Length(s.Model) > MaxUsageModelNameLength {
 		return fmt.Errorf("model: length must be 1..%d", MaxUsageModelNameLength)
 	}
 	for _, check := range []struct {

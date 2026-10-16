@@ -79,6 +79,7 @@ func TestStaleLockOfDeadPidIsCleared(t *testing.T) {
 	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ageLock(t, path)
 	lock, err := Acquire(path, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +88,94 @@ func TestStaleLockOfDeadPidIsCleared(t *testing.T) {
 		t.Fatal("stale lock must be cleared and acquired")
 	}
 	_ = lock.Release()
+}
+
+// ageLock backdates a lock file's mtime past the stale window, which is what
+// a genuinely abandoned lock looks like. Freshly written locks — however
+// dead their recorded pid — are never swept.
+func ageLock(t *testing.T, path string) {
+	t.Helper()
+	old := time.Now().Add(-2 * lockStaleWindow)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The stale window fences the creation window: a lock file younger than
+// lockStaleWindow is never removed, no matter what it contains — that is the
+// state another contender's O_CREATE-then-write leaves behind.
+func TestFreshLockIsNeverSwept(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.lock")
+	_ = os.Chmod(filepath.Dir(path), 0o700)
+	// Empty: exactly what a contender's O_CREATE looks like before the
+	// payload lands. Previously this was swept and re-locked, breaking
+	// mutual exclusion.
+	writeLock(t, path, "")
+	lock, err := Acquire(path, 150*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock != nil {
+		_ = lock.Release()
+		t.Fatal("a fresh unparseable lock must not be stolen")
+	}
+	// Same for a fresh record whose owner is long dead: age is the gate,
+	// not liveness alone.
+	dead := spawnDeadPid(t)
+	if dead <= 0 {
+		t.Skip("no provably-dead pid available")
+	}
+	writeLock(t, path, fmt.Sprintf(`{"pid":%d,"startedAt":"2026-05-09T10:00:00.000Z","token":"dead"}`, dead))
+	lock, err = Acquire(path, 150*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock != nil {
+		_ = lock.Release()
+		t.Fatal("a fresh lock of a dead pid must not be stolen")
+	}
+	// Once it ages past the window, the dead owner's lock is cleared.
+	ageLock(t, path)
+	lock, err = Acquire(path, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock == nil {
+		t.Fatal("an aged dead-owner lock must be cleared")
+	}
+	_ = lock.Release()
+}
+
+// A held lock's heartbeat refreshes its mtime so a long-running hold is
+// never swept by the stale window.
+func TestHeartbeatRefreshesMtime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.lock")
+	_ = os.Chmod(filepath.Dir(path), 0o700)
+	lock, err := Acquire(path, time.Second)
+	if err != nil || lock == nil {
+		t.Fatalf("acquire: lock=%v err=%v", lock, err)
+	}
+	defer func() { _ = lock.Release() }()
+	ageLock(t, path)
+	lock.refreshMtime()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(info.ModTime()) >= lockStaleWindow {
+		t.Fatalf("heartbeat did not refresh mtime: %v old", time.Since(info.ModTime()))
+	}
+	// A lock that is no longer ours must not be kept alive by our heartbeat.
+	writeLock(t, path, `{"pid":424242,"startedAt":"2026-05-09T10:00:00.000Z","token":"someone-else"}`)
+	ageLock(t, path)
+	lock.refreshMtime()
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(info.ModTime()) < lockStaleWindow {
+		t.Fatal("heartbeat must not refresh a lock it no longer owns")
+	}
 }
 
 // A record claiming our own pid is ours only if its start identity matches;
@@ -113,10 +202,11 @@ func TestOwnPidLockStalenessMatchesTSProbe(t *testing.T) {
 	}
 
 	// Same pid, a different identity: a stale record from another process
-	// that recycled our pid — cleared.
+	// that recycled our pid — cleared once it ages past the stale window.
 	writeLock(t, path, fmt.Sprintf(
 		`{"pid":%d,"startedAt":"2026-05-09T10:00:00.000Z","token":"foreign","processStartIdentity":"darwin:1:1"}`,
 		os.Getpid()))
+	ageLock(t, path)
 	if lock, err := Acquire(path, time.Second); err != nil {
 		t.Fatal(err)
 	} else if lock == nil {
@@ -129,6 +219,7 @@ func TestOwnPidLockStalenessMatchesTSProbe(t *testing.T) {
 	// in-memory owner set is what vouches for a real own lock).
 	writeLock(t, path, fmt.Sprintf(
 		`{"pid":%d,"startedAt":"2026-05-09T10:00:00.000Z","token":"foreign"}`, os.Getpid()))
+	ageLock(t, path)
 	if lock, err := Acquire(path, time.Second); err != nil {
 		t.Fatal(err)
 	} else if lock == nil {

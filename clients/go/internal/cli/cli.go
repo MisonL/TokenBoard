@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,7 +76,14 @@ func RunWithEnv(ctx context.Context, args []string, env Env, stdout, stderr io.W
 }
 
 func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.Writer) int {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// A missing home directory would silently turn the state dir into a
+		// relative path — locks and cursors would land in the working
+		// directory instead. Refuse instead.
+		fmt.Fprintf(stderr, "Cannot resolve the home directory: %v\n", err)
+		return ExitFailure
+	}
 	stateDir := state.ResolveDir(env, home)
 
 	switch options.Command {
@@ -173,8 +181,10 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 				recorded.ConsecutiveFailures, suffix)
 		}
 		// The TS collector prints the failure itself before classifying it;
-		// keep that so the scheduled runner's log names the cause.
-		fmt.Fprintln(stderr, uploadErr.Error())
+		// keep that so the scheduled runner's log names the cause. URLs are
+		// reduced to their origin: the scheduled log is long-lived and a
+		// transport error's full URL may carry query parameters.
+		fmt.Fprintln(stderr, upload.RedactURLs(uploadErr.Error()))
 		return classifyFailure(uploadErr, options, env)
 	}
 
@@ -251,9 +261,12 @@ func expandWarmHookSources(source string) []string {
 }
 
 // cursorScopeFromEndpoint mirrors the TS cursorScopeFromEndpoint: the
-// endpoint URL's origin (lowercased host, default port dropped), or empty
-// when there is no endpoint. An endpoint that does not parse is a failure —
-// the TS new URL() throws and aborts the run the same way.
+// endpoint URL's origin — lowercased host, default port dropped, IPv6 hosts
+// kept in brackets, port normalized — or empty when there is no endpoint. An
+// endpoint that does not parse is a failure; the TS new URL() throws and
+// aborts the run the same way. (The TS side would continue with the literal
+// origin "null" for scheme-less or file:// endpoints; refusing is the
+// fail-closed equivalent.)
 func cursorScopeFromEndpoint(endpoint string) (string, error) {
 	if endpoint == "" {
 		return "", nil
@@ -263,14 +276,24 @@ func cursorScopeFromEndpoint(endpoint string) (string, error) {
 		return "", fmt.Errorf("Invalid endpoint URL: %s", endpoint)
 	}
 	host := strings.ToLower(parsed.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]" // url.Hostname strips IPv6 brackets
+	}
 	if port := parsed.Port(); port != "" && !isDefaultPort(parsed.Scheme, port) {
 		host = host + ":" + port
 	}
 	return parsed.Scheme + "://" + host, nil
 }
 
+// isDefaultPort normalizes before comparing so a leading-zero port
+// ("https://h:0443") is recognized as default and dropped, the way the TS
+// URL parser canonicalizes it.
 func isDefaultPort(scheme, port string) bool {
-	return (scheme == "https" && port == "443") || (scheme == "http" && port == "80")
+	normalized, err := strconv.Atoi(port)
+	if err != nil {
+		return false
+	}
+	return (scheme == "https" && normalized == 443) || (scheme == "http" && normalized == 80)
 }
 
 func requiredSyncConfig(options Options) []string {
@@ -393,14 +416,44 @@ func firstNonEmpty(values ...string) string {
 }
 
 // localTimezone mirrors the TS default: the machine's IANA zone (TS reads it
-// from Intl, which honors TZ). time.Local resolves TZ or /etc/localtime the
-// same way; when the runtime cannot name a zone ("Local") it falls back to
-// UTC rather than failing the run.
+// from Intl, which honors TZ or the system zone). time.Local resolves TZ or
+// /etc/localtime the same way but reports the literal "Local" when the zone
+// has no name, so the conventional system locations are consulted directly
+// before giving up — a silent UTC fallback would shift usageDate and fork the
+// server's dedup key against a TS collector on the same machine.
 func localTimezone() string {
+	if name := strings.TrimSpace(os.Getenv("TZ")); name != "" {
+		return name // validated by assertValidTimezone, like the TS path
+	}
 	if name := time.Local.String(); name != "" && name != "Local" && contract.IsValidTimezone(name) {
 		return name
 	}
+	if name := systemTimezoneName(); name != "" {
+		return name
+	}
 	return "UTC"
+}
+
+// systemTimezoneName reads the host zone name from the conventional
+// locations: /etc/timezone (Debian and derivatives) and the /etc/localtime
+// symlink into a zoneinfo tree (macOS, most Linux). Windows has neither, so
+// it falls through to the caller's UTC fallback.
+func systemTimezoneName() string {
+	if data, err := os.ReadFile("/etc/timezone"); err == nil {
+		if name := strings.TrimSpace(string(data)); contract.IsValidTimezone(name) {
+			return name
+		}
+	}
+	target, err := os.Readlink("/etc/localtime")
+	if err != nil {
+		return ""
+	}
+	if index := strings.LastIndex(target, "zoneinfo/"); index >= 0 {
+		if name := target[index+len("zoneinfo/"):]; contract.IsValidTimezone(name) {
+			return name
+		}
+	}
+	return ""
 }
 
 // assertValidTimezone mirrors timezone.ts: trim, require non-empty, and

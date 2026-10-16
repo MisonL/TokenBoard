@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -209,7 +210,10 @@ func parseCheckResponse(response *http.Response) (parsedResponse, error) {
 		Existing []ExistingSnapshotHash `json:"existing"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return parsedResponse{}, fmt.Errorf("Snapshot check returned invalid response")
+		// The cause is preserved (%w): a body read the per-attempt deadline
+		// cut short must stay recognizable as a timeout so it classifies as
+		// transient instead of masquerading as a contract breakage.
+		return parsedResponse{}, fmt.Errorf("Snapshot check returned invalid response: %w", err)
 	}
 	// The TS validator requires Array.isArray(value.existing); a missing key
 	// is a contract breakage, not an empty history — treating it as empty
@@ -235,7 +239,7 @@ func parseUploadResponse(response *http.Response) (parsedResponse, error) {
 		Upserted *int `json:"upserted"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
+		return parsedResponse{}, fmt.Errorf("Upload returned invalid response: %w", err)
 	}
 	if payload.Upserted == nil || *payload.Upserted < 0 {
 		return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
@@ -271,14 +275,20 @@ func postWithRetries(ctx context.Context, config Config, url string, body []byte
 		}
 		parsed, err := consumeParsed(response, cancel, parse)
 		if err != nil {
+			// A body read the deadline cut short is a timeout — a transport
+			// failure the TS side retries, not a contract breakage. It is
+			// reported in the TS RequestTimeoutError shape so it classifies
+			// as transient (exit 75).
+			if timedOut := requestDeadlineExceeded(ctx, config, err); timedOut != nil {
+				lastErr = timedOut
+				if attempt < transientFetchAttempts-1 {
+					sleepWithContext(ctx, retryDelay(nil, attempt, config.RetryDelayMs))
+				}
+				continue
+			}
 			// A well-formed response with an unexpected body is a contract
 			// breakage, not a transient condition: no retry, like the TS
-			// ResponseParsingError path. The exception is a body read the
-			// deadline cut short — that is a timeout, reported in the TS
-			// RequestTimeoutError shape so it classifies as transient.
-			if timedOut := requestDeadlineExceeded(ctx, config, err); timedOut != nil {
-				return parsedResponse{}, timedOut
-			}
+			// ResponseParsingError path.
 			return parsedResponse{}, err
 		}
 		return parsed, nil
@@ -395,6 +405,12 @@ func retryDelay(response *http.Response, attempt, configuredMs int) time.Duratio
 			base = parsed
 		}
 	}
+	// Clamp before shifting: the result is capped below anyway, and an
+	// oversized base would overflow base<<attempt into a negative duration,
+	// turning the backoff into an immediate retry.
+	if base > maxRetryDelayMs {
+		base = maxRetryDelayMs
+	}
 	delay := base << attempt
 	return min(time.Duration(delay)*time.Millisecond, maxRetryDelayMs*time.Millisecond)
 }
@@ -441,19 +457,27 @@ type BackoffState struct {
 }
 
 // LoadBackoff reads the pause state; any read or parse problem yields nil
-// (absent state), matching the TS loader.
+// (absent state). Mirrors the TS loader's type gate: consecutiveFailures
+// must be a number and lastErrorSummary a string, or the record is treated
+// as absent rather than half-read.
 func LoadBackoff(stateDir string) *BackoffState {
 	data, err := os.ReadFile(filepath.Join(stateDir, backoffFileName))
 	if err != nil {
 		return nil
 	}
-	var state BackoffState
-	// The TS loader only requires lastErrorSummary to be a string; an empty
-	// one is a valid (if odd) state, not an absent one.
-	if json.Unmarshal(data, &state) != nil {
+	var raw struct {
+		ConsecutiveFailures *float64 `json:"consecutiveFailures"`
+		LastErrorSummary    *string  `json:"lastErrorSummary"`
+		PausedUntil         string   `json:"pausedUntil"`
+	}
+	if json.Unmarshal(data, &raw) != nil || raw.ConsecutiveFailures == nil || raw.LastErrorSummary == nil {
 		return nil
 	}
-	return &state
+	return &BackoffState{
+		ConsecutiveFailures: int(*raw.ConsecutiveFailures),
+		LastErrorSummary:    *raw.LastErrorSummary,
+		PausedUntil:         raw.PausedUntil,
+	}
 }
 
 // IsPaused reports an active pause window, or nil when uploads may proceed.
@@ -512,12 +536,34 @@ func writeBackoff(stateDir string, state BackoffState) {
 
 // Summarize truncates an error message to 200 characters with an ellipsis,
 // the same shape the TS backoff stores. The cut counts runes, not bytes:
-// slicing bytes could split a multi-byte character and store invalid UTF-8.
+// slicing bytes could split a multi-byte character and store invalid UTF-8
+// (the TS side slices UTF-16 units; the two differ only for astral-plane
+// characters in a display-only field). URLs are reduced to their origin
+// first — this string is persisted, and a transport error's full URL may
+// carry query parameters that do not belong in a long-lived file.
 func Summarize(uploadErr error) string {
-	message := uploadErr.Error()
+	message := RedactURLs(uploadErr.Error())
 	runes := []rune(message)
 	if len(runes) > 200 {
 		return string(runes[:197]) + "…"
 	}
 	return message
+}
+
+var urlPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+// RedactURLs rewrites every http(s) URL in the message down to its scheme,
+// host and port. Credentials and query strings are dropped; anything that
+// fails to parse keeps its path-free prefix rather than the raw text.
+func RedactURLs(message string) string {
+	return urlPattern.ReplaceAllStringFunc(message, func(raw string) string {
+		// Trailing punctuation is sentence structure, not URL.
+		trimmed := strings.TrimRight(raw, ".,;:!?)]}")
+		trailer := raw[len(trimmed):]
+		parsed, err := url.Parse(trimmed)
+		if err != nil || parsed.Host == "" {
+			return "https://<redacted>" + trailer
+		}
+		return parsed.Scheme + "://" + parsed.Host + trailer
+	})
 }

@@ -12,6 +12,8 @@
 package sessioncursor
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +23,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
@@ -131,7 +134,11 @@ func Write(path string, state State) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.tmp-go-%d", path, os.Getpid())
+	// The temp name carries a random suffix like the TS writer
+	// (`${path}.tmp-${pid}-${hex}`): pid and clock alone can collide when a
+	// pid is recycled, and two writers sharing a temp name would corrupt
+	// each other's half-written file.
+	tmp := fmt.Sprintf("%s.tmp-go-%d-%s", path, os.Getpid(), randomHex(8))
 	if err := os.WriteFile(tmp, append(payload, '\n'), 0o600); err != nil {
 		return err
 	}
@@ -350,19 +357,39 @@ func validateAntigravityAliasMtimes(key string, value json.RawMessage) error {
 
 func parseEntry(raw json.RawMessage) (Entry, error) {
 	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &probe); err != nil {
+	if err := json.Unmarshal(raw, &probe); err != nil || probe == nil {
 		return Entry{}, fmt.Errorf("must be an object")
 	}
+	// Required fields, mirroring the TS validator's typeof checks: a missing
+	// key and an explicit null are equally invalid (json.Unmarshal alone
+	// would silently map null to the zero value).
 	for _, required := range []string{"size", "mtimeMs", "sha256", "snapshots", "missingCost", "updatedAt"} {
-		if _, ok := probe[required]; !ok {
+		value, ok := probe[required]
+		if !ok || isJSONNull(value) {
 			return Entry{}, fmt.Errorf("%s is required", required)
+		}
+	}
+	// Optional fields reject null for the same reason: the TS validator's
+	// `undefined || typeof ...` guards treat null as a type violation.
+	for _, optional := range []string{"contentHashAlgo", "endsWithNewline", "pendingUpload", "compactedIdentity", "statuslineClaimed", "antigravityOrigin"} {
+		if value, ok := probe[optional]; ok && isJSONNull(value) {
+			return Entry{}, fmt.Errorf("%s must not be null", optional)
+		}
+	}
+	// The true-only markers: present means literally true, never false.
+	for _, trueOnly := range []string{"compactedIdentity", "statuslineClaimed"} {
+		if value, ok := probe[trueOnly]; ok {
+			var marker bool
+			if err := json.Unmarshal(value, &marker); err != nil || !marker {
+				return Entry{}, fmt.Errorf("%s must be true when present", trueOnly)
+			}
 		}
 	}
 	var entry Entry
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		return Entry{}, err
 	}
-	if math.IsNaN(entry.Size) || math.IsInf(entry.Size, 0) || math.IsNaN(entry.MtimeMs) || math.IsInf(entry.MtimeMs, 0) {
+	if !isFiniteNumber(entry.Size) || !isFiniteNumber(entry.MtimeMs) {
 		return Entry{}, fmt.Errorf("size and mtimeMs must be finite numbers")
 	}
 	if !sha256Pattern.MatchString(entry.SHA256) {
@@ -373,11 +400,52 @@ func parseEntry(raw json.RawMessage) (Entry, error) {
 	default:
 		return Entry{}, fmt.Errorf("antigravityOrigin must be database or language-server")
 	}
-	for i, snapshot := range entry.Snapshots {
+	snapshots, err := parseSnapshots(probe["snapshots"])
+	if err != nil {
+		return Entry{}, err
+	}
+	entry.Snapshots = snapshots
+	return entry, nil
+}
+
+// parseSnapshots validates the snapshot array against the TS
+// isValidCursorSnapshot rules: every string and counter is required and
+// non-null, and codexContextPricingPending is a true-only marker.
+func parseSnapshots(raw json.RawMessage) ([]Snapshot, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("snapshots must be an array")
+	}
+	snapshots := make([]Snapshot, 0, len(items))
+	for index, item := range items {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(item, &fields); err != nil || fields == nil {
+			return nil, fmt.Errorf("snapshots[%d] must be an object", index)
+		}
+		for _, required := range []string{
+			"source", "usageDate", "timezone", "model",
+			"inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens",
+			"totalTokens", "costUsd", "sessionCount",
+		} {
+			value, ok := fields[required]
+			if !ok || isJSONNull(value) {
+				return nil, fmt.Errorf("snapshots[%d].%s is required", index, required)
+			}
+		}
+		if value, ok := fields["codexContextPricingPending"]; ok {
+			var pending bool
+			if err := json.Unmarshal(value, &pending); err != nil || !pending {
+				return nil, fmt.Errorf("snapshots[%d].codexContextPricingPending must be true when present", index)
+			}
+		}
+		var snapshot Snapshot
+		if err := json.Unmarshal(item, &snapshot); err != nil {
+			return nil, fmt.Errorf("snapshots[%d]: %w", index, err)
+		}
 		// TS isValidCursorSnapshot also requires the source to be one of the
 		// usage sources; a cursor entry with an unknown source is corruption.
 		if !contract.IsValidSource(snapshot.Source) {
-			return Entry{}, fmt.Errorf("snapshots[%d].source %q is not a usage source", i, snapshot.Source)
+			return nil, fmt.Errorf("snapshots[%d].source %q is not a usage source", index, snapshot.Source)
 		}
 		for _, check := range []struct {
 			name  string
@@ -392,15 +460,19 @@ func parseEntry(raw json.RawMessage) (Entry, error) {
 			{"sessionCount", snapshot.SessionCount},
 		} {
 			if !isFiniteNumber(check.value) {
-				return Entry{}, fmt.Errorf("snapshots[%d].%s must be a finite number", i, check.name)
+				return nil, fmt.Errorf("snapshots[%d].%s must be a finite number", index, check.name)
 			}
 		}
+		snapshots = append(snapshots, snapshot)
 	}
-	// A missing snapshots array must round-trip as [], not null.
-	if entry.Snapshots == nil {
-		entry.Snapshots = []Snapshot{}
-	}
-	return entry, nil
+	return snapshots, nil
+}
+
+// isJSONNull reports whether a raw JSON value is the literal null. Without
+// this check, encoding/json maps null to the zero value with no error and
+// the entry would pass validation the TS side rejects.
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }
 
 // isValidCursorKey mirrors the TypeScript rule: either a relative path with
@@ -496,4 +568,15 @@ func FileName(source contract.Source, scope string) string {
 // side accepts.
 func utf16Length(s string) int {
 	return len(utf16.Encode([]rune(s)))
+}
+
+// randomHex returns n random bytes as hex, for temp-name uniqueness.
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		// A weak suffix still separates names; only a same-nanosecond
+		// collision could match the clock alone.
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }

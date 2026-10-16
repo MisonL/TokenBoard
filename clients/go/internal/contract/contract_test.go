@@ -348,3 +348,28 @@ func TestRejectsEmptyCorrectionLiteral(t *testing.T) {
 		t.Error("empty correction must be omitted from the payload")
 	}
 }
+
+// Local and Factory resolve in Go's zone loader but are rejected by Intl;
+// the TS side would refuse them, so this side must too.
+func TestTimezoneRejectsLocalAndFactory(t *testing.T) {
+	for _, value := range []string{"Local", "Factory", "local", "factory"} {
+		if IsValidTimezone(value) {
+			t.Errorf("%q must be rejected like Intl rejects it", value)
+		}
+	}
+}
+
+// Length bounds count UTF-16 code units like Zod's .max(), not bytes: a
+// CJK-heavy model name within the limit must pass.
+func TestLengthBoundsCountUTF16Units(t *testing.T) {
+	snapshot := goldenSnapshotByName(t, "base")
+	snapshot.Model = strings.Repeat("模", MaxUsageModelNameLength)
+	if err := snapshot.Validate(); err != nil {
+		t.Fatalf("%d CJK chars = %d UTF-16 units, must fit: %v",
+			MaxUsageModelNameLength, MaxUsageModelNameLength, err)
+	}
+	snapshot.Model = strings.Repeat("模", MaxUsageModelNameLength+1)
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("one unit over the limit must be rejected")
+	}
+}

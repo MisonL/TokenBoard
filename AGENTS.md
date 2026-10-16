@@ -23,9 +23,11 @@ pnpm format:check
 - `pnpm typecheck`：运行所有包的 TypeScript 类型检查。
 - `pnpm build`：构建 Web Worker 客户端与服务端产物。
 - `pnpm preview`：通过 Wrangler 本地预览 Worker。
-- `pnpm deploy`：执行生产部署脚本，包含配置校验、构建、D1 migration 和 Worker 发布。
+- `pnpm run deploy`：执行生产部署脚本，包含配置校验、构建、D1 migration 和 Worker 发布。注意必须写 `pnpm run deploy`——`pnpm deploy` 会被 pnpm 内置同名命令拦截，不会执行本仓库脚本。
 - `pnpm format`：按根目录 Prettier 配置格式化 JavaScript、TypeScript 和 JSON 源文件。
 - `pnpm format:check`：检查上述文件是否符合统一格式，不修改工作树。
+- `cd clients/go && go test ./... -race`：运行 Go 客户端（M0+M1 阶段）的测试；`go vet ./...` 与 `GOOS=windows go build ./...` 是跨平台改动的最小验证。
+- `node scripts/clients-go-gen-goldens.mjs`：从 `packages/usage-core` 重新生成 Go 契约层的金样本（`clients/go/internal/contract/goldens/snapshot-hash.json`）；仅在 TS 侧 schema 变更时运行，输出需 diff 审查后提交。
 - `node skills/tokenboard/scripts/status.mjs`：检查本机 collector、设备身份、hook、计划任务和最近同步状态；输出应脱敏。
 - `node --test skills/tokenboard/scripts/*.test.mjs`：运行 skill 脚本的 Node 测试。
 
@@ -35,6 +37,7 @@ pnpm format:check
 - `apps/web/app/features/`：按业务 feature 组织的服务、查询、schema、组件和测试。
 - `packages/collector/`：本地 Node.js collector，负责调用 `ccusage`、读取各工具本地 usage 记录并上传 snapshot。
 - `packages/usage-core/`：跨端共享的 usage schema、normalize、hash 和工具函数。
+- `clients/go/`：Go 客户端（进行中，M0+M1 已落地：`internal/contract` 契约与金样本、`internal/upload` 上传与 backoff、`internal/state` 运行锁、`internal/cli` 子命令、`internal/collect/sessioncursor` cursor 读写）。与 TS collector 共用 `collector-run.lock`、cursor 文件名和 `upload-backoff.json`，改动这些协议必须两侧同时验证（`docs/specs/go-client-spec.md`）。provider registry 尚为空，M2 起按 spec 顺序移植。
 - `skills/tokenboard/`：Codex / Claude Code 安装、同步、hook、schedule 脚本。
 - `apps/web/app/components/ui/`：通用 UI 原语；业务组件不要放这里。
 - `apps/web/db/migrations/`：按序执行的 D1 migration；部署前必须核对 migration、Drizzle schema 和 `db/verify-*.sql`。

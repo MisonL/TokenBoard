@@ -11,10 +11,23 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 func run(t *testing.T, env map[string]string, args ...string) (int, string, string) {
 	t.Helper()
+	if env == nil {
+		env = map[string]string{}
+	}
+	// Every command takes the run lock in the state directory; without an
+	// override that would be the real ~/.tokenboard, so tests would contend
+	// with the machine's own collector and pollute its state.
+	if _, ok := env["TOKENBOARD_STATE_DIR"]; !ok {
+		stateDir := t.TempDir()
+		_ = os.Chmod(stateDir, 0o700)
+		env["TOKENBOARD_STATE_DIR"] = stateDir
+	}
 	lookup := func(key string) string { return env[key] }
 	var stdout, stderr bytes.Buffer
 	code := RunWithEnv(context.Background(), args, lookup, &stdout, &stderr)
@@ -354,5 +367,45 @@ func TestSyncRejectsInvalidEndpoint(t *testing.T) {
 	}, "sync", "--source", "pi")
 	if code != ExitFailure || !strings.Contains(stderr, "Invalid endpoint URL") {
 		t.Errorf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+// The endpoint origin keeps IPv6 brackets and normalizes default ports the
+// way new URL().origin does; both feed the cursor-filename scope hash, so a
+// mismatch would fork cursor files across implementations.
+func TestCursorScopeFromEndpointEdgeForms(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		want     string
+	}{
+		{"https://[2001:db8::1]:8443/x", "https://[2001:db8::1]:8443"},
+		{"https://[2001:db8::1]/x", "https://[2001:db8::1]"},
+		{"https://h.example:0443/x", "https://h.example"},
+		{"http://h.example:0080", "http://h.example"},
+		{"https://h.example:443", "https://h.example"},
+		{"https://user:pw@H.example:8443/x?q=1", "https://h.example:8443"},
+	}
+	for _, tc := range cases {
+		got, err := cursorScopeFromEndpoint(tc.endpoint)
+		if err != nil {
+			t.Errorf("%q: unexpected error %v", tc.endpoint, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%q: got %q want %q", tc.endpoint, got, tc.want)
+		}
+	}
+}
+
+// systemTimezoneName resolves the conventional locations; the test only
+// asserts the shape (empty or a valid IANA name) so it holds on hosts
+// without either file.
+func TestSystemTimezoneNameResolvesValidOrEmpty(t *testing.T) {
+	name := systemTimezoneName()
+	if name != "" && !contract.IsValidTimezone(name) {
+		t.Fatalf("systemTimezoneName returned an invalid zone %q", name)
+	}
+	if name == "Local" || name == "Factory" {
+		t.Fatalf("systemTimezoneName must not return %q", name)
 	}
 }

@@ -28,7 +28,7 @@ audio, embedding and other modality rows remain available when they also expose 
 token prices. Missing or zero context limits are stored as `0` instead of inventing a context size.
 A failed sync never clears or partially replaces the last successful catalogue. The diff publish
 is a single transactional batch up to the D1 statement limit; only a single sync removing more
-than ~4,650 models (over half the catalogue) would split it, and any later sync converges on
+than ~4,657 models (over half the catalogue) would split it, and any later sync converges on
 whatever landed. A stored row whose content no longer parses is treated as changed and
 overwritten by the next publish, so one corrupt row cannot wedge the sync; only an unreadable
 primary key, which the diff cannot name, still fails closed.
@@ -111,7 +111,7 @@ two the same way for the usage cards. The collector is unaffected either way: it
 An invalid, expired, or filter-mismatched cursor or limit returns HTTP 400 with an explicit API
 error; discard that cursor and restart from the first page. Keep the same `provider`,
 `includeInactive`, and active generation (implicitly carried by the cursor) when following a
-cursor. The former `/api/v1/model-pricing` GET path remains as a compatibility alias.
+cursor.
 
 For an immediate refresh, configure a Worker secret once and call the protected endpoint:
 

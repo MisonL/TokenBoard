@@ -254,3 +254,46 @@ func TestAcceptsLastScanGeneration32Hex(t *testing.T) {
 		t.Errorf("32-hex generation rejected: %v", err)
 	}
 }
+
+// Entry-level nulls and false-valued true-only markers are what the TS
+// isValidCursorEntry rejects; encoding/json alone would map null to zero
+// values and let the cursor through, silently rewriting data the TS side
+// considers corrupt.
+func TestRejectsEntryLevelNullsAndFalseMarkers(t *testing.T) {
+	entry := func(fields string) string {
+		return `{"version":1,"source":"pi","files":{"ok.json":{` + fields + `}}}`
+	}
+	validFields := `"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":false,"updatedAt":"x"`
+	cases := map[string]string{
+		"snapshots is null":       entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":null,"missingCost":false,"updatedAt":"x"`),
+		"size is null":            entry(`"size":null,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":false,"updatedAt":"x"`),
+		"updatedAt is null":       entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":false,"updatedAt":null`),
+		"missingCost is null":     entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":null,"updatedAt":"x"`),
+		"compactedIdentity false": entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":false,"updatedAt":"x","compactedIdentity":false`),
+		"statuslineClaimed false": entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":false,"updatedAt":"x","statuslineClaimed":false`),
+		"compactedIdentity null":  entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":false,"updatedAt":"x","compactedIdentity":null`),
+		"snapshot usageDate null": entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[{"source":"pi","usageDate":null,"timezone":"UTC","model":"m","inputTokens":1,"outputTokens":1,"cacheCreationTokens":0,"cacheReadTokens":0,"totalTokens":2,"costUsd":0,"sessionCount":1}],"missingCost":false,"updatedAt":"x"`),
+		"snapshot pending false":  entry(`"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[{"source":"pi","usageDate":"2026-05-09","timezone":"UTC","model":"m","inputTokens":1,"outputTokens":1,"cacheCreationTokens":0,"cacheReadTokens":0,"totalTokens":2,"costUsd":0,"sessionCount":1,"codexContextPricingPending":false}],"missingCost":false,"updatedAt":"x"`),
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Read(writeTemp(t, content), "pi"); err == nil {
+				t.Errorf("%s: expected rejection", name)
+			}
+		})
+	}
+	// Positive controls: true markers and absent optionals stay valid.
+	for name, content := range map[string]string{
+		"minimal entry":         entry(validFields),
+		"true markers":          entry(validFields + `,"compactedIdentity":true,"statuslineClaimed":true`),
+		"pendingUpload false":   entry(validFields + `,"pendingUpload":false`),
+		"pendingUpload true":    entry(validFields + `,"pendingUpload":true`),
+		"endsWithNewline false": entry(validFields + `,"endsWithNewline":false`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Read(writeTemp(t, content), "pi"); err != nil {
+				t.Errorf("%s: valid cursor rejected: %v", name, err)
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package upload
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -430,4 +431,72 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+// The backoff loader mirrors the TS type gate: a record missing either
+// required field is treated as absent, not half-read.
+func TestLoadBackoffRequiresBothTypedFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "upload-backoff.json")
+	write := func(content string) {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"consecutiveFailures":3,"lastErrorSummary":"boom"}`)
+	if state := LoadBackoff(dir); state == nil || state.ConsecutiveFailures != 3 {
+		t.Fatalf("valid record rejected: %+v", state)
+	}
+	write(`{"consecutiveFailures":3,"lastErrorSummary":""}`)
+	if state := LoadBackoff(dir); state == nil {
+		t.Fatal("empty summary is a valid string per the TS loader")
+	}
+	write(`{"lastErrorSummary":"boom"}`)
+	if state := LoadBackoff(dir); state != nil {
+		t.Fatalf("record without consecutiveFailures must be absent: %+v", state)
+	}
+	write(`{"consecutiveFailures":3}`)
+	if state := LoadBackoff(dir); state != nil {
+		t.Fatalf("record without lastErrorSummary must be absent: %+v", state)
+	}
+	write(`{"consecutiveFailures":"3","lastErrorSummary":"boom"}`)
+	if state := LoadBackoff(dir); state != nil {
+		t.Fatalf("wrong-typed field must be absent: %+v", state)
+	}
+}
+
+// Summarize reduces URLs to their origin before persisting: the backoff file
+// outlives the request and a transport error may embed query parameters.
+func TestSummarizeRedactsURLs(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"Post \"https://host.example/api/v1/ingest?token=abc\": dial tcp: timeout",
+			"Post \"https://host.example\": dial tcp: timeout"},
+		{"Post \"https://user:pw@host.example:8443/x\": refused",
+			"Post \"https://host.example:8443\": refused"},
+		{"trailing punctuation https://host.example/x, and more",
+			"trailing punctuation https://host.example, and more"},
+		{"no url here", "no url here"},
+	}
+	for _, tc := range cases {
+		if got := Summarize(errors.New(tc.in)); got != tc.want {
+			t.Errorf("Summarize(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	long := strings.Repeat("界", 250)
+	got := Summarize(errors.New(long))
+	if len([]rune(got)) != 198 || !strings.HasSuffix(got, "…") {
+		t.Errorf("rune truncation drifted: %d runes", len([]rune(got)))
+	}
+}
+
+// The backoff base is clamped before the shift: an oversized base would
+// overflow base<<attempt into a negative duration (immediate retry).
+func TestRetryDelayClampsBaseBeforeShift(t *testing.T) {
+	delay := retryDelay(nil, 3, 1<<62)
+	if delay <= 0 || delay > maxRetryDelayMs*time.Millisecond {
+		t.Fatalf("delay %v out of range", delay)
+	}
 }

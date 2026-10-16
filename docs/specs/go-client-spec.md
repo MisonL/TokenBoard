@@ -1,6 +1,6 @@
 # TokenBoard Go 客户端（clients/go）实施规格
 
-状态：**已批准待开工**（2026-10-15 用户确认方向）。上游依据：`docs/research/client-binary-zig-gui-research.md`（调研终稿）。
+状态：**实施中**（2026-10-15 用户确认方向；M0 契约层与 M1 上传/锁/CLI 已实现并合入 `feat/model-pricing-maintenance`，见 §11）。上游依据：`docs/research/client-binary-zig-gui-research.md`（调研终稿）。
 本 spec 是实施契约：实施过程中偏离此处必须先更新本文件。
 
 ## 0. 已批准的决策（用户拍板，不重开）
@@ -124,5 +124,11 @@ clients/go/
 
 - [x] 调研完成（见 research 报告）；ccusage 已升 20.0.33（2cc5249，PR #24）
 - [ ] **前置：与上游作者对齐（D8）** —— 开工条件
-- [ ] M0 契约层开工（第一周产出：金样本 + cursor 双向兼容测试）
-- [ ] 确认 Go 工具链版本基线（go.mod 声明，选当前 latest stable）
+- [x] M0 契约层（6cca203；金样本 `clients/go/internal/contract/goldens/snapshot-hash.json`，由 `scripts/clients-go-gen-goldens.mjs` 从 TS 侧再生成；cursor 双向兼容验证在 50c4157）
+- [x] 确认 Go 工具链版本基线：`clients/go/go.mod` 声明 `go 1.27`，依赖仅 `golang.org/x/sys`
+- [x] M1 上传/运行锁/瞬态分类/sync CLI（9286438 + 9d6f6c4 + 50c4157；provider registry 尚为空，M2 起填充）
+
+**与 §2 布局的已发生偏离（回写于此）**：
+
+- cli 未用 cobra：`internal/cli/cli.go` 手写子命令分发，零第三方依赖。
+- `contract/contract.json`（JSON Schema 生成类型）未采用：契约以手写 Go 结构 + TS 生成的金样本（`goldens/`）钉住，等价性由字节级测试保证。

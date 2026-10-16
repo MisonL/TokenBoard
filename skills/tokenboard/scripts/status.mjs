@@ -140,7 +140,13 @@ function runCli() {
 
   const config = readConfig()
   const source = typeof config.source === 'string' && config.source.trim() ? config.source : 'all'
-  const stateDir = process.env.TOKENBOARD_STATE_DIR || dirname(file)
+  // Mirror resolveStateDir (collector's STATE_DIR || CONFIG_DIR || ~/.tokenboard):
+  // a user who only sets TOKENBOARD_STATE_DIR keeps their sync/backoff state
+  // there, and status must read the same directory the collector writes.
+  const stateDir =
+    process.env.TOKENBOARD_STATE_DIR?.trim() ||
+    process.env.TOKENBOARD_CONFIG_DIR?.trim() ||
+    dirname(file)
   console.log(
     JSON.stringify(
       buildStatus({
@@ -186,7 +192,11 @@ function readScheduledSync(source, stateDir) {
 }
 
 function readScheduledRetry(configFile, source = 'all') {
-  const stateDir = process.env.TOKENBOARD_STATE_DIR || dirname(configFile)
+  // Same resolution as the caller: STATE_DIR || CONFIG_DIR || config dir.
+  const stateDir =
+    process.env.TOKENBOARD_STATE_DIR?.trim() ||
+    process.env.TOKENBOARD_CONFIG_DIR?.trim() ||
+    dirname(configFile)
   const statePath = scheduledRetryStatePath(stateDir, source)
   const state = readRetryState(statePath)
   if (source === 'all') return state
