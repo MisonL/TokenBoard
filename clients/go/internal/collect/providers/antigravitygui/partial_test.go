@@ -204,3 +204,47 @@ func removeCursorDir(stateDir string) error {
 	}
 	return os.WriteFile(stateDir, []byte("blocked"), 0o600)
 }
+
+func TestCollectGuiUsesLanguageServerWhenConversationsDirectoryIsAbsent(t *testing.T) {
+	// A machine without the GUI tool's conversations directory still collects
+	// through the language-server route: the missing directory is "not
+	// installed here", not a failure.
+	options, _ := guiTestOptions(t, "antigravity", func(options *Options) {
+		options.ConversationDir = "/definitely/missing/conversations"
+	})
+	snapshots, err := Collect(options)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want the language-server route's single session", len(snapshots))
+	}
+	if snapshots[0].TotalTokens != 174 {
+		t.Fatalf("totalTokens = %d, want the fixture's 174", snapshots[0].TotalTokens)
+	}
+}
+
+func TestCollectGuiRetriesCascadesThatProduceNoUsableEvents(t *testing.T) {
+	// An empty metadata response records a frontier for priority ordering but
+	// must not mark the cascade done: the conversation may gain usage later.
+	var calls []string
+	options, _ := guiTestOptions(t, "antigravity", func(options *Options) {
+		options.RequestGeneratorMetadata = func(request GeneratorMetadataRequest) (any, error) {
+			calls = append(calls, request.CascadeID)
+			return map[string]any{"generatorMetadata": []any{}}, nil
+		}
+	})
+
+	if _, err := Collect(options); err != nil {
+		t.Fatalf("first collect: %v", err)
+	}
+	options.CollectedAt = "2026-06-24T02:05:00.000Z"
+	if _, err := Collect(options); err != nil {
+		t.Fatalf("second collect: %v", err)
+	}
+
+	want := []string{"conversation-a", "conversation-a"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("cascade requests = %v, want %v", calls, want)
+	}
+}
