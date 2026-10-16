@@ -17,6 +17,7 @@ package sqlite
 
 import (
 	"bytes"
+	"context"
 	dbsql "database/sql"
 	"encoding/json"
 	"errors"
@@ -119,9 +120,9 @@ func resolveMaxOutputBytes(options QueryOptions) int {
 // same way; blob columns are dropped, since a projected token column is never
 // a blob and passing one on would risk carrying opaque bytes forward.
 func queryEmbedded(dbFile, sql string, options QueryOptions) ([]map[string]any, error) {
-	database, err := dbsql.Open("sqlite", readOnlyDSN(dbFile))
+	database, err := openReadOnly(dbFile, options.Label)
 	if err != nil {
-		return nil, openError(err, dbFile, options.Label)
+		return nil, err
 	}
 	defer database.Close()
 
@@ -167,9 +168,18 @@ func queryEmbedded(dbFile, sql string, options QueryOptions) ([]map[string]any, 
 	return collected, nil
 }
 
-// readOnlyDSN builds the driver URI for a read-only open. SQLite's URI parser
-// treats '?' and '#' as delimiters, so a path containing either would truncate
-// into query syntax without escaping.
+// openReadOnly opens a database through the embedded driver with a read-only
+// DSN. SQLite's URI parser treats '?' and '#' as delimiters, so a path
+// containing either would truncate into query syntax without escaping.
+func openReadOnly(dbFile, label string) (*dbsql.DB, error) {
+	database, err := dbsql.Open("sqlite", readOnlyDSN(dbFile))
+	if err != nil {
+		return nil, openError(err, dbFile, label)
+	}
+	return database, nil
+}
+
+// readOnlyDSN builds the driver URI for a read-only open.
 func readOnlyDSN(dbFile string) string {
 	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(filepath.ToSlash(dbFile))
 	return "file:" + escaped + "?mode=ro"
@@ -180,33 +190,57 @@ func readOnlyDSN(dbFile string) string {
 // `-readonly` keeps the tool's database immutable and `-json` avoids
 // delimiter-escaping guesswork.
 func queryExternal(dbFile, sql string, options QueryOptions) ([]map[string]any, error) {
+	stdout, err := runExternal(dbFile, sql, true, options)
+	if err != nil {
+		return nil, err
+	}
+	return ParseJSONRows(stdout, dbFile, options.Label)
+}
+
+// runExternal runs one query through the executable and returns its stdout.
+// The context bounds the whole run, not just the wait after exit: a `sqlite3`
+// blocked on a locked database would otherwise hold the collector open
+// indefinitely, which is what the TS side's execFile timeout prevents.
+func runExternal(dbFile, sql string, jsonMode bool, options QueryOptions) (string, error) {
 	sqliteBin := resolveSQLiteBin(options.SQLiteBin)
 	timeout := options.Timeout
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
-	command := exec.Command(sqliteBin, "-readonly", "-json", "-batch", dbFile, sql)
+	arguments := []string{"-readonly"}
+	if jsonMode {
+		arguments = append(arguments, "-json")
+	}
+	arguments = append(arguments, "-batch", dbFile, sql)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, sqliteBin, arguments...)
 	command.WaitDelay = timeout
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("%s SQLite reader unavailable: %s not found", options.Label, sqliteBin)
+			return "", fmt.Errorf("%s SQLite reader unavailable: %s not found", options.Label, sqliteBin)
 		}
 		if missingDatabaseError(err, stderr.String(), dbFile) {
-			return nil, fmt.Errorf("%s database not found: %s", options.Label, dbFile)
+			return "", fmt.Errorf("%s database not found: %s", options.Label, dbFile)
+		}
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("Failed to read %s SQLite data from %s: timed out after %s",
+				options.Label, dbFile, timeout)
 		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()
 		}
-		return nil, fmt.Errorf("Failed to read %s SQLite data from %s: %s", options.Label, dbFile, message)
+		return "", fmt.Errorf("Failed to read %s SQLite data from %s: %s", options.Label, dbFile, message)
 	}
 	if stdout.Len() > resolveMaxOutputBytes(options) {
-		return nil, fmt.Errorf("%s SQLite result exceeded %d bytes", options.Label, resolveMaxOutputBytes(options))
+		return "", fmt.Errorf("%s SQLite result exceeded %d bytes", options.Label, resolveMaxOutputBytes(options))
 	}
-	return ParseJSONRows(stdout.String(), dbFile, options.Label)
+	return stdout.String(), nil
 }
 
 // missingDatabaseError mirrors the TS isSqliteOpenError: the executable could
