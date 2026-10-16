@@ -102,6 +102,18 @@ func (s *State) SetExtra(key string, value any) error {
 	return nil
 }
 
+// ExtraValue returns one unmodelled top-level field verbatim.
+func (s State) ExtraValue(key string) (json.RawMessage, bool) {
+	value, ok := s.extra[key]
+	return value, ok
+}
+
+// DeleteExtra removes one unmodelled top-level field. Removing a field that
+// is absent is not an error: a source deletes state it may never have written.
+func (s *State) DeleteExtra(key string) {
+	delete(s.extra, key)
+}
+
 // Read parses and validates a cursor file. A missing file yields an empty
 // state, matching the TypeScript collector; corrupt JSON or a failed
 // validation is an error.

@@ -93,8 +93,8 @@ func alwaysIncludeMtime(float64) bool  { return true }
 //
 // Reuse needs the new window to be a subset of the old one, which reads as
 // previous.sinceDate <= current.sinceDate: a cursor built from a wider window
-// already covers every record the narrower window would ask for. Narrowing
-// the window (a later since) invalidates it, and so does a timezone change,
+// already covers every record the narrower window would ask for. Widening the
+// window (an earlier since) invalidates it, and so does a timezone change,
 // because the same record would then land on a different local date.
 func IsReusableHistoryScope(previous, current string) bool {
 	if previous == current {
