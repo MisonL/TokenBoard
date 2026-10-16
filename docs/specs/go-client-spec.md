@@ -72,8 +72,8 @@ clients/go/
 
 ## 5. 依赖升级门禁（D3 的兜底机制）
 
-`clients/go/scripts/check-deps.sh`（CI 跑）：
-1. 对 ccusage：取 fixture 会话树，分别用旧/新版本二进制跑 `daily --json`/`session --json`，**规范化 diff 输出**；shape 变化 → CI 红，人工审后更新金样本。
+`clients/go/scripts/check-deps.sh`（CI 跑；已实现，金样本在 `clients/go/testdata/ccusage-golden/`）：
+1. 对 ccusage：取固定 fixture 会话树，用二进制跑 `claude daily --json --breakdown` / `claude session --json`（含 `--config packages/collector/ccusage.json`，与原采集调用同形），键序规范化后与金样本 diff；shape 变化 → 退出码 1，人工审后 `--update` 重铸。版本闸门：二进制版本必须等于 TS 侧 `packages/collector/package.json` 的 pin，否则直接拒绝。旧/新双版本对照留给 CI 传入 `CCUSAGE_BIN` 两次调用。
 2. 对 Go 依赖：常规 `go build`+ 全量测试即为门禁；`go.mod` 无 pin 压力，常规 dependabot/手动升级。
 - JSON 输出上游无 schemaVersion、无 CHANGELOG —— 此门禁是唯一防线，不可省。
 
@@ -127,17 +127,23 @@ clients/go/
 - [x] M0 契约层（6cca203；金样本 `clients/go/internal/contract/goldens/snapshot-hash.json`，由 `scripts/clients-go-gen-goldens.mjs` 从 TS 侧再生成；cursor 双向兼容验证在 50c4157）
 - [x] 确认 Go 工具链版本基线：`clients/go/go.mod` 声明 `go 1.27`，依赖为 `golang.org/x/sys` 与 `github.com/klauspost/compress`（M2 引入，Go 标准库的 `internal/zstd` 不可导入）
 - [x] M1 上传/运行锁/瞬态分类/sync CLI（9286438 + 9d6f6c4 + 50c4157；provider registry 尚为空，M2 起填充）
-- [ ] M2 grok/dsh/pi/opencode + zstd 分帧 —— 进行中：
+- [x] M2 grok/dsh/pi/opencode + zstd 分帧 —— 完成：
   - [x] grok-build provider + 共用 scan/aggregate 层（bb22885）
-  - [x] deepseek-harness provider + zstd 分帧（该来源已注册；影子 diff=0，见下）
-  - [ ] pi provider
-  - [ ] opencode provider
-  - [ ] `clients/go/scripts/check-deps.sh`（ccusage 依赖闸门）
+  - [x] deepseek-harness provider + zstd 分帧（37e0aa1）
+  - [x] pi provider
+  - [x] opencode provider + 嵌入式 SQLite 读写（modernc.org/sqlite）
+  - [x] `clients/go/scripts/check-deps.sh`（§5 依赖闸门；**本属 M4**，提前完成——金样本是 M4 编写解析器时的契约，先钉上游形状再写解析器是正确顺序）
 
-**M2 影子 diff 口径**：同一 DSH fixture（同目录 plain+zstd 双编码去重、跨帧 UTF-8、尾部撕裂帧、cache read/write、跨日期）分别跑 `tsx src/cli.ts preview --source deepseek-harness` 与 Go `tokenboard preview --source deepseek-harness`，除 `collectedAt`（墙钟）外逐字段一致。键序、`totalTokens`、`sessionCount`、`costUsd=0` 均相同。
+**M2 影子 diff 口径**：每来源一个 fixture（grok：真实 `updates.jsonl` 事件形状；DSH：同目录 plain+zstd 双编码去重 + 跨帧 UTF-8 + 尾部撕裂帧 + cache read/write + 跨日期；Pi：fork 同 id 去重 + toolResult/compaction/branch_summary 三类 carrier + 跨日期；opencode：真实 `opencode.db` 行 + `gpt-4o`/`GPT-4o` 大小写排序陷阱）分别跑 `tsx src/cli.ts preview --source <s>` 与 Go `tokenboard preview --source <s>`，除 `collectedAt`（墙钟）外逐字段、逐序一致。
+
+**M2 新增的共享层**（TS 侧分散在 `session-cursor.ts` 等文件中，Go 归入独立包）：
+
+- `internal/collect/collate`：镜像 JS 默认 `localeCompare`。ICU 主级比较忽略大小写、次级小写在前，且标点自带主级权重（`_` 在 `-` 之前），与字节序不同；`Aggregate.Snapshots()` 与 `MergeSnapshots` 的排序若与 TS 分叉，同一批 snapshot 会以不同顺序输出，而 cursor 契约是按字节比较的。可打印 ASCII 的排序表由 Node 实测导出（见包注释），非 ASCII 退化为码点序并在注释中声明该边界。
+- `internal/collect/sqlite`：移植 `sqlite-reader.ts`。嵌入式 modernc 驱动对应 `node:sqlite`，外部 `sqlite3` 二进制仍由 `TOKENBOARD_SQLITE_BIN` 强制（保持 TS 的环境契约：该变量选读法，不改变行为）。两条路径均只读，且有 `-json` 输出上限对齐的字节预算检查与「两读法结果一致」的实测测试。
 
 
 **与 §2 布局的已发生偏离（回写于此）**：
 
 - cli 未用 cobra：`internal/cli/cli.go` 手写子命令分发，零第三方依赖。
+- §4 的 ccusage 三层集成（捆绑/探测/下载）与 §8 的 GoReleaser/self-update 通道归 M4/M6；本轮仅提前落地了 §5 的 check-deps 闸门。
 - `contract/contract.json`（JSON Schema 生成类型）未采用：契约以手写 Go 结构 + TS 生成的金样本（`goldens/`）钉住，等价性由字节级测试保证。
