@@ -16,9 +16,6 @@ import (
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
-// Source is one of the two GUI sources this package serves.
-type Source = contract.Source
-
 // Origin records which route produced an entry's usage: the SQLite history or
 // the language server. A cursor reset may discard one without touching the
 // other, so every usage entry has to carry it.
@@ -719,7 +716,7 @@ func buildGuiSnapshot(input PushGuiUsageEventInput) contract.Snapshot {
 	total := input.Event.InputTokens + input.Event.OutputTokens +
 		input.Event.CacheCreationTokens + input.Event.CacheReadTokens
 	return contract.Snapshot{
-		Source:        input.Source,
+		Source:        contract.Source(input.Source),
 		UsageDate:     usageDate,
 		Timezone:      input.Timezone,
 		Model:         input.Event.Model,
