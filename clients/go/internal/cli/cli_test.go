@@ -52,6 +52,26 @@ func grokHomeFixture(t *testing.T) string {
 	return home
 }
 
+// dshHomeFixture writes one plain-text DSH session whose assistant/message
+// carries usage, so a preview/sync run exercises the registered provider
+// through the real --source resolution rather than the provider's own tests.
+func dshHomeFixture(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "project", "session-1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	event := `{"type":"assistant/message","seq":1,"time":1786702920000,` +
+		`"data":{"turn":1,"step":0,` +
+		`"message":{"id":"m","role":"assistant","source":{"kind":"model","model":"deepseek-v4-pro"}},` +
+		`"usage":{"inputTokens":1000,"outputTokens":10,"cacheReadTokens":0,"cacheWriteTokens":0}}}`
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(event+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
 func TestVersionExitsOK(t *testing.T) {
 	code, stdout, _ := run(t, nil, "version")
 	if code != ExitOK || !strings.Contains(stdout, "tokenboard") {
@@ -101,15 +121,53 @@ func TestPreviewUnimplementedConcreteSourceFailsFast(t *testing.T) {
 // An all-source preview over a home with no sessions prints an empty array:
 // every missing store is skipped as unavailable, not reported as a failure.
 func TestPreviewAllSourcesWithNoSessionsPrintsEmptyArray(t *testing.T) {
+	// Every provider home is pointed at an empty temp directory: a developer
+	// machine that has real sessions would otherwise be read by the all-source
+	// run and this would stop being a test of the empty case.
 	code, stdout, _ := run(t, map[string]string{
 		"TOKENBOARD_TIMEZONE":  "UTC",
 		"TOKENBOARD_GROK_HOME": t.TempDir(),
+		"TOKENBOARD_DSH_HOME":  t.TempDir(),
 	}, "preview")
 	if code != ExitOK {
 		t.Fatalf("code = %d", code)
 	}
 	if strings.TrimSpace(stdout) != "[]" {
 		t.Errorf("preview output %q, want []", stdout)
+	}
+}
+
+// The DeepSeek Harness provider is reachable through the real --source
+// resolution: an installed session previews its snapshot, and with no session
+// present the source is skipped rather than reported as collected with zero
+// usage.
+func TestPreviewDeepSeekHarnessSource(t *testing.T) {
+	code, stdout, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE": "UTC",
+		"TOKENBOARD_DSH_HOME": dshHomeFixture(t),
+	}, "preview", "--source", "deepseek-harness")
+	if code != ExitOK {
+		t.Fatalf("code = %d stderr=%q", code, stderr)
+	}
+	var snapshots []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &snapshots); err != nil {
+		t.Fatalf("stdout not JSON: %q", stdout)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %v, want 1", snapshots)
+	}
+	if snapshots[0]["source"] != "deepseek-harness" ||
+		snapshots[0]["model"] != "deepseek-v4-pro" ||
+		snapshots[0]["costUsd"] != float64(0) {
+		t.Errorf("snapshot = %v", snapshots[0])
+	}
+
+	code, _, stderr = run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE": "UTC",
+		"TOKENBOARD_DSH_HOME": t.TempDir(),
+	}, "preview", "--source", "deepseek-harness")
+	if code != ExitFailure || !strings.Contains(stderr, "No DeepSeek Harness sessions found") {
+		t.Errorf("empty DSH home: code=%d stderr=%q", code, stderr)
 	}
 }
 
@@ -142,6 +200,37 @@ func TestSyncUploadsAndReportsCounts(t *testing.T) {
 		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
 		"TOKENBOARD_GROK_HOME":    grokHomeFixture(t),
 	}, "sync", "--source", "grok-build")
+	if code != ExitOK {
+		t.Fatalf("code = %d stderr=%q", code, stderr)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout not JSON: %q", stdout)
+	}
+	if _, ok := result["upserted"]; !ok {
+		t.Errorf("result lacks upserted: %v", result)
+	}
+}
+
+func TestSyncDeepSeekHarnessUploadsAndReportsCounts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/check") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"existing": []any{}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"upserted": 1})
+	}))
+	defer server.Close()
+
+	stateDir := t.TempDir()
+	_ = os.Chmod(stateDir, 0o700)
+	code, stdout, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":     "UTC",
+		"TOKENBOARD_STATE_DIR":    stateDir,
+		"TOKENBOARD_ENDPOINT":     server.URL,
+		"TOKENBOARD_UPLOAD_TOKEN": "tb_x",
+		"TOKENBOARD_DSH_HOME":     dshHomeFixture(t),
+	}, "sync", "--source", "deepseek-harness")
 	if code != ExitOK {
 		t.Fatalf("code = %d stderr=%q", code, stderr)
 	}

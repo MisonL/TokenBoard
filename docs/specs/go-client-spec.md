@@ -125,8 +125,17 @@ clients/go/
 - [x] 调研完成（见 research 报告）；ccusage 已升 20.0.33（2cc5249，PR #24）
 - [ ] **前置：与上游作者对齐（D8）** —— 开工条件
 - [x] M0 契约层（6cca203；金样本 `clients/go/internal/contract/goldens/snapshot-hash.json`，由 `scripts/clients-go-gen-goldens.mjs` 从 TS 侧再生成；cursor 双向兼容验证在 50c4157）
-- [x] 确认 Go 工具链版本基线：`clients/go/go.mod` 声明 `go 1.27`，依赖仅 `golang.org/x/sys`
+- [x] 确认 Go 工具链版本基线：`clients/go/go.mod` 声明 `go 1.27`，依赖为 `golang.org/x/sys` 与 `github.com/klauspost/compress`（M2 引入，Go 标准库的 `internal/zstd` 不可导入）
 - [x] M1 上传/运行锁/瞬态分类/sync CLI（9286438 + 9d6f6c4 + 50c4157；provider registry 尚为空，M2 起填充）
+- [ ] M2 grok/dsh/pi/opencode + zstd 分帧 —— 进行中：
+  - [x] grok-build provider + 共用 scan/aggregate 层（bb22885）
+  - [x] deepseek-harness provider + zstd 分帧（该来源已注册；影子 diff=0，见下）
+  - [ ] pi provider
+  - [ ] opencode provider
+  - [ ] `clients/go/scripts/check-deps.sh`（ccusage 依赖闸门）
+
+**M2 影子 diff 口径**：同一 DSH fixture（同目录 plain+zstd 双编码去重、跨帧 UTF-8、尾部撕裂帧、cache read/write、跨日期）分别跑 `tsx src/cli.ts preview --source deepseek-harness` 与 Go `tokenboard preview --source deepseek-harness`，除 `collectedAt`（墙钟）外逐字段一致。键序、`totalTokens`、`sessionCount`、`costUsd=0` 均相同。
+
 
 **与 §2 布局的已发生偏离（回写于此）**：
 

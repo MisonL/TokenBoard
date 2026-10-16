@@ -4,5 +4,6 @@
 package providers
 
 import (
+	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/deepseekharness"
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/grokbuild"
 )
