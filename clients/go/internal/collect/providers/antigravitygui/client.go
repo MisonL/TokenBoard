@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -74,6 +75,16 @@ func CreateLanguageServerClient(options Options, languageServerPath, overrideIde
 	}, nil
 }
 
+// SpawnLanguageServerError reports a language server that could not be
+// started at all.
+type SpawnLanguageServerError struct {
+	Message string
+	Cause   error
+}
+
+func (e *SpawnLanguageServerError) Error() string { return e.Message }
+func (e *SpawnLanguageServerError) Unwrap() error { return e.Cause }
+
 // languageServerProcess owns the child and its single Wait call. Wait must run
 // exactly once, and the reaper goroutine here is the only caller, so the exit
 // signal is available whether the process dies during startup or later.
@@ -119,6 +130,16 @@ func spawnLanguageServer(options Options, languageServerPath, overrideIdeVersion
 	command.Stderr = io.Discard
 	command.Stdin = nil
 	if err := command.Start(); err != nil {
+		// A missing binary is "the language server is not installed here",
+		// which the availability classifier and the TS log contract both
+		// recognize as `spawn <path> … ENOENT`; Go's exec error does not read
+		// that way, so it is rewrapped.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, &SpawnLanguageServerError{
+				Message: "spawn " + path + " ENOENT",
+				Cause:   err,
+			}
+		}
 		return nil, err
 	}
 	process := &languageServerProcess{command: command, exited: make(chan struct{})}

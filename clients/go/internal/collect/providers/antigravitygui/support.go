@@ -135,10 +135,11 @@ func IsUnavailableLanguageServerError(err error) bool {
 		strings.Contains(message, "Timed out starting Antigravity language server") ||
 		strings.HasPrefix(message, "Antigravity metadata request failed for ") ||
 		strings.HasPrefix(message, "Antigravity metadata request transport failed for ") ||
-		strings.HasPrefix(message, "Antigravity metadata request timed out for ")
+		strings.HasPrefix(message, "Antigravity metadata request timed out for ") ||
+		spawnENOENTPattern.MatchString(message)
 }
 
-// collateCompare orders two strings the way the TS localeCompare does.
-func collateCompare(left, right string) int {
-	return compareHashes(left, right)
-}
+// spawnENOENTPattern is the TS /^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/:
+// a language-server binary that is not installed at the path the client tried.
+var spawnENOENTPattern = regexp.MustCompile(
+	`^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT`)
