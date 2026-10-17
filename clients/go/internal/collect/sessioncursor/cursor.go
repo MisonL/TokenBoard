@@ -404,9 +404,10 @@ func parseEntry(raw json.RawMessage) (Entry, error) {
 	if !isFiniteNumber(entry.Size) || !isFiniteNumber(entry.MtimeMs) {
 		return Entry{}, fmt.Errorf("size and mtimeMs must be finite numbers")
 	}
-	if !sha256Pattern.MatchString(entry.SHA256) {
-		return Entry{}, fmt.Errorf("sha256 must be a sha256 hex digest")
-	}
+	// TS only checks `typeof candidate.sha256 === 'string'`: the digest may be a
+	// blake2b512 content hash (128 hex) when contentHashAlgo says so, so a
+	// 64-hex sha256 pattern here would reject valid cursors. The required-field
+	// loop above enforces presence and json.Unmarshal enforces the string type.
 	switch entry.AntigravityOrigin {
 	case "", "database", "language-server":
 	default:

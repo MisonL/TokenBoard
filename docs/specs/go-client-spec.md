@@ -125,6 +125,24 @@ clients/go/
 - [x] 调研完成（见 research 报告）；ccusage 已升 20.0.33（2cc5249，PR #24）
 - [ ] **前置：与上游作者对齐（D8）** —— 开工条件
 
+**M4 状态（claude-code + ccusage 集成层）**：
+
+- [x] `internal/ccusage`：`Resolve` 三层获取（`TOKENBOARD_CCUSAGE_BIN` → `~/.tokenboard/bin/ccusage` → PATH 探测 → npm 下载 + sha512 完整性校验），**hook 模式在下载层之前返回错误**（不联网）；`RunJSON` 命令层（超时具名、瞬态重试、Windows `.cmd`/`.bat` shell 引号与元字符拒绝、128MiB 输出上限）；`PackageRunner`（bunx/npm exec/pnpm dlx/npx，`--config` 拼接）；`NormalizeCcusageDailyJSON`（ordered record 保序、pro-rata 成本分摊、session 计数按报告时区、codex 总量重算）。
+- [x] `internal/pricing`：模型定价目录（网络分页 + 游标环检测、24h 缓存 + ETag/304、陈旧缓存与 bundled 静态回退、hook 模式离线）、动态 ccusage 配置生成与显式配置优先级、context tier 校验。
+- [x] `internal/collect/providers/claudecode`：range 与 hook 两条路径；hook 走 `sessioncursor.CollectHookIncremental` + 窄窗口 reconcile + 对账断言；`TOKENBOARD_FORCE_PACKAGE_RUNNER` 跳过二进制获取；非 hook 获取失败回退 package runner（保留 TS 无捆绑二进制的行为），hook 模式 fail-closed。
+- [x] CLI 接线：`warmHookCursors`（仅无界非 hook 的 claude-code 预热高水位）、`pricingDiagnosticSink`（未定价模型按 provider 聚合，20 个上限）、`acknowledgeUploadCursors` 补上 `shouldAckCursor` 的非 Antigravity 分支（hook 模式按已上传分组清 `pendingUpload`，range 模式不动）。
+- 已修复的移植缺陷（有测试钉住）：
+  - `sessioncursor` 的 `ReadLines` 闭包原本删除 `scanState.unreadChangedFiles`，而 `ScanResult` 的副本在扫描结束时已拷好，导致 `Commit` 永远拒绝（「cannot commit before all changed files are read」）；改为直接写 `result`，与 TS `readChangedSessionJsonlLines` 一致。
+  - cursor 条目校验曾强制 `sha256` 为 64 位 hex，而内容哈希早已切到 blake2b512（128 hex），Go 读不回自己写的 cursor；改为只要求字符串，与 TS `isValidCursorEntry` 一致。
+  - `NormalizeCcusageDailyJSON` 曾把 daily 输入当 sessions 传，session 计数全错；stub 传入的普通 map 也未转 ordered record。
+  - `parseJSDate` 不支持 ccusage 的显示日期（`Apr 28, 2026`），TS 的 `Date.parse(value + ' UTC')` 支持。
+  - `internal/pricing` 曾用 RE2 不支持的前瞻正则做 model ID 校验，包初始化即 panic；改为等价函数。
+- 与 TS 的已知边界：
+  - Go 侧捆绑二进制是 spec §4 的第一层，TS 没有；非 hook 获取失败仍回退 package runner 以保持 skill 安装兼容。
+  - bundled 静态配置在 Go 侧是嵌入文件，运行时落盘到 `<stateDir>/ccusage.bundled.json`；TS 从 checkout 读 `ccusage.json`。
+  - Windows 的 dev/ino 由 `identity_windows.go` 给出平台回退，不与 Node 的 stat 逐位对齐。
+- M4 出口（hook 离线行为）：`TestHookModeNeverDownloadsCcusage`（无二进制时 hook 失败且 runner 不运行）、`TestResolveHookModeFailsClosedWithoutABinary`、`TestResolvePrefersTheBundledBinaryOverPATH`、`TestDownloadVerifiesIntegrityAndInstallsTheBinary` 覆盖获取层；`TestHookModeUsesChangedFilesToNarrowReconciliation` 等 6 条覆盖 hook 对账语义。
+
 **M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：
 
 - 纯/无依赖（可直接平移，对应 Go 侧新包 `antigravityscan`）：`antigravity-file-scan.ts`（173 行，SHA-256 键 + 热/冷混合选择 + 从两端取样）、`antigravity-since.ts`（87 行，`since@时区` scope 解析 + `includesTimestamp/includesFileMtime` 谓词）。两者测试仅 3 条，但逻辑密集。

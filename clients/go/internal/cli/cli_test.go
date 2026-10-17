@@ -111,8 +111,9 @@ func TestInvalidSourceIsUsageError(t *testing.T) {
 
 // A concrete --source whose provider is not implemented in this client fails
 // fast, the way the TS CLI fails when a single source cannot be collected.
+// Codex is the remaining ported-in-M5 source; claude-code is implemented.
 func TestPreviewUnimplementedConcreteSourceFailsFast(t *testing.T) {
-	code, _, stderr := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}, "preview", "--source", "claude-code")
+	code, _, stderr := run(t, map[string]string{"TOKENBOARD_TIMEZONE": "UTC"}, "preview", "--source", "codex")
 	if code != ExitFailure || !strings.Contains(stderr, "not implemented") {
 		t.Errorf("code=%d stderr=%q", code, stderr)
 	}
@@ -123,7 +124,10 @@ func TestPreviewUnimplementedConcreteSourceFailsFast(t *testing.T) {
 func TestPreviewAllSourcesWithNoSessionsPrintsEmptyArray(t *testing.T) {
 	// Every provider home is pointed at an empty temp directory: a developer
 	// machine that has real sessions would otherwise be read by the all-source
-	// run and this would stop being a test of the empty case.
+	// run and this would stop being a test of the empty case. Claude Code has
+	// no local directory to point at (ccusage owns the scan), so its provider
+	// is stubbed instead of running a real ccusage over the machine's home.
+	stubSource(t, contract.SourceClaudeCode, stubProvider{})
 	code, stdout, _ := run(t, map[string]string{
 		"TOKENBOARD_TIMEZONE":     "UTC",
 		"TOKENBOARD_GROK_HOME":    t.TempDir(),

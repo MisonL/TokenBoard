@@ -164,8 +164,10 @@ func TestRejectInvalidCursors(t *testing.T) {
 		// rejects empty and ".." there); it is rejected inside a synthetic
 		// key's parts, which the "absolute part" case below covers.
 		"dot segment in synthetic part": `{"version":1,"source":"pi","files":{"kind\u0000a/../b":{"size":1,"mtimeMs":1,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshots":[],"missingCost":false,"updatedAt":"x"}}}`,
-		"bad sha":                       `{"version":1,"source":"pi","files":{"ok.json":{"size":1,"mtimeMs":1,"sha256":"xyz","snapshots":[],"missingCost":false,"updatedAt":"x"}}}`,
-		"corrupt json":                  `{"version":1,`,
+		// TS only requires sha256 to be a string (blake2b512 digests are 128
+		// hex), so a non-string is the shape it actually rejects.
+		"bad sha":      `{"version":1,"source":"pi","files":{"ok.json":{"size":1,"mtimeMs":1,"sha256":7,"snapshots":[],"missingCost":false,"updatedAt":"x"}}}`,
+		"corrupt json": `{"version":1,`,
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {

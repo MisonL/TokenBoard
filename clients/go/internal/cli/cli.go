@@ -21,6 +21,7 @@ import (
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers"
 	antigravityprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitycli"
 	antigravityguiprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitygui"
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 	"github.com/MisonL/TokenBoard/clients/go/internal/upload"
@@ -77,10 +78,17 @@ func RunWithEnv(ctx context.Context, args []string, env Env, stdout, stderr io.W
 		fmt.Fprintln(stderr, err.Error())
 		return ExitUsage
 	}
-	return dispatch(ctx, options, env, stdout, stderr)
+	// Providers report every unpriced model on every run; the sink folds those
+	// into one line per provider when the run ends, the way the TS CLI does.
+	sink := newPricingDiagnosticSink(stderr)
+	defer sink.Flush()
+	return dispatch(ctx, options, env, stdout, sink)
 }
 
 func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.Writer) int {
+	// The hook warm mark is stamped with the run's start, not its end: the
+	// scan is only guaranteed to cover files that existed when it began.
+	startedAt := time.Now()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		// A missing home directory would silently turn the state dir into a
@@ -94,10 +102,16 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 	switch options.Command {
 	case "warm-hooks":
 		return withRunLock(stateDir, stderr, func() int {
-			// No provider registers a hook cursor yet; report the sources the
-			// TS collector would report as warmed — every concrete source,
-			// not just the hook-installed two.
+			// The TS collector advances the hook cursors' high-water mark after
+			// a full scan so the next hook run does not rescan the whole tree.
+			// Only the two hook-installed sources have a cursor to warm; the
+			// others are reported (the TS JSON lists every expanded source)
+			// but left untouched.
 			sources := expandWarmHookSources(options.Source)
+			if err := warmHookCursors(sources, stateDir, startedAt, options, env, "all", "", stderr); err != nil {
+				fmt.Fprintln(stderr, err.Error())
+				return ExitFailure
+			}
 			payload, _ := json.MarshalIndent(map[string]any{"warmed": sources}, "", "  ")
 			fmt.Fprintln(stdout, string(payload))
 			return ExitOK
@@ -122,7 +136,7 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 			return ExitOK
 		})
 	case "sync":
-		return runSync(ctx, options, env, stateDir, stdout, stderr)
+		return runSync(ctx, options, env, stateDir, startedAt, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", options.Command)
 		return ExitUsage
@@ -146,18 +160,24 @@ func withRunLock(stateDir string, stderr io.Writer, body func() int) int {
 	return body()
 }
 
-func runSync(ctx context.Context, options Options, env Env, stateDir string, stdout, stderr io.Writer) int {
+func runSync(
+	ctx context.Context, options Options, env Env, stateDir string,
+	startedAt time.Time, stdout, stderr io.Writer,
+) int {
 	missing := requiredSyncConfig(options)
 	if len(missing) > 0 {
 		fmt.Fprintf(stderr, "Missing required config for sync: %s\n", strings.Join(missing, ", "))
 		return ExitFailure
 	}
 	return withRunLock(stateDir, stderr, func() int {
-		return syncLocked(ctx, options, env, stateDir, stdout, stderr)
+		return syncLocked(ctx, options, env, stateDir, startedAt, stdout, stderr)
 	})
 }
 
-func syncLocked(ctx context.Context, options Options, env Env, stateDir string, stdout, stderr io.Writer) int {
+func syncLocked(
+	ctx context.Context, options Options, env Env, stateDir string,
+	startedAt time.Time, stdout, stderr io.Writer,
+) int {
 	cursorScope, err := cursorScopeFromEndpoint(options.Endpoint)
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
@@ -202,7 +222,15 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 		return classifyFailure(uploadErr, options, env)
 	}
 
-	if err := acknowledgeUploadCursors(stateDir, outcome.collectedSources, outcome.snapshots, options, cursorScope); err != nil {
+	if err := acknowledgeUploadCursors(stateDir, outcome.collectedSources, outcome.snapshots, options, cursorScope, env); err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return ExitFailure
+	}
+	// The high-water mark claims a full scan covered everything up to the run's
+	// start; only the runs that actually did (unbounded, not hook mode) may
+	// advance it.
+	if err := warmHookCursors(sourceNames(outcome.collectedSources), stateDir, startedAt, options, env,
+		options.Since, options.Until, stderr); err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return ExitFailure
 	}
@@ -694,27 +722,45 @@ func versionString() string {
 var Version = "dev"
 
 // acknowledgeUploadCursors marks the just-uploaded snapshots as acknowledged
-// in each antigravity source's cursor, so they stop being re-emitted. Only an
-// upload that actually succeeded reaches here: acknowledging a failed run
-// would silently drop the usage it carried.
+// in each source's cursor, so they stop being re-emitted. Only an upload that
+// actually succeeded reaches here: acknowledging a failed run would silently
+// drop the usage it carried.
+//
+// Mirrors the TS shouldAckCursor rule: the Antigravity sources always
+// acknowledge (their cursors track session markers), the session-file sources
+// only in hook mode (a range-mode run re-reads through ccusage anyway, and
+// acknowledging would clear a pending entry a later hook still needs).
 func acknowledgeUploadCursors(
 	stateDir string,
 	collectedSources []contract.Source,
 	snapshots []contract.Snapshot,
 	options Options,
 	cursorScope string,
+	env Env,
 ) error {
+	hookMode := env("TOKENBOARD_HOOK_MODE") == "1"
 	for _, source := range collectedSources {
-		if source != contract.SourceAntigravityCLI &&
-			source != contract.SourceAntigravity && source != contract.SourceAntigravityIDE {
-			continue
-		}
 		acknowledged := map[string]bool{}
 		for _, snapshot := range snapshots {
 			if snapshot.Source != source {
 				continue
 			}
 			acknowledged[snapshot.AckGroupKey()] = true
+		}
+		if source != contract.SourceAntigravityCLI &&
+			source != contract.SourceAntigravity && source != contract.SourceAntigravityIDE {
+			if !hookMode {
+				continue
+			}
+			if err := sessioncursor.AcknowledgePendingUploads(sessioncursor.AcknowledgeInput{
+				StateDir:           stateDir,
+				Source:             source,
+				CursorScope:        cursorScope,
+				AcknowledgedGroups: acknowledged,
+			}); err != nil {
+				return fmt.Errorf("%s cursor acknowledgement failed: %w", source, err)
+			}
+			continue
 		}
 		// The three Antigravity sources keep separate cursor key families and
 		// separate compaction rules, so each is acknowledged by its own

@@ -1,0 +1,61 @@
+package cli
+
+import (
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
+)
+
+// Port of warmHookCursors: after a full scan, advance the hook cursors'
+// high-water mark so the next hook run does not rescan the whole session
+// tree. A bounded or hook-mode run never warms — the high-water mark claims
+// "everything up to here was covered", which is only true for a full scan.
+func warmHookCursors(
+	sources []string,
+	stateDir string,
+	startedAt time.Time,
+	options Options,
+	env Env,
+	since, until string,
+	stderr io.Writer,
+) error {
+	if options.HookMode {
+		return nil
+	}
+	if !isAllDateFilter(since) || until != "" {
+		return nil
+	}
+	for _, source := range sources {
+		switch contract.Source(source) {
+		case contract.SourceClaudeCode:
+			if err := sessioncursor.WarmHookCursorHighWater(sessioncursor.WarmInput{
+				StateDir:    stateDir,
+				Source:      contract.SourceClaudeCode,
+				HighWaterMs: float64(startedAt.UnixMilli()),
+			}); err != nil {
+				return fmt.Errorf("%s hook cursor warm failed: %w", source, err)
+			}
+		case contract.SourceCodex:
+			// Codex warms one cursor per configured profile scope; that plan
+			// arrives with the Codex provider in M5.
+		}
+	}
+	return nil
+}
+
+// isAllDateFilter ports iso-calendar-date.ts isAllDateFilter.
+func isAllDateFilter(value string) bool {
+	return strings.TrimSpace(value) == "all"
+}
+
+func sourceNames(sources []contract.Source) []string {
+	names := make([]string, 0, len(sources))
+	for _, source := range sources {
+		names = append(names, string(source))
+	}
+	return names
+}

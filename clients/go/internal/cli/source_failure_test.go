@@ -53,9 +53,12 @@ func guiSnapshot(source contract.Source) contract.Snapshot {
 }
 
 // emptyProviderHomes points every other source at an empty store, so an
-// all-source run cannot read the developer machine's real sessions.
+// all-source run cannot read the developer machine's real sessions. Claude
+// Code has no local directory to point at — its provider shells out to
+// ccusage, which may probe PATH or download — so it is stubbed out instead.
 func emptyProviderHomes(t *testing.T) map[string]string {
 	t.Helper()
+	stubSource(t, contract.SourceClaudeCode, stubProvider{})
 	return map[string]string{
 		"TOKENBOARD_TIMEZONE":     "UTC",
 		"TOKENBOARD_GROK_HOME":    t.TempDir(),
