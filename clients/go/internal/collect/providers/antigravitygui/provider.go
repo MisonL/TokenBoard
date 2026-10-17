@@ -128,6 +128,7 @@ func Collect(options Options) ([]contract.Snapshot, error) {
 		localUsage:  localRead.Usage,
 		rangeValue:  rangeValue,
 		cascadeScan: &cascadeScan,
+		dbScan:      &scanState,
 	}); err != nil {
 		return nil, err
 	}
@@ -209,6 +210,7 @@ type languageServerInput struct {
 	localUsage  antigravityhistory.Result
 	rangeValue  antigravityscan.CollectionRange
 	cascadeScan *antigravityscan.FileScanState
+	dbScan      *antigravityscan.FileScanState
 }
 
 // collectLanguageServerUsage runs the optional language-server route. It
@@ -582,6 +584,19 @@ func preservePartialGuiUsage(input languageServerInput, cleanupErrors *[]error) 
 				sessioncursor.SelectPendingCursorSnapshotGroups(
 					input.cursor, input.rangeValue.SinceDate, nil))
 		})
+	// The TS reader mutates cursor.antigravityDbFileScan in place, so the
+	// partial write persists the rotation bookkeeping it recorded. Go's reader
+	// works on a copy, so put both scan states back before writing.
+	if input.dbScan != nil {
+		if err := setCursorDBFileScan(input.cursor, *input.dbScan); err != nil {
+			*cleanupErrors = append(*cleanupErrors, err)
+		}
+	}
+	if input.cascadeScan != nil {
+		if err := setCursorCascadeFileScan(input.cursor, *input.cascadeScan); err != nil {
+			*cleanupErrors = append(*cleanupErrors, err)
+		}
+	}
 	if err := sessioncursor.Write(input.cursorPath, *input.cursor); err != nil {
 		*cleanupErrors = append(*cleanupErrors, err)
 	}

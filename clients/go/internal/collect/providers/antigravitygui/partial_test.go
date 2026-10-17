@@ -1,13 +1,16 @@
 package antigravitygui
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravityhistory"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravitymeta"
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravityscan"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
@@ -270,5 +273,63 @@ func TestCollectGuiSurfacesTheDbErrorInsteadOfTheScanAssertion(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SQLite metadata query failed") {
 		t.Fatalf("err = %v, want the SQLite failure", err)
+	}
+}
+
+func TestCollectGuiPersistsScanStateOnThePartialPath(t *testing.T) {
+	// The TS reader mutates cursor.antigravityDbFileScan in place and the
+	// partial path writes the whole cursor, so the rotation bookkeeping
+	// survives a failed language-server route. Go copies the scan state, so
+	// the partial write has to put it back or every failed run re-stats the
+	// same files from a cold rotation.
+	conversationDir := t.TempDir()
+	cascadeID := "11111111-1111-1111-1111-111111111111"
+	if err := os.WriteFile(filepath.Join(conversationDir, cascadeID+".db"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	options, stateDir := guiTestOptions(t, "antigravity", func(options *Options) {
+		options.ConversationDir = conversationDir
+		options.ListCascadeIDs = func() ([]string, error) {
+			return []string{"conversation-a"}, nil
+		}
+		// The injected reader stands in for the SQLite read, so it has to
+		// record the scan entry the real reader would.
+		options.ReadDbUsageEvents = func(readOptions antigravityhistory.Options) (antigravityhistory.Result, error) {
+			if readOptions.ScanState != nil {
+				readOptions.ScanState.Files[hashOf(cascadeID)] = antigravityscan.FileScanEntry{
+					MtimeMs: 1_782_000_000_000, Size: 1,
+				}
+			}
+			return antigravityhistory.Result{
+				CascadeIDs:                map[string]bool{},
+				Events:                    []antigravitymeta.UsageEvent{},
+				KnownCascadeIDs:           map[string]bool{},
+				LastReadRowIndexByCascade: map[string]int64{},
+			}, nil
+		}
+		options.RequestGeneratorMetadata = func(GeneratorMetadataRequest) (any, error) {
+			return nil, errors.New("metadata unavailable")
+		}
+	})
+
+	if _, err := Collect(options); err == nil {
+		t.Fatal("expected a partial error")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(stateDir, "antigravity-cursor.json"))
+	if err != nil {
+		t.Fatalf("read cursor: %v", err)
+	}
+	var parsed struct {
+		DBScan struct {
+			Files map[string]any `json:"files"`
+		} `json:"antigravityDbFileScan"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("parse cursor: %v", err)
+	}
+	if len(parsed.DBScan.Files) == 0 {
+		t.Fatal("the partial write dropped the database scan state the reader recorded")
 	}
 }
