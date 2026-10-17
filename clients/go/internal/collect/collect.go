@@ -85,18 +85,13 @@ func OverrideProvider(source contract.Source, provider Provider) (restore func()
 	}
 }
 
-// IsOptionalSourceUnavailable mirrors the TS isOptionalSourceUnavailable: the
-// "tool is not installed here" messages an all-source run skips instead of
-// reporting as a failure. Anything else is a real collection failure.
-func IsOptionalSourceUnavailable(source contract.Source, message string) bool {
-	return IsOptionalSourceUnavailableIgnoringLanguageServer(source, message, false)
-}
-
-// IsOptionalSourceUnavailableIgnoringLanguageServer is the same check with the
-// TS `ignoreLanguageServerUnavailable` switch: when set, an absent language
-// server is treated as "not installed here" too. The TS side passes
-// TOKENBOARD_FAIL_ON_SOURCE_ERROR !== '1', so an operator who wants a hard
-// failure on every source error gets one.
+// IsOptionalSourceUnavailableIgnoringLanguageServer mirrors the TS
+// isOptionalSourceUnavailable: the "tool is not installed here" messages an
+// all-source run skips instead of reporting as a failure. Anything else is a
+// real collection failure. ignoreLanguageServerUnavailable is the TS switch of
+// the same name: when set, an absent language server is "not installed here"
+// too. The TS side passes TOKENBOARD_FAIL_ON_SOURCE_ERROR !== '1', so an
+// operator who wants a hard failure on every source error gets one.
 func IsOptionalSourceUnavailableIgnoringLanguageServer(
 	source contract.Source,
 	message string,
