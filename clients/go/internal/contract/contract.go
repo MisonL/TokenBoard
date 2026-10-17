@@ -348,6 +348,13 @@ func IsValidTimezone(value string) bool {
 	return err == nil
 }
 
+// UTF16Length counts UTF-16 code units, matching Zod's z.string().max() and
+// String.prototype.length. Exported so the provider parsers bound strings the
+// same way.
+func UTF16Length(s string) int {
+	return utf16Length(s)
+}
+
 // utf16Length counts UTF-16 code units, matching Zod's z.string().max(),
 // which measures JavaScript String#length. Byte counts would reject
 // CJK-heavy names the TS side accepts.

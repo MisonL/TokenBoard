@@ -247,9 +247,11 @@ func collectLanguageServerUsage(input languageServerInput) error {
 }
 
 // guiCollectionError classifies a failed language-server route. With usage
-// already collected it becomes a partial error carrying the snapshots; the
-// cleanup failures (a language server that would not shut down) ride along as
-// the cause and make the partial error fatal.
+// already collected it becomes a partial error carrying the validated
+// snapshots; the cleanup failures (a language server that would not shut
+// down) ride along as the cause and make the partial error fatal. Without
+// snapshots the original error is returned untouched — the CLI classifies it
+// by message, and rewriting it would hide the real cause.
 func guiCollectionError(err error, snapshots []contract.Snapshot, cleanupErrors []error) error {
 	cause := cleanupErrorCause(cleanupErrors)
 	if len(snapshots) > 0 {
@@ -258,9 +260,18 @@ func guiCollectionError(err error, snapshots []contract.Snapshot, cleanupErrors 
 		if unavailable {
 			label = "Antigravity language server unavailable"
 		}
+		merged := sessioncursor.MergeSnapshots(snapshots)
+		for _, snapshot := range merged {
+			if validateErr := snapshot.Validate(); validateErr != nil {
+				if cause == nil {
+					return fmt.Errorf("%s snapshot rejected: %w", snapshot.Source, validateErr)
+				}
+				return fmt.Errorf("%s snapshot rejected: %w: %v", snapshot.Source, validateErr, cause)
+			}
+		}
 		return &PartialUsageError{
 			Message:   label + " after DB history was collected: " + err.Error(),
-			Snapshots: sessioncursor.MergeSnapshots(snapshots),
+			Snapshots: merged,
 			Fatal:     len(cleanupErrors) > 0 || !unavailable,
 			Cause:     cause,
 		}
