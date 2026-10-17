@@ -311,3 +311,97 @@ func TestAssertHookReconciliationSnapshotsRequiresEverySpecificModel(t *testing.
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// File acknowledgement is the Codex contract: the exact (path, digest)
+// revision the upload covered is cleared, and the Codex pending-correction
+// marker goes with it.
+func TestAcknowledgePendingUploadsClearsAnAcknowledgedCodexFile(t *testing.T) {
+	stateDir := t.TempDir()
+	pending := true
+	cursor := NewState("codex")
+	cursor.Files["2026/05/22/session.jsonl"] = Entry{
+		Size:          1,
+		MtimeMs:       1,
+		SHA256:        "abc",
+		Snapshots:     []Snapshot{{Source: "codex", UsageDate: "2026-05-22", Model: "gpt-5", CodexContextPricingPending: true}},
+		PendingUpload: &pending,
+		UpdatedAt:     "2026-05-22T10:00:00.000Z",
+	}
+	cursorPath := filepath.Join(stateDir, "codex-cursor.json")
+	if err := Write(cursorPath, cursor); err != nil {
+		t.Fatal(err)
+	}
+	if err := AcknowledgePendingUploads(AcknowledgeInput{
+		StateDir:          stateDir,
+		Source:            contract.SourceCodex,
+		AcknowledgedFiles: []AcknowledgedFile{{RelativePath: "2026/05/22/session.jsonl", SHA256: "abc"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entry := readCursorFiles(t, cursorPath)["2026/05/22/session.jsonl"]
+	if entry.PendingUpload == nil || *entry.PendingUpload {
+		t.Error("the acknowledged entry must be cleared")
+	}
+	if entry.Snapshots[0].CodexContextPricingPending {
+		t.Error("the pending-correction marker must be cleared with the acknowledgement")
+	}
+}
+
+// A different digest means the file changed after the upload: its new bytes
+// never reached the server, so it stays pending.
+func TestAcknowledgePendingUploadsKeepsAChangedCodexFile(t *testing.T) {
+	stateDir := t.TempDir()
+	pending := true
+	cursor := NewState("codex")
+	cursor.Files["2026/05/22/session.jsonl"] = Entry{
+		Size: 2, MtimeMs: 2, SHA256: "newer",
+		Snapshots:     []Snapshot{{Source: "codex", UsageDate: "2026-05-22", Model: "gpt-5"}},
+		PendingUpload: &pending,
+		UpdatedAt:     "2026-05-22T10:00:00.000Z",
+	}
+	cursorPath := filepath.Join(stateDir, "codex-cursor.json")
+	if err := Write(cursorPath, cursor); err != nil {
+		t.Fatal(err)
+	}
+	if err := AcknowledgePendingUploads(AcknowledgeInput{
+		StateDir:          stateDir,
+		Source:            contract.SourceCodex,
+		AcknowledgedFiles: []AcknowledgedFile{{RelativePath: "2026/05/22/session.jsonl", SHA256: "older"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entry := readCursorFiles(t, cursorPath)["2026/05/22/session.jsonl"]
+	if entry.PendingUpload == nil || !*entry.PendingUpload {
+		t.Error("the unacknowledged revision must stay pending")
+	}
+}
+
+// The two acknowledgement forms are mutually exclusive, and only Codex takes
+// file acknowledgements; mixing them would silently pick one.
+func TestAcknowledgePendingUploadsRejectsMixedOrForeignFileAcknowledgements(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := AcknowledgePendingUploads(AcknowledgeInput{
+		StateDir:           stateDir,
+		Source:             contract.SourceCodex,
+		AcknowledgedGroups: map[string]bool{"codex\x002026-05-22\x00Asia/Shanghai\x00gpt-5": true},
+		AcknowledgedFiles:  []AcknowledgedFile{{RelativePath: "a", SHA256: "b"}},
+	}); err == nil || !strings.Contains(err.Error(), "cannot be supplied together") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := AcknowledgePendingUploads(AcknowledgeInput{
+		StateDir:          stateDir,
+		Source:            contract.SourceClaudeCode,
+		AcknowledgedFiles: []AcknowledgedFile{{RelativePath: "a", SHA256: "b"}},
+	}); err == nil || !strings.Contains(err.Error(), "only supported for Codex") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func readCursorFiles(t *testing.T, path string) map[string]Entry {
+	t.Helper()
+	cursor, err := Read(path, "codex")
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return cursor.Files
+}

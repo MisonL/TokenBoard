@@ -105,3 +105,69 @@ func TestWarmHookCursorsClampsToTheClock(t *testing.T) {
 		t.Errorf("high-water %v must be clamped to now", value)
 	}
 }
+
+// Codex warms the cursor the hook runs actually read. With one home and no
+// history that is the legacy cursor; the profile cursors appear only once the
+// plan turns multi-profile.
+func TestWarmHookCursorsWarmTheCodexLegacyCursorForOneHome(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	home := filepath.Join(root, "codex")
+	startedAt := time.Date(2026, 5, 22, 1, 0, 0, 0, time.UTC)
+	env := func(key string) string {
+		if key == "CODEX_HOME" {
+			return home
+		}
+		return ""
+	}
+	if err := warmHookCursors([]string{"codex"}, stateDir, startedAt, Options{}, env, "all", "", &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := sessioncursor.Read(filepath.Join(stateDir, "codex-cursor.json"), "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := cursor.ExtraValue("lastScanHighWaterMs")
+	if !ok {
+		t.Fatal("high-water mark not written to the legacy Codex cursor")
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value != float64(startedAt.UnixMilli()) {
+		t.Errorf("high-water = %v, want %v", value, startedAt.UnixMilli())
+	}
+}
+
+// Two homes force profile cursors, and the warm must land on those, not on the
+// legacy cursor no hook run reads any more.
+func TestWarmHookCursorsWarmEachCodexProfileCursor(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	firstHome := filepath.Join(root, "first")
+	secondHome := filepath.Join(root, "second")
+	startedAt := time.Date(2026, 5, 22, 1, 0, 0, 0, time.UTC)
+	env := func(key string) string {
+		if key == "TOKENBOARD_CODEX_HOMES_JSON" {
+			return `["` + firstHome + `","` + secondHome + `"]`
+		}
+		return ""
+	}
+	if err := warmHookCursors([]string{"codex"}, stateDir, startedAt, Options{}, env, "all", "", &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, home := range []string{firstHome, secondHome} {
+		path := filepath.Join(stateDir, codexHookProfileCursorName(home))
+		cursor, err := sessioncursor.Read(path, "codex")
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if _, ok := cursor.ExtraValue("lastScanHighWaterMs"); !ok {
+			t.Errorf("%s was not warmed", home)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "codex-cursor.json")); !os.IsNotExist(err) {
+		t.Errorf("the legacy cursor must stay untouched: %v", err)
+	}
+}

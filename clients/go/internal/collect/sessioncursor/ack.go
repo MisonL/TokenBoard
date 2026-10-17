@@ -16,9 +16,23 @@ type AcknowledgeInput struct {
 	CursorScope string
 	// AcknowledgedGroups are the daily snapshot groups the server accepted.
 	AcknowledgedGroups map[string]bool
+	// AcknowledgedFiles are the (relativePath, sha256) pairs a Codex hook run
+	// uploaded. Codex acknowledges per file rather than per group because a
+	// hook run can upload a partial group (one file's share of a date/model)
+	// and the file is the only thing that proves which part reached the
+	// server. When set, AcknowledgedGroups is ignored, matching the TS rule
+	// that the two cannot be supplied together.
+	AcknowledgedFiles []AcknowledgedFile
 	// Now is the clock the rewritten entries are stamped from; zero uses the
 	// wall clock.
 	Now time.Time
+}
+
+// AcknowledgedFile is one uploaded session file, identified by the digest the
+// cursor recorded for it.
+type AcknowledgedFile struct {
+	RelativePath string
+	SHA256       string
 }
 
 // AcknowledgePendingUploads ports the non-Antigravity half of
@@ -34,6 +48,14 @@ func AcknowledgePendingUploads(input AcknowledgeInput) error {
 		input.Source == contract.SourceAntigravity ||
 		input.Source == contract.SourceAntigravityIDE {
 		return &AcknowledgeError{Message: "Antigravity cursors use their own acknowledgement"}
+	}
+	if input.AcknowledgedFiles != nil {
+		if input.Source != contract.SourceCodex {
+			return &AcknowledgeError{Message: "Acknowledged snapshot files are only supported for Codex cursors"}
+		}
+		if input.AcknowledgedGroups != nil {
+			return &AcknowledgeError{Message: "Acknowledged snapshot files and groups cannot be supplied together"}
+		}
 	}
 	now := input.Now
 	if now.IsZero() {
@@ -54,18 +76,40 @@ func AcknowledgePendingUploads(input AcknowledgeInput) error {
 	if err != nil {
 		return err
 	}
+	var acknowledgedFiles map[string]bool
+	if input.AcknowledgedFiles != nil {
+		acknowledgedFiles = make(map[string]bool, len(input.AcknowledgedFiles))
+		for _, file := range input.AcknowledgedFiles {
+			acknowledgedFiles[file.RelativePath+"\x00"+file.SHA256] = true
+		}
+	}
 	changed := false
 	for _, key := range sortedEntryKeys(cursor.Files) {
 		entry := cursor.Files[key]
 		if entry.PendingUpload == nil || !*entry.PendingUpload {
 			continue
 		}
-		if len(entry.Snapshots) > 0 && !entryFullyAcknowledged(entry, input.AcknowledgedGroups) {
+		if acknowledgedFiles != nil {
+			// A file acknowledgement names the exact revision that uploaded;
+			// a file that changed since keeps its pending flag so the new
+			// bytes still upload.
+			if !acknowledgedFiles[key+"\x00"+entry.SHA256] {
+				continue
+			}
+		} else if len(entry.Snapshots) > 0 && !entryFullyAcknowledged(entry, input.AcknowledgedGroups) {
 			continue
 		}
 		pending := false
 		entry.PendingUpload = &pending
 		entry.UpdatedAt = updatedAt
+		if input.Source == contract.SourceCodex {
+			// The TS clears the pending-correction marker once the cost is
+			// uploaded; leaving it set would make the next run treat an
+			// acknowledged snapshot as unresolved again.
+			for index := range entry.Snapshots {
+				entry.Snapshots[index].CodexContextPricingPending = false
+			}
+		}
 		cursor.Files[key] = entry
 		changed = true
 	}

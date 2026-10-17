@@ -21,6 +21,7 @@ import (
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers"
 	antigravityprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitycli"
 	antigravityguiprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitygui"
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/codex"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
@@ -222,7 +223,7 @@ func syncLocked(
 		return classifyFailure(uploadErr, options, env)
 	}
 
-	if err := acknowledgeUploadCursors(stateDir, outcome.collectedSources, outcome.snapshots, options, cursorScope, env); err != nil {
+	if err := acknowledgeUploadCursors(stateDir, outcome, options, cursorScope, env); err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return ExitFailure
 	}
@@ -269,6 +270,10 @@ type collection struct {
 	snapshots        []contract.Snapshot
 	collectedSources []contract.Source
 	failures         []sourceFailure
+	// codexAcknowledgement is the per-scope file list the Codex hook run
+	// uploaded. The TS side attaches it to the snapshots; Go carries it out of
+	// band through collect.Options.
+	codexAcknowledgement []collect.CursorScopeFiles
 }
 
 // collectionFailed mirrors the TS exit contract: a fatal source failure always
@@ -323,6 +328,7 @@ func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorS
 			fmt.Fprintf(stderr, "Skipping unavailable %s source: not implemented in this client yet\n", source)
 			continue
 		}
+		var codexAcknowledgement []collect.CursorScopeFiles
 		collected, err := provider.Collect(ctx, collect.Options{
 			Timezone:    options.Timezone,
 			Since:       options.Since,
@@ -331,10 +337,16 @@ func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorS
 			StateDir:    stateDir,
 			Stderr:      func(line string) { fmt.Fprintln(stderr, line) },
 			Env:         env,
+			HookAcknowledgement: func(scopes []collect.CursorScopeFiles) {
+				codexAcknowledgement = scopes
+			},
 		})
 		if err == nil {
 			outcome.snapshots = append(outcome.snapshots, collected...)
 			outcome.collectedSources = append(outcome.collectedSources, source)
+			if codexAcknowledgement != nil {
+				outcome.codexAcknowledgement = codexAcknowledgement
+			}
 			continue
 		}
 		message := err.Error()
@@ -732,20 +744,33 @@ var Version = "dev"
 // acknowledging would clear a pending entry a later hook still needs).
 func acknowledgeUploadCursors(
 	stateDir string,
-	collectedSources []contract.Source,
-	snapshots []contract.Snapshot,
+	outcome collection,
 	options Options,
 	cursorScope string,
 	env Env,
 ) error {
 	hookMode := env("TOKENBOARD_HOOK_MODE") == "1"
-	for _, source := range collectedSources {
+	for _, source := range outcome.collectedSources {
 		acknowledged := map[string]bool{}
-		for _, snapshot := range snapshots {
+		for _, snapshot := range outcome.snapshots {
 			if snapshot.Source != source {
 				continue
 			}
 			acknowledged[snapshot.AckGroupKey()] = true
+		}
+		if source == contract.SourceCodex {
+			if !hookMode {
+				continue
+			}
+			// Codex acknowledges per file per cursor scope: a hook run can
+			// upload a partial (date, model) group, so the file revision is
+			// the only proof of what reached the server. The scopes come from
+			// the same plan the hook runs use, so a profile cursor is never
+			// confused with the legacy one.
+			if err := acknowledgeCodexCursors(stateDir, outcome.codexAcknowledgement, env); err != nil {
+				return fmt.Errorf("%s cursor acknowledgement failed: %w", source, err)
+			}
+			continue
 		}
 		if source != contract.SourceAntigravityCLI &&
 			source != contract.SourceAntigravity && source != contract.SourceAntigravityIDE {
@@ -787,6 +812,51 @@ func acknowledgeUploadCursors(
 		}
 		if ackErr != nil {
 			return fmt.Errorf("%s cursor acknowledgement failed: %w", source, ackErr)
+		}
+	}
+	return nil
+}
+
+// acknowledgeCodexCursors ports the Codex branch of ackUploadCursors: every
+// cursor scope the plan names is acknowledged with the files this run
+// uploaded for it. A scope the run uploaded nothing for is still visited, so
+// an empty acknowledgement clears nothing rather than skipping the scope.
+func acknowledgeCodexCursors(
+	stateDir string,
+	acknowledgement []collect.CursorScopeFiles,
+	env Env,
+) error {
+	homes, err := codex.ResolveHomes(codex.ResolveHomesInput{
+		JSONValue:   env("TOKENBOARD_CODEX_HOMES_JSON"),
+		LegacyValue: env("CODEX_HOME"),
+	})
+	if err != nil {
+		return err
+	}
+	plan, err := codex.ResolveHookCursorPlan(homes, stateDir)
+	if err != nil {
+		return err
+	}
+	scopes := []string{""}
+	if plan.UsesProfileCursors {
+		scopes = append(scopes, plan.CursorScopes...)
+	}
+	filesByScope := map[string][]sessioncursor.AcknowledgedFile{}
+	for _, entry := range acknowledgement {
+		filesByScope[entry.CursorScope] = entry.Files
+	}
+	for _, scope := range scopes {
+		files := filesByScope[scope]
+		if files == nil {
+			files = []sessioncursor.AcknowledgedFile{}
+		}
+		if err := sessioncursor.AcknowledgePendingUploads(sessioncursor.AcknowledgeInput{
+			StateDir:          stateDir,
+			Source:            contract.SourceCodex,
+			CursorScope:       scope,
+			AcknowledgedFiles: files,
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

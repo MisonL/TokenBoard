@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravitymeta"
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
@@ -37,6 +38,20 @@ type Options struct {
 	// ...). The TS collection context threads its env the same way; nil
 	// falls back to the process environment.
 	Env func(string) string
+	// HookAcknowledgement receives the per-cursor-scope file list a Codex hook
+	// run produced. The TS side attaches the same metadata to the returned
+	// snapshots with a symbol; Go threads it out of band because the snapshot
+	// type is shared with the upload contract. Nil discards it.
+	HookAcknowledgement func([]CursorScopeFiles)
+}
+
+// CursorScopeFiles is the Codex hook acknowledgement: the session files one
+// cursor scope uploaded, so the CLI can acknowledge exactly those revisions
+// after a successful upload. An empty CursorScope names the legacy unscopped
+// cursor.
+type CursorScopeFiles struct {
+	CursorScope string
+	Files       []sessioncursor.AcknowledgedFile
 }
 
 // EnvValue resolves a key through Options.Env, falling back to the process
