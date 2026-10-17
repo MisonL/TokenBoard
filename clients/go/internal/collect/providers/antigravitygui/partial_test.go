@@ -248,3 +248,27 @@ func TestCollectGuiRetriesCascadesThatProduceNoUsableEvents(t *testing.T) {
 		t.Fatalf("cascade requests = %v, want %v", calls, want)
 	}
 }
+
+func TestCollectGuiSurfacesTheDbErrorInsteadOfTheScanAssertion(t *testing.T) {
+	// Under --since all, a database read that failed carries no scan result at
+	// all — the TS error path returns a result without completeDirectoryScan, so
+	// its `=== false` assertion cannot fire. Reporting the incomplete-scan
+	// message here would hide the real read failure.
+	options, _ := guiTestOptions(t, "antigravity", func(options *Options) {
+		options.Since = "all"
+		options.ReadDbUsageEvents = func(antigravityhistory.Options) (antigravityhistory.Result, error) {
+			return antigravityhistory.Result{}, errors.New("Antigravity SQLite metadata query failed")
+		}
+	})
+
+	_, err := Collect(options)
+	if err == nil {
+		t.Fatal("a failed database read must surface")
+	}
+	if strings.Contains(err.Error(), "requires a complete SQLite directory scan") {
+		t.Fatalf("err = %v, want the SQLite failure, not the incomplete-scan assertion", err)
+	}
+	if !strings.Contains(err.Error(), "SQLite metadata query failed") {
+		t.Fatalf("err = %v, want the SQLite failure", err)
+	}
+}

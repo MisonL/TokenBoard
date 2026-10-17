@@ -96,7 +96,14 @@ func Collect(options Options) ([]contract.Snapshot, error) {
 
 	localRead := readGuiLocalDbUsageWithCursorRecovery(
 		options, &cursor, rangeValue, timezone, collectedAt, &scanState)
-	if err := assertFullHistoryDirectoryScanComplete(options.Source, rangeValue, localRead.Usage); err != nil {
+	// A failed local read surfaces before the completeness assertion: the error
+	// path carries no scan result at all (the TS reader returns a result without
+	// completeDirectoryScan), so asserting on it would mask the real failure.
+	if localRead.Error != nil {
+		if !IsUnavailableDBError(localRead.Error) {
+			return nil, localRead.Error
+		}
+	} else if err := assertFullHistoryDirectoryScanComplete(options.Source, rangeValue, localRead.Usage); err != nil {
 		return nil, err
 	}
 	for _, event := range localRead.Usage.Events {
@@ -108,12 +115,6 @@ func Collect(options Options) ([]contract.Snapshot, error) {
 			Snapshots: &snapshots, EmittedKeys: emittedKeys,
 			Timezone: timezone, CollectedAt: collectedAt, Source: options.Source,
 		})
-	}
-
-	// A failed local read that is not "the tool is not installed here" is
-	// fatal: continuing would report a partial day as complete.
-	if localRead.Error != nil && !IsUnavailableDBError(localRead.Error) {
-		return nil, localRead.Error
 	}
 
 	if err := collectLanguageServerUsage(languageServerInput{
