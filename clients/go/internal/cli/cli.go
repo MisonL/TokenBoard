@@ -6,6 +6,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravitymeta"
 	_ "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers"
 	antigravityprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitycli"
 	antigravityguiprovider "github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/antigravitygui"
@@ -102,18 +104,19 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 		})
 	case "preview":
 		return withRunLock(stateDir, stderr, func() int {
-			snapshots, _, failures, abortErr := collectAll(ctx, options, env, stateDir, "", stderr)
+			outcome, abortErr := collectAll(ctx, options, env, stateDir, "", stderr)
 			if abortErr != nil {
 				fmt.Fprintln(stderr, abortErr.Error())
 				return ExitFailure
 			}
+			snapshots := outcome.snapshots
 			if snapshots == nil {
 				snapshots = []contract.Snapshot{}
 			}
 			payload, _ := json.MarshalIndent(snapshots, "", "  ")
 			fmt.Fprintln(stdout, string(payload))
-			if len(failures) > 0 {
-				fmt.Fprintf(stderr, "One or more sources failed: %s\n", strings.Join(failures, "; "))
+			if collectionFailed(outcome, options) {
+				fmt.Fprintf(stderr, "One or more sources failed: %s\n", formatSourceFailures(outcome.failures))
 				return ExitFailure
 			}
 			return ExitOK
@@ -160,25 +163,25 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 		fmt.Fprintln(stderr, err.Error())
 		return ExitFailure
 	}
-	snapshots, collectedSources, failures, abortErr := collectAll(ctx, options, env, stateDir, cursorScope, stderr)
+	outcome, abortErr := collectAll(ctx, options, env, stateDir, cursorScope, stderr)
 	if abortErr != nil {
 		fmt.Fprintln(stderr, abortErr.Error())
 		return ExitFailure
 	}
-	collectionFailed := len(failures) > 0 && (options.FailOnSourceErr || options.Source != "all")
+	shouldFailForSourceErrors := collectionFailed(outcome, options)
 
 	if pausedUntil, paused := upload.IsPaused(stateDir, time.Now()); paused {
 		fmt.Fprintf(stderr,
 			"TokenBoard upload paused until %s after repeated non-transient failures; collected snapshots remain queued in the cursor\n",
 			pausedUntil)
-		if collectionFailed {
+		if shouldFailForSourceErrors {
 			return ExitFailure
 		}
 		return ExitOK
 	}
 
 	config := upload.Config{Endpoint: options.Endpoint, UploadToken: options.UploadToken}
-	result, uploadErr := upload.UploadSnapshots(ctx, config, snapshots, nil)
+	result, uploadErr := upload.UploadSnapshots(ctx, config, outcome.snapshots, nil)
 	if uploadErr == nil {
 		upload.RecordSuccess(stateDir)
 	} else {
@@ -199,15 +202,15 @@ func syncLocked(ctx context.Context, options Options, env Env, stateDir string, 
 		return classifyFailure(uploadErr, options, env)
 	}
 
-	if err := acknowledgeUploadCursors(stateDir, collectedSources, snapshots, options, cursorScope); err != nil {
+	if err := acknowledgeUploadCursors(stateDir, outcome.collectedSources, outcome.snapshots, options, cursorScope); err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return ExitFailure
 	}
 
 	payload, _ := json.MarshalIndent(map[string]any{"upserted": result.Upserted, "skipped": result.Skipped}, "", "  ")
 	fmt.Fprintln(stdout, string(payload))
-	if collectionFailed {
-		fmt.Fprintf(stderr, "One or more sources failed: %s\n", strings.Join(failures, "; "))
+	if shouldFailForSourceErrors {
+		fmt.Fprintf(stderr, "One or more sources failed: %s\n", formatSourceFailures(outcome.failures))
 		return ExitFailure
 	}
 	return ExitOK
@@ -223,24 +226,71 @@ func classifyFailure(cause error, options Options, env Env) int {
 	return ExitFailure
 }
 
+// sourceFailure records one source that did not finish cleanly, the way the
+// TS sourceFailures entry does. Fatal marks a failure an all-source run must
+// report even without TOKENBOARD_FAIL_ON_SOURCE_ERROR.
+type sourceFailure struct {
+	source  contract.Source
+	message string
+	fatal   bool
+}
+
+// collection is the outcome of collectAll before the upload: what to upload,
+// which sources to acknowledge, and the failures to report afterwards.
+type collection struct {
+	snapshots        []contract.Snapshot
+	collectedSources []contract.Source
+	failures         []sourceFailure
+}
+
+// collectionFailed mirrors the TS exit contract: a fatal source failure always
+// fails the run; a non-fatal one fails it only when the run named that one
+// source or the operator set TOKENBOARD_FAIL_ON_SOURCE_ERROR.
+func collectionFailed(outcome collection, options Options) bool {
+	for _, failure := range outcome.failures {
+		if failure.fatal {
+			return true
+		}
+	}
+	return len(outcome.failures) > 0 && (options.FailOnSourceErr || options.Source != "all")
+}
+
+// formatSourceFailures is the TS formatSourceFailures: source: message,
+// semicolon-separated. Antigravity messages are already category redactions.
+func formatSourceFailures(failures []sourceFailure) string {
+	messages := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		messages = append(messages, fmt.Sprintf("%s: %s", failure.source, failure.message))
+	}
+	return strings.Join(messages, "; ")
+}
+
 // collectAll gathers snapshots from the registered providers, mirroring the
-// TS collectOptionalSource semantics: a concrete --source run fails fast on
-// any error, while an all-source run treats a missing local store as
-// unavailable and keeps going. A source with no provider at all is not
-// implemented in this client yet: fatal for a concrete run, skipped for all.
+// TS collectCollectOptionalSource semantics. A concrete --source run aborts on
+// any error except a partial result, which still uploads and is reported at
+// the end. An all-source run skips a missing local store as unavailable,
+// defers real failures until after the upload, and never aborts (except in
+// hook mode, where a failure must stop the run). A source with no provider at
+// all is not implemented in this client yet: an abort for a concrete run,
+// skipped for all.
+//
 // The returned error is the fail-fast abort.
-func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorScope string, stderr io.Writer) ([]contract.Snapshot, []contract.Source, []string, error) {
+func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorScope string, stderr io.Writer) (collection, error) {
 	sources := expandSources(options.Source, options.HookMode)
 	all := options.Source == "all"
-	_ = env
-	var snapshots []contract.Snapshot
-	var collectedSources []contract.Source
-	var failures []string
+	// The TS collectAllSnapshots fails fast for a concrete source (and in hook
+	// mode); otherwise it defers every failure to the end of the run.
+	failFast := options.HookMode
+	// The TS side passes TOKENBOARD_FAIL_ON_SOURCE_ERROR !== '1' for the
+	// Antigravity sources, so an absent language server is only "not installed
+	// here" while the operator has not asked for a hard failure.
+	ignoreLanguageServerUnavailable := env("TOKENBOARD_FAIL_ON_SOURCE_ERROR") != "1"
+	outcome := collection{}
 	for _, source := range sources {
 		provider, ok := collect.Lookup(source)
 		if !ok {
 			if !all {
-				return nil, nil, nil, fmt.Errorf("%s is not implemented in this client yet", source)
+				return collection{}, fmt.Errorf("%s is not implemented in this client yet", source)
 			}
 			fmt.Fprintf(stderr, "Skipping unavailable %s source: not implemented in this client yet\n", source)
 			continue
@@ -254,41 +304,148 @@ func collectAll(ctx context.Context, options Options, env Env, stateDir, cursorS
 			Stderr:      func(line string) { fmt.Fprintln(stderr, line) },
 			Env:         env,
 		})
-		if err != nil {
-			// The Antigravity GUI sources can fail after the SQLite history was
-			// read: the partial error carries the snapshots, which upload, and
-			// its fatal flag decides whether the run still reports a failure.
-			if partial, ok := antigravityguiprovider.IsPartialUsageError(err); ok && len(partial.Snapshots) > 0 {
-				snapshots = append(snapshots, partial.Snapshots...)
-				collectedSources = append(collectedSources, source)
-				if !all {
-					failure := fmt.Sprintf("%s: %v", source, err)
-					if partial.Fatal {
-						return snapshots, collectedSources, []string{failure}, fmt.Errorf("%s", failure)
-					}
-					return snapshots, collectedSources, nil, nil
-				}
-				if partial.Fatal {
-					failures = append(failures, fmt.Sprintf("%s: %v", source, err))
-				}
-				fmt.Fprintf(stderr, "Antigravity collection partial for %s source: %v\n", source, err)
-				continue
-			}
-			if !all {
-				return nil, nil, nil, err
-			}
-			if collect.IsOptionalSourceUnavailable(source, err.Error()) {
-				fmt.Fprintf(stderr, "Skipping unavailable %s source: %v\n", source, err)
-				continue
-			}
-			failures = append(failures, fmt.Sprintf("%s: %v", source, err))
-			fmt.Fprintf(stderr, "Skipping %s source: %v\n", source, err)
+		if err == nil {
+			outcome.snapshots = append(outcome.snapshots, collected...)
+			outcome.collectedSources = append(outcome.collectedSources, source)
 			continue
 		}
-		snapshots = append(snapshots, collected...)
-		collectedSources = append(collectedSources, source)
+		message := err.Error()
+
+		// The Antigravity GUI sources can fail after the SQLite history was
+		// read: the partial error carries the snapshots, which upload, and its
+		// fatal flag decides whether the run still reports a failure. The
+		// partial result is handled before every abort path, so even a
+		// concrete-source run uploads what it collected.
+		if partial, ok := antigravityguiprovider.IsPartialUsageError(err); ok {
+			outcome.snapshots = append(outcome.snapshots, partial.Snapshots...)
+			outcome.collectedSources = append(outcome.collectedSources, source)
+			outcome.failures = append(outcome.failures, sourceFailure{
+				source:  source,
+				message: sourceFailureMessage(source, "partial", message),
+				fatal:   partial.Fatal,
+			})
+			fmt.Fprintln(stderr, formatAntigravityDiagnostic(source, "partial", message))
+			continue
+		}
+
+		if all && collect.IsOptionalSourceUnavailableIgnoringLanguageServer(
+			source, message, ignoreLanguageServerUnavailable) {
+			fmt.Fprintln(stderr, unavailableDiagnostic(source, message))
+			continue
+		}
+
+		if !all || failFast {
+			// The fail-fast abort reports an Antigravity failure by its
+			// category: the raw message may carry paths and conversation ids.
+			if isAntigravitySource(source) {
+				return collection{}, errors.New(formatAntigravityDiagnostic(source, "failed", message))
+			}
+			return collection{}, err
+		}
+
+		outcome.failures = append(outcome.failures, sourceFailure{
+			source:  source,
+			message: sourceFailureMessage(source, "failed", message),
+			// The TS side passes failOnNonUnavailable to the Antigravity and
+			// optional sources only; a claude-code/codex failure is recorded
+			// non-fatal and reported only when the exit contract says so.
+			fatal: source != contract.SourceClaudeCode && source != contract.SourceCodex,
+		})
+		if isAntigravitySource(source) {
+			fmt.Fprintln(stderr, formatAntigravityDiagnostic(source, "failed", message))
+			continue
+		}
+		fmt.Fprintf(stderr, "Skipping %s source: %v\n", source, err)
 	}
-	return snapshots, collectedSources, failures, nil
+	return outcome, nil
+}
+
+// unavailableDiagnostic is the stderr line for a source skipped as "not
+// installed here": Antigravity gets the redacted diagnostic, the rest the raw
+// message (their unavailable messages carry paths too, but they are short and
+// the TS side prints them as-is).
+func unavailableDiagnostic(source contract.Source, message string) string {
+	if isAntigravitySource(source) {
+		return formatAntigravityDiagnostic(source, "unavailable", message)
+	}
+	return fmt.Sprintf("Skipping unavailable %s source: %s", source, message)
+}
+
+func isAntigravitySource(source contract.Source) bool {
+	return strings.HasPrefix(string(source), "antigravity")
+}
+
+// formatAntigravityDiagnostic is the TS formatAntigravityDiagnostic: the
+// scheduled log is long-lived, so a failure is named by its category rather
+// than by its raw message (which can carry paths and conversation ids).
+func formatAntigravityDiagnostic(source contract.Source, status string, message string) string {
+	return fmt.Sprintf("Antigravity collection: source=%s status=%s category=%s",
+		source, status, antigravityErrorCategory(message))
+}
+
+// sourceFailureMessage is the TS sourceFailureMessage: what the failure report
+// carries for one source — the category for Antigravity, the message for the
+// rest.
+func sourceFailureMessage(source contract.Source, status string, message string) string {
+	if !isAntigravitySource(source) {
+		return message
+	}
+	return fmt.Sprintf("status=%s category=%s", status, antigravityErrorCategory(message))
+}
+
+// antigravityErrorCategory is the TS antigravityErrorCategory.
+func antigravityErrorCategory(message string) string {
+	if strings.Contains(message, "Antigravity SQLite metadata cursor reset detected") &&
+		strings.Contains(message, "rerun with --since all") {
+		return "sqlite-full-baseline-required"
+	}
+	if strings.Contains(strings.ToLower(message), "cursor") {
+		return "cursor-state-failed"
+	}
+	if strings.Contains(message, "Antigravity SQLite reader unavailable") {
+		return "sqlite-reader-unavailable"
+	}
+	if strings.Contains(message, "Antigravity CLI requires --since all before a bounded scan can complete an incomplete SQLite directory scan") {
+		return "sqlite-full-baseline-required"
+	}
+	if strings.Contains(message, "Antigravity CLI --since all requires a complete SQLite directory scan") ||
+		strings.Contains(message, "Antigravity GUI --since all requires a complete SQLite directory scan") ||
+		strings.Contains(message, "Antigravity CLI full history scan could not read every enumerated SQLite database") ||
+		strings.Contains(message, "Antigravity GUI full history scan could not read every enumerated SQLite database") {
+		return "sqlite-directory-incomplete"
+	}
+	if strings.Contains(message, "Antigravity conversations directory not found") ||
+		strings.Contains(message, "No Antigravity conversations found") {
+		return "history-unavailable"
+	}
+	if isAntigravityMetadataLimitMessage(message) {
+		return "metadata-limit-exceeded"
+	}
+	if isAntigravityInvalidMetadataMessage(message) {
+		return "invalid-metadata"
+	}
+	if strings.Contains(message, "Antigravity language server unavailable after DB history was collected") ||
+		antigravitymeta.IsUnavailableLanguageServerError(errors.New(message)) {
+		return "language-server-unavailable"
+	}
+	if strings.Contains(message, "Failed to read Antigravity SQLite metadata") {
+		return "sqlite-read-failed"
+	}
+	if strings.Contains(message, "Failed to read Antigravity metadata") {
+		return "metadata-read-failed"
+	}
+	return "collection-failed"
+}
+
+func isAntigravityMetadataLimitMessage(message string) bool {
+	return strings.Contains(message, "Antigravity metadata response exceeded the ") ||
+		strings.Contains(message, "Antigravity generator metadata response exceeded the ") ||
+		strings.Contains(message, "Antigravity language server metadata exceeded the ")
+}
+
+func isAntigravityInvalidMetadataMessage(message string) bool {
+	return strings.Contains(message, "Invalid Antigravity") ||
+		strings.Contains(message, "Antigravity metadata request returned invalid JSON for ")
 }
 
 func expandSources(source string, hookMode bool) []contract.Source {

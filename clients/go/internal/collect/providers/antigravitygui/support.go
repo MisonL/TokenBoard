@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravitymeta"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravityscan"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/collate"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/mtime"
@@ -127,19 +128,5 @@ func IsUnavailableDBError(err error) bool {
 // IsUnavailableLanguageServerError reports the language-server failures that
 // only mean the server is not here.
 func IsUnavailableLanguageServerError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := err.Error()
-	return strings.Contains(message, "Antigravity language server exited before it was ready") ||
-		strings.Contains(message, "Timed out starting Antigravity language server") ||
-		strings.HasPrefix(message, "Antigravity metadata request failed for ") ||
-		strings.HasPrefix(message, "Antigravity metadata request transport failed for ") ||
-		strings.HasPrefix(message, "Antigravity metadata request timed out for ") ||
-		spawnENOENTPattern.MatchString(message)
+	return antigravitymeta.IsUnavailableLanguageServerError(err)
 }
-
-// spawnENOENTPattern is the TS /^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT/:
-// a language-server binary that is not installed at the path the client tried.
-var spawnENOENTPattern = regexp.MustCompile(
-	`^spawn .*(Antigravity.*language_server|tokenboard-antigravity-language-server) ENOENT`)

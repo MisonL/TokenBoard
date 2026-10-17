@@ -4,9 +4,11 @@ package collect
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravitymeta"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
@@ -68,10 +70,38 @@ func Lookup(source contract.Source) (Provider, bool) {
 	return provider, ok
 }
 
+// OverrideProvider replaces a source's provider and returns the restore
+// function. It exists so tests can drive the CLI's failure contract against a
+// stub without touching local stores.
+func OverrideProvider(source contract.Source, provider Provider) (restore func()) {
+	previous, had := registry[source]
+	registry[source] = provider
+	return func() {
+		if had {
+			registry[source] = previous
+		} else {
+			delete(registry, source)
+		}
+	}
+}
+
 // IsOptionalSourceUnavailable mirrors the TS isOptionalSourceUnavailable: the
 // "tool is not installed here" messages an all-source run skips instead of
 // reporting as a failure. Anything else is a real collection failure.
 func IsOptionalSourceUnavailable(source contract.Source, message string) bool {
+	return IsOptionalSourceUnavailableIgnoringLanguageServer(source, message, false)
+}
+
+// IsOptionalSourceUnavailableIgnoringLanguageServer is the same check with the
+// TS `ignoreLanguageServerUnavailable` switch: when set, an absent language
+// server is treated as "not installed here" too. The TS side passes
+// TOKENBOARD_FAIL_ON_SOURCE_ERROR !== '1', so an operator who wants a hard
+// failure on every source error gets one.
+func IsOptionalSourceUnavailableIgnoringLanguageServer(
+	source contract.Source,
+	message string,
+	ignoreLanguageServerUnavailable bool,
+) bool {
 	switch source {
 	case contract.SourceOpenCode:
 		return strings.Contains(message, "OpenCode database not found") ||
@@ -85,6 +115,8 @@ func IsOptionalSourceUnavailable(source contract.Source, message string) bool {
 			strings.Contains(message, "This Node.js build lacks zstd support")
 	case contract.SourceAntigravityCLI, contract.SourceAntigravity, contract.SourceAntigravityIDE:
 		return strings.Contains(message, "Antigravity SQLite reader unavailable") ||
+			(ignoreLanguageServerUnavailable &&
+				antigravitymeta.IsUnavailableLanguageServerError(errors.New(message))) ||
 			strings.Contains(message, "Antigravity conversations directory not found") ||
 			strings.Contains(message, "No Antigravity conversations found")
 	}
