@@ -7,6 +7,7 @@ package antigravityscan
 import (
 	"errors"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -166,7 +167,9 @@ func FormatDate(at time.Time, timezone string) string {
 
 func lookupEnv(env func(string) string, key string) string {
 	if env == nil {
-		return ""
+		// The TS side reads the process env when no override is threaded; an
+		// absent fallback would silently drop TOKENBOARD_SINCE instead.
+		return os.Getenv(key)
 	}
 	return env(key)
 }

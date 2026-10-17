@@ -327,7 +327,7 @@ func readProtoModel(chatModel protoMessage) (string, []string, error) {
 		}
 	}
 	for _, candidate := range candidates {
-		if len([]rune(candidate)) > maxModelLength {
+		if contract.UTF16Length(candidate) > maxModelLength {
 			return "", nil, errors.New("Invalid Antigravity generator metadata blob: model is invalid")
 		}
 	}

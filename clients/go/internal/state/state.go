@@ -21,6 +21,9 @@ import (
 // ResolveDir mirrors resolveStateDir: TOKENBOARD_STATE_DIR, else
 // TOKENBOARD_CONFIG_DIR, else ~/.tokenboard.
 func ResolveDir(env func(string) string, homeDir string) string {
+	if env == nil {
+		env = os.Getenv
+	}
 	if dir := strings.TrimSpace(env("TOKENBOARD_STATE_DIR")); dir != "" {
 		return dir
 	}

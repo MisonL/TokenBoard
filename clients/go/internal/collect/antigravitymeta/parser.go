@@ -338,7 +338,7 @@ func readModel(usage, chatModel map[string]any, index int) (string, error) {
 }
 
 func readBoundedString(value, field string, index int) (string, error) {
-	if value == "" || len([]rune(value)) > maxModelLength {
+	if value == "" || contract.UTF16Length(value) > maxModelLength {
 		return "", fmt.Errorf("Invalid Antigravity generator metadata item %d: %s must be a non-empty string",
 			index, field)
 	}
@@ -371,7 +371,7 @@ func readOptionalIdentity(value any, field string, index int) (any, error) {
 	}
 	switch typed := value.(type) {
 	case string:
-		if len([]rune(typed)) > maxMetadataIdentityLen {
+		if contract.UTF16Length(typed) > maxMetadataIdentityLen {
 			return nil, invalid()
 		}
 		return typed, nil

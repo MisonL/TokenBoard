@@ -586,3 +586,34 @@ func TestRawContentInADatabaseBlobNeverReachesTheEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestBoundsModelNamesByUtf16CodeUnits(t *testing.T) {
+	// The protobuf blob path only admits printable ASCII (isText), but the
+	// language-server JSON path does not. The TS parser measures with
+	// String.prototype.length, i.e. UTF-16 code units, so 81 astral characters
+	// (162 units) must be rejected even though they are only 81 runes.
+	model := strings.Repeat("\U0001F600", 81)
+	// responseModel is the first candidate readModel validates; the oversized
+	// value has to be it, or the loop returns on usage.model first.
+	response := map[string]any{
+		"generatorMetadata": []any{
+			map[string]any{
+				"executionId": "execution-a",
+				"stepIndices": []any{int64(3)},
+				"chatModel": map[string]any{
+					"responseModel":     model,
+					"chatStartMetadata": map[string]any{"createdAt": "2026-06-23T16:30:00.000Z"},
+					"usage": map[string]any{
+						"model":        "gemini-3-flash-a",
+						"inputTokens":  "10",
+						"outputTokens": "2",
+						"responseId":   "response-a",
+					},
+				},
+			},
+		},
+	}
+	if _, err := ParseGeneratorMetadata(response, "conversation-a"); err == nil {
+		t.Fatal("a model name over 160 UTF-16 code units must be rejected")
+	}
+}

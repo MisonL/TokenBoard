@@ -310,3 +310,12 @@ func TestProcessStartIdentityMatchesTSFormat(t *testing.T) {
 		t.Errorf("unexpected identity format %q", identity)
 	}
 }
+
+func TestResolveDirWithNilEnvUsesTheProcessEnvironment(t *testing.T) {
+	// The TS resolveStateDir reads process.env when no env is threaded through;
+	// a nil env here must behave the same rather than panic.
+	t.Setenv("TOKENBOARD_STATE_DIR", "/tmp/explicit-state")
+	if dir := ResolveDir(nil, "/home/example"); dir != "/tmp/explicit-state" {
+		t.Fatalf("dir = %q, want the process environment's override", dir)
+	}
+}

@@ -179,3 +179,16 @@ func TestFullHistoryIncludesEverything(t *testing.T) {
 		t.Error("a full-history range excluded old data")
 	}
 }
+
+func TestResolveCollectionRangeWithNilEnvReadsTheProcessEnvironment(t *testing.T) {
+	// The TS resolveAntigravityCollectionRange reads process.env when the
+	// collection context threads none; nil must not silently mean "no since".
+	t.Setenv("TOKENBOARD_SINCE", "20260601")
+	rangeValue, err := ResolveCollectionRange(nil, "UTC", nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if rangeValue.SinceDate != "2026-06-01" {
+		t.Fatalf("sinceDate = %q, want the process environment's 2026-06-01", rangeValue.SinceDate)
+	}
+}
