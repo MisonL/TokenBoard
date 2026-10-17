@@ -133,8 +133,10 @@ func spawnLanguageServer(options Options, languageServerPath, overrideIdeVersion
 		// A missing binary is "the language server is not installed here",
 		// which the availability classifier and the TS log contract both
 		// recognize as `spawn <path> … ENOENT`; Go's exec error does not read
-		// that way, so it is rewrapped.
-		if errors.Is(err, fs.ErrNotExist) {
+		// that way, so it is rewrapped. A bare command name resolves through
+		// PATH and reports exec.ErrNotFound (also fs.ErrNotExist) with no
+		// *PathError, so this branch covers both shapes.
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound) {
 			return nil, &SpawnLanguageServerError{
 				Message: "spawn " + path + " ENOENT",
 				Cause:   err,

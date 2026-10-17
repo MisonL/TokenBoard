@@ -60,3 +60,22 @@ func TestSpawnFailureNamesAMissingLanguageServer(t *testing.T) {
 		t.Fatalf("err = %v, want a missing language server to classify as unavailable", err)
 	}
 }
+
+func TestSpawnFailureThroughPathLookupIsUnavailable(t *testing.T) {
+	// A bare command name goes through lookPath, whose miss is exec.ErrNotFound
+	// (fs.ErrNotExist) rather than a *PathError; it must be reworked into the
+	// same spawn ENOENT shape so the availability classifier sees it.
+	t.Setenv("PATH", t.TempDir())
+	_, err := CreateLanguageServerClient(
+		Options{Source: "antigravity"}, "tokenboard-antigravity-language-server", "", 0)
+	if err == nil {
+		t.Fatal("expected the missing binary to fail the spawn")
+	}
+	var spawnError *SpawnLanguageServerError
+	if !errors.As(err, &spawnError) {
+		t.Fatalf("err = %v, want a SpawnLanguageServerError", err)
+	}
+	if !IsUnavailableLanguageServerError(err) {
+		t.Fatalf("err = %v, want a PATH-lookup miss to classify as unavailable", err)
+	}
+}
