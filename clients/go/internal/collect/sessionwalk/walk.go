@@ -71,6 +71,13 @@ func Resolve(rootDir string, options Options) (Files, bool, error) {
 	return Files{RootDir: resolvedRoot, Paths: paths}, true, nil
 }
 
+// ResolveRoot exposes the root half of Resolve without walking the tree. The
+// Codex legacy-cursor migration needs the resolved root alone: it addresses one
+// known relative path under it rather than enumerating.
+func ResolveRoot(rootDir string, options Options) (string, bool, error) {
+	return resolveRoot(rootDir, options)
+}
+
 func resolveRoot(rootPath string, options Options) (string, bool, error) {
 	details, err := os.Lstat(rootPath)
 	if err != nil {

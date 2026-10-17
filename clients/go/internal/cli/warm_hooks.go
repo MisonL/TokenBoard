@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/codex"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
@@ -40,8 +41,41 @@ func warmHookCursors(
 				return fmt.Errorf("%s hook cursor warm failed: %w", source, err)
 			}
 		case contract.SourceCodex:
-			// Codex warms one cursor per configured profile scope; that plan
-			// arrives with the Codex provider in M5.
+			// Codex warms one cursor per configured profile scope. The plan
+			// decides whether that is the legacy cursor or a hashed profile
+			// cursor, and it must be the same plan the hook runs use, or the
+			// warm would advance a cursor nothing reads.
+			if err := warmCodexHookCursors(stateDir, startedAt, env); err != nil {
+				return fmt.Errorf("%s hook cursor warm failed: %w", source, err)
+			}
+		}
+	}
+	return nil
+}
+
+// warmCodexHookCursors ports the Codex branch of warmHookCursors: resolve the
+// homes, resolve the cursor plan for this state directory, and advance each
+// home's cursor.
+func warmCodexHookCursors(stateDir string, startedAt time.Time, env Env) error {
+	homes, err := codex.ResolveHomes(codex.ResolveHomesInput{
+		JSONValue:   env("TOKENBOARD_CODEX_HOMES_JSON"),
+		LegacyValue: env("CODEX_HOME"),
+	})
+	if err != nil {
+		return err
+	}
+	plan, err := codex.ResolveHookCursorPlan(homes, stateDir)
+	if err != nil {
+		return err
+	}
+	for index := range homes {
+		if err := sessioncursor.WarmHookCursorHighWater(sessioncursor.WarmInput{
+			StateDir:    stateDir,
+			Source:      contract.SourceCodex,
+			CursorScope: plan.CursorScopes[index],
+			HighWaterMs: float64(startedAt.UnixMilli()),
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

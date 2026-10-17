@@ -1,7 +1,9 @@
 package sessionfile
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 )
@@ -9,7 +11,23 @@ import (
 // FingerprintFile hashes a session file (or its first endOffset bytes) with
 // the current content algorithm. It returns the digest and, when endOffset is
 // nil, the size it observed.
+//
+// The scan always fingerprints with the current algorithm; only a *recorded*
+// algorithm dispatches (see FingerprintWithAlgorithm), where an absent field
+// means the legacy sha256.
 func FingerprintFile(filePath string, endOffset *int64) (string, int64, error) {
+	return FingerprintWithAlgorithm(filePath, endOffset, ContentHashAlgorithm)
+}
+
+// FingerprintWithAlgorithm hashes a file with the algorithm a cursor entry
+// records. An empty algorithm means the current one; a recorded sha256 names
+// the legacy digest. An unknown algorithm is an error: guessing would compare
+// two digests that were never meant to be equal and silently drop the entry.
+func FingerprintWithAlgorithm(filePath string, endOffset *int64, algorithm string) (string, int64, error) {
+	hasher, err := contentHasherFor(algorithm)
+	if err != nil {
+		return "", 0, err
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", 0, err
@@ -27,7 +45,6 @@ func FingerprintFile(filePath string, endOffset *int64) (string, int64, error) {
 			return "", 0, fmt.Errorf("Session file changed while hashing: %s", filePath)
 		}
 	}
-	hasher := newContentHasher()
 	buffer := make([]byte, HashBufferBytes)
 	position := int64(0)
 	for position < limit {
@@ -51,6 +68,29 @@ func FingerprintFile(filePath string, endOffset *int64) (string, int64, error) {
 		return "", 0, fmt.Errorf("Session file changed while hashing: %s", filePath)
 	}
 	return fmt.Sprintf("%x", hasher.Sum(nil)), size, nil
+}
+
+// contentHasherFor mirrors the TS createSessionContentHasherFor: the current
+// algorithm (or an absent field, which means the legacy sha256) dispatches by
+// name, and anything else fails closed.
+func contentHasherFor(algorithm string) (hash.Hash, error) {
+	if algorithm == "" {
+		algorithm = LegacyContentHashAlgorithm
+	}
+	switch algorithm {
+	case ContentHashAlgorithm:
+		return newBlake2b512(), nil
+	case LegacyContentHashAlgorithm:
+		return sha256.New(), nil
+	}
+	return nil, fmt.Errorf("Unsupported session content hash algorithm: %s", algorithm)
+}
+
+// NewContentHasherFor exposes the algorithm dispatch to callers that stream a
+// file themselves (the Codex legacy-cursor migration verifies the file
+// identity around its own read loop).
+func NewContentHasherFor(algorithm string) (hash.Hash, error) {
+	return contentHasherFor(algorithm)
 }
 
 // FingerprintFileAndPrefix hashes the whole file and its first
