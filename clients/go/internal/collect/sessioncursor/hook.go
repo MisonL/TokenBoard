@@ -12,10 +12,10 @@ import (
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 )
 
-// Port of hook-incremental.ts for the Claude path. The Codex-only fields
-// (context-pricing markers, reconciliation file entries, reusable pending
-// files) arrive with the Codex provider in M5; the shared scan, cursor and
-// parsing semantics are already the ones that provider will use.
+// Port of hook-incremental.ts. The Claude path uses the scan-and-parse half;
+// the Codex provider additionally consumes the pending-entry and reconciliation
+// bookkeeping (context-pricing markers, reusable pending files) this file
+// exposes.
 
 // HookInput configures one hook-incremental collection.
 type HookInput struct {
@@ -27,6 +27,25 @@ type HookInput struct {
 	Stderr      func(line string)
 	Timezone    string
 	CollectedAt string
+	// CursorProfileHash pins the Codex profile the cursor belongs to.
+	CursorProfileHash string
+	// AllowedRootSymlinks lists the absolute targets a symlinked root may
+	// resolve to.
+	AllowedRootSymlinks []string
+	// ScanSinceMs narrows the metadata scan to recently touched files.
+	ScanSinceMs *float64
+	// ForcePendingUploadRescan re-reads pending files whose metadata is
+	// unchanged.
+	ForcePendingUploadRescan bool
+	// IncludePendingSnapshotEntries asks for the per-file pending snapshot
+	// entries the caller needs to acknowledge exactly what it uploaded.
+	IncludePendingSnapshotEntries bool
+	// IncludeReconciliationFileEntries asks for the (path, sha256) pairs of the
+	// files whose snapshots this run reconciles.
+	IncludeReconciliationFileEntries bool
+	// SkipSessionScan reads only the cursor's pending entries (the Codex
+	// "nothing changed on disk" path).
+	SkipSessionScan bool
 	// Now is injectable for tests; nil uses the wall clock.
 	Now func() time.Time
 }
@@ -37,6 +56,23 @@ type HookKey struct {
 	Model     string
 }
 
+// HookPendingSnapshotEntry is one pending snapshot with the file it came from.
+type HookPendingSnapshotEntry struct {
+	RelativePath string
+	SHA256       string
+	Snapshot     contract.Snapshot
+	// ContextPricingPending marks a Codex snapshot whose cost the context
+	// pricing layer has not resolved yet.
+	ContextPricingPending bool
+}
+
+// HookReconciliationFileEntry names one file whose snapshots ccusage must
+// cover, by path and digest.
+type HookReconciliationFileEntry struct {
+	RelativePath string
+	SHA256       string
+}
+
 // HookIncrementalResult is the hook run's incremental state.
 type HookIncrementalResult struct {
 	RangeArgs       []string
@@ -44,6 +80,19 @@ type HookIncrementalResult struct {
 	ChangedDates    []string
 	ChangedKeys     []HookKey
 	CachedSnapshots []Snapshot
+	// ReusablePendingSnapshots is the subset of CachedSnapshots whose session
+	// file is still on disk. Only these can be covered by a ccusage scan of the
+	// same tree; a snapshot restored for a file that is gone cannot be, so
+	// callers must not treat the two alike when deciding what ccusage already
+	// counted.
+	ReusablePendingSnapshots []contract.Snapshot
+	// UnresolvedContextPricingSnapshots are cached snapshots still waiting for
+	// the context pricing layer.
+	UnresolvedContextPricingSnapshots []contract.Snapshot
+	// PendingSnapshotEntries is set when the caller asked for it.
+	PendingSnapshotEntries []HookPendingSnapshotEntry
+	// ReconciliationFileEntries is set when the caller asked for it.
+	ReconciliationFileEntries []HookReconciliationFileEntry
 }
 
 // cursorLockTimeout matches the TS cursor lock's 35s acquisition window.
@@ -63,7 +112,6 @@ func CollectHookIncremental(input HookInput) (HookIncrementalResult, error) {
 	if input.Now != nil {
 		now = input.Now
 	}
-	var result HookIncrementalResult
 	lock, err := state.Acquire(cursorPath+".lock", cursorLockTimeout)
 	if err != nil {
 		return HookIncrementalResult{}, err
@@ -73,12 +121,21 @@ func CollectHookIncremental(input HookInput) (HookIncrementalResult, error) {
 	}
 	defer func() { _ = lock.Release() }()
 
+	if input.SkipSessionScan {
+		return collectPendingHookCursorLocked(input, cursorPath)
+	}
+
 	scan, err := CollectChangedSessionFiles(ScanInput{
-		Source:      input.Source,
-		SessionsDir: input.SessionsDir,
-		SessionDirs: input.SessionDirs,
-		CursorPath:  cursorPath,
-		Now:         now,
+		Source:                   input.Source,
+		SessionsDir:              input.SessionsDir,
+		SessionDirs:              input.SessionDirs,
+		CursorPath:               cursorPath,
+		CursorProfileHash:        input.CursorProfileHash,
+		HasCursorProfileHash:     input.CursorProfileHash != "",
+		AllowedRootSymlinks:      input.AllowedRootSymlinks,
+		ScanSinceMs:              input.ScanSinceMs,
+		ForcePendingUploadRescan: input.ForcePendingUploadRescan,
+		Now:                      now,
 	})
 	if err != nil {
 		return HookIncrementalResult{}, err
@@ -91,12 +148,39 @@ func CollectHookIncremental(input HookInput) (HookIncrementalResult, error) {
 	}
 
 	// Snapshots carried for files that vanished while still pending: the
-	// server never acknowledged them, so they ride along with this run.
-	cachedSnapshots := []Snapshot{}
-	for _, group := range scan.MissingPendingSnapshots {
-		for _, snapshot := range group.Snapshots {
-			cachedSnapshots = append(cachedSnapshots, restoreCursorSnapshot(snapshot))
+	// server never acknowledged them, so they ride along with this run. The
+	// reusable set (pending files whose content did not change) rides along
+	// too; only it can be covered by a ccusage scan of the same tree.
+	restoredPendingSnapshots := restoreCachedPendingSnapshots(scan.MissingPendingSnapshots, input.CollectedAt)
+	reusableEntries := restoreReusablePendingEntries(scan.ReusablePendingFiles, input.CollectedAt)
+	restoredEntries := append(
+		append([]HookPendingSnapshotEntry{}, reusableEntries...),
+		restorePendingSnapshotEntries(scan.MissingPendingSnapshotEntries, input.CollectedAt)...)
+	cachedSnapshots := make([]Snapshot, 0, len(reusableEntries)+len(restoredPendingSnapshots))
+	for _, entry := range reusableEntries {
+		cachedSnapshots = append(cachedSnapshots, cursorSnapshotOf(entry.Snapshot))
+	}
+	for _, snapshot := range restoredPendingSnapshots {
+		cachedSnapshots = append(cachedSnapshots, restoreCursorSnapshot(snapshot))
+	}
+	// A pending entry whose cost the context pricing layer has not resolved yet
+	// is re-emitted so the provider can try again. The Codex provider widens
+	// this set with its own "is this model priced" rule; the cursor can only
+	// report the marker it stored.
+	unresolved := make([]contract.Snapshot, 0)
+	for _, entry := range reusableEntries {
+		if entry.ContextPricingPending {
+			unresolved = append(unresolved, entry.Snapshot)
 		}
+	}
+	for _, snapshot := range restoredPendingSnapshots {
+		if snapshot.CodexContextPricingPending {
+			unresolved = append(unresolved, SnapshotsOf([]Snapshot{snapshot}, input.CollectedAt)[0])
+		}
+	}
+	var pendingEntries []HookPendingSnapshotEntry
+	if input.IncludePendingSnapshotEntries {
+		pendingEntries = restoredEntries
 	}
 
 	if len(scan.Files) == 0 {
@@ -106,13 +190,14 @@ func CollectHookIncremental(input HookInput) (HookIncrementalResult, error) {
 					return HookIncrementalResult{}, err
 				}
 			}
-			return HookIncrementalResult{
-				RangeArgs:       []string{},
-				Changed:         true,
-				ChangedDates:    []string{},
-				ChangedKeys:     []HookKey{},
-				CachedSnapshots: cachedSnapshots,
-			}, nil
+			return withPendingSnapshotEntries(HookIncrementalResult{
+				RangeArgs:                         []string{},
+				Changed:                           true,
+				ChangedDates:                      []string{},
+				ChangedKeys:                       []HookKey{},
+				CachedSnapshots:                   cachedSnapshots,
+				UnresolvedContextPricingSnapshots: unresolved,
+			}, input, pendingEntries, nil), nil
 		}
 		if scan.HasPendingUpload {
 			return HookIncrementalResult{}, fmt.Errorf(
@@ -123,13 +208,14 @@ func CollectHookIncremental(input HookInput) (HookIncrementalResult, error) {
 				return HookIncrementalResult{}, err
 			}
 		}
-		return HookIncrementalResult{
-			RangeArgs:       []string{},
-			Changed:         false,
-			ChangedDates:    []string{},
-			ChangedKeys:     []HookKey{},
-			CachedSnapshots: []Snapshot{},
-		}, nil
+		return withPendingSnapshotEntries(HookIncrementalResult{
+			RangeArgs:                         []string{},
+			Changed:                           false,
+			ChangedDates:                      []string{},
+			ChangedKeys:                       []HookKey{},
+			CachedSnapshots:                   []Snapshot{},
+			UnresolvedContextPricingSnapshots: unresolved,
+		}, input, pendingEntries, nil), nil
 	}
 
 	parsed, err := parseChangedFiles(input, scan)
@@ -157,14 +243,158 @@ func CollectHookIncremental(input HookInput) (HookIncrementalResult, error) {
 	}
 	reportSkippedOversizedRows(input, parsed)
 
-	result = HookIncrementalResult{
-		RangeArgs:       buildDateRangeArgs(parsed.changedDates),
-		Changed:         len(parsed.changedDates) > 0 || len(cachedSnapshots) > 0,
-		ChangedDates:    sortedDates(parsed.changedDates),
-		ChangedKeys:     sortedKeys(parsed.changedKeys),
-		CachedSnapshots: cachedSnapshots,
+	result := HookIncrementalResult{
+		RangeArgs:                         buildDateRangeArgs(parsed.changedDates),
+		Changed:                           len(parsed.changedDates) > 0 || len(cachedSnapshots) > 0,
+		ChangedDates:                      sortedDates(parsed.changedDates),
+		ChangedKeys:                       sortedKeys(parsed.changedKeys),
+		CachedSnapshots:                   cachedSnapshots,
+		UnresolvedContextPricingSnapshots: unresolved,
+	}
+	for _, entry := range reusableEntries {
+		result.ReusablePendingSnapshots = append(result.ReusablePendingSnapshots, entry.Snapshot)
+	}
+	return withPendingSnapshotEntries(result, input, pendingEntries, parsed.reconciliationFileEntries), nil
+}
+
+// collectPendingHookCursorLocked ports collectPendingHookCursorLocked: the
+// cursor's pending entries without any disk scan.
+func collectPendingHookCursorLocked(input HookInput, cursorPath string) (HookIncrementalResult, error) {
+	cursor, err := Read(cursorPath, string(input.Source))
+	if err != nil {
+		return HookIncrementalResult{}, err
+	}
+	entries := []HookPendingSnapshotEntry{}
+	cleanedSnapshotlessPending := false
+	for _, key := range sortedEntryKeys(cursor.Files) {
+		entry := cursor.Files[key]
+		if entry.PendingUpload == nil || !*entry.PendingUpload {
+			continue
+		}
+		if len(entry.Snapshots) == 0 {
+			delete(cursor.Files, key)
+			cleanedSnapshotlessPending = true
+			continue
+		}
+		for _, snapshot := range entry.Snapshots {
+			restored := SnapshotsOf([]Snapshot{snapshot}, input.CollectedAt)[0]
+			entries = append(entries, HookPendingSnapshotEntry{
+				RelativePath:          key,
+				SHA256:                entry.SHA256,
+				Snapshot:              restored,
+				ContextPricingPending: snapshot.CodexContextPricingPending,
+			})
+		}
+	}
+	if cleanedSnapshotlessPending {
+		if err := Write(cursorPath, cursor); err != nil {
+			return HookIncrementalResult{}, err
+		}
+	}
+	cachedSnapshots := make([]Snapshot, 0, len(entries))
+	unresolved := []contract.Snapshot{}
+	for _, entry := range entries {
+		cachedSnapshots = append(cachedSnapshots, cursorSnapshotOf(entry.Snapshot))
+		if entry.ContextPricingPending {
+			unresolved = append(unresolved, entry.Snapshot)
+		}
+	}
+	result := HookIncrementalResult{
+		RangeArgs:                         []string{},
+		Changed:                           len(entries) > 0,
+		ChangedDates:                      []string{},
+		ChangedKeys:                       []HookKey{},
+		CachedSnapshots:                   cachedSnapshots,
+		UnresolvedContextPricingSnapshots: unresolved,
+	}
+	if input.IncludePendingSnapshotEntries {
+		result.PendingSnapshotEntries = entries
+	}
+	if input.IncludeReconciliationFileEntries {
+		result.ReconciliationFileEntries = []HookReconciliationFileEntry{}
 	}
 	return result, nil
+}
+
+// withPendingSnapshotEntries attaches the optional fields the TS
+// withPendingSnapshotEntries helper adds.
+func withPendingSnapshotEntries(
+	result HookIncrementalResult,
+	input HookInput,
+	pendingEntries []HookPendingSnapshotEntry,
+	reconciliationEntries []HookReconciliationFileEntry,
+) HookIncrementalResult {
+	if input.IncludePendingSnapshotEntries {
+		result.PendingSnapshotEntries = pendingEntries
+	}
+	if input.IncludeReconciliationFileEntries {
+		if reconciliationEntries == nil {
+			reconciliationEntries = []HookReconciliationFileEntry{}
+		}
+		result.ReconciliationFileEntries = reconciliationEntries
+	}
+	return result
+}
+
+// restoreCachedPendingSnapshots returns the cursor snapshots of the vanished
+// pending files.
+func restoreCachedPendingSnapshots(groups []PendingSnapshotGroup, collectedAt string) []Snapshot {
+	out := []Snapshot{}
+	for _, group := range groups {
+		for _, snapshot := range group.Snapshots {
+			out = append(out, snapshot)
+		}
+	}
+	return out
+}
+
+// restorePendingSnapshotEntries expands the missing-pending groups into
+// per-snapshot entries.
+func restorePendingSnapshotEntries(groups []PendingSnapshotEntry, collectedAt string) []HookPendingSnapshotEntry {
+	out := []HookPendingSnapshotEntry{}
+	for _, group := range groups {
+		for _, snapshot := range group.Snapshots {
+			out = append(out, HookPendingSnapshotEntry{
+				RelativePath:          group.RelativePath,
+				SHA256:                group.SHA256,
+				Snapshot:              SnapshotsOf([]Snapshot{snapshot}, collectedAt)[0],
+				ContextPricingPending: snapshot.CodexContextPricingPending,
+			})
+		}
+	}
+	return out
+}
+
+// restoreReusablePendingEntries expands the reusable pending files.
+func restoreReusablePendingEntries(files []ReusablePendingFile, collectedAt string) []HookPendingSnapshotEntry {
+	out := []HookPendingSnapshotEntry{}
+	for _, file := range files {
+		for _, snapshot := range file.Snapshots {
+			out = append(out, HookPendingSnapshotEntry{
+				RelativePath:          file.RelativePath,
+				SHA256:                file.SHA256,
+				Snapshot:              SnapshotsOf([]Snapshot{snapshot}, collectedAt)[0],
+				ContextPricingPending: snapshot.CodexContextPricingPending,
+			})
+		}
+	}
+	return out
+}
+
+func cursorSnapshotOf(snapshot contract.Snapshot) Snapshot {
+	return Snapshot{
+		Source:              string(snapshot.Source),
+		UsageDate:           snapshot.UsageDate,
+		Timezone:            snapshot.Timezone,
+		Model:               snapshot.Model,
+		InputTokens:         float64(snapshot.InputTokens),
+		OutputTokens:        float64(snapshot.OutputTokens),
+		CacheCreationTokens: float64(snapshot.CacheCreation),
+		CacheReadTokens:     float64(snapshot.CacheRead),
+		TotalTokens:         float64(snapshot.TotalTokens),
+		CostUSD:             snapshot.CostUSD,
+		SessionCount:        float64(snapshot.SessionCount),
+	}
 }
 
 type parsedFiles struct {
@@ -176,6 +406,7 @@ type parsedFiles struct {
 	unparsedTokenLikeRows        int
 	skippedOversizedRows         int
 	largestSkippedOversizedBytes int64
+	reconciliationFileEntries    []HookReconciliationFileEntry
 }
 
 func parseChangedFiles(input HookInput, scan *ScanResult) (parsedFiles, error) {
@@ -209,6 +440,10 @@ func parseChangedFiles(input HookInput, scan *ScanResult) (parsedFiles, error) {
 		}
 		if len(result.Snapshots) > 0 {
 			parsed.pendingUploadPaths = append(parsed.pendingUploadPaths, file.RelativePath)
+			parsed.reconciliationFileEntries = append(parsed.reconciliationFileEntries, HookReconciliationFileEntry{
+				RelativePath: file.RelativePath,
+				SHA256:       file.SHA256,
+			})
 		}
 		if file.PendingUpload && len(result.Snapshots) == 0 && result.IgnoredUploadSafeRows == 0 {
 			parsed.pendingFilesWithoutSnapshots++
