@@ -4,10 +4,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newLanguageServerStub serves the language-server endpoint over TLS, the way
@@ -163,4 +166,70 @@ func (neverEndingReader) Read(buffer []byte) (int, error) {
 		buffer[index] = 'x'
 	}
 	return len(buffer), nil
+}
+
+func TestRequestGeneratorMetadataDoesNotFollowRedirects(t *testing.T) {
+	// The TS request() rejects a non-200 status outright. Following a redirect
+	// would carry the loopback CSRF token to whatever the server names.
+	var redirected int
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected++
+		_, _ = w.Write([]byte(`{"generatorMetadata":[]}`))
+	}))
+	t.Cleanup(target.Close)
+	port := newLanguageServerStub(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	})
+
+	_, err := RequestGeneratorMetadata(GeneratorMetadataRequest{Source: "antigravity", CascadeID: "c"}, port, "token")
+	if err == nil {
+		t.Fatal("a redirect response must be rejected, not followed")
+	}
+	if redirected != 0 {
+		t.Fatal("the request followed the redirect and sent the CSRF token to another server")
+	}
+}
+
+func TestCloseGivesTheServerAGracefulShutdownFirst(t *testing.T) {
+	// The TS closeLanguageServer sends SIGTERM and only escalates to SIGKILL
+	// after two seconds, so the server can flush its own state. The child here
+	// records whether it saw SIGTERM; an immediate SIGKILL leaves no marker.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "terminated")
+	ready := filepath.Join(dir, "ready")
+	// The ready marker closes the race between Start and the shell installing
+	// its trap: SIGTERM before the trap exists would use the default action.
+	command := exec.Command("sh", "-c",
+		`trap 'touch "$1"; exit 0' TERM; touch "$2"; while true; do sleep 0.05; done`,
+		"sh", marker, ready)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child never signalled readiness")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	process := &languageServerProcess{command: command, exited: make(chan struct{})}
+	go func() {
+		process.waitErr = command.Wait()
+		close(process.exited)
+	}()
+
+	if err := process.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case <-process.exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the process did not exit")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the server was killed without a chance to handle SIGTERM")
+	}
 }

@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -212,6 +213,12 @@ func RequestGeneratorMetadata(request GeneratorMetadataRequest, port int, csrfTo
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
+		// The TS request() never follows a redirect: a 3xx is just a non-200
+		// status. Following one would hand the loopback CSRF token to
+		// whatever host the response names.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	httpRequest, err := http.NewRequest(http.MethodPost,
 		fmt.Sprintf("https://127.0.0.1:%d/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata", port),
@@ -278,10 +285,34 @@ func formatMetadataRequestTransportError(source Source, err error) string {
 	return fmt.Sprintf("Antigravity metadata request transport failed for %s: %v", source, err)
 }
 
+// closeLanguageServerGracePeriod is the TS closeLanguageServer's 2s window
+// between SIGTERM and SIGKILL.
+const closeLanguageServerGracePeriod = 2 * time.Second
+
 func (p *languageServerProcess) close() error {
 	if p.command.Process == nil {
 		return nil
 	}
+	select {
+	case <-p.exited:
+		return nil
+	default:
+	}
+	// The TS side sends SIGTERM, waits up to two seconds for the server to
+	// exit, and only then escalates to SIGKILL. Windows has no SIGTERM for a
+	// child process, so there the graceful step is skipped.
+	if err := p.command.Process.Signal(syscall.SIGTERM); err != nil {
+		return p.kill()
+	}
+	select {
+	case <-p.exited:
+		return nil
+	case <-time.After(closeLanguageServerGracePeriod):
+		return p.kill()
+	}
+}
+
+func (p *languageServerProcess) kill() error {
 	if err := p.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
