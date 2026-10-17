@@ -44,12 +44,16 @@ type modelRow struct {
 type sessionCountState struct {
 	provided     bool
 	counts       map[string]float64
-	attributions map[string]sessionAttribution
+	attributions map[string]SessionAttribution
 }
 
-type sessionAttribution struct {
-	usageDate string
-	model     string
+// SessionAttribution is what ccusage's session report says one session file
+// belongs to: the usage date it counts toward and the model it was attributed
+// to. The Codex provider keys its canonical attribution cache by it, so it is
+// exported even though the Claude path only uses it internally.
+type SessionAttribution struct {
+	UsageDate string
+	Model     string
 }
 
 var (
@@ -180,7 +184,7 @@ func assertIntegral(values ...float64) error {
 }
 
 func getSessionCounts(input any, provided bool, timezone string, source contract.Source) (sessionCountState, error) {
-	state := sessionCountState{provided: provided, counts: map[string]float64{}, attributions: map[string]sessionAttribution{}}
+	state := sessionCountState{provided: provided, counts: map[string]float64{}, attributions: map[string]SessionAttribution{}}
 	for _, row := range extractDailyRows(input) {
 		attribution, ok, err := readCcusageSessionAttribution(row, timezone, source)
 		if err != nil {
@@ -189,7 +193,7 @@ func getSessionCounts(input any, provided bool, timezone string, source contract
 		if !ok {
 			continue
 		}
-		key := sessionCountKey(attribution.usageDate, attribution.model)
+		key := sessionCountKey(attribution.UsageDate, attribution.Model)
 		state.counts[key]++
 		state.attributions[key] = attribution
 	}
@@ -226,9 +230,9 @@ func appendSessionOnlySnapshots(
 		}
 		snapshot := contract.Snapshot{
 			Source:       options.Source,
-			UsageDate:    attribution.usageDate,
+			UsageDate:    attribution.UsageDate,
 			Timezone:     options.Timezone,
-			Model:        attribution.model,
+			Model:        attribution.Model,
 			SessionCount: int64(sessionCount),
 			CollectedAt:  collectedAt,
 		}
@@ -248,20 +252,20 @@ func readSessionCount(state sessionCountState, usageDate, model string, metrics 
 }
 
 // ReadCcusageSessionAttribution ports readCcusageSessionAttribution.
-func ReadCcusageSessionAttribution(row any, timezone string, source contract.Source) (sessionAttribution, bool, error) {
+func ReadCcusageSessionAttribution(row any, timezone string, source contract.Source) (SessionAttribution, bool, error) {
 	return readCcusageSessionAttribution(row, timezone, source)
 }
 
-func readCcusageSessionAttribution(row any, timezone string, source contract.Source) (sessionAttribution, bool, error) {
+func readCcusageSessionAttribution(row any, timezone string, source contract.Source) (SessionAttribution, bool, error) {
 	record, ok := row.(*orderedRecord)
 	if !ok || record == nil {
-		return sessionAttribution{}, false, nil
+		return SessionAttribution{}, false, nil
 	}
 	usageDate, ok, err := readSessionDate(record, timezone)
 	if err != nil || !ok {
-		return sessionAttribution{}, false, err
+		return SessionAttribution{}, false, err
 	}
-	return sessionAttribution{usageDate: usageDate, model: readSessionCountModel(record, source)}, true, nil
+	return SessionAttribution{UsageDate: usageDate, Model: readSessionCountModel(record, source)}, true, nil
 }
 
 func readSessionDate(row *orderedRecord, timezone string) (string, bool, error) {
@@ -623,4 +627,49 @@ func sortByteOrder(values []string) {
 			values[j], values[j-1] = values[j-1], values[j]
 		}
 	}
+}
+
+// SessionRows ports the Codex provider's readSessionRows: the session report's
+// rows under whichever envelope key the report used. A non-object input yields
+// no rows, matching the TS filter that silently drops non-object entries.
+func SessionRows(input any) []any {
+	records := extractDailyRows(input)
+	out := make([]any, 0, len(records))
+	for _, record := range records {
+		out = append(out, record)
+	}
+	return out
+}
+
+// RecordGet reads one field of a session row. The provider resolves a row's
+// session file from directory/sessionFile/sessionId, which requires field
+// access the normalize package keeps private.
+func RecordGet(row any, key string) (any, bool) {
+	record, ok := row.(*orderedRecord)
+	if !ok || record == nil {
+		return nil, false
+	}
+	return record.Get(key)
+}
+
+// ReadSessionFileRow reads the fields the Codex provider needs to resolve a
+// session row's file path: directory, sessionFile and sessionId, each only
+// when it is a string.
+func ReadSessionFileRow(row any) (directory, sessionFile, sessionID string, ok bool) {
+	record, ok := row.(*orderedRecord)
+	if !ok || record == nil {
+		return "", "", "", false
+	}
+	readString := func(key string) string {
+		value, present := record.Get(key)
+		if !present {
+			return ""
+		}
+		text, isString := value.(string)
+		if !isString {
+			return ""
+		}
+		return text
+	}
+	return readString("directory"), readString("sessionFile"), readString("sessionId"), true
 }
