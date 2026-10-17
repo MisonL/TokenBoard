@@ -131,3 +131,26 @@ func TestNonEmptyDirectoryWithoutConversationsIsUnavailable(t *testing.T) {
 		t.Fatalf("err = %v, want the no-conversations message", err)
 	}
 }
+
+func TestSortsEqualMtimeCascadesByIdNotByHash(t *testing.T) {
+	// The TS comparator breaks an mtime tie with left.id.localeCompare(right.id)
+	// — the raw ids. Comparing the ids' hashes instead orders them differently
+	// and would pick another conversation when the limit truncates.
+	dir := t.TempDir()
+	at := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	for _, id := range []string{
+		"22222222-2222-2222-2222-222222222222", // hash 05d1… sorts first by hash
+		"00000000-0000-0000-0000-000000000001", // id sorts first
+		"11111111-1111-1111-1111-111111111111",
+	} {
+		writeCascadeFile(t, dir, id+".pb", 9, at)
+	}
+
+	cascades := listCascades(t, dir)
+	if len(cascades) != 3 {
+		t.Fatalf("cascades = %d, want 3", len(cascades))
+	}
+	if cascades[0].ID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("first = %q, want the raw-id order to lead", cascades[0].ID)
+	}
+}

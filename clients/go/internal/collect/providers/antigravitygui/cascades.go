@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravitymeta"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravityscan"
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect/collate"
 )
 
 // CascadeRef names one conversation file as the directory lists it.
@@ -196,7 +196,13 @@ func compareRecentCascades(left, right CascadeRef) int {
 		}
 		return -1
 	}
-	return compareHashes(antigravitymeta.Hash(left.ID), antigravitymeta.Hash(right.ID))
+	if collate.Less(left.ID, right.ID) {
+		return -1
+	}
+	if collate.Less(right.ID, left.ID) {
+		return 1
+	}
+	return 0
 }
 
 // pushPreferredCascade keeps the best `limit` cascades: full until the limit,
