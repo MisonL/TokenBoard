@@ -142,6 +142,10 @@ clients/go/
   - bundled 静态配置在 Go 侧是嵌入文件，运行时落盘到 `<stateDir>/ccusage.bundled.json`；TS 从 checkout 读 `ccusage.json`。
   - Windows 的 dev/ino 由 `identity_windows.go` 给出平台回退，不与 Node 的 stat 逐位对齐。
 - M4 出口（hook 离线行为）：`TestHookModeNeverDownloadsCcusage`（无二进制时 hook 失败且 runner 不运行）、`TestResolveHookModeFailsClosedWithoutABinary`、`TestResolvePrefersTheBundledBinaryOverPATH`、`TestDownloadVerifiesIntegrityAndInstallsTheBinary` 覆盖获取层；`TestHookModeUsesChangedFilesToNarrowReconciliation` 等 6 条覆盖 hook 对账语义。
+- **M4 影子 diff 口径（2026-10-17 实测，commit 92b6493）**：同一 Claude home fixture（两个模型、cache 读写、跨小时），`TOKENBOARD_CCUSAGE_BIN` 指向 `packages/collector/node_modules/.bin/ccusage`（20.0.33），分别跑 TS `tsx src/cli.ts preview --source claude-code` 与 Go `tokenboard preview --source claude-code`：
+  - range 模式：snapshot 数组除 `collectedAt`（墙钟）外逐字段、逐序一致；未定价诊断行一致。
+  - hook 模式：snapshot 一致；写出的 `claude-code-cursor.json` 除 `updatedAt` 外逐字段一致，包括 blake2b512 内容哈希（128 hex）、`endsWithNewline`、`pendingUpload`、`missingCost` 与 `lastScanHighWaterMs`（同一浮点值）。
+  - hook 离线：`env -i`（PATH 无 ccusage）下 `sync --source claude-code` 报 `ccusage is not installed and hook mode does not download it`、退出码 1、不写 cursor、不联网。
 
 **M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：
 
