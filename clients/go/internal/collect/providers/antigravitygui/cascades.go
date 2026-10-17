@@ -85,7 +85,10 @@ func ListAntigravityCascades(input ListCascadesInput) ([]CascadeRef, error) {
 			continue
 		}
 		seenIDs[id] = true
-		cascade, ok := cascadeRefFor(dir, id)
+		cascade, ok, err := cascadeRefFor(dir, id)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			continue
 		}
@@ -111,7 +114,11 @@ func ListAntigravityCascades(input ListCascadesInput) ([]CascadeRef, error) {
 	candidateLimit := directoryCandidateLimit(limit)
 	scanIDs := antigravityscan.SelectFileScanIds(directoryIDs, scanState, candidateLimit)
 	for _, id := range scanIDs {
-		if cascade, ok := cascadeRefFor(dir, id); ok {
+		cascade, ok, err := cascadeRefFor(dir, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			markScanEntry(scanState, cascade, checkedSequence)
 		} else {
 			antigravityscan.RemoveFileScanEntry(scanState, id)
@@ -145,11 +152,13 @@ func ListAntigravityCascades(input ListCascadesInput) ([]CascadeRef, error) {
 
 	sort.SliceStable(cascades, func(i, j int) bool { return compare(cascades[i], cascades[j]) < 0 })
 
-	// An empty directory with no scan history means the tool has never run
-	// here; the caller classifies this as "unavailable". A scan state with
-	// entries means the tool ran before and the directory is momentarily
-	// unreadable — an error, not a skip.
-	if len(cascades) == 0 && len(scanState.Files) == 0 && len(required) == 0 && len(names) == 0 {
+	// An empty result with no scan history means the tool has never run here;
+	// the caller classifies this as "unavailable". A scan state with entries
+	// means the tool ran before and the directory is momentarily unreadable —
+	// an error, not a skip. Unrelated directory contents do not change this:
+	// the question is whether any conversation was found, not what else sits
+	// in the directory.
+	if len(cascades) == 0 && len(scanState.Files) == 0 {
 		return nil, &NoConversationsError{Dir: dir}
 	}
 	return cascades, nil
@@ -245,35 +254,63 @@ func cachedCascadeRef(state *antigravityscan.FileScanState, id string) (CascadeR
 	}, true
 }
 
-// cascadeRefFor stats one conversation file pair: the cascade's own file plus,
-// when present, its SQLite database. Either alone names the conversation.
-func cascadeRefFor(dir, id string) (CascadeRef, bool) {
-	info, err := os.Stat(filepath.Join(dir, id+".db"))
-	if err == nil {
-		cascade := CascadeRef{ID: id, MtimeMs: mtimeMs(info.ModTime()), Size: info.Size(), HasDatabaseFile: true}
-		// The TS ref prefers the cascade file's mtime when both exist; the
-		// SQLite file is the durable one, so it wins here. Both agree in
-		// practice because Antigravity writes them together.
-		if agc, agcErr := os.Stat(filepath.Join(dir, id+".agc")); agcErr == nil && agc.ModTime().UnixMilli() > info.ModTime().UnixMilli() {
-			cascade.MtimeMs = mtimeMs(agc.ModTime())
+// cascadeRefFor stats one conversation's trajectory (.pb) and SQLite (.db)
+// files. Either alone names the conversation; the newer file supplies mtime
+// and size together, so the cursor's (mtime, size) comparison never mixes the
+// two sources, and an mtime tie keeps the .pb (the TS reduce's first element).
+// hasDatabaseFile records the .db's presence — that is what decides whether
+// the SQLite history will cover the conversation.
+func cascadeRefFor(dir, id string) (CascadeRef, bool, error) {
+	pbRef, pbOK, err := fileRefFor(id, filepath.Join(dir, id+".pb"))
+	if err != nil {
+		return CascadeRef{}, false, err
+	}
+	dbRef, dbOK, err := fileRefFor(id, filepath.Join(dir, id+".db"))
+	if err != nil {
+		return CascadeRef{}, false, err
+	}
+	if !pbOK && !dbOK {
+		return CascadeRef{}, false, nil
+	}
+	latest := pbRef
+	if !pbOK || (dbOK && dbRef.MtimeMs > pbRef.MtimeMs) {
+		latest = dbRef
+	}
+	return CascadeRef{ID: id, MtimeMs: latest.MtimeMs, Size: latest.Size, HasDatabaseFile: dbOK}, true, nil
+}
+
+// fileRefFor stats one candidate file. A missing file is an absent candidate;
+// any other stat failure is a real read failure and must surface, the way the
+// TS fileRef rethrows everything but ENOENT.
+func fileRefFor(id, path string) (fileRefValue, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fileRefValue{}, false, nil
 		}
-		return cascade, true
+		return fileRefValue{}, false, err
 	}
-	if agc, agcErr := os.Stat(filepath.Join(dir, id+".agc")); agcErr == nil {
-		return CascadeRef{ID: id, MtimeMs: mtimeMs(agc.ModTime()), Size: agc.Size()}, true
-	}
-	return CascadeRef{}, false
+	return fileRefValue{ID: id, MtimeMs: mtimeMs(info.ModTime()), Size: info.Size()}, true, nil
+}
+
+type fileRefValue struct {
+	ID      string
+	MtimeMs float64
+	Size    int64
 }
 
 var cascadeIDPattern = regexp.MustCompile(
 	`^[0-9a-fA-F-]{8,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{4,}-[0-9a-fA-F-]{12,}$`)
 
-// cascadeIDFromFile extracts a cascade id from a directory entry name.
+// cascadeIDFromFile extracts a cascade id from a directory entry name. Only
+// the two conversation formats (.pb trajectory and .db SQLite) name one;
+// anything else in the directory is not a conversation.
 func cascadeIDFromFile(name string) string {
-	base := name
-	if index := strings.LastIndex(name, "."); index > 0 {
-		base = name[:index]
+	ext := filepath.Ext(name)
+	if ext != ".pb" && ext != ".db" {
+		return ""
 	}
+	base := strings.TrimSuffix(name, ext)
 	if !cascadeIDPattern.MatchString(base) {
 		return ""
 	}
