@@ -495,3 +495,38 @@ func TestReadSessionJSONLFailsOnOneMiBTokenCountRowWithUsageAfterLimit(t *testin
 	})
 	requireReadError(t, err, "Session JSONL contains an oversized line with token or usage metadata")
 }
+
+// An append-only read starts at an offset but the recorded digest covers the
+// whole file. Hashing only the tail made every such read fail its own
+// verification, which surfaced as "Session file changed while reading" on the
+// hook incremental path.
+func TestReadSessionJSONLVerifiesAWholeFileDigestFromAMidFileOffset(t *testing.T) {
+	content := []byte("{\"type\":\"session_meta\"}\n{\"type\":\"summary\"}\n")
+	path := writeSessionJSONL(t, "incremental.jsonl", content)
+	digest, size, err := FingerprintFile(path, nil)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	dev, ino, _ := FileIdentity(info)
+	start := int64(len("{\"type\":\"session_meta\"}\n"))
+	var lines []Line
+	err = Read(ReadInput{
+		FilePath:     path,
+		StartOffset:  start,
+		MaxLineBytes: 1024,
+		Fingerprint:  &Fingerprint{Dev: dev, Ino: ino, Size: size, SHA256: digest},
+	}, func(line Line) error {
+		lines = append(lines, line)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0].Text, `"summary"`) {
+		t.Fatalf("lines = %+v, want only the tail row", lines)
+	}
+}

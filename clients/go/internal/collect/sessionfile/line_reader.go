@@ -116,20 +116,23 @@ func Read(input ReadInput, yield func(Line) error) error {
 	}
 	defer file.Close()
 
-	var prefixHash hash.Hash
+	// The recorded digest covers the whole file, so an append-only read must
+	// keep hashing from the prefix into the same hasher the line reader feeds:
+	// a fresh hasher for the tail would never match the fingerprint's SHA256.
+	// (The TS reader opens one contentHash and updates it with the prefix and
+	// then every chunk.)
+	contentHash := newContentHasher()
 	if input.Fingerprint != nil {
 		// blake2b512 is the TS content hash; the fingerprint check uses the
-		// recorded digest, so the prefix is hashed with the same algorithm.
-		prefixHash = newContentHasher()
-		if err := hashPrefix(file, input.StartOffset, prefixHash, input.FilePath); err != nil {
+		// recorded digest, so the file is hashed with the same algorithm.
+		if err := hashPrefix(file, input.StartOffset, contentHash, input.FilePath); err != nil {
 			return err
 		}
 	}
 	if endOffset != nil && *endOffset <= input.StartOffset {
-		return assertVerified(input.StartOffset, input.Fingerprint, prefixHash, input.FilePath)
+		return assertVerified(input.StartOffset, input.Fingerprint, contentHash, input.FilePath)
 	}
 
-	contentHash := newContentHasher()
 	reader := &lineReader{
 		file:                   file,
 		position:               input.StartOffset,
