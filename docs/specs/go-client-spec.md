@@ -147,6 +147,38 @@ clients/go/
   - hook 模式：snapshot 一致；写出的 `claude-code-cursor.json` 除 `updatedAt` 外逐字段一致，包括 blake2b512 内容哈希（128 hex）、`endsWithNewline`、`pendingUpload`、`missingCost` 与 `lastScanHighWaterMs`（同一浮点值）。
   - hook 离线：`env -i`（PATH 无 ccusage）下 `sync --source claude-code` 报 `ccusage is not installed and hook mode does not download it`、退出码 1、不写 cursor、不联网。
 
+**M5 状态（codex 全家，进行中）**：
+
+- [x] 叶子层（a61dbb0、660f116）：`internal/codexusage`（legacy cached-input-folded 与 additive 两种 token 口径）、`codex/homes.go`（显式 > `TOKENBOARD_CODEX_HOMES_JSON` > legacy `CODEX_HOME` 逗号列表 + 歧义守卫）、`command_options.go`（恒 `--offline`）、`cost_projection.go`（1,000,000 定点、最大余数、按模型名破平）、`subagent_math.go`。
+- [x] `attribution_cache.go` + `jsonl_reader.go`（660f116）：有界 JSONL 读取与投影校验、attribution cache（私有 0700、指纹竞态、legacy 无 dev/ino 不匹配、超限丢弃重建）。
+- [x] `session_scope.go` + `session_cloner.go`（660f116）：k 路归并按相对路径合并、bounded scope、冻结副本与投影文件两种来源；Go 无 clone 原语，回退为 O_EXCL + `io.CopyBuffer` 并保留 TS 文案。
+- [x] `context_pricing.go`（660f116）：规则编译、usage 提取、动态定价目录选择、指纹 memo；测试镜像 TS 的 83 条 + 7 条 table。
+- [x] `hook_profiles.go`（660f116）：per-home profile cursor（`codex-cursor.profile-<sha256(home)>.json`）、legacy cursor 迁移（按 `contentHashAlgo` 分派摘要、活动路径优先于 `archived_sessions`、已持久化条目免读源文件）、`mergeCodexHookIncrementals` 的 pending 去重/对账剔除/reusable 子集。
+- [x] CLI 接线（660f116、1701f94）：`warmHookCursors` 的 Codex 分支按 `ResolveHookCursorPlan` 预热每个 profile cursor；Codex hook 上传后按「文件 × cursor scope」确认（`(relativePath, sha256)` 精确匹配，清 `pendingUpload` 与 `codexContextPricingPending`），与按日分组的确认互斥；`collect.Options.HookAcknowledgement` 承接 TS 侧挂在 snapshot 上的 acknowledgement 元数据。
+- [x] context pricing cursor 标记（660f116）：`sessioncursor.ContextPricingMarker` 由 codex 包 `init` 安装，`UpdateCursorFile` 对 codex 源恒调用，缺标记即报错（不静默丢 pending 修正标记）。
+- 已修复的移植缺陷（有测试钉住）：
+  - `sessionfile.FingerprintFile` 在新增「按算法分派」的指纹后一度把空算法映射到 legacy sha256，而扫描侧恒用当前算法，导致所有 session 读回都报 `Session file changed while reading`；`FingerprintFile` 固定传当前算法，空算法只在**记录值**分派时代表 legacy。
+  - `hook_profiles` 的 legacy 迁移曾用「是否为普通文件」挑选活动/归档路径，而 TS 是「活动路径存在即优先」（符号链接/目录随后由内容比对拒绝）；按普通文件探测会让过期归档副本覆盖更新的活动会话。
+  - `matchesLegacySessionContent` 必须复刻 TS 的三次 stat 一致性校验（lstat → open+stat → lstat → 读 → stat → lstat），否则文件在读取中被替换时不会 fail-closed。
+- [x] subagent usage 链：`subagent_usage_child/json/cache/worker_pool/usage.go`（继承累积量扣除、跨 profile 事件去重、FIFO 缓存与指纹失效、worker pool 与 panic 拒绝、oversized 行诊断合并）。
+- [x] `codex.ts` provider 编排：`provider.go`（hook / scoped / bounded / unbounded 四条路径 + 各自的单次重试矩阵 + 部分成功的 session 计数降级）+ `provider_scope.go`（session 行解析、canonical attribution 替换、scope 源稳定性断言）。
+- [x] 注册：`providers.go` 引入 codex 包（`register.go` 把 `collect.Options` 适配到 `codex.Options`），`preview/sync/warm-hooks --source codex` 可用。
+- 影子 diff 抓到的移植缺陷（已修，均有回归测试）：
+  - **ccusage 调用漏 `--config`**：provider 直接调 `PackageRunner.RunPackageArgs`，而 TS 把 `appendCcusageConfig` 拼在 `runPackageArgs` 内部，Go 的 config 拼接在 `PackageRunner.Args` 上。结果每次 codex 调用都退回 ccusage 内置价目表，混合模型日 `deepseek-v4-flash` 成本 0.003609（Go）vs 0.005091（TS）。改为统一走 `runnerArgs`。
+  - **子进程环境只传 6 个 key**：TS 传 `{ ...process.env, CODEX_HOME }`，Go 的 `environOf` 只物化 6 个变量，`npx` shim 找不到 `node`（`exit status 127`）。改为「继承进程环境 + 覆盖 codex 相关键且空值即清除」。
+  - **`NormalizeSubagentSessions` 只认 `map[string]any`**：真实 runner 解码出的是 `*ccusage.orderedRecord`，投影后 `extractSubagentRows` 恒返回 0 行，subagent 修正在生产路径**从未生效**（`codex-subagent-usage-cache.json` 一直是空 `entries`），而所有 map 型 stub 单测全绿。修法：`ccusage` 导出 `OrderedObject`/`RecordWith`/`DecodeOrderedJSON`，投影与行标记都按有序对象处理（键序即文档序，多模型分摊余数依赖它）。
+  - **`tagSessionRow` 丢 home 标记**：同一根因——多 profile 行打不上 `__tokenboardCodexHomeIndex`，`rowHomeIndex` 恒 -1，重复相对路径时会跨 home 误解析。
+- [x] **M5 codex 影子 diff（2026-10-18，diff=0）**：自建 codex home fixture（`sessions/` 两日两会话、cached input、一个 `turn_context` 从 deepseek-v4-flash 切到 gpt-5.6-sol 的混合模型会话、一个带 `payload.source.subagent` 的子会话、一个 `archived_sessions/` 归档会话），`TOKENBOARD_CCUSAGE_BIN` 指向 `packages/collector/node_modules/.bin/ccusage`（20.0.33），两侧各自独立 `TOKENBOARD_STATE_DIR`，比较时剔除 `collectedAt`：
+  - `--since all`、默认窗口、`--since 20260616`、`--until 2026-10-16`、`--since … --until …`：snapshot 逐字段一致（含 `sessionCount`，`costUsd` 逐位相等）。
+  - 多 profile（`TOKENBOARD_CODEX_HOMES_JSON` 两个 home，其中一份含同名相对路径）：一致。
+  - `archived_sessions` 为符号链接：无 allowlist 时两侧同一 fail-closed 文案与退出码；`TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON` 放行后一致。
+  - hook 模式：以 TS 写出的 cursor 作 seed，第二轮增量 snapshot 一致，`codex-cursor.json` / attribution cache / subagent cache 除 `updatedAt` 外逐字段一致；第三、四轮（无变化）输出一致。`warm-hooks --source codex` 的 cursor 除 `lastScanHighWaterMs`/`updatedAt` 外一致。
+  - 已知差异（不影响 snapshot）：Go 无 clone 原语，多打一行 `Codex copy-on-write clone is unavailable; using a bounded standard file copy` 诊断；cursor/attribution JSON 的对象键序不同（TS 固定顺序，Go 按 map 排序），逐字段一致。
+- [x] M5 出口验收：`internal/collect/providers/codex` 共 379 条 Go 测试（TS codex 全家 356 条，逐文件 1:1 平移：context-pricing 90、subagent-json 28→`jsonl_reader_test.go`、codex 36、subagent-usage 31、session-scope/bounds/race 53、multi-profile-hook 26、scoped-scan 13、attribution-cache 15、session-cloner 9、subagent-cache 9、symlink/homes 13、bounded-retry+attribution-batches 7、hook-race+scoped-reconciliation 6、worker-pool 5、cost-projection/math 15）；`gofmt -l .` 干净、`go vet ./...` 通过、`go test ./...` 与 `-race`（codex/ccusage/cli）全绿、`GOOS=windows|linux go build ./...` 通过。
+- 与 TS 的已知边界：
+  - `codexFileStat.ctimeMs` 由反射取平台字段（Linux `Ctim`、Darwin `Ctimespec`、Windows 无），Windows 上退化为 mtime，change detection 弱于 Node。
+  - Go 侧 context pricing 的规则来源是 `DefaultRules()` + 动态目录，与 TS 的内联常量表同源但表体由 `BuildCodexContextPricingRules` 生成，影子 diff 已逐模型核对（`gpt-5.6-sol` 重定价两侧一致）。
+
 **M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：
 
 - 纯/无依赖（可直接平移，对应 Go 侧新包 `antigravityscan`）：`antigravity-file-scan.ts`（173 行，SHA-256 键 + 热/冷混合选择 + 从两端取样）、`antigravity-since.ts`（87 行，`since@时区` scope 解析 + `includesTimestamp/includesFileMtime` 谓词）。两者测试仅 3 条，但逻辑密集。

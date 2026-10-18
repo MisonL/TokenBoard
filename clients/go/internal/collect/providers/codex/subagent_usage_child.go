@@ -485,11 +485,3 @@ func subagentCacheUsageDate(cacheKey string, usageDate string) string {
 	subagentUsageDateCache.formatted[cacheKey] = usageDate
 	return usageDate
 }
-
-// subagentCacheUsageDateCount reports the formatted-date cache size. It exists
-// for the tests that pin the cache bound the TS suite asserts.
-func subagentCacheUsageDateCount() int {
-	subagentUsageDateCache.Lock()
-	defer subagentUsageDateCache.Unlock()
-	return len(subagentUsageDateCache.formatted)
-}

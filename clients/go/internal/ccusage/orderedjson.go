@@ -52,6 +52,41 @@ func (r *orderedRecord) Len() int {
 	return len(r.keys)
 }
 
+// OrderedObject is one decoded JSON object that remembers its key order. The
+// runner hands providers these records, so a provider that re-projects its
+// output (the Codex subagent correction, the per-home row tag) reaches the
+// fields and their order through this interface rather than the unexported
+// type.
+type OrderedObject interface {
+	Keys() []string
+	Get(key string) (any, bool)
+}
+
+// RecordWith returns a copy of an ordered row with key set — appended when the
+// key is new — the way the TS `{ ...row, [key]: value }` spread behaves. ok is
+// false when row is not an ordered object; the caller decides what to do with
+// a row it cannot tag.
+func RecordWith(row any, key string, value any) (any, bool) {
+	record, ok := row.(*orderedRecord)
+	if !ok || record == nil {
+		return nil, false
+	}
+	copied := newOrderedRecord()
+	for _, name := range record.keys {
+		copied.set(name, record.values[name])
+	}
+	copied.set(key, value)
+	return copied, true
+}
+
+// DecodeOrderedJSON decodes JSON with the runner's conventions: objects keep
+// their document order and numbers are json.Number. A caller holding raw JSON
+// (a cached response, a fixture) needs it to hand a provider the same shape
+// RunJSON produces.
+func DecodeOrderedJSON(data []byte) (any, error) {
+	return decodeOrdered(data)
+}
+
 // decodeOrdered decodes JSON with json.Number numbers and ordered objects.
 func decodeOrdered(data []byte) (any, error) {
 	decoder := json.NewDecoder(newByteReader(data))

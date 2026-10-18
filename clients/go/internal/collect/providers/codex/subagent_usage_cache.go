@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/collate"
@@ -79,12 +80,12 @@ type CodexSubagentUsageCacheReader struct {
 type CodexSubagentUsageCacheInput struct {
 	// StateDir empty disables caching entirely; the callback then receives the
 	// uncached readers, exactly like the TS `if (!input.stateDir)` branch.
-	StateDir              string
-	Timezone              string
-	ReadChildUsageByDate  ReadChildUsageByDate
-	ReadChildUsageEvents  ReadChildUsageEvents
-	CacheFiles            map[string]CodexSubagentUsageCacheFile
-	Callback              func(CodexSubagentUsageCacheReader) error
+	StateDir             string
+	Timezone             string
+	ReadChildUsageByDate ReadChildUsageByDate
+	ReadChildUsageEvents ReadChildUsageEvents
+	CacheFiles           map[string]CodexSubagentUsageCacheFile
+	Callback             func(CodexSubagentUsageCacheReader) error
 }
 
 // WithCodexSubagentUsageCache runs callback under the cache lock with the
@@ -167,6 +168,12 @@ func runSubagentCacheTransaction(
 		return err
 	}
 	usedKeys := map[string]bool{}
+	// The TS transaction is single-threaded: mapWithConcurrency only starts
+	// overlapping reads after the callback has produced the rows, and each
+	// reader call awaits before touching the shared cache. The Go port runs the
+	// reads on goroutines, so the cache map and the used-key set need a lock to
+	// keep that same state consistent.
+	var cacheMu sync.Mutex
 	reader := CodexSubagentUsageCacheReader{
 		Read: func(filePath, timestamp, timezone string, stderr func(string), sourceFilePath string) ([]DatedUsage, error) {
 			cacheFile := subagentCacheFileFor(input.CacheFiles, filePath, sourceFilePath)
@@ -177,7 +184,9 @@ func runSubagentCacheTransaction(
 				keySource = sourceFilePath
 			}
 			key := attributionCacheKey(keySource)
+			cacheMu.Lock()
 			usedKeys[key] = true
+			cacheMu.Unlock()
 
 			before, err := fingerprintSubagentChildSessionFile(filePath)
 			if err != nil {
@@ -192,16 +201,26 @@ func runSubagentCacheTransaction(
 			if cacheFile != nil {
 				cacheFingerprint = cacheFile.SourceFingerprint
 			}
-			if cached, ok := cache.entriesLookup(key); ok && sameSubagentCacheFingerprint(cached, cacheFingerprint) {
+			cacheMu.Lock()
+			cached, hit := cache.entriesLookup(key)
+			hit = hit && sameSubagentCacheFingerprint(cached, cacheFingerprint)
+			if hit {
 				cached.UpdatedAt = updatedAt
 				cache.Entries[key] = cached
+			}
+			cacheMu.Unlock()
+			if hit {
 				return copyDatedUsages(cached.Usages), nil
 			}
 
+			// The TS readStableChildUsage calls the wrapped reader with four
+			// arguments, so sourceFilePath never reaches it; it is only the
+			// cache lookup key above. Passing an empty source keeps the two
+			// paths identical for an injected reader that inspects it.
 			stable, err := readStableChildUsage(
 				filePath, timestamp, timezone, stderr,
 				func(filePath, timestamp, timezone string, stderr func(string)) ([]DatedUsage, error) {
-					return input.ReadChildUsageByDate(filePath, timestamp, timezone, stderr, sourceFilePath)
+					return input.ReadChildUsageByDate(filePath, timestamp, timezone, stderr, "")
 				},
 				before,
 			)
@@ -217,14 +236,18 @@ func runSubagentCacheTransaction(
 					return nil, err
 				}
 				if matches {
+					cacheMu.Lock()
 					cache.Entries[key] = subagentEntryFromFingerprint(
 						cacheFile.SourceFingerprint, stable.usages, updatedAt)
+					cacheMu.Unlock()
 				} else {
 					emitStderr(stderr,
 						"Skipping stale Codex subagent usage cache write for a session that changed after copy")
 				}
 			} else {
+				cacheMu.Lock()
 				cache.Entries[key] = subagentEntryFromFingerprint(stable.fingerprint, stable.usages, updatedAt)
+				cacheMu.Unlock()
 			}
 			return stable.usages, nil
 		},
@@ -239,10 +262,12 @@ func runSubagentCacheTransaction(
 					return nil, err
 				}
 			}
+			// See the read closure: the wrapped event reader is called with
+			// four arguments in TS.
 			stable, err := readStableChildUsage(
 				filePath, timestamp, timezone, stderr,
 				func(filePath, timestamp, timezone string, stderr func(string)) ([]ChildUsageEvent, error) {
-					return readChildUsageEvents(filePath, timestamp, timezone, stderr, sourceFilePath)
+					return readChildUsageEvents(filePath, timestamp, timezone, stderr, "")
 				},
 				before,
 			)
@@ -552,7 +577,7 @@ func evictSubagentEntriesToSerializedSize(
 	copy(ordered, entries)
 	sortSubagentEntriesNewestFirst(ordered)
 
-	bytes := len(encodeSubagentCacheEntriesObject(ordered))
+	bytes := len(encodeSubagentCacheEntriesObject(ordered, 0))
 	index := len(ordered)
 	for bytes > budgetBytes && index > 0 {
 		index--
@@ -640,7 +665,9 @@ type subagentChildFingerprintError struct {
 	cause error
 }
 
-func (e *subagentChildFingerprintError) Error() string { return "Unable to fingerprint Codex child session" }
+func (e *subagentChildFingerprintError) Error() string {
+	return "Unable to fingerprint Codex child session"
+}
 func (e *subagentChildFingerprintError) Unwrap() error { return e.cause }
 
 // subagentNowMillis converts the transaction's ISO timestamp to epoch
@@ -851,29 +878,35 @@ func encodeSubagentCacheState(timezone string, entries []subagentOrderedEntry) [
 	builder.WriteString(",\n  \"timezone\": ")
 	builder.WriteString(attributionJSONString(timezone))
 	builder.WriteString(",\n  \"entries\": ")
-	builder.WriteString(encodeSubagentCacheEntriesObject(entries))
+	builder.WriteString(encodeSubagentCacheEntriesObject(entries, 1))
 	builder.WriteString("\n}\n")
 	return []byte(builder.String())
 }
 
-// encodeSubagentCacheEntriesObject writes the entries object alone, as
-// JSON.stringify(entries, null, 2) would at the root: `{\n  "key": {...}}`.
-func encodeSubagentCacheEntriesObject(entries []subagentOrderedEntry) string {
+// encodeSubagentCacheEntriesObject writes the entries object with its closing
+// brace at baseLevel. baseLevel 0 is the standalone
+// `JSON.stringify(entries, null, 2)` the eviction accounting measures;
+// baseLevel 1 is the same object embedded under the cache state's "entries"
+// key.
+func encodeSubagentCacheEntriesObject(entries []subagentOrderedEntry, baseLevel int) string {
 	if len(entries) == 0 {
 		return "{}"
 	}
+	keyIndent := strings.Repeat("  ", baseLevel+1)
 	var builder strings.Builder
 	builder.WriteString("{\n")
 	for index, entry := range entries {
 		if index > 0 {
 			builder.WriteString(",\n")
 		}
-		builder.WriteString("  ")
+		builder.WriteString(keyIndent)
 		builder.WriteString(attributionJSONString(entry.Key))
 		builder.WriteString(": ")
-		builder.WriteString(encodeSubagentCacheEntry(entry.Entry, 1))
+		builder.WriteString(encodeSubagentCacheEntry(entry.Entry, baseLevel+1))
 	}
-	builder.WriteString("\n}")
+	builder.WriteString("\n")
+	builder.WriteString(strings.Repeat("  ", baseLevel))
+	builder.WriteString("}")
 	return builder.String()
 }
 
@@ -927,22 +960,25 @@ func encodeSubagentCacheEntry(entry subagentCacheEntry, level int) string {
 	return builder.String()
 }
 
-func encodeSubagentDatedUsages(usages []DatedUsage, level int) string {
+// encodeSubagentDatedUsages writes the usages array whose closing bracket sits
+// at arrayLevel (the level of the "usages" key).
+func encodeSubagentDatedUsages(usages []DatedUsage, arrayLevel int) string {
 	if len(usages) == 0 {
 		return "[]"
 	}
-	indent := strings.Repeat("  ", level)
+	elementLevel := arrayLevel + 1
+	elementIndent := strings.Repeat("  ", elementLevel)
 	var builder strings.Builder
 	builder.WriteString("[\n")
 	for index, usage := range usages {
 		if index > 0 {
 			builder.WriteString(",\n")
 		}
-		builder.WriteString(indent)
-		builder.WriteString(encodeSubagentDatedUsage(usage, level))
+		builder.WriteString(elementIndent)
+		builder.WriteString(encodeSubagentDatedUsage(usage, elementLevel))
 	}
 	builder.WriteString("\n")
-	builder.WriteString(strings.Repeat("  ", level-1))
+	builder.WriteString(strings.Repeat("  ", arrayLevel))
 	builder.WriteString("]")
 	return builder.String()
 }

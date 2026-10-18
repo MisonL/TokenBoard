@@ -632,8 +632,12 @@ func sortByteOrder(values []string) {
 // SessionRows ports the Codex provider's readSessionRows: the session report's
 // rows under whichever envelope key the report used. A non-object input yields
 // no rows, matching the TS filter that silently drops non-object entries.
+//
+// The value is normalized first: a provider that re-projects ccusage's own
+// report (the per-home row tagging) hands over a plain Go map, and the TS
+// reader accepts any object shape.
 func SessionRows(input any) []any {
-	records := extractDailyRows(input)
+	records := extractDailyRows(normalizeDecodedValue(input))
 	out := make([]any, 0, len(records))
 	for _, record := range records {
 		out = append(out, record)

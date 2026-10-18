@@ -18,6 +18,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/MisonL/TokenBoard/clients/go/internal/ccusage"
 )
 
 // subagentRecord is one JSON object with its key order.
@@ -73,6 +75,15 @@ func subagentRecordOf(value any) (*subagentRecord, bool) {
 			return nil, false
 		}
 		return typed, true
+	case ccusage.OrderedObject:
+		// The runner's decoded rows. Their key order is the document order the
+		// TS correction iterates, so it must survive this projection.
+		record := newSubagentRecord()
+		for _, key := range typed.Keys() {
+			value, _ := typed.Get(key)
+			record.set(key, normalizeSubagentSessionValue(value))
+		}
+		return record, true
 	case map[string]any:
 		record := newSubagentRecord()
 		keys := make([]string, 0, len(typed))
@@ -109,6 +120,13 @@ func NormalizeSubagentSessions(input any) (any, error) {
 
 func normalizeSubagentSessionValue(value any) any {
 	switch typed := value.(type) {
+	case ccusage.OrderedObject:
+		record := newSubagentRecord()
+		for _, key := range typed.Keys() {
+			fieldValue, _ := typed.Get(key)
+			record.set(key, normalizeSubagentSessionValue(fieldValue))
+		}
+		return record
 	case map[string]any:
 		record := newSubagentRecord()
 		keys := make([]string, 0, len(typed))

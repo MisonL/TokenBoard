@@ -85,6 +85,20 @@ func Lookup(source contract.Source) (Provider, bool) {
 	return provider, ok
 }
 
+// Unregister removes a source's provider and returns the restore function. It
+// exists so a test can exercise the "not implemented in this client yet" path:
+// every source in the contract has a provider, and a test that called the CLI
+// directly would otherwise run a real provider over the machine's own stores.
+func Unregister(source contract.Source) (restore func()) {
+	previous, had := registry[source]
+	delete(registry, source)
+	return func() {
+		if had {
+			registry[source] = previous
+		}
+	}
+}
+
 // OverrideProvider replaces a source's provider and returns the restore
 // function. It exists so tests can drive the CLI's failure contract against a
 // stub without touching local stores.

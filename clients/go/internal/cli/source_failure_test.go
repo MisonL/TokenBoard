@@ -58,7 +58,11 @@ func guiSnapshot(source contract.Source) contract.Snapshot {
 // ccusage, which may probe PATH or download — so it is stubbed out instead.
 func emptyProviderHomes(t *testing.T) map[string]string {
 	t.Helper()
+	// The two ccusage-backed sources have no local directory to point at, and
+	// leaving them unstubbed would run a real scan over the machine's own
+	// sessions.
 	stubSource(t, contract.SourceClaudeCode, stubProvider{})
+	stubSource(t, contract.SourceCodex, stubProvider{})
 	return map[string]string{
 		"TOKENBOARD_TIMEZONE":     "UTC",
 		"TOKENBOARD_GROK_HOME":    t.TempDir(),

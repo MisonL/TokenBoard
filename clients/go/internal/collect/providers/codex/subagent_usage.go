@@ -39,14 +39,14 @@ type SubagentCorrectionInput struct {
 	// Sessions is the session report. Raw JSON bytes keep object key order,
 	// which decides how a corrected total is spread across a multi-model row;
 	// an already-decoded Go map cannot and is decoded in sorted key order.
-	Sessions      any
-	CodexHomes    []string
-	Timezone      string
-	Stderr        func(string)
-	StateDir      string
-	CacheFiles    map[string]CodexSubagentUsageCacheFile
-	ReadChildUsageByDate ReadChildUsageByDate
-	ReadChildUsageEvents ReadChildUsageEvents
+	Sessions                any
+	CodexHomes              []string
+	Timezone                string
+	Stderr                  func(string)
+	StateDir                string
+	CacheFiles              map[string]CodexSubagentUsageCacheFile
+	ReadChildUsageByDate    ReadChildUsageByDate
+	ReadChildUsageEvents    ReadChildUsageEvents
 	MaxConcurrentChildReads int
 	CodexSymlinkRoots       []string
 }
@@ -192,6 +192,12 @@ func createCodexSubagentDiagnostics(stderr func(string)) *subagentDiagnostics {
 func (d *subagentDiagnostics) report(line string) {
 	summary, ok := parseOversizedIrrelevantChildRowSummary(line)
 	if !ok {
+		// Reads run on goroutines here; the TS reader invokes stderr from the
+		// single event-loop thread, so the callback is serialized there. Holding
+		// the mutex keeps the same guarantee for a caller that is not
+		// thread-safe.
+		d.mu.Lock()
+		defer d.mu.Unlock()
 		emitStderr(d.stderr, line)
 		return
 	}
@@ -569,10 +575,14 @@ func readCorrectedSubagentMetrics(
 	}
 	metrics := make([]Metric, 0, len(usageByDate))
 	for _, usage := range usageByDate {
+		inputTokens, err := correctedChildInputTokens(usage)
+		if err != nil {
+			return nil, err
+		}
 		metrics = append(metrics, Metric{
 			UsageDate:           usage.UsageDate,
 			Model:               original.Model,
-			InputTokens:         correctedChildInputTokens(usage),
+			InputTokens:         inputTokens,
 			OutputTokens:        usage.OutputTokens,
 			CacheCreationTokens: usage.CacheCreationTokens,
 			CacheReadTokens:     usage.CacheReadTokens,
@@ -587,20 +597,20 @@ func readCorrectedSubagentMetrics(
 // input_tokens. Legacy Codex records report cached input inside input_tokens,
 // while newer records report it as a separate additive field. The total proves
 // which representation produced this event; without that proof preserve input.
-func correctedChildInputTokens(usage DatedUsage) float64 {
+func correctedChildInputTokens(usage DatedUsage) (float64, error) {
 	cacheReadIsIncludedInInput := usage.CacheReadTokens <= usage.InputTokens &&
 		usage.TotalTokens == usage.InputTokens+usage.CacheCreationTokens+usage.OutputTokens
 	if !cacheReadIsIncludedInInput {
-		return usage.InputTokens
+		return usage.InputTokens, nil
 	}
 	value, err := subtractNonNegative(usage.InputTokens, usage.CacheReadTokens, "subagent input")
 	if err != nil {
-		// The TS helper throws here; the caller treats a non-negative input
-		// as guaranteed by the representation check above, so an error means
-		// the caller's own invariant is broken and must not be clamped.
-		panic(err)
+		// The representation check above proves cacheRead <= input, so the TS
+		// helper cannot throw here. Report the invariant failure instead of
+		// clamping: a wrong input count would be silent.
+		return 0, err
 	}
-	return value
+	return value, nil
 }
 
 func readCrossProfileChildUsageByDate(
