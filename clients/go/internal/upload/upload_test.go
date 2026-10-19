@@ -354,6 +354,19 @@ func TestRequestTimeoutMsResolvesEnv(t *testing.T) {
 			t.Errorf("invalid env %q must fall back to default, got %d", invalid, got)
 		}
 	}
+	// TS requires Number.isSafeInteger, so anything at or past 2^53 is not a
+	// number it will use — it falls back to the default rather than capping.
+	// A plain Atoi parses these and then caps, which is a different timeout.
+	for _, unsafe := range []string{"9007199254740992", "99999999999999999999"} {
+		t.Setenv("TOKENBOARD_FETCH_TIMEOUT_MS", unsafe)
+		if got := requestTimeoutMs(Config{}); got != defaultRequestTimeoutMs {
+			t.Errorf("unsafe integer %q must fall back to default, got %d", unsafe, got)
+		}
+	}
+	t.Setenv("TOKENBOARD_FETCH_TIMEOUT_MS", "9007199254740991")
+	if got := requestTimeoutMs(Config{}); got != maxRequestTimeoutMs {
+		t.Errorf("the largest safe integer must be accepted and capped, got %d", got)
+	}
 	if got := requestTimeoutMs(Config{RequestTimeoutMs: 7}); got != 7 {
 		t.Errorf("config override must win, got %d", got)
 	}

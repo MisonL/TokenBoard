@@ -350,12 +350,18 @@ func postOnce(ctx context.Context, config Config, url string, body []byte, clien
 // the TS env check), capped at two minutes, else the 30s default.
 var positiveDigitsPattern = regexp.MustCompile(`^[1-9]\d*$`)
 
+// maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER. TS rejects a larger
+// timeout value outright (Number.isSafeInteger), so a value past it falls back
+// to the default instead of being capped; parsing it here would silently pick
+// a different deadline for the same input.
+const maxSafeInteger = 1<<53 - 1
+
 func requestTimeoutMs(config Config) int {
 	if config.RequestTimeoutMs > 0 {
 		return min(config.RequestTimeoutMs, maxRequestTimeoutMs)
 	}
 	if raw := strings.TrimSpace(os.Getenv("TOKENBOARD_FETCH_TIMEOUT_MS")); raw != "" && positiveDigitsPattern.MatchString(raw) {
-		if parsed, err := strconv.Atoi(raw); err == nil {
+		if parsed, err := strconv.Atoi(raw); err == nil && int64(parsed) <= maxSafeInteger {
 			return min(parsed, maxRequestTimeoutMs)
 		}
 	}
