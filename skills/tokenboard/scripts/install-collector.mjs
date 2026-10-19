@@ -14,6 +14,7 @@ import {
   readPackageManager
 } from './config.mjs'
 import { defaultReleaseRepo, installClientBinary } from './client-binary.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 import {
   buildCloneSteps,
   buildDefaultBranchPullSteps,
@@ -38,7 +39,9 @@ function run(command, args, options = {}) {
       }
     )
   } catch (error) {
-    console.error(errorMessage(error))
+    // A failed clone or fetch echoes the repo URL, which may carry
+    // `user:token@host` userinfo.
+    console.error(redactUrlCredentials(errorMessage(error)))
     process.exit(1)
   }
 }
@@ -128,7 +131,9 @@ function runCli() {
         console.log(`TokenBoard client ${installed.version} ready at ${installed.path}`)
       })
       .catch((error) => {
-        console.error(errorMessage(error))
+        // The release base URL and repo can carry `user:token@host` userinfo
+        // (a private mirror), and this sink is the terminal or a CI log.
+        console.error(redactUrlCredentials(errorMessage(error)))
         process.exit(1)
       })
     return

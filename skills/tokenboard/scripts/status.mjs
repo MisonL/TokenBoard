@@ -153,7 +153,7 @@ function runCli() {
         config,
         scheduledRetry: readScheduledRetry(file, source),
         scheduledSync: readScheduledSync(source, stateDir),
-        recentRuns: collectRecentRunSummary(join(dirname(file), 'runs')),
+        recentRuns: collectRecentRunSummary(join(stateDir, 'runs')),
         uploadBackoff: readUploadBackoff(stateDir)
       }),
       null,

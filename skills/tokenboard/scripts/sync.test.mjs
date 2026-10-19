@@ -261,6 +261,29 @@ test('refresh does not replace an explicit ccusage configuration', () => {
   assert.equal(invocation.env.TOKENBOARD_CCUSAGE_CONFIG, '/custom/pricing.json')
 })
 
+test('a binary client never inherits the checkout ccusage configuration', () => {
+  // `upgrade.mjs --to-binary` keeps the checkout as the rollback, so it is
+  // still on disk with whatever `ccusage.json` its last pull left. The Go
+  // client ranks an explicit config above its own bundled baseline, so
+  // injecting that file would price new usage with a frozen table.
+  const invocation = buildSyncInvocation({
+    env: {},
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'binary'
+    },
+    homeDir: '/home/user',
+    fileExists: () => true
+  })
+
+  assert.equal(invocation.clientType, 'binary')
+  assert.equal(invocation.env.TOKENBOARD_CCUSAGE_CONFIG, undefined)
+  assert.equal(refreshBundledCcusageConfig(invocation, () => true).env.TOKENBOARD_CCUSAGE_CONFIG, undefined)
+})
+
 test('sync invocation forwards the configured Codex symlink roots as JSON', () => {
   const invocation = buildSyncInvocation({
     env: {},
@@ -568,6 +591,26 @@ test('scheduled upgrade diagnostics redact credentials embedded in URLs', () => 
   ])
   assert.doesNotMatch(lines[0], /ci-user|ci-token/)
   assert.doesNotMatch(lines[1], /ci-token/)
+})
+
+test('a binary client honors the skip-upgrade switch', () => {
+  for (const options of [
+    { flags: { 'skip-upgrade': true }, env: {} },
+    { flags: {}, env: { TOKENBOARD_SKIP_UPGRADE: '1' } },
+    { flags: {}, env: { TOKENBOARD_AUTO_UPGRADE: '0' } }
+  ]) {
+    const selfUpdates = []
+    runPreCollectUpgrade({
+      ...options,
+      invocation: { clientType: 'binary', command: '/home/user/.tokenboard/bin/tokenboard' },
+      selfUpdate: (value) => selfUpdates.push(value),
+      binaryExists: () => true,
+      log: () => {},
+      warn: () => {}
+    })
+
+    assert.deepEqual(selfUpdates, [], JSON.stringify(options))
+  }
 })
 
 test('a binary client upgrades through its own self-update, not the checkout', () => {

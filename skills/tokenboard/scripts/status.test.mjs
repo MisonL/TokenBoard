@@ -166,6 +166,41 @@ test('status reads the source-specific scheduled sync state file', () => {
   }
 })
 
+test('status reads run logs from the state directory, not the config directory', () => {
+  // The coordinator writes `runs/` under resolveStateDir (STATE_DIR ||
+  // CONFIG_DIR || ~/.tokenboard). A user who only sets TOKENBOARD_STATE_DIR
+  // must still see their recent runs.
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-status-runs-dir-'))
+  const stateRoot = mkdtempSync(join(tmpdir(), 'tokenboard-status-runs-state-'))
+  try {
+    writeFileSync(join(root, 'config.json'), '{}\n')
+    mkdirSync(join(stateRoot, 'runs'), { recursive: true })
+    // Run files are named by their start time; the summary only counts the
+    // last seven days, so the fixture has to be recent.
+    const started = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    const runId = started.replace(/:/g, '-')
+    writeFileSync(
+      join(stateRoot, 'runs', `${runId}.json`),
+      JSON.stringify({ runId, startedAt: started, status: 'success', exitCode: 0 })
+    )
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./status.mjs', import.meta.url))], {
+      env: {
+        ...process.env,
+        TOKENBOARD_CONFIG_DIR: root,
+        TOKENBOARD_STATE_DIR: stateRoot
+      },
+      encoding: 'utf8'
+    })
+
+    assert.equal(result.status, 0)
+    assert.equal(JSON.parse(result.stdout).recentRuns.total, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(stateRoot, { recursive: true, force: true })
+  }
+})
+
 test('status rejects non-canonical scheduled retry timestamps instead of normalizing them', () => {
   const root = mkdtempSync(join(tmpdir(), 'tokenboard-status-timestamp-'))
   try {

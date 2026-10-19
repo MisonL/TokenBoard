@@ -56,6 +56,14 @@ if (!serverOrigin) {
 const savedProfile = reusableServerProfile(currentConfig, serverOrigin)
 const useDeviceLink = shouldUseDeviceLink(flags)
 let activeProfile
+// Resolved by whichever branch runs below and reused for the install step.
+// Deliberately kept out of the profile write: `clientType` names a client that
+// does not exist yet at that point. Writing it first meant a failed install
+// (`setup.mjs --client binary` on an offline machine) left the config
+// promising a binary that was never installed, and every later sync refused to
+// run until the user hand-edited the config back. `install-collector.mjs`
+// records the type itself once the install has actually succeeded.
+let resolvedInstallOptions
 
 if (!pairingCode && !useDeviceLink && savedProfile) {
   withSetupCredentialsLock(() => {
@@ -67,6 +75,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       profile: latestProfile,
       defaultScheduleTimes: dailyScheduleTimes
     })
+    resolvedInstallOptions = installOptions
     const profilePackageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
     const profileScheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
     const nextConfig = withServerProfile(latestConfig, serverOrigin, {
@@ -74,7 +83,6 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       repoUrl: installOptions.repoUrl,
       repoRef: installOptions.repoRef,
       packageManager: profilePackageManager,
-      clientType: installOptions.clientType,
       scheduleTimes: profileScheduleTimes,
       ...(installOptions.codexSymlinkRoots === undefined
         ? {}
@@ -136,6 +144,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       profile: existingProfile,
       defaultScheduleTimes: dailyScheduleTimes
     })
+    resolvedInstallOptions = installOptions
     const pairedPackageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
     const pairedScheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
     const nextConfig = withServerProfile(latestConfig, pairedServerOrigin, {
@@ -149,7 +158,6 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       repoUrl: installOptions.repoUrl,
       repoRef: installOptions.repoRef,
       packageManager: pairedPackageManager,
-      clientType: installOptions.clientType,
       scheduleTimes: pairedScheduleTimes,
       ...(installOptions.codexSymlinkRoots === undefined
         ? {}
@@ -175,11 +183,16 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
   console.log('TokenBoard config written.')
 }
 
-const installOptions = resolveSetupInstallOptions({
-  flags,
-  profile: activeProfile,
-  defaultScheduleTimes: dailyScheduleTimes
-})
+// Reuse the options resolved before the profile write: the saved profile no
+// longer carries `clientType` (the installer records it), so re-resolving from
+// `activeProfile` would fall back to `git` and install the wrong client.
+const installOptions =
+  resolvedInstallOptions ||
+  resolveSetupInstallOptions({
+    flags,
+    profile: activeProfile,
+    defaultScheduleTimes: dailyScheduleTimes
+  })
 const packageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
 const scheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
 const installFlags = {

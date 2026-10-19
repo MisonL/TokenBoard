@@ -141,6 +141,9 @@ describe('verifyUploadToken', () => {
             expect(sql).toContain('FROM upload_tokens')
             expect(sql).toContain('device_id as deviceId')
             expect(sql).toContain('installation_id as installationId')
+            // The only thing that makes revocation effective: without this
+            // predicate a revoked token keeps full write access forever.
+            expect(sql).toContain('revoked_at IS NULL')
             return {
               bind(value: string) {
                 expect(value).toBe('hash:tok')

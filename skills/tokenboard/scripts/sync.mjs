@@ -244,7 +244,11 @@ export function runPreCollectUpgrade({
   warn = (message) => console.error(message)
 } = {}) {
   if (invocation?.clientType === 'binary') {
-    if (flags.hook === true || !binaryExists(invocation.command)) {
+    // The switches that hold the git client on its current version must hold
+    // the binary too: an automatic self-update rewrites the executable itself,
+    // which is harder to undo than a checkout `git checkout` can revert.
+    // `shouldRunUpgrade` also covers `--hook`, so a hook still never upgrades.
+    if (!shouldRunUpgrade({ flags, env }) || !binaryExists(invocation.command)) {
       return
     }
     try {
@@ -439,6 +443,13 @@ export function createUpgradeLogger(logs, { write = writeSync, log = console.log
 
 export function refreshBundledCcusageConfig(invocation, fileExists = existsSync) {
   if (invocation.env?.TOKENBOARD_CCUSAGE_CONFIG?.trim()) return invocation
+  // A binary install materializes its own pricing baseline from the copy
+  // compiled into it. A checkout may still be on disk — `upgrade.mjs
+  // --to-binary` deliberately keeps it as the rollback — and its
+  // `ccusage.json` is frozen at whatever revision it was last pulled to. The
+  // Go side ranks an explicit config above its bundled one, so pointing it at
+  // that stale file would price new usage with the old table and never say so.
+  if (invocation.clientType === 'binary') return invocation
 
   const bundledCcusageConfig = join(invocation.repoDir, 'packages', 'collector', 'ccusage.json')
   if (!fileExists(bundledCcusageConfig)) return invocation
