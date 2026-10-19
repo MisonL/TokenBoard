@@ -16,9 +16,10 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
+
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 // The language server's fixed endpoints and timeouts, matching the TS client.
@@ -179,12 +180,12 @@ func (p *languageServerProcess) waitForReady(port int, probe probeFunc) error {
 }
 
 func readReadyTimeout() time.Duration {
-	raw := os.Getenv("TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS")
-	value, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || value <= 0 {
-		return defaultReadyTimeout
+	// TS reads this with Number.parseInt(…, 10); Atoi would reject the
+	// trailing-suffix forms parseInt accepts and fall back to the default.
+	if value, ok := contract.ParseInt(os.Getenv("TOKENBOARD_ANTIGRAVITY_READY_TIMEOUT_MS")); ok && value > 0 {
+		return time.Duration(value) * time.Millisecond
 	}
-	return time.Duration(value) * time.Millisecond
+	return defaultReadyTimeout
 }
 
 // probeLanguageServerEndpoint opens a TLS connection to the local port. The

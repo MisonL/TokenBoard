@@ -351,3 +351,45 @@ func TestRunJSONRunsWindowsShimWithQuotedParenthesizedArguments(t *testing.T) {
 	}
 	_ = exec.ErrNotFound
 }
+
+// TS reads both of these with Number.parseInt(…, 10): a trailing suffix is
+// ignored. Atoi rejected those values and fell back to the defaults, so the
+// two collectors used different budgets for the same environment.
+func TestCommandEnvValuesReadLikeParseInt(t *testing.T) {
+	timeouts := []struct {
+		value string
+		want  int
+	}{
+		{"5000", 5000},
+		{"5000ms", 5000},
+		{" 5000", 5000},
+		{"5000.9", 5000},
+		{"0", DefaultCommandTimeoutMs},
+		{"-1", DefaultCommandTimeoutMs},
+		{"abc", DefaultCommandTimeoutMs},
+	}
+	for _, tc := range timeouts {
+		t.Setenv("TOKENBOARD_COMMAND_TIMEOUT_MS", tc.value)
+		if got := readCommandTimeoutMs(); got != tc.want {
+			t.Errorf("readCommandTimeoutMs(%q) = %d, want %d", tc.value, got, tc.want)
+		}
+	}
+
+	delays := []struct {
+		value string
+		want  time.Duration
+	}{
+		{"250", 250 * time.Millisecond},
+		{"250ms", 250 * time.Millisecond},
+		{"250.9", 250 * time.Millisecond},
+		{"0", 0},
+		{"-1", DefaultRetryDelayMs * time.Millisecond},
+		{"abc", DefaultRetryDelayMs * time.Millisecond},
+	}
+	for _, tc := range delays {
+		t.Setenv("TOKENBOARD_COMMAND_RETRY_DELAY_MS", tc.value)
+		if got := readRetryDelay(); got != tc.want {
+			t.Errorf("readRetryDelay(%q) = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}

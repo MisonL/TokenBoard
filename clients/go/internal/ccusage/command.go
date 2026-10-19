@@ -8,11 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 // Port of command.ts. The messages are load-bearing: a timeout is named as a
@@ -248,16 +248,16 @@ func quoteWindowsShellArgument(value string) string {
 }
 
 func readCommandTimeoutMs() int {
-	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("TOKENBOARD_COMMAND_TIMEOUT_MS")))
-	if err == nil && value > 0 {
+	// parseInt semantics, matching TS: a trailing suffix still yields a
+	// usable value.
+	if value, ok := contract.ParseInt(os.Getenv("TOKENBOARD_COMMAND_TIMEOUT_MS")); ok && value > 0 {
 		return value
 	}
 	return DefaultCommandTimeoutMs
 }
 
 func readRetryDelay() time.Duration {
-	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("TOKENBOARD_COMMAND_RETRY_DELAY_MS")))
-	if err == nil && value >= 0 {
+	if value, ok := contract.ParseInt(os.Getenv("TOKENBOARD_COMMAND_RETRY_DELAY_MS")); ok && value >= 0 {
 		return time.Duration(value) * time.Millisecond
 	}
 	return DefaultRetryDelayMs * time.Millisecond
