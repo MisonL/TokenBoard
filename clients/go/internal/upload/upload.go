@@ -368,13 +368,16 @@ func requestTimeoutMs(config Config) int {
 // rather than making the whole value unreadable. An optional base prefix is
 // not honoured, because base 10 stops at the "x" in "0x10", which is also what
 // parseInt does.
+//
+// A value too large for an int saturates in the sign's direction instead of
+// failing. JS has no overflow at these magnitudes, so the number it returns is
+// merely huge; reporting "unreadable" would send the caller back to a default
+// the TS side never uses.
 func parseLeadingInt(value string) (int, bool) {
 	text := strings.TrimLeft(value, " \t\n\r\v\f")
-	sign := 1
+	negative := false
 	if text != "" && (text[0] == '+' || text[0] == '-') {
-		if text[0] == '-' {
-			sign = -1
-		}
+		negative = text[0] == '-'
 		text = text[1:]
 	}
 	digits := 0
@@ -386,9 +389,15 @@ func parseLeadingInt(value string) (int, bool) {
 	}
 	parsed, err := strconv.Atoi(text[:digits])
 	if err != nil {
-		return 0, false
+		if negative {
+			return -math.MaxInt, true
+		}
+		return math.MaxInt, true
 	}
-	return sign * parsed, true
+	if negative {
+		parsed = -parsed
+	}
+	return parsed, true
 }
 
 func isRetryableStatus(status int) bool {

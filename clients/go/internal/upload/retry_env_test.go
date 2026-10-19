@@ -33,6 +33,23 @@ func TestRetryDelayReadsTheEnvironmentLikeParseInt(t *testing.T) {
 	}
 }
 
+// An oversized positive value is clamped to the ceiling, not discarded:
+// parseInt returns the number however large it is, and everything above the
+// ceiling collapses to the same delay. Falling back to the default here would
+// make the two clients back off differently for the same input.
+func TestRetryDelayClampsAnOversizedEnvironmentValue(t *testing.T) {
+	t.Setenv("TOKENBOARD_FETCH_RETRY_DELAY_MS", "99999999999999999999")
+	if got := retryDelay(nil, 0, 0); got != maxRetryDelayMs*time.Millisecond {
+		t.Errorf("retryDelay = %v, want the %v ceiling", got, maxRetryDelayMs*time.Millisecond)
+	}
+
+	// A negative overflow stays negative in JS, so it takes the default.
+	t.Setenv("TOKENBOARD_FETCH_RETRY_DELAY_MS", "-99999999999999999999")
+	if got := retryDelay(nil, 0, 0); got != defaultRetryDelayMs*time.Millisecond {
+		t.Errorf("retryDelay = %v, want the %v default", got, defaultRetryDelayMs*time.Millisecond)
+	}
+}
+
 // An explicit Config override outranks the environment, and a non-zero
 // override is the only way to express "zero" through the config.
 func TestRetryDelayPrefersTheConfigOverride(t *testing.T) {
