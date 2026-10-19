@@ -192,6 +192,10 @@ clients/go/
   - `upgrade.mjs --to-binary`：迁移分支——装二进制 + 写 `clientType: 'binary'`，**不删旧 checkout**（改回 `'git'` 即回滚）；安装失败时不改配置（否则下次 sync 会去 spawn 一个不存在的二进制）。
   - `status.mjs` 输出 `clientType`。
 - 端到端实测（2026-10-18，本机 darwin/amd64，本地 stub 发布端点）：GoReleaser 快照产物 → `installClientBinary` 引导安装 → `tokenboard version` 报 `0.0.0-SNAPSHOT-cfe61a0` → 自更新到 9.9.9（校验通过、`.backup-…` 保留旧版、再次运行为 no-op）→ `sync.mjs --mode preview` 以 binary 客户端跑通（同一 grok fixture 下与 TS 侧 `--since all` 均 1 条 snapshot）。顺带修掉一个只在真实路径暴露的缺陷：binary 分支曾把 `cwd` 设成不存在的 collector checkout，spawn 报 `ENOENT` 并被读成「客户端未安装」。
+- 2026-10-19 收尾修复（`34d5371`、`ae64125`、`ebbce64`）：
+  - `self-update` 的 `--tag`/`--repo` 曾解析后丢弃，现在都进 `Input`，且 flag 优先于环境变量（与 skill 的 `flags['release-repo'] || env.…` 同序）。
+  - 安装时指定的发布源此前只用于那一次安装，后续自动更新回落到默认仓库。现在 `migrateToBinaryClient` 把非默认的 `releaseRepo`/`releaseBaseUrl` 写入配置，`buildSyncInvocation` 经 `sharedEnv` 传给 client，`runPreCollectUpgrade` 也把 invocation 的 env 传给 self-update spawn（此前完全没传，用了 ambient env）。`release-tag` 刻意不持久化——它只钉住一次安装。
+  - `swap` 注释曾声称两次 rename 之间没有空窗，实际目标路径在该窗口缺失。注释订正；skill 侧新增 `recoverOrphanedBinary`，在目标缺失时从最新 `.backup-*` 恢复（前缀取自配置路径的 basename，与 Go 的 `backupPath` 同源）。
 - 未覆盖边界：真实 GitHub Releases 发布（仓库尚无 tag/CI workflow）、ccusage 随 tarball 捆绑（spec §4 的 CI 步骤，当前走三层获取的 PATH/下载路径）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
 - Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 
