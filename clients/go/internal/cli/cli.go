@@ -749,14 +749,20 @@ func runSelfUpdate(args []string, env Env, stdout, stderr io.Writer) int {
 			rest = append(rest, arg)
 		}
 	}
-	if _, err := readFlags(rest); err != nil {
+	flags, err := readFlags(rest)
+	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return ExitUsage
 	}
+	// The flag is the operator's intent for this run and wins over the
+	// environment, which is the scheduler's channel; the skill spells both the
+	// same way (`flags['release-repo'] || env.TOKENBOARD_RELEASE_REPO`). A
+	// pinned tag skips the release lookup and installs that version even when
+	// it is not the newest, which is what `--tag` has to mean.
 	selfupdate.SetCurrentVersion(Version)
 	result, err := selfupdate.Run(selfupdate.Input{
-		Repo: strings.TrimSpace(env("TOKENBOARD_RELEASE_REPO")),
-		Tag:  strings.TrimSpace(env("TOKENBOARD_RELEASE_TAG")),
+		Repo: firstNonEmpty(strings.TrimSpace(flags["repo"]), strings.TrimSpace(env("TOKENBOARD_RELEASE_REPO"))),
+		Tag:  firstNonEmpty(strings.TrimSpace(flags["tag"]), strings.TrimSpace(env("TOKENBOARD_RELEASE_TAG"))),
 		Env:  env,
 		Stderr: func(line string) {
 			fmt.Fprintln(stderr, upload.RedactURLs(line))

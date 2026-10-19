@@ -12,8 +12,18 @@
 //   - the previous binary is kept until the new one has answered `version`.
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { errorMessage } from './error-message.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 
@@ -347,11 +357,56 @@ export async function installClientBinary({
   }
 }
 
+// recoverOrphanedBinary restores a binary whose swap was interrupted.
+//
+// `self-update` renames the running binary aside, then renames the staged one
+// into its place. A process killed between those two leaves `tokenboard.backup-*`
+// with no target in place, and the machine then reports "client is not
+// installed" on every sync with no way back. The backup is the previous
+// working binary, so the recovery is a rename back into place — and it only
+// runs when the target is genuinely missing, so it cannot undo a good install.
+export function recoverOrphanedBinary({ binaryPath, readDir = readdirSync, rename = renameSync, log = () => {} }) {
+  if (existsSync(binaryPath)) {
+    return null
+  }
+  const directory = dirname(binaryPath)
+  // Go's backupPath is `current + ".backup-" + stamp`, so the prefix follows the
+  // path actually configured rather than the platform's default file name.
+  const prefix = `${basename(binaryPath)}.backup-`
+  let names
+  try {
+    names = readDir(directory)
+  } catch {
+    return null
+  }
+  const backups = names.filter((name) => name.startsWith(prefix)).sort()
+  const latest = backups.at(-1)
+  if (!latest) {
+    return null
+  }
+  rename(join(directory, latest), binaryPath)
+  log(`TokenBoard client was missing; restored ${binaryPath} from ${latest}`)
+  return join(directory, latest)
+}
+
 // runSelfUpdate hands the upgrade to the installed binary, which owns the
 // checksum verification and the rename-swap from here on. The scheduled path
 // passes --scheduled so an offline machine stays quiet instead of failing the
 // run.
-export function runSelfUpdate({ binaryPath, scheduled = false, spawn = spawnSync, env = process.env, log = () => {} }) {
+export function runSelfUpdate({
+  binaryPath,
+  scheduled = false,
+  spawn = spawnSync,
+  env = process.env,
+  log = () => {},
+  readDir = readdirSync,
+  rename = renameSync
+}) {
+  if (!existsSync(binaryPath)) {
+    // A missing target may be the remains of an interrupted swap rather than a
+    // client that was never installed; restore before deciding.
+    recoverOrphanedBinary({ binaryPath, readDir, rename, log })
+  }
   if (!existsSync(binaryPath)) {
     throw new Error(`TokenBoard client is not installed: ${binaryPath}`)
   }

@@ -254,9 +254,15 @@ func backupPath(current string, now func() time.Time) string {
 	return fmt.Sprintf("%s.backup-%s", current, stamp.Format("20060102T150405Z"))
 }
 
-// swap replaces current with staged, keeping the old file as backup. The
-// rename order means a crash between the two leaves the original in place
-// under the backup name and no window where neither file exists.
+// swap replaces current with staged, keeping the old file as backup.
+//
+// The two renames are not atomic as a pair: between them the target path does
+// not exist. The original is never lost — it is at `backup` — but a process
+// killed in that window leaves the machine with no client at `current`, and
+// the next scheduled sync reports "client is not installed". The skill's
+// binary path therefore restores from the backup before spawning (see
+// `recoverOrphanedBinary` in client-binary.mjs); a manual run can always
+// rename the backup back by hand.
 func swap(staged, current, backup string) error {
 	if err := os.Rename(current, backup); err != nil {
 		return fmt.Errorf("cannot back up the current TokenBoard binary: %w", err)

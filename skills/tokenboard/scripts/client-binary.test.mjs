@@ -14,6 +14,7 @@ import {
   installClientBinary,
   latestTag,
   readChecksums,
+  recoverOrphanedBinary,
   releasePlatform,
   resolveRelease,
   runSelfUpdate,
@@ -248,7 +249,43 @@ test('installClientBinary refuses a binary that does not answer version', async 
 })
 
 test('runSelfUpdate refuses to run when no client is installed', () => {
-  assert.throws(() => runSelfUpdate({ binaryPath: join(tmpdir(), 'missing-tokenboard') }), /is not installed/)
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-missing-client-'))
+  assert.throws(() => runSelfUpdate({ binaryPath: join(dir, 'missing-tokenboard') }), /is not installed/)
+})
+
+test('runSelfUpdate restores a binary left behind by an interrupted swap', () => {
+  // `self-update` renames the running binary aside before staging the new one;
+  // a process killed in between leaves the backup and no target. Without this
+  // recovery every later sync reports "client is not installed".
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-orphan-'))
+  const binaryPath = join(dir, binaryFileName('darwin'))
+  writeFileSync(`${binaryPath}.backup-20260101T000000Z`, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+  runSelfUpdate({ binaryPath, spawn: () => ({ status: 0, stdout: 'tokenboard (go) 1.2.3\n' }), log: () => {} })
+
+  assert.equal(existsSync(binaryPath), true)
+  assert.equal(existsSync(`${binaryPath}.backup-20260101T000000Z`), false)
+})
+
+test('recovery follows the configured file name, not the platform default', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-renamed-'))
+  const binaryPath = join(dir, 'custom-client')
+  writeFileSync(`${binaryPath}.backup-20260101T000000Z`, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+  recoverOrphanedBinary({ binaryPath })
+
+  assert.equal(existsSync(binaryPath), true)
+})
+
+test('a healthy binary is never replaced by a backup', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-healthy-'))
+  const binaryPath = join(dir, binaryFileName('darwin'))
+  writeFileSync(binaryPath, 'current', { mode: 0o755 })
+  writeFileSync(`${binaryPath}.backup-20260101T000000Z`, 'older', { mode: 0o755 })
+
+  runSelfUpdate({ binaryPath, spawn: () => ({ status: 0, stdout: 'ok\n' }), log: () => {} })
+
+  assert.equal(readFileSync(binaryPath, 'utf8'), 'current')
 })
 
 test('runSelfUpdate forwards --scheduled and reports a non-zero exit', () => {

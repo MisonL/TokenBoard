@@ -125,3 +125,64 @@ func TestSelfUpdatePrintsVersionAndUpdated(t *testing.T) {
 		t.Errorf("stdout = %q, want version 1.2.3 and updated false", stdout)
 	}
 }
+
+// `--tag` is the operator's way to install a specific release; the parser used
+// to accept it and then drop it, so the update silently took the newest one.
+// A pinned tag resolves without a release lookup, so a recording server sees
+// the archive download and never `/releases/latest`.
+func TestSelfUpdatePinsTheTagFlagWithoutALookup(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	code, _, stderr := run(t, map[string]string{
+		"TOKENBOARD_RELEASE_BASE_URL": server.URL,
+	}, "self-update", "--tag", "v0.0.1")
+
+	if code != ExitFailure {
+		t.Errorf("exit = %d, want %d (the download 404s); stderr: %s", code, ExitFailure, stderr)
+	}
+	if len(paths) == 0 {
+		t.Fatalf("no request reached the release server; stderr: %s", stderr)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "releases/latest") {
+			t.Errorf("a pinned tag must skip the latest-release lookup; requests: %v", paths)
+		}
+		if !strings.Contains(path, "/releases/download/v0.0.1/") {
+			t.Errorf("request %q is not the pinned tag's download", path)
+		}
+	}
+}
+
+// `--repo` names the repository for this run. An operator overriding a value
+// the scheduler exported expects the flag to win; the skill's upgrade path
+// spells the same precedence (`flags['release-repo'] || env.…`).
+func TestSelfUpdateRepoFlagOverridesTheEnvironment(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	code, _, stderr := run(t, map[string]string{
+		"TOKENBOARD_RELEASE_BASE_URL": server.URL,
+		"TOKENBOARD_RELEASE_REPO":     "env/repo",
+	}, "self-update", "--repo", "flag/repo")
+
+	if code != ExitFailure {
+		t.Errorf("exit = %d, want %d (the lookup 404s); stderr: %s", code, ExitFailure, stderr)
+	}
+	if len(paths) == 0 {
+		t.Fatalf("no request reached the release server; stderr: %s", stderr)
+	}
+	for _, path := range paths {
+		if !strings.HasPrefix(path, "/flag/repo/") {
+			t.Errorf("request %q did not use the --repo value; requests: %v", path, paths)
+		}
+	}
+}
