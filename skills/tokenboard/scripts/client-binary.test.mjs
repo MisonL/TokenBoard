@@ -19,6 +19,7 @@ import {
   runSelfUpdate,
   tagFromURL,
   verifyChecksum,
+  verifyExecutable,
   versionOf
 } from './client-binary.mjs'
 
@@ -111,6 +112,17 @@ test('resolveRelease follows the releases-latest redirect instead of the REST AP
   assert.equal(release.archive.name, 'tokenboard_darwin_amd64.tar.gz')
   assert.match(release.archive.url, /\/releases\/download\/v1\.2\.3\//)
   assert.equal(release.checksums.name, 'checksums.txt')
+})
+
+test('verifyExecutable requires the version as a whole token', () => {
+  // The staged binary is the only check before the swap. A substring match
+  // accepts "1.2.30" for "1.2.3" and installs a truncated download as the
+  // client; Go's verifyExecutable has always matched a whole token.
+  const spawn = () => ({ status: 0, stdout: 'tokenboard (go) 1.2.30\n', stderr: '' })
+  assert.throws(() => verifyExecutable('/staged/tokenboard', '1.2.3', { spawn }), /does not run/)
+
+  const exact = () => ({ status: 0, stdout: 'tokenboard (go) 1.2.3\n', stderr: '' })
+  verifyExecutable('/staged/tokenboard', '1.2.3', { spawn: exact })
 })
 
 test('resolveRelease refuses a redirect loop rather than walking it', async (t) => {

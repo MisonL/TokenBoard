@@ -261,8 +261,27 @@ export function verifyExecutable(path, version, { spawn = spawnSync } = {}) {
   }
   const printed = String(result.stdout ?? '').trim()
   if (!printed) throw new Error('the downloaded TokenBoard binary does not run: it printed no version')
-  if (!printed.includes(version)) {
+  // A substring test would accept "1.2.30" for "1.2.3", and this check is the
+  // only thing between a truncated download and a broken install. Go's
+  // `verifyExecutable` matches a whole token; the bootstrap has to agree.
+  if (!namesVersion(printed, version)) {
     throw new Error(`the downloaded TokenBoard binary does not run: it printed ${JSON.stringify(printed)}`)
+  }
+}
+
+// namesVersion reports whether the output names the version as a standalone
+// token, delimited by anything that is not part of a version number.
+export function namesVersion(output, version) {
+  const isContinuation = (char) => (char >= '0' && char <= '9') || char === '.'
+  let start = 0
+  for (;;) {
+    const index = output.indexOf(version, start)
+    if (index < 0) return false
+    const before = index > 0 ? output[index - 1] : ' '
+    const end = index + version.length
+    const after = end < output.length ? output[end] : ' '
+    if (!isContinuation(before) && !isContinuation(after)) return true
+    start = index + 1
   }
 }
 
