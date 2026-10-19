@@ -794,8 +794,12 @@ func jsonlParseJSDate(value string) (time.Time, bool) {
 		for _, layout := range []string{
 			time.RFC3339Nano,
 			time.RFC3339,
+			"2006-01-02T15:04Z07:00",
+			"2006-01-02T15:04:05Z0700",
+			"2006-01-02T15:04Z0700",
 			"2006-01-02 15:04:05.999999999Z07:00",
 			"2006-01-02 15:04:05Z07:00",
+			"2006-01-02 15:04Z07:00",
 		} {
 			if parsed, err := time.Parse(layout, trimmed); err == nil {
 				return parsed, true
@@ -803,11 +807,15 @@ func jsonlParseJSDate(value string) (time.Time, bool) {
 		}
 		return time.Time{}, false
 	case codexISODateTimeWithoutZone.MatchString(trimmed):
+		// JS accepts a missing seconds field here; the pattern already does, so
+		// the layout list has to as well.
 		for _, layout := range []string{
 			"2006-01-02T15:04:05.999999999",
 			"2006-01-02T15:04:05",
+			"2006-01-02T15:04",
 			"2006-01-02 15:04:05.999999999",
 			"2006-01-02 15:04:05",
+			"2006-01-02 15:04",
 		} {
 			if parsed, err := time.ParseInLocation(layout, trimmed, time.Local); err == nil {
 				return parsed, true
@@ -816,7 +824,12 @@ func jsonlParseJSDate(value string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999 MST",
 		"2006-01-02 15:04:05 MST",
+		// JS resolves "2025-08-08 10:00 UTC" (the retry the caller appends),
+		// so the space-separated form has to resolve here too — otherwise the
+		// raw value reaches the contract where a date belongs.
+		"2006-01-02 15:04 MST",
 		"Jan 2, 2006 MST",
 		"Jan 2, 2006 15:04:05 MST",
 		"Jan 2, 2006",

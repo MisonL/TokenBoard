@@ -652,3 +652,26 @@ func mustMarshalJSON(t *testing.T, value any) string {
 	}
 	return string(encoded)
 }
+
+// Date.parse accepts timestamp forms the layout lists did not spell out: a
+// missing seconds field, a colon-less offset, and a space instead of "T". The
+// TS collector normalizes all of them to a calendar date; returning the raw
+// value instead hands the contract a timestamp where a date belongs, and
+// validation rejects the whole sync.
+func TestNormalizeDateAcceptsTheFormsDateParseAccepts(t *testing.T) {
+	cases := map[string]string{
+		"2025-08-08T10:00Z":        "2025-08-08",
+		"2025-08-08T10:00:00+0200": "2025-08-08",
+		"2025-08-08 10:00":         "2025-08-08",
+		"2025-08-08 10:00:00":      "2025-08-08",
+	}
+	for value, want := range cases {
+		got, err := NormalizeDate(value)
+		if err != nil {
+			t.Fatalf("NormalizeDate(%q): %v", value, err)
+		}
+		if got != want {
+			t.Errorf("NormalizeDate(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
