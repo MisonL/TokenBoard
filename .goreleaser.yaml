@@ -2,8 +2,9 @@
 #
 # Cut with `goreleaser release --clean` on a version tag (`vX.Y.Z`). The
 # output this must produce is fixed by `internal/release`:
-#   - five platform builds, archive `tokenboard_<os>_<arch>.tar.gz`
-#     (`Platform()` in that package validates the same five pairs),
+#   - six platform builds (3 OS × 2 arch), archive
+#     `tokenboard_<os>_<arch>.tar.gz` (`Platform()` in that package validates
+#     the same six pairs),
 #   - a `checksums.txt` manifest of sha256 digests (`Checksums()`),
 #   - the binary inside the archive named `tokenboard` (`tokenboard.exe`
 #     on Windows), which `extractBinary()` looks up by base name.

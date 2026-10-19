@@ -155,7 +155,7 @@ test('latestTag decodes a percent-escaped tag', () => {
   assert.equal(tagFromURL('https://github.com/o/r/releases/latest'), '')
 })
 
-test('releasePlatform covers the five published builds and refuses the rest', () => {
+test('releasePlatform covers the six published builds and refuses the rest', () => {
   assert.equal(releasePlatform('darwin', 'x64'), 'darwin_amd64')
   assert.equal(releasePlatform('darwin', 'arm64'), 'darwin_arm64')
   assert.equal(releasePlatform('linux', 'x64'), 'linux_amd64')

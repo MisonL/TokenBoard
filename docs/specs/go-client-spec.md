@@ -10,7 +10,7 @@
 | D1 | 语言 | **Go**，Web 端（apps/web）留 TS 不动 |
 | D2 | 仓库 | **不拆库**：Go client 长期住在 `clients/go/`，无拆仓里程碑 |
 | D3 | 依赖策略 | **能用最新就用最新**：依赖跟随 latest，靠「升级门禁」（见 §5）兜底，不做长期 pin |
-| D4 | 交付形态 | 单二进制，GoReleaser × 5 平台（darwin/linux/win32 × x64/arm64），免 CGO |
+| D4 | 交付形态 | 单二进制，GoReleaser × 6 平台（darwin/linux/win32 × x64/arm64），免 CGO |
 | D5 | ccusage | 捆绑 > 探测 > 下载（fail-closed）；ccusage 是 Rust 静态二进制（npm 平台包分发，MIT，sha512 可 pin） |
 | D6 | GUI | 与 CLI 解耦另行立项，不进本 spec |
 | D7 | Zig | 不采用 |
@@ -92,7 +92,7 @@ clients/go/
 
 ## 8. 升级通道
 
-- GoReleaser：5 平台 tarball + checksums.txt；`tokenboard self-update`：查 Releases → 比较 → 下载 → 验 checksum → rename-swap（新版先 `.new` 落地、`--version` 验证后替换、旧版留 backup）。
+- GoReleaser：6 平台 tarball（3 OS × 2 arch）+ checksums.txt；`tokenboard self-update`：查 Releases → 比较 → 下载 → 验 checksum → rename-swap（新版先 `.new` 落地、`--version` 验证后替换、旧版留 backup）。
 - 定时升级路径改调 `self-update --scheduled`，**解耦 git 工作树状态**（消解「安装目录=开发仓库→脏树→升级永久跳过」死结）。
 - 现存 git-clone 用户：upgrade.mjs 迁移分支——装二进制 + `config.clientType:'binary'`，不删旧 checkout；`clientType` 缺省 `'git'` 保持兼容。
 - 包管理器（brew/scoop/winget）：二期，检测到包管理器安装时 self-update 提示改用之，避免双头更新。
@@ -181,9 +181,9 @@ clients/go/
 
 **M6 状态（GoReleaser / self-update / skill 改造，2026-10-18）**：
 
-- [x] `internal/release`：发布通道的读侧。**不碰 api.github.com**——该端点对匿名调用按 IP 限流 60 次/小时，同一 NAT 后的多台机器共用一个额度，定时自更新会随机失败。改为走 `/releases/latest` 的 302 跳转解析 tag（最多 5 跳，超限即报循环；相对 Location 按当前 URL 解析），再按 `releases/download/<tag>/<asset>` 拼下载 URL，两者与普通资产下载同一 CDN、无配额。`Repo` 校验 owner/repo；`Platform` 只接受构建矩阵的六组（`darwin|linux|windows` × `amd64|arm64`；spec §9 的 D4 写「5 平台」，实际矩阵是 3×2=6）；`Checksums` 对畸形行 fail-closed（不是跳过）；`Verify` 要求 manifest 含该资产名（未列出即拒绝安装）。
+- [x] `internal/release`：发布通道的读侧。**不碰 api.github.com**——该端点对匿名调用按 IP 限流 60 次/小时，同一 NAT 后的多台机器共用一个额度，定时自更新会随机失败。改为走 `/releases/latest` 的 302 跳转解析 tag（最多 5 跳，超限即报循环；相对 Location 按当前 URL 解析），再按 `releases/download/<tag>/<asset>` 拼下载 URL，两者与普通资产下载同一 CDN、无配额。`Repo` 校验 owner/repo；`Platform` 只接受构建矩阵的六组（`darwin|linux|windows` × `amd64|arm64`；D4 原先写「5 平台」，已订正为 3×2=6）；`Checksums` 对畸形行 fail-closed（不是跳过）；`Verify` 要求 manifest 含该资产名（未列出即拒绝安装）。
 - [x] `internal/selfupdate`：`self-update` 的写侧。顺序固定为 解析 → 下载 archive+checksums → 验 checksum → 解包 → 写 `<dir>/tokenboard.new` → 执行 `version` 验证 → rename 换入（旧版留 `.backup-<UTC>`）。先替换后验证会让机器上的 collector 彻底跑不起来，而「负责升级的东西」正是它自己，定时任务永远修不回来，所以验证必须在 swap 之前。`verifyExecutable` 按**整 token** 匹配版本号（`1.2.30` 不含 `1.2.3`），避免把截断下载当成合格版本。scheduled 路径失败时 CLI 返回 0（离线是正常状态，调度器无法处置升级失败）。
-- [x] `.goreleaser.yaml`：5 平台 tarball（Windows 也强制 tar.gz，因为 `extractBinary` 只读 gzip tar）+ `checksums.txt` + `-ldflags` 注入 `internal/cli.Version`。已用真实 GoReleaser v2.12.7 跑 `check` 与 `release --snapshot` 验证：产物名恰为 `tokenboard_<os>_<arch>.tar.gz`、`checksums.txt`、包内可执行文件名为 `tokenboard`，与 `release.Platform()`/`ArchiveName()`/`ChecksumsName()`/`binaryFileName()` 逐项对齐。
+- [x] `.goreleaser.yaml`：6 平台 tarball（3 OS × 2 arch；Windows 也强制 tar.gz，因为 `extractBinary` 只读 gzip tar）+ `checksums.txt` + `-ldflags` 注入 `internal/cli.Version`。已用真实 GoReleaser v2.12.7 跑 `check` 与 `release --snapshot` 验证：产物名恰为 `tokenboard_<os>_<arch>.tar.gz`、`checksums.txt`、包内可执行文件名为 `tokenboard`，与 `release.Platform()`/`ArchiveName()`/`ChecksumsName()`/`binaryFileName()` 逐项对齐。
 - [x] skill 二进制客户端（`clientType`，缺省 `'git'`）：
   - `scripts/client-binary.mjs`：**仅用于首次引导**（此时还没有二进制可以执行 `self-update`）。它实现与 `internal/release` 同口径的三条规则（跳转解析、无 checksums 即拒、`version` 验证后换入），解包用平台自带 `tar`（与 archive fallback 用 `unzip` 同思路）。
   - `config.mjs` 增 `readClientType`（flag > `TOKENBOARD_CLIENT` > `clientType` > `'git'`），未知值报错而非静默按 git 跑；`clientType` 进入 profile-scoped 键集。

@@ -83,7 +83,7 @@ func Version(tagName string) string {
 // Platform names the release asset suffix for a GOOS/GOARCH pair, matching
 // the naming GoReleaser produces for this project's build matrix: the
 // `{{ .Os }}_{{ .Arch }}` default, so the suffix is the GOOS and GOARCH
-// themselves for the five pairs the config builds.
+// themselves for the six pairs the config builds.
 func Platform(goos, goarch string) (string, bool) {
 	os, ok := assetOS(goos)
 	if !ok {
