@@ -2579,6 +2579,48 @@ test('migrateToBinaryClient honors an explicit release repo, tag and base URL', 
   assert.equal(installed[0].baseUrl, 'https://github.example')
 })
 
+// The install-time release source has to outlive the install: every later
+// automatic `self-update` resolves the feed on its own, and without this the
+// machine quietly starts updating from the default repository instead of the
+// one it was installed from.
+test('migrateToBinaryClient records a non-default release source', async () => {
+  const merged = []
+  await migrateToBinaryClient({
+    flags: { 'release-repo': 'other/TokenBoard', 'release-base-url': 'https://github.example' },
+    env: {},
+    configDirectory: '/home/user/.tokenboard',
+    install: async () => ({ version: '9.9.9', path: '/x/tokenboard', tag: 'v9.9.9' }),
+    mergeConfigFile: (patch) => {
+      merged.push(patch)
+      return { ...patch }
+    },
+    log: () => {}
+  })
+
+  assert.deepEqual(merged, [
+    { clientType: 'binary', releaseRepo: 'other/TokenBoard', releaseBaseUrl: 'https://github.example' }
+  ])
+})
+
+// A tag pins one install; pinning it into the config would freeze the client
+// on that version forever, since self-update reads the same field.
+test('migrateToBinaryClient never records the pinned tag', async () => {
+  const merged = []
+  await migrateToBinaryClient({
+    flags: { 'release-tag': 'v9.9.9' },
+    env: {},
+    configDirectory: '/home/user/.tokenboard',
+    install: async () => ({ version: '9.9.9', path: '/x/tokenboard', tag: 'v9.9.9' }),
+    mergeConfigFile: (patch) => {
+      merged.push(patch)
+      return { ...patch }
+    },
+    log: () => {}
+  })
+
+  assert.deepEqual(merged, [{ clientType: 'binary' }])
+})
+
 test('migrateToBinaryClient leaves clientType alone when the install fails', async () => {
   const merged = []
   await assert.rejects(

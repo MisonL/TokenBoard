@@ -252,7 +252,15 @@ export function runPreCollectUpgrade({
       return
     }
     try {
-      selfUpdate({ binaryPath: invocation.command, scheduled: flags.scheduled === true, log })
+      // The invocation's env carries the release feed this client was
+      // installed from; spawning with the ambient process env instead would
+      // let a scheduled update reach a different feed than the install used.
+      selfUpdate({
+        binaryPath: invocation.command,
+        scheduled: flags.scheduled === true,
+        env: invocation.env || env,
+        log
+      })
     } catch (error) {
       warn(`TokenBoard self-update skipped: ${redactUrlCredentials(errorMessage(error))}`)
     }
@@ -531,6 +539,12 @@ export function buildSyncInvocation({
     ...(until !== undefined ? { TOKENBOARD_UNTIL: until } : {}),
     TOKENBOARD_SINCE: since,
     TOKENBOARD_DEFAULT_SINCE: since,
+    // The feed this client was installed from, recorded at install time. The
+    // Go client's `self-update` reads both variables, so carrying them through
+    // the shared env keeps an automatic update pointed at that feed instead of
+    // the compiled-in default repository.
+    ...(config.releaseRepo ? { TOKENBOARD_RELEASE_REPO: config.releaseRepo } : {}),
+    ...(config.releaseBaseUrl ? { TOKENBOARD_RELEASE_BASE_URL: config.releaseBaseUrl } : {}),
     ...(flags.scheduled === true ? onlyWhenUnset('TOKENBOARD_FAIL_ON_SOURCE_ERROR', '1') : {}),
     ...(flags.hook === true
       ? {

@@ -51,10 +51,20 @@ export async function migrateToBinaryClient({
   const tag = trimmedString(flags['release-tag'] || env.TOKENBOARD_RELEASE_TAG) || undefined
   const baseUrl = trimmedString(flags['release-base-url'] || env.TOKENBOARD_RELEASE_BASE_URL) || undefined
   const installed = await install({ repo, tag, baseUrl, configDir: configDirectory, log })
-  // Only the switch is recorded: the install location is derived from the
-  // config directory, so a copied config cannot point at another machine's
-  // binary.
-  const next = mergeConfigFile({ clientType: 'binary' })
+  // The switch is recorded so the next sync knows which client to run. A
+  // release source that came from a flag or the environment is recorded too:
+  // every later `self-update` resolves the feed on its own, and forgetting it
+  // would silently move the machine back to the default repository. The tag
+  // is deliberately not recorded — it pins this one install, and persisting it
+  // would freeze the client on that version.
+  //
+  // The install location is still derived from the config directory, so a
+  // config copied to another machine cannot point at this one's binary.
+  const next = mergeConfigFile({
+    clientType: 'binary',
+    ...(repo !== defaultReleaseRepo ? { releaseRepo: repo } : {}),
+    ...(baseUrl ? { releaseBaseUrl: baseUrl } : {})
+  })
   log(
     `TokenBoard will run the released Go client (${installed.version}) from now on. ` +
       'Set clientType back to "git" in the config to return to the checkout install.'

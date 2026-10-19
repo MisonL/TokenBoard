@@ -337,6 +337,50 @@ test('a binary client invocation runs the Go binary with the same env contract',
   assert.equal(invocation.env.TOKENBOARD_CCUSAGE_CONFIG, '/custom/pricing.json')
 })
 
+test('the release source recorded in the config reaches the binary', () => {
+  const invocation = buildSyncInvocation({
+    flags: { mode: 'sync' },
+    env: {},
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'binary',
+      releaseRepo: 'other/TokenBoard',
+      releaseBaseUrl: 'https://github.example'
+    },
+    homeDir: '/home/user',
+    pathEnv: '/usr/bin',
+    fileExists: () => true
+  })
+
+  assert.equal(invocation.env.TOKENBOARD_RELEASE_REPO, 'other/TokenBoard')
+  assert.equal(invocation.env.TOKENBOARD_RELEASE_BASE_URL, 'https://github.example')
+})
+
+// An install that never recorded a feed has to stay unset: exporting an empty
+// value would reach the Go side as an explicit, invalid repository.
+test('an install without a recorded release source exports nothing', () => {
+  const invocation = buildSyncInvocation({
+    flags: { mode: 'sync' },
+    env: {},
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'binary'
+    },
+    homeDir: '/home/user',
+    pathEnv: '/usr/bin',
+    fileExists: () => true
+  })
+
+  assert.equal('TOKENBOARD_RELEASE_REPO' in invocation.env, false)
+  assert.equal('TOKENBOARD_RELEASE_BASE_URL' in invocation.env, false)
+})
+
 test('a binary client invocation keeps the git argument shape for until and source', () => {
   const invocation = buildSyncInvocation({
     flags: { mode: 'preview', source: 'codex', until: '20260810' },
@@ -611,6 +655,37 @@ test('a binary client honors the skip-upgrade switch', () => {
 
     assert.deepEqual(selfUpdates, [], JSON.stringify(options))
   }
+})
+
+// The feed an install came from lives in the config, so an automatic update
+// keeps using it instead of falling back to the default repository.
+test('a binary client self-updates from the release source it was installed from', () => {
+  const selfUpdates = []
+  const upgrades = []
+  const warnings = []
+  runPreCollectUpgrade({
+    flags: { scheduled: true },
+    invocation: {
+      clientType: 'binary',
+      command: '/home/user/.tokenboard/bin/tokenboard',
+      env: {
+        PATH: '/usr/bin',
+        TOKENBOARD_RELEASE_REPO: 'other/TokenBoard',
+        TOKENBOARD_RELEASE_BASE_URL: 'https://github.example'
+      }
+    },
+    selfUpdate: (options) => selfUpdates.push(options),
+    upgrade: (options) => upgrades.push(options),
+    binaryExists: () => true,
+    log: () => {},
+    warn: (message) => warnings.push(message)
+  })
+
+  assert.equal(selfUpdates.length, 1)
+  assert.equal(selfUpdates[0].env.TOKENBOARD_RELEASE_REPO, 'other/TokenBoard')
+  assert.equal(selfUpdates[0].env.TOKENBOARD_RELEASE_BASE_URL, 'https://github.example')
+  assert.deepEqual(upgrades, [])
+  assert.deepEqual(warnings, [])
 })
 
 test('a binary client upgrades through its own self-update, not the checkout', () => {
