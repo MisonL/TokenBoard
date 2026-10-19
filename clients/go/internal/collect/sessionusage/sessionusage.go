@@ -275,8 +275,13 @@ func BoundedModel(value any) string {
 // truncateUTF16 mirrors JS String#slice(0, limit), which counts UTF-16 code
 // units. Counting runes instead would leave up to 320 units on an astral-plane
 // id, and contract validation — which counts units — would then reject the
-// snapshot. A cut that lands inside a surrogate pair drops the lone half, as
-// slice does.
+// snapshot.
+//
+// A cut inside a surrogate pair drops the half rather than keeping it. JS's
+// slice keeps the lone surrogate, but a Go string cannot hold one, and the
+// alternative — keeping the whole pair — would exceed the bound this function
+// exists to enforce. Only an id over 160 units with a pair straddling the cut
+// reaches this branch.
 func truncateUTF16(value string, limit int) string {
 	units := 0
 	for index, character := range value {

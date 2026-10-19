@@ -29,9 +29,11 @@ func TestBoundedModelTruncatesByUTF16Units(t *testing.T) {
 	}
 }
 
-// A cut that lands between the halves of a surrogate pair would store a lone
-// surrogate, which is not valid UTF-8. TS's slice has exactly this behaviour,
-// so the port keeps the same boundary rather than extending past it.
+// A cut that lands between the halves of a surrogate pair drops the half
+// rather than storing a lone surrogate, which a Go string cannot hold. JS's
+// slice keeps the half; the two can differ only for an id over 160 units with
+// a pair straddling the cut, and keeping the whole pair instead would break
+// the bound.
 func TestBoundedModelKeepsABoundaryCharacterWhole(t *testing.T) {
 	// 159 ASCII units leave room for one code unit of a surrogate pair.
 	model := BoundedModel(strings.Repeat("a", 159) + "😀" + "tail")
