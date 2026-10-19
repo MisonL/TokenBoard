@@ -14,13 +14,20 @@ func init() {
 }
 
 // markUnresolvedContextPricing ports the `cursor.source === 'codex'` branch of
-// updateCursorFile. It only ever sets the flag: a carried-over snapshot that
-// already has it keeps it until an acknowledgement clears it, which is what
-// the TS spread does.
+// updateCursorFile against the default rule set. It only ever sets the flag: a
+// carried-over snapshot that already has it keeps it until an acknowledgement
+// clears it, which is what the TS spread does.
 func markUnresolvedContextPricing(snapshots []sessioncursor.Snapshot) []sessioncursor.Snapshot {
+	return DefaultRules().MarkUnresolvedContextPricing(snapshots)
+}
+
+// MarkUnresolvedContextPricing is the rule-set-bound form. The provider passes
+// this to the cursor layer so a model the running catalogue prices is marked
+// by the same rules that will price it.
+func (r *Rules) MarkUnresolvedContextPricing(snapshots []sessioncursor.Snapshot) []sessioncursor.Snapshot {
 	out := make([]sessioncursor.Snapshot, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		if IsUnresolvedCodexContextPricingSnapshot(cursorCostSnapshot(snapshot)) {
+		if r.IsUnresolvedCodexContextPricingSnapshot(cursorCostSnapshot(snapshot)) {
 			snapshot.CodexContextPricingPending = true
 		}
 		out = append(out, snapshot)

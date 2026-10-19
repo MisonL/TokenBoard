@@ -61,12 +61,14 @@ func applyPricing(t *testing.T, snapshots []contract.Snapshot, usages []CodexCon
 		Stderr      func(string)
 		Timezone    string
 		CollectedAt string
+		Rules       *Rules
 	}{
 		Snapshots:   snapshots,
 		Usages:      usages,
 		Stderr:      func(line string) { lines = append(lines, line) },
 		Timezone:    "UTC",
 		CollectedAt: "2026-05-20T01:00:00.000Z",
+		Rules:       DefaultRules(),
 	})
 	if err != nil {
 		t.Fatalf("apply: %v (stderr %v)", err, lines)
@@ -345,8 +347,10 @@ func TestFailsWhenAnAttributedModelHasNoCanonicalRow(t *testing.T) {
 		Stderr      func(string)
 		Timezone    string
 		CollectedAt string
+		Rules       *Rules
 	}{
 		Snapshots: snapshots, Usages: usages, Timezone: "UTC", CollectedAt: "2026-05-20T01:00:00.000Z",
+		Rules: DefaultRules(),
 	})
 	if err == nil || !strings.HasPrefix(err.Error(), cannotSplitMixedModelUsage) {
 		t.Fatalf("err = %v", err)

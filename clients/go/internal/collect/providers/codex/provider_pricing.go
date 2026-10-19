@@ -46,14 +46,14 @@ var childSessionChangeMessages = map[string]bool{
 
 // mergeContextPricingUsages ports mergeContextPricingUsages: one entry per
 // (date, model, attributed model, service tier, context tier).
-func mergeContextPricingUsages(usages []CodexContextPricingUsage) []CodexContextPricingUsage {
+func (r *Rules) MergeContextPricingUsages(usages []CodexContextPricingUsage) []CodexContextPricingUsage {
 	merged := map[string]*CodexContextPricingUsage{}
 	order := []string{}
 	for _, usage := range usages {
-		model := NormalizeModelID(usage.Model)
+		model := r.NormalizeModelID(usage.Model)
 		attributed := ""
 		if usage.AttributedModel != nil {
-			attributed = NormalizeModelID(*usage.AttributedModel)
+			attributed = r.NormalizeModelID(*usage.AttributedModel)
 		}
 		serviceTier := string(usage.ServiceTier)
 		if serviceTier == "" {
@@ -143,7 +143,7 @@ func addMixedContextUsage(usages map[string]*mixedUsage, order *[]string, attrib
 // non-context model and a context-priced model is attributed by ccusage to the
 // non-context one, so the context row is rebuilt from the raw usage and the
 // attributed share is moved out of the canonical row.
-func splitMixedCodexContextPricingSnapshots(
+func (r *Rules) SplitMixedContextPricingSnapshots(
 	snapshots []contract.Snapshot,
 	usages []CodexContextPricingUsage,
 	costs []CodexContextPricingCost,
@@ -156,8 +156,8 @@ func splitMixedCodexContextPricingSnapshots(
 		if usage.AttributedModel == nil || *usage.AttributedModel == "" {
 			continue
 		}
-		model := NormalizeModelID(usage.Model)
-		attributed := NormalizeModelID(*usage.AttributedModel)
+		model := r.NormalizeModelID(usage.Model)
+		attributed := r.NormalizeModelID(*usage.AttributedModel)
 		key := usage.UsageDate + "\x00" + model
 		// The raw usage keeps Codex's legacy shape, where cached input is
 		// folded into the input count. The canonical row ccusage produces is
@@ -169,7 +169,7 @@ func splitMixedCodexContextPricingSnapshots(
 		cacheReadTokens := usage.CacheReadTokens
 		totalTokens := inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
 		usageCost := 0.0
-		if priced := PriceCodexContextPricingUsages([]CodexContextPricingUsage{usage}); len(priced) > 0 {
+		if priced := r.PriceCodexContextPricingUsages([]CodexContextPricingUsage{usage}); len(priced) > 0 {
 			usageCost = priced[0].CostUSD
 		}
 		current, ok := contextEntries[key]
@@ -219,7 +219,7 @@ func splitMixedCodexContextPricingSnapshots(
 	copy(result, snapshots)
 	costsByKey := map[string]float64{}
 	for _, cost := range costs {
-		costsByKey[cost.UsageDate+"\x00"+NormalizeModelID(cost.Model)] = cost.CostUSD
+		costsByKey[cost.UsageDate+"\x00"+r.NormalizeModelID(cost.Model)] = cost.CostUSD
 	}
 	// Every lookup below is by usageDate + normalized model, so index the
 	// snapshots once: a mixed day has one entry per model and a linear scan
@@ -229,7 +229,7 @@ func splitMixedCodexContextPricingSnapshots(
 	// the discarded backing array.
 	snapshotByIndex := map[string]int{}
 	for index := range result {
-		key := result[index].UsageDate + "\x00" + NormalizeModelID(result[index].Model)
+		key := result[index].UsageDate + "\x00" + r.NormalizeModelID(result[index].Model)
 		if _, ok := snapshotByIndex[key]; !ok {
 			snapshotByIndex[key] = index
 		}
@@ -239,7 +239,7 @@ func splitMixedCodexContextPricingSnapshots(
 	for _, key := range order {
 		entry := contextEntries[key]
 		contextSnapshot := &entry.snapshot
-		existingKey := contextSnapshot.UsageDate + "\x00" + NormalizeModelID(contextSnapshot.Model)
+		existingKey := contextSnapshot.UsageDate + "\x00" + r.NormalizeModelID(contextSnapshot.Model)
 		existingIndex, hasExisting := snapshotByIndex[existingKey]
 		if hasExisting {
 			existing := &result[existingIndex]
@@ -305,7 +305,7 @@ func splitMixedCodexContextPricingSnapshots(
 			totalAttributedTokens += clipped.TotalTokens
 			totalMixedCost += clipped.CostUSD
 		}
-		contextCost := costsByKey[contextSnapshot.UsageDate+"\x00"+NormalizeModelID(contextSnapshot.Model)]
+		contextCost := costsByKey[contextSnapshot.UsageDate+"\x00"+r.NormalizeModelID(contextSnapshot.Model)]
 		if !isSafeNonNegativeInteger(totalAttributedTokens) || totalAttributedTokens <= 0 {
 			message := mixedModelUsageHasNoPositiveTokenTotal + contextSnapshot.UsageDate
 			emitStderr(stderr, message)
@@ -381,10 +381,16 @@ func applyCollectedCodexContextPricing(input struct {
 	Stderr      func(string)
 	Timezone    string
 	CollectedAt string
+	Rules       *Rules
 }) ([]contract.Snapshot, error) {
-	mappedUsages := ApplyCodexContextPricingUsageModelHints(input.Usages, codexContextPricingModelHints(input.Snapshots))
-	costs := PriceCodexContextPricingUsages(mappedUsages)
-	split, err := splitMixedCodexContextPricingSnapshots(
+	rules := input.Rules
+	if rules == nil {
+		rules = DefaultRules()
+	}
+	mappedUsages := rules.ApplyCodexContextPricingUsageModelHints(
+		input.Usages, rules.ContextPricingModelHints(input.Snapshots))
+	costs := rules.PriceCodexContextPricingUsages(mappedUsages)
+	split, err := rules.SplitMixedContextPricingSnapshots(
 		input.Snapshots, mappedUsages, costs, input.Stderr, input.Timezone, input.CollectedAt)
 	if err != nil {
 		return nil, err
@@ -393,7 +399,7 @@ func applyCollectedCodexContextPricing(input struct {
 	for index, snapshot := range split {
 		costSnapshots[index] = CostSnapshotFromContract(snapshot)
 	}
-	priced, err := ApplyCodexContextPricingCosts(costSnapshots, costs, input.Stderr)
+	priced, err := rules.ApplyCodexContextPricingCosts(costSnapshots, costs, input.Stderr)
 	if err != nil {
 		return nil, err
 	}
@@ -404,11 +410,11 @@ func applyCollectedCodexContextPricing(input struct {
 	return out, nil
 }
 
-// codexContextPricingModelHints ports codexContextPricingModelHints.
-func codexContextPricingModelHints(snapshots []contract.Snapshot) CodexContextPricingModelHints {
+// ContextPricingModelHints ports codexContextPricingModelHints.
+func (r *Rules) ContextPricingModelHints(snapshots []contract.Snapshot) CodexContextPricingModelHints {
 	hints := CodexContextPricingModelHints{}
 	for _, snapshot := range snapshots {
-		if snapshot.TotalTokens <= 0 || !IsCodexContextPricingModel(snapshot.Model) {
+		if snapshot.TotalTokens <= 0 || !r.IsCodexContextPricingModel(snapshot.Model) {
 			continue
 		}
 		models, ok := hints[snapshot.UsageDate]
@@ -416,20 +422,20 @@ func codexContextPricingModelHints(snapshots []contract.Snapshot) CodexContextPr
 			models = map[string]bool{}
 			hints[snapshot.UsageDate] = models
 		}
-		models[NormalizeModelID(snapshot.Model)] = true
+		models[r.NormalizeModelID(snapshot.Model)] = true
 	}
 	return hints
 }
 
 // reportUnrecoverablePendingCodexPricing ports
 // reportUnrecoverablePendingCodexPricing.
-func reportUnrecoverablePendingCodexPricing(snapshots []contract.Snapshot, stderr func(string)) {
+func (r *Rules) ReportUnrecoverablePendingCodexPricing(snapshots []contract.Snapshot, stderr func(string)) {
 	if len(snapshots) == 0 {
 		return
 	}
 	details := make([]string, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		details = append(details, snapshot.UsageDate+"/"+NormalizeModelID(snapshot.Model))
+		details = append(details, snapshot.UsageDate+"/"+r.NormalizeModelID(snapshot.Model))
 	}
 	emitStderr(stderr, "Codex context pricing is unavailable for pending snapshots without source session files; keeping them pending: "+
 		joinStrings(details, ", "))

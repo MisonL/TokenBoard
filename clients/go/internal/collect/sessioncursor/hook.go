@@ -46,6 +46,10 @@ type HookInput struct {
 	// SkipSessionScan reads only the cursor's pending entries (the Codex
 	// "nothing changed on disk" path).
 	SkipSessionScan bool
+	// ContextPricingMarker stamps the snapshots the pricing layer still owes a
+	// cost; nil keeps the package-level hook. The Codex provider passes one
+	// bound to the rules derived from the running catalogue.
+	ContextPricingMarker func([]Snapshot) []Snapshot
 	// Now is injectable for tests; nil uses the wall clock.
 	Now func() time.Time
 }
@@ -455,6 +459,7 @@ func parseChangedFiles(input HookInput, scan *ScanResult) (parsedFiles, error) {
 			Snapshots:             cursorSnapshotsOf(result.Snapshots),
 			MissingCost:           result.MissingCost,
 			IgnoredUploadSafeRows: result.IgnoredUploadSafeRows,
+			ContextPricingMarker:  input.ContextPricingMarker,
 		}, input.CollectedAt); err != nil {
 			return parsedFiles{}, err
 		}

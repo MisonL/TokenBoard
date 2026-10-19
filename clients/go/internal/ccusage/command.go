@@ -201,10 +201,17 @@ func buildShellInvocation(command string, args []string, shell bool) (invocation
 	if comspec == "" {
 		comspec = "cmd.exe"
 	}
+	// SysProcAttr.CmdLine replaces the whole CreateProcess command line, not
+	// just the argument tail (syscall/exec_windows.go: "use attr.CmdLine if
+	// set, else build the command line by escaping the arguments"). Passing
+	// only the quoted shim line would hand cmd.exe a command line with no
+	// `/d /s /c`, and it would try to run `exec` as the program. The wrapper
+	// flags therefore belong in the verbatim line itself.
+	wrapperArgs := []string{comspec, "/d", "/s", "/c", commandLine}
 	return invocation{
 		command:        comspec,
-		args:           []string{"/d", "/s", "/c", commandLine},
-		windowsCmdLine: commandLine,
+		args:           wrapperArgs[1:],
+		windowsCmdLine: strings.Join(wrapperArgs, " "),
 	}, nil
 }
 

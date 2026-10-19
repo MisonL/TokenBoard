@@ -503,6 +503,10 @@ type ParsedFile struct {
 	Snapshots             []Snapshot
 	MissingCost           bool
 	IgnoredUploadSafeRows int
+	// ContextPricingMarker overrides the package-level hook for this file. The
+	// Codex provider passes one bound to the rules derived from the running
+	// catalogue; nil keeps the registered default.
+	ContextPricingMarker func([]Snapshot) []Snapshot
 }
 
 func UpdateCursorFile(cursor *State, file ChangedFile, parsed ParsedFile, updatedAt string) error {
@@ -525,10 +529,14 @@ func UpdateCursorFile(cursor *State, file ChangedFile, parsed ParsedFile, update
 		snapshots = parsed.Snapshots
 	}
 	if cursor.Source == string(contract.SourceCodex) {
-		if ContextPricingMarker == nil {
+		marker := parsed.ContextPricingMarker
+		if marker == nil {
+			marker = ContextPricingMarker
+		}
+		if marker == nil {
 			return errors.New("codex cursor update requires the context pricing marker")
 		}
-		snapshots = ContextPricingMarker(snapshots)
+		snapshots = marker(snapshots)
 	}
 	missingCost := parsed.MissingCost
 	if file.AppendOnly && hasPrior {

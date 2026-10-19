@@ -305,18 +305,23 @@ func TestBuildShellInvocationQuotesWindowsArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCommandLine := `""C:/Program Files (x86)/nodejs/npm.cmd" exec ccusage --input-dir "C:/checkouts/(repo) with spaces" "C:\work\\""`
-	if inv.windowsCmdLine != wantCommandLine {
-		t.Errorf("windowsCmdLine = %q, want %q", inv.windowsCmdLine, wantCommandLine)
-	}
+	quotedLine := `""C:/Program Files (x86)/nodejs/npm.cmd" exec ccusage --input-dir "C:/checkouts/(repo) with spaces" "C:\work\\""`
 	wantComspec := os.Getenv("ComSpec")
 	if wantComspec == "" {
 		wantComspec = "cmd.exe"
 	}
+	// SysProcAttr.CmdLine replaces the entire CreateProcess command line, so
+	// the wrapper flags must be part of it. Passing only the quoted shim line
+	// left cmd.exe with no /d /s /c and it tried to run `exec` as the program.
+	wantCommandLine := wantComspec + " /d /s /c " + quotedLine
+	if inv.windowsCmdLine != wantCommandLine {
+		t.Errorf("windowsCmdLine = %q, want %q", inv.windowsCmdLine, wantCommandLine)
+	}
 	if inv.command != wantComspec {
 		t.Errorf("command = %q, want %q", inv.command, wantComspec)
 	}
-	if len(inv.args) != 4 || inv.args[0] != "/d" || inv.args[1] != "/s" || inv.args[2] != "/c" {
+	if len(inv.args) != 4 || inv.args[0] != "/d" || inv.args[1] != "/s" || inv.args[2] != "/c" ||
+		inv.args[3] != quotedLine {
 		t.Errorf("args = %v", inv.args)
 	}
 }

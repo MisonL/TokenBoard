@@ -555,6 +555,7 @@ func (run *providerRun) collectHookUsageAttempt(forcePendingUploadRescan bool) (
 		Timezone:                 run.timezone,
 		CollectedAt:              run.collectedAt,
 		ForcePendingUploadRescan: forcePendingUploadRescan,
+		ContextPricingMarker:     run.rules.MarkUnresolvedContextPricing,
 	})
 	if err != nil {
 		return nil, err
@@ -599,7 +600,7 @@ func (run *providerRun) collectHookUsageAttempt(forcePendingUploadRescan bool) (
 		}
 	}
 	unresolved := incremental.UnresolvedContextPricing
-	reportUnrecoverablePendingCodexPricing(unresolved, run.stderr)
+	run.rules.ReportUnrecoverablePendingCodexPricing(unresolved, run.stderr)
 	unresolvedKeys := map[string]bool{}
 	for _, snapshot := range unresolved {
 		unresolvedKeys[codexSnapshotIdentity(snapshot)] = true
@@ -626,7 +627,7 @@ func (run *providerRun) collectHookUsageAttempt(forcePendingUploadRescan bool) (
 		if unresolvedKeys[identity] {
 			continue
 		}
-		if IsUnresolvedCodexContextPricingSnapshot(CostSnapshotFromContract(snapshot)) {
+		if run.rules.IsUnresolvedCodexContextPricingSnapshot(CostSnapshotFromContract(snapshot)) {
 			continue
 		}
 		cached = append(cached, snapshot)

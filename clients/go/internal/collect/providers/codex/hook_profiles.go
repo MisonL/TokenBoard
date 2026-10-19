@@ -62,6 +62,9 @@ type HookProfileInput struct {
 	Timezone                 string
 	CollectedAt              string
 	ForcePendingUploadRescan bool
+	// ContextPricingMarker stamps pending snapshots with the rule set the
+	// provider resolved for this run; nil keeps the package-level default.
+	ContextPricingMarker func([]sessioncursor.Snapshot) []sessioncursor.Snapshot
 }
 
 // AcknowledgedFile is one file the run may acknowledge after upload.
@@ -130,6 +133,7 @@ func CollectHookProfiles(input HookProfileInput) (HookProfilesResult, error) {
 			IncludePendingSnapshotEntries:    true,
 			IncludeReconciliationFileEntries: true,
 			ForcePendingUploadRescan:         input.ForcePendingUploadRescan,
+			ContextPricingMarker:             input.ContextPricingMarker,
 		})
 		if err != nil {
 			return HookProfilesResult{}, err
@@ -155,6 +159,7 @@ func CollectHookProfiles(input HookProfileInput) (HookProfilesResult, error) {
 			IncludePendingSnapshotEntries:    true,
 			IncludeReconciliationFileEntries: true,
 			SkipSessionScan:                  true,
+			ContextPricingMarker:             input.ContextPricingMarker,
 		})
 		if err != nil {
 			return HookProfilesResult{}, err

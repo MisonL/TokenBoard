@@ -36,6 +36,13 @@ type PreparedConfig struct {
 	Catalogue       Catalogue
 	Overrides       map[string]any
 	CoveredModelIDs map[string]bool
+	// ExplicitOverrideModelIDs names the models the user's own config prices.
+	// The Codex context-pricing rules take these models out of the dynamic
+	// rule set: an explicit config is a deliberate override and must keep
+	// deciding the cost, exactly as it already wins in the merged ccusage
+	// config. The TS side derives the same set with
+	// `new Set(Object.keys(explicitPricingOverrides))`.
+	ExplicitOverrideModelIDs map[string]bool
 }
 
 // Prepare ports prepareDynamicCcusageConfig. The returned path is always a
@@ -109,17 +116,19 @@ func Prepare(input PrepareInput) (PreparedConfig, error) {
 				"TokenBoard model pricing: bundled ccusage config write failed (%s); using %s",
 				err.Error(), describeFallback(fallback)))
 			return PreparedConfig{
-				ConfigPath:      fallback,
-				Catalogue:       catalogue,
-				Overrides:       overrides,
-				CoveredModelIDs: covered,
+				ConfigPath:               fallback,
+				Catalogue:                catalogue,
+				Overrides:                overrides,
+				CoveredModelIDs:          covered,
+				ExplicitOverrideModelIDs: explicitOverrideModelIDs(explicitOverrides),
 			}, nil
 		}
 		return PreparedConfig{
-			ConfigPath:      bundledPath,
-			Catalogue:       catalogue,
-			Overrides:       overrides,
-			CoveredModelIDs: covered,
+			ConfigPath:               bundledPath,
+			Catalogue:                catalogue,
+			Overrides:                overrides,
+			CoveredModelIDs:          covered,
+			ExplicitOverrideModelIDs: explicitOverrideModelIDs(explicitOverrides),
 		}, nil
 	}
 
@@ -137,18 +146,20 @@ func Prepare(input PrepareInput) (PreparedConfig, error) {
 			fallbackCovered[modelID] = true
 		}
 		return PreparedConfig{
-			ConfigPath:      fallback,
-			Catalogue:       catalogue,
-			Overrides:       overrides,
-			CoveredModelIDs: fallbackCovered,
+			ConfigPath:               fallback,
+			Catalogue:                catalogue,
+			Overrides:                overrides,
+			CoveredModelIDs:          fallbackCovered,
+			ExplicitOverrideModelIDs: explicitOverrideModelIDs(explicitOverrides),
 		}, nil
 	}
 	stderr(fmt.Sprintf("TokenBoard model pricing: prepared ccusage config at %s", configPath))
 	return PreparedConfig{
-		ConfigPath:      configPath,
-		Catalogue:       catalogue,
-		Overrides:       overrides,
-		CoveredModelIDs: covered,
+		ConfigPath:               configPath,
+		Catalogue:                catalogue,
+		Overrides:                overrides,
+		CoveredModelIDs:          covered,
+		ExplicitOverrideModelIDs: explicitOverrideModelIDs(explicitOverrides),
 	}, nil
 }
 
@@ -816,4 +827,13 @@ func randomSuffix() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buffer)
+}
+
+// explicitOverrideModelIDs is the key set of the user's own pricing overrides.
+func explicitOverrideModelIDs(overrides map[string]any) map[string]bool {
+	ids := make(map[string]bool, len(overrides))
+	for modelID := range overrides {
+		ids[modelID] = true
+	}
+	return ids
 }

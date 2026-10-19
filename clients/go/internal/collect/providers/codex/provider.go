@@ -126,6 +126,19 @@ func Collect(ctx context.Context, options Options) ([]contract.Snapshot, error) 
 	if err != nil {
 		return nil, err
 	}
+	// The rule set is derived from the same catalogue that priced the ccusage
+	// config: the static table widened by every unambiguously priced catalogue
+	// model, minus the models the user's own config overrides. TS scopes this
+	// through AsyncLocalStorage for the whole collect; here the run carries it
+	// explicitly. Using the static default instead would leave a model the
+	// server newly prices un-repriced, which is exactly the divergence the
+	// catalogue exists to avoid.
+	rules := CompileRules(BuildCodexContextPricingRules(
+		prepared.Catalogue.Models,
+		CodexContextPricingRules,
+		pricingStderr,
+		prepared.ExplicitOverrideModelIDs,
+	))
 	collection := providerRun{
 		ctx:           ctx,
 		runner:        runner,
@@ -136,6 +149,7 @@ func Collect(ctx context.Context, options Options) ([]contract.Snapshot, error) 
 		env:           commandEnv,
 		options:       options,
 		stderr:        stderr,
+		rules:         rules,
 	}
 
 	var snapshots []contract.Snapshot
@@ -162,6 +176,12 @@ type providerRun struct {
 	env           func(string) string
 	options       Options
 	stderr        func(string)
+	// rules is the context-pricing rule set for this run: the static table
+	// widened by the models the running catalogue prices (and narrowed by the
+	// user's explicit overrides), exactly as the TS provider scopes its rules
+	// for the lifetime of one collect. Nothing reads DefaultRules directly on
+	// this path, so a model the server newly prices is repriced here too.
+	rules *Rules
 }
 
 // resolveRunner picks the ccusage invocation. Hook mode never downloads: the
@@ -433,12 +453,14 @@ func (run *providerRun) collectScopedUsage(input scopedRunInput) ([]contract.Sna
 		Stderr      func(string)
 		Timezone    string
 		CollectedAt string
+		Rules       *Rules
 	}{
 		Snapshots:   projected,
-		Usages:      mergeContextPricingUsages(contextPricingUsages),
+		Usages:      run.rules.MergeContextPricingUsages(contextPricingUsages),
 		Stderr:      run.stderr,
 		Timezone:    run.timezone,
 		CollectedAt: run.collectedAt,
+		Rules:       run.rules,
 	})
 }
 
@@ -482,9 +504,9 @@ func (run *providerRun) collectScopedBatch(
 	if err != nil {
 		return scopedBatch{}, err
 	}
-	usages, err := CollectCodexContextPricingUsagesFromFiles(CollectFilesInput{
+	usages, err := run.rules.CollectCodexContextPricingUsagesFromFiles(CollectFilesInput{
 		FilePaths:             mapKeys(scope.SourceFiles),
-		CanonicalModelsByDate: codexContextPricingModelHints(snapshots),
+		CanonicalModelsByDate: run.rules.ContextPricingModelHints(snapshots),
 		CanonicalModelsByFile: canonicalModelsByScopedFileFromSessionRows(sessions, scope, run.timezone),
 		Timezone:              run.timezone,
 		Since:                 since,
@@ -649,12 +671,14 @@ func (run *providerRun) collectBoundedUsageAttempt(input boundedRunInput) ([]con
 		Stderr      func(string)
 		Timezone    string
 		CollectedAt string
+		Rules       *Rules
 	}{
 		Snapshots:   projected,
-		Usages:      mergeContextPricingUsages(contextPricingUsages),
+		Usages:      run.rules.MergeContextPricingUsages(contextPricingUsages),
 		Stderr:      run.stderr,
 		Timezone:    run.timezone,
 		CollectedAt: run.collectedAt,
+		Rules:       run.rules,
 	})
 }
 
@@ -770,9 +794,9 @@ func (run *providerRun) collectFrozenBoundedBatch(
 	if err != nil {
 		return frozenBoundedBatch{}, err
 	}
-	usages, err := CollectCodexContextPricingUsagesFromFiles(CollectFilesInput{
+	usages, err := run.rules.CollectCodexContextPricingUsagesFromFiles(CollectFilesInput{
 		FilePaths:             mapKeys(scope.SourceFiles),
-		CanonicalModelsByDate: codexContextPricingModelHints(snapshots),
+		CanonicalModelsByDate: run.rules.ContextPricingModelHints(snapshots),
 		CanonicalModelsByFile: canonicalModelsByScopedFile(scope, combined),
 		Timezone:              run.timezone,
 		Since:                 input.since,
@@ -1028,7 +1052,7 @@ func (run *providerRun) collectUnboundedUsage(input unboundedRunInput) ([]contra
 func (run *providerRun) collectUnboundedUsageAttempt(input unboundedRunInput) ([]contract.Snapshot, error) {
 	memo := CreateCodexSessionFingerprintMemo()
 	discover := func() (CodexContextPricingFileInventory, error) {
-		return DiscoverCodexContextPricingFiles(DiscoverInput{
+		return run.rules.DiscoverCodexContextPricingFiles(DiscoverInput{
 			CodexHomes:          input.codexHomes,
 			CodexSymlinkRoots:   input.codexSymlinkRoots,
 			CaptureFingerprints: true,
@@ -1072,7 +1096,7 @@ func (run *providerRun) collectUnboundedUsageAttempt(input unboundedRunInput) ([
 	}
 	needsPricing := func() bool {
 		for _, snapshot := range projected {
-			if IsCodexContextPricingModel(snapshot.Model) && snapshot.TotalTokens > 0 {
+			if run.rules.IsCodexContextPricingModel(snapshot.Model) && snapshot.TotalTokens > 0 {
 				return true
 			}
 		}
@@ -1104,10 +1128,10 @@ func (run *providerRun) collectUnboundedUsageAttempt(input unboundedRunInput) ([
 	if err := assertCodexContextPricingInventoryStable(inventory, after); err != nil {
 		return nil, err
 	}
-	usages, err := CollectCodexContextPricingUsagesFromFiles(CollectFilesInput{
+	usages, err := run.rules.CollectCodexContextPricingUsagesFromFiles(CollectFilesInput{
 		FilePaths:             inventory.FilePaths,
 		IdentityPaths:         inventory.IdentityPaths,
-		CanonicalModelsByDate: codexContextPricingModelHints(projected),
+		CanonicalModelsByDate: run.rules.ContextPricingModelHints(projected),
 		CanonicalModelsByFile: canonicalModelsByInventoryFiles(
 			canonicalSessions, input.codexHomes, inventory, run.timezone),
 		Timezone: run.timezone,
@@ -1131,12 +1155,14 @@ func (run *providerRun) collectUnboundedUsageAttempt(input unboundedRunInput) ([
 		Stderr      func(string)
 		Timezone    string
 		CollectedAt string
+		Rules       *Rules
 	}{
 		Snapshots:   projected,
 		Usages:      usages,
 		Stderr:      run.stderr,
 		Timezone:    run.timezone,
 		CollectedAt: run.collectedAt,
+		Rules:       run.rules,
 	})
 }
 

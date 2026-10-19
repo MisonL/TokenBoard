@@ -1,9 +1,12 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1696,5 +1699,86 @@ func TestProviderReportsPartialCollectionWhenSessionCountsFail(t *testing.T) {
 	}
 	if len(errors) != len(want) || errors[0] != want[0] {
 		t.Errorf("errors = %v, want %v", errors, want)
+	}
+}
+
+// The rule set the provider prices with is the static table widened by the
+// running catalogue. A model the catalogue prices but the static table does
+// not must be repriced from its request-level usage; falling back to the
+// default rules would leave it on ccusage's day-level cost, and the same
+// machine would then produce a different snapshot than the TS collector.
+func TestProviderPricesAModelTheCatalogueAdds(t *testing.T) {
+	codexHome := provEmptyCodexHome(t)
+	sessionPath := filepath.Join(codexHome, "sessions", "2026", "05", "20", "dynamic.jsonl")
+	provWriteJSONL(t, sessionPath, provTokenEvent("2026-05-20T00:01:00.000Z", 20, "gpt-6-astra"))
+
+	runner := &provStubRunner{t: t, respond: func(call provCall) (any, error) {
+		if call.hasArg("daily") {
+			return provJSON(t, `{"data":[{"date":"2026-05-20","models":{
+				"gpt-6-astra":{"inputTokens":20,"outputTokens":0,"cacheCreationInputTokens":0,
+				"cacheReadInputTokens":0,"totalTokens":20,"costUSD":0.001}}}]}`), nil
+		}
+		if call.hasArg("session") {
+			return provJSON(t, `{"sessions":[{"directory":"2026/05/20","sessionFile":"dynamic",
+				"lastActivity":"2026-05-20T00:01:00.000Z",
+				"models":{"gpt-6-astra":{"inputTokens":20,"totalTokens":20}}}]}`), nil
+		}
+		return nil, fmt.Errorf("Unexpected ccusage command")
+	}}
+	fetcher := func(*http.Request) (*http.Response, error) {
+		body := map[string]any{"models": []any{map[string]any{
+			"provider":                 "openai",
+			"modelId":                  "gpt-6-astra",
+			"inputCostPerMillion":      5,
+			"outputCostPerMillion":     30,
+			"cacheReadCostPerMillion":  0.5,
+			"cacheWriteCostPerMillion": 6.25,
+			"contextWindow":            1_050_000,
+			"maxInputTokens":           1_050_000,
+			"pricing": map[string]any{"tiers": []any{
+				map[string]any{
+					"tier":        map[string]any{"type": "context", "size": float64(272_000)},
+					"input":       float64(10),
+					"output":      float64(45),
+					"cache_read":  float64(1),
+					"cache_write": float64(12),
+				},
+			}},
+		}}, "nextCursor": nil}
+		payload, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(payload)),
+		}, nil
+	}
+
+	var diagnostics []string
+	snapshots, err := provCollect(t, Options{
+		CodexHome:      provHome(codexHome),
+		Timezone:       "UTC",
+		CollectedAt:    "2026-05-20T01:00:00.000Z",
+		Runner:         runner.run,
+		PricingFetcher: fetcher,
+		Stderr:         func(line string) { diagnostics = append(diagnostics, line) },
+	}, map[string]string{
+		"TOKENBOARD_ENDPOINT":      "https://tokenboard.example/api/v1/ingest",
+		"TOKENBOARD_SINCE":         "",
+		"TOKENBOARD_DEFAULT_SINCE": "",
+		"TOKENBOARD_UNTIL":         "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("diagnostics: %v", diagnostics)
+	got := provSnapshotFor(t, snapshots, "2026-05-20", "gpt-6-astra")
+	// 20 fresh input tokens at 5/M from the catalogue row, not ccusage's 0.001.
+	assertCloseTo(t, got.CostUSD, 20*5.0/1_000_000, 12)
+	if got.TotalTokens != 20 {
+		t.Errorf("total tokens = %d, want the session's 20", got.TotalTokens)
 	}
 }
