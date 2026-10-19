@@ -37,7 +37,7 @@ pnpm format:check
 - `apps/web/app/features/`：按业务 feature 组织的服务、查询、schema、组件和测试。
 - `packages/collector/`：本地 Node.js collector，负责调用 `ccusage`、读取各工具本地 usage 记录并上传 snapshot。
 - `packages/usage-core/`：跨端共享的 usage schema、normalize、hash 和工具函数。
-- `clients/go/`：Go 客户端（进行中，M0+M1 已落地：`internal/contract` 契约与金样本、`internal/upload` 上传与 backoff、`internal/state` 运行锁、`internal/cli` 子命令、`internal/collect/sessioncursor` cursor 读写）。与 TS collector 共用 `collector-run.lock`、cursor 文件名和 `upload-backoff.json`，改动这些协议必须两侧同时验证（`docs/specs/go-client-spec.md`）。provider registry 尚为空，M2 起按 spec 顺序移植。
+- `clients/go/`：Go 客户端（M0–M6 已落地：`internal/contract` 契约与金样本、`internal/upload` 上传与 backoff、`internal/state` 运行锁、`internal/cli` 子命令、`internal/collect` 全部九个来源 provider 与共享扫描/cursor 层、`internal/pricing` 动态定价目录、`internal/ccusage`/`codexusage` 外部工具调用、`internal/release` + `internal/selfupdate` 发布通道）。与 TS collector 共用 `collector-run.lock`、cursor 文件名和 `upload-backoff.json`，改动这些协议必须两侧同时验证（`docs/specs/go-client-spec.md`）。发布侧另有仓库根 `.goreleaser.yaml`（构建矩阵 3 OS × 2 arch）与 skill 的 `clientType`（`git`|`binary`，缺省 `git`）。
 - `skills/tokenboard/`：Codex / Claude Code 安装、同步、hook、schedule 脚本。
 - `apps/web/app/components/ui/`：通用 UI 原语；业务组件不要放这里。
 - `apps/web/db/migrations/`：按序执行的 D1 migration；部署前必须核对 migration、Drizzle schema 和 `db/verify-*.sql`。
@@ -475,8 +475,10 @@ skills/tokenboard/
   scripts/
     setup.mjs
     sync.mjs
+    install-collector.mjs
     install-schedule.mjs
     coordinator.mjs
+    client-binary.mjs
     antigravity-hook.mjs
     antigravity-statusline.mjs
     uninstall.mjs
