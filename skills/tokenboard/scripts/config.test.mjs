@@ -8,6 +8,7 @@ import {
   mergeConfig,
   normalizeActiveServerConfig,
   packageManagerCommand,
+  readClientType,
   readConfig,
   serverOriginFromEndpoint,
   stripUtf8Bom,
@@ -15,6 +16,32 @@ import {
   writeConfig
 } from './config.mjs'
 import { credentialsLockPath, withCredentialsLock } from './credentials-lock.mjs'
+
+test('readClientType defaults to git so an existing install is untouched', () => {
+  assert.equal(readClientType({ flags: {}, env: {}, config: {} }), 'git')
+  assert.equal(readClientType({ flags: {}, env: {}, config: { clientType: 'binary' } }), 'binary')
+  assert.equal(readClientType({ flags: { client: 'binary' }, env: {}, config: {} }), 'binary')
+  assert.equal(readClientType({ flags: {}, env: { TOKENBOARD_CLIENT: 'binary' }, config: {} }), 'binary')
+})
+
+test('readClientType prefers the flag over the environment and the config', () => {
+  assert.equal(
+    readClientType({
+      flags: { client: 'git' },
+      env: { TOKENBOARD_CLIENT: 'binary' },
+      config: { clientType: 'binary' }
+    }),
+    'git'
+  )
+})
+
+test('readClientType refuses an unknown value instead of silently running git', () => {
+  assert.throws(
+    () => readClientType({ flags: {}, env: {}, config: { clientType: 'cargo' } }),
+    /Unsupported client type/
+  )
+  assert.throws(() => readClientType({ flags: { client: 'true' }, env: {}, config: {} }), /Unsupported client type/)
+})
 
 test('strips UTF-8 BOM before parsing config content', () => {
   const parsed = JSON.parse(stripUtf8Bom('\ufeff{"configured":true}'))

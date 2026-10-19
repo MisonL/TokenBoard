@@ -31,7 +31,7 @@ import {
 } from './setup-options.mjs'
 
 const usage =
-  'Usage: setup.mjs [--pairing-code CODE] [--base-url URL] [--timezone TZ] [--device-name NAME] [--use-device-link] [--skip-collector] [--skip-schedule] [--skip-initial-sync] [--skip-hook] [--schedule-times HH:MM,...] [--package-manager pnpm|bun|npm] [--repo-url URL] [--repo-ref REF]'
+  'Usage: setup.mjs [--pairing-code CODE] [--base-url URL] [--timezone TZ] [--device-name NAME] [--use-device-link] [--skip-collector] [--skip-schedule] [--skip-initial-sync] [--skip-hook] [--schedule-times HH:MM,...] [--package-manager pnpm|bun|npm] [--client git|binary] [--repo-url URL] [--repo-ref REF]'
 
 if (printHelpIfRequested(process.argv.slice(2), usage)) {
   process.exit(0)
@@ -74,6 +74,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       repoUrl: installOptions.repoUrl,
       repoRef: installOptions.repoRef,
       packageManager: profilePackageManager,
+      clientType: installOptions.clientType,
       scheduleTimes: profileScheduleTimes,
       ...(installOptions.codexSymlinkRoots === undefined
         ? {}
@@ -148,6 +149,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       repoUrl: installOptions.repoUrl,
       repoRef: installOptions.repoRef,
       packageManager: pairedPackageManager,
+      clientType: installOptions.clientType,
       scheduleTimes: pairedScheduleTimes,
       ...(installOptions.codexSymlinkRoots === undefined
         ? {}
@@ -212,6 +214,7 @@ if (!flags['skip-collector']) {
     process.execPath,
     buildInstallCollectorArgs({
       flags: installFlags,
+      clientType: installOptions.clientType,
       packageManager,
       installCollectorScript: scriptPath('./install-collector.mjs')
     }),

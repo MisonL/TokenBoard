@@ -29,8 +29,19 @@ Optional flags:
 --repo-url https://github.com/evepupil/TokenBoard.git
 --repo-ref <branch-or-ref>
 --package-manager pnpm|bun|npm
+--client git|binary
 --use-device-link
 ```
+
+`--client binary` installs the released Go client instead of a git checkout. The
+default is `git`, and every existing install stays on it; the choice is stored as
+`clientType` in the config and can be changed back at any time. A binary install
+downloads one release tarball into `~/.tokenboard/bin/tokenboard` and needs no
+Node.js, no checkout and no `pnpm install` afterwards. It is the smaller install
+and the one that cannot get stuck on a dirty checkout, but its upgrade channel is
+the release feed rather than the repository branch. Do not switch an install to
+`binary` unless the user asks for it or the release feed is confirmed to be the
+intended source for that machine.
 
 After setup, report whether config was written, schedule was installed, and initial sync succeeded. Do not show `uploadToken`.
 
@@ -93,6 +104,8 @@ Run one `node scripts/sync.mjs --mode sync --source antigravity-cli --since all`
 do not delete the existing cursor or configuration to bypass that check.
 
 Sync runs a lightweight upgrade first by default. It updates the local collector checkout and this installed skill from the configured TokenBoard repo, then continues with collection. Hook syncs do not run this upgrade path; they only enqueue and reconcile usage. If Git upgrade fails, the script falls back to the GitHub ZIP archive path. If upgrade still fails, treat it as a warning unless sync itself fails. For troubleshooting only, skip the upgrade with `--skip-upgrade`, `TOKENBOARD_SKIP_UPGRADE=1`, or `TOKENBOARD_AUTO_UPGRADE=0`.
+
+A `clientType: binary` install upgrades differently: the sync runs the Go client's own `tokenboard self-update`, which downloads the latest release, verifies it against the release's `checksums.txt`, and swaps it in only after the new binary has answered `version`. The git checkout is not involved and may stay dirty or absent. To move an existing git-clone install onto this channel, run `node scripts/upgrade.mjs --to-binary` — it installs the current release and flips `clientType`, keeping the checkout as the rollback (set `clientType` back to `git`). The release feed and the git default branch are published from different places, so migration is explicit opt-in, never a default.
 
 An existing Git collector checkout with tracked or untracked changes, or one whose status cannot be read, stops the upgrade before any fetch or checkout. This deliberate stop does not try the ZIP archive fallback; resolve or preserve the local worktree first.
 
@@ -169,7 +182,7 @@ Check local config and installed schedule metadata:
 node scripts/status.mjs
 ```
 
-The JSON output includes configuration-presence flags, `packageManager`, `scheduleTimes`, device-link presence, and hook status, including `antigravityCli`. It must not print upload tokens, install claims, device identifiers, endpoints, or local paths.
+The JSON output includes configuration-presence flags, `clientType` (`git` or `binary`), `packageManager`, `scheduleTimes`, device-link presence, and hook status, including `antigravityCli`. It must not print upload tokens, install claims, device identifiers, endpoints, or local paths.
 
 Notifier hooks use `~/.tokenboard/bin/notify.cjs` and only enqueue a background sync signal. They must not run `ccusage`, scan files, or upload in the foreground hook process. On Windows, every process spawned by the notifier must set `windowsHide: true` so hook execution does not open a console window.
 

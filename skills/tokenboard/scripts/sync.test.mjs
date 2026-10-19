@@ -12,6 +12,7 @@ import {
   readHookSyncTimeoutMs,
   refreshBundledCcusageConfig,
   runCollectorProcess,
+  runPreCollectUpgrade,
   runSyncInvocation,
   writeRedactedOutput
 } from './sync.mjs'
@@ -276,6 +277,116 @@ test('sync invocation forwards the configured Codex symlink roots as JSON', () =
   assert.equal(invocation.env.TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON, '["/srv/codex-archive","/srv/codex-archive"]')
 })
 
+test('a binary client invocation runs the Go binary with the same env contract', () => {
+  const invocation = buildSyncInvocation({
+    flags: { mode: 'sync' },
+    env: { TOKENBOARD_CCUSAGE_CONFIG: '/custom/pricing.json' },
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'binary'
+    },
+    homeDir: '/home/user',
+    nodePath: '/usr/local/bin/node',
+    pathEnv: '/usr/bin',
+    fileExists: () => true
+  })
+
+  // Same subcommand surface, no node and no tsx: the binary is the collector.
+  assert.equal(invocation.command, normalizeMemoryPath('/home/user/.tokenboard/bin/tokenboard'))
+  assert.deepEqual(invocation.args, ['sync', '--source', 'all'])
+  assert.equal(invocation.clientType, 'binary')
+  // A binary install has no checkout, so the working directory is the binary's
+  // own directory — pointing it at the absent collector dir made spawn fail
+  // with ENOENT on the command itself.
+  assert.equal(invocation.cwd, normalizeMemoryPath('/home/user/.tokenboard/bin'))
+  // The endpoint contract is identical to the git client's.
+  assert.equal(invocation.env.TOKENBOARD_ENDPOINT, 'https://tokenboard.example.com/api/v1/ingest')
+  assert.equal(invocation.env.TOKENBOARD_UPLOAD_TOKEN, 'test-upload-token')
+  assert.equal(invocation.env.TOKENBOARD_TIMEZONE, 'Asia/Shanghai')
+  assert.equal(invocation.env.TOKENBOARD_SOURCE, 'all')
+  // The bundled ccusage config is the one thing a binary client does not get
+  // injected (it materializes the baseline itself), but an explicitly set
+  // value in the environment is forwarded untouched — the same passthrough
+  // rule the git client follows.
+  assert.equal(invocation.env.TOKENBOARD_CCUSAGE_CONFIG, '/custom/pricing.json')
+})
+
+test('a binary client invocation keeps the git argument shape for until and source', () => {
+  const invocation = buildSyncInvocation({
+    flags: { mode: 'preview', source: 'codex', until: '20260810' },
+    env: {},
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'binary'
+    },
+    homeDir: '/home/user',
+    fileExists: () => false
+  })
+
+  assert.deepEqual(invocation.args, ['preview', '--source', 'codex', '--until', '20260810'])
+  assert.equal(invocation.env.TOKENBOARD_UNTIL, '20260810')
+})
+
+test('the default client type stays git for an existing install', () => {
+  const invocation = buildSyncInvocation({
+    flags: {},
+    env: {},
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo'
+    },
+    fileExists: () => false
+  })
+
+  assert.equal(invocation.clientType, 'git')
+  assert.match(invocation.command, /node$/)
+  assert.deepEqual(invocation.args.slice(0, 3), ['--import', 'tsx', 'src/cli.ts'])
+})
+
+test('the binary client flag wins over the config value', () => {
+  const invocation = buildSyncInvocation({
+    flags: { client: 'binary' },
+    env: {},
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'git'
+    },
+    fileExists: () => false
+  })
+
+  assert.equal(invocation.clientType, 'binary')
+})
+
+test('an unknown client type is refused rather than silently run as git', () => {
+  assert.throws(
+    () =>
+      buildSyncInvocation({
+        flags: {},
+        env: {},
+        config: {
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          uploadToken: 'test-upload-token',
+          timezone: 'Asia/Shanghai',
+          collectorDir: '/repo',
+          clientType: 'cargo-cult'
+        },
+        fileExists: () => false
+      }),
+    /Unsupported client type/
+  )
+})
+
 test('sync invocation does not replace an explicitly supplied Codex symlink root environment', () => {
   const invocation = buildSyncInvocation({
     env: { TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON: '["/custom/archive"]' },
@@ -457,6 +568,111 @@ test('scheduled upgrade diagnostics redact credentials embedded in URLs', () => 
   ])
   assert.doesNotMatch(lines[0], /ci-user|ci-token/)
   assert.doesNotMatch(lines[1], /ci-token/)
+})
+
+test('a binary client upgrades through its own self-update, not the checkout', () => {
+  const selfUpdates = []
+  const upgrades = []
+  const warnings = []
+  runPreCollectUpgrade({
+    flags: { scheduled: true },
+    invocation: { clientType: 'binary', command: '/home/user/.tokenboard/bin/tokenboard' },
+    selfUpdate: (options) => selfUpdates.push(options),
+    upgrade: (options) => upgrades.push(options),
+    binaryExists: () => true,
+    log: () => {},
+    warn: (message) => warnings.push(message)
+  })
+
+  // --scheduled is what keeps an offline machine from failing the run.
+  assert.equal(selfUpdates.length, 1)
+  assert.equal(selfUpdates[0].binaryPath, '/home/user/.tokenboard/bin/tokenboard')
+  assert.equal(selfUpdates[0].scheduled, true)
+  assert.deepEqual(upgrades, [])
+  assert.deepEqual(warnings, [])
+})
+
+test('a binary hook sync never upgrades at all', () => {
+  const selfUpdates = []
+  runPreCollectUpgrade({
+    flags: { hook: true },
+    invocation: { clientType: 'binary', command: '/home/user/.tokenboard/bin/tokenboard' },
+    selfUpdate: (options) => selfUpdates.push(options),
+    binaryExists: () => true,
+    log: () => {},
+    warn: () => {}
+  })
+
+  assert.deepEqual(selfUpdates, [])
+})
+
+test('a binary client whose binary is missing does not try to self-update it', () => {
+  const selfUpdates = []
+  runPreCollectUpgrade({
+    flags: {},
+    invocation: { clientType: 'binary', command: '/home/user/.tokenboard/bin/tokenboard' },
+    selfUpdate: (options) => selfUpdates.push(options),
+    binaryExists: () => false,
+    log: () => {},
+    warn: () => {}
+  })
+
+  assert.deepEqual(selfUpdates, [])
+})
+
+test('a failed binary self-update warns instead of failing the sync', () => {
+  const warnings = []
+  assert.doesNotThrow(() =>
+    runPreCollectUpgrade({
+      flags: {},
+      invocation: { clientType: 'binary', command: '/home/user/.tokenboard/bin/tokenboard' },
+      selfUpdate: () => {
+        throw new Error('dial https://api-user:api-secret@example.invalid: timeout')
+      },
+      binaryExists: () => true,
+      log: () => {},
+      warn: (message) => warnings.push(message)
+    })
+  )
+
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /self-update skipped/)
+  // The URL may carry userinfo; the warning sink is a long-lived log.
+  assert.doesNotMatch(warnings[0], /api-secret/)
+})
+
+test('a git client still upgrades the checkout before collection', () => {
+  const upgrades = []
+  runPreCollectUpgrade({
+    flags: {},
+    invocation: { clientType: 'git', command: 'node' },
+    env: {},
+    upgrade: (options) => upgrades.push(options),
+    selfUpdate: () => {
+      throw new Error('a git client must not self-update')
+    },
+    binaryExists: () => true,
+    log: () => {},
+    warn: () => {}
+  })
+
+  assert.equal(upgrades.length, 1)
+  assert.equal(upgrades[0].automatic, true)
+})
+
+test('a git client honors the skip-upgrade switch', () => {
+  const upgrades = []
+  runPreCollectUpgrade({
+    flags: { 'skip-upgrade': true },
+    invocation: { clientType: 'git', command: 'node' },
+    env: {},
+    upgrade: (options) => upgrades.push(options),
+    binaryExists: () => true,
+    log: () => {},
+    warn: () => {}
+  })
+
+  assert.deepEqual(upgrades, [])
 })
 
 test('scheduled sync records running and failed state without affecting manual sync', async () => {

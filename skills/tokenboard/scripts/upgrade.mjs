@@ -13,6 +13,7 @@ import {
   readPackageManager
 } from './config.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
+import { defaultReleaseRepo, installClientBinary } from './client-binary.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { recoverOrphanedBackup, runArchiveFallback, selectAvailableBackupPath } from './upgrade-archive.mjs'
 import {
@@ -27,6 +28,39 @@ import {
 } from './upgrade-utils.mjs'
 
 export const defaultRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
+
+// migrateToBinaryClient upgrades a git-clone install to the released binary:
+// it installs the current release into the config directory's bin/ and flips
+// `clientType` to 'binary' so the sync spawns the Go client from now on. The
+// existing checkout is not deleted — the git client keeps working as the
+// rollback (set `clientType` back to 'git'), and the skill keeps updating
+// itself from the checkout until it is gone.
+//
+// This is explicit opt-in (`--to-binary`): the release feed and the git
+// default branch are published from different places on purpose, and flipping
+// the default would silently retarget every existing install.
+export async function migrateToBinaryClient({
+  flags = {},
+  env = process.env,
+  configDirectory = defaultConfigDir(),
+  install = installClientBinary,
+  mergeConfigFile = mergeConfig,
+  log = console.log
+} = {}) {
+  const repo = trimmedString(flags['release-repo'] || env.TOKENBOARD_RELEASE_REPO) || defaultReleaseRepo
+  const tag = trimmedString(flags['release-tag'] || env.TOKENBOARD_RELEASE_TAG) || undefined
+  const baseUrl = trimmedString(flags['release-base-url'] || env.TOKENBOARD_RELEASE_BASE_URL) || undefined
+  const installed = await install({ repo, tag, baseUrl, configDir: configDirectory, log })
+  // Only the switch is recorded: the install location is derived from the
+  // config directory, so a copied config cannot point at another machine's
+  // binary.
+  const next = mergeConfigFile({ clientType: 'binary' })
+  log(
+    `TokenBoard will run the released Go client (${installed.version}) from now on. ` +
+      'Set clientType back to "git" in the config to return to the checkout install.'
+  )
+  return { installed, clientType: next.clientType }
+}
 
 export function buildUpgradePlan({
   collectorDir,
@@ -439,13 +473,21 @@ function runCli() {
   if (
     printHelpIfRequested(
       process.argv.slice(2),
-      'Usage: upgrade.mjs [--repo-url URL] [--repo-ref REF] [--skill-dir DIR] [--archive-url URL] [--package-manager pnpm|bun|npm]'
+      'Usage: upgrade.mjs [--repo-url URL] [--repo-ref REF] [--skill-dir DIR] [--archive-url URL] [--package-manager pnpm|bun|npm] [--to-binary]'
     )
   ) {
     return
   }
+  const flags = parseArgs(process.argv.slice(2))
+  if (flags['to-binary']) {
+    migrateToBinaryClient({ flags, configDirectory: defaultConfigDir() }).catch((error) => {
+      console.error(redactUrlCredentials(errorMessage(error)))
+      process.exit(1)
+    })
+    return
+  }
   try {
-    runUpgrade({ flags: parseArgs(process.argv.slice(2)) })
+    runUpgrade({ flags })
   } catch (error) {
     // The manual path prints to the terminal directly, so redact here too: an error can carry a
     // repo URL with `user:token@host` userinfo, and this sink does not go through `log()`.

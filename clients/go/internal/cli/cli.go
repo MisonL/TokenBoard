@@ -24,6 +24,7 @@ import (
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/providers/codex"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
+	"github.com/MisonL/TokenBoard/clients/go/internal/selfupdate"
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 	"github.com/MisonL/TokenBoard/clients/go/internal/upload"
 )
@@ -66,6 +67,8 @@ func RunWithEnv(ctx context.Context, args []string, env Env, stdout, stderr io.W
 		return ExitUsage
 	}
 	switch args[0] {
+	case "self-update":
+		return runSelfUpdate(args[1:], env, stdout, stderr)
 	case "version":
 		fmt.Fprintln(stdout, versionString())
 		return ExitOK
@@ -563,8 +566,7 @@ func parseArgs(args []string, env Env) (Options, error) {
 	switch command {
 	case "preview", "sync", "warm-hooks":
 	default:
-		return Options{}, fmt.Errorf("Usage: tokenboard <preview|sync|warm-hooks> [--source %s]",
-			strings.Join(sourceChoices(), "|"))
+		return Options{}, fmt.Errorf("Usage: %s", usageLine())
 	}
 	flags, err := readFlags(args[1:])
 	if err != nil {
@@ -722,8 +724,62 @@ func assertValidTimezone(value string) error {
 	return nil
 }
 
+// runSelfUpdate replaces this binary with the newest published release.
+//
+// The scheduled path (`--scheduled`) must not fail the run when the update
+// cannot be reached: an offline machine is a normal state, and the collector
+// keeps working on the version it has. A genuine update failure is reported
+// on stderr and still exits 0 for the scheduled path, so the scheduler does
+// not retry an upgrade it cannot influence.
+func runSelfUpdate(args []string, env Env, stdout, stderr io.Writer) int {
+	// --scheduled is a boolean: the scheduler writes it bare
+	// (`tokenboard self-update --scheduled`), which the value-requiring flag
+	// parser would reject. Pull it out first, then parse the rest normally so
+	// an unknown or valueless flag is still a usage error.
+	scheduled := false
+	rest := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch {
+		case arg == "--scheduled":
+			scheduled = true
+		case strings.HasPrefix(arg, "--scheduled="):
+			value := strings.TrimPrefix(arg, "--scheduled=")
+			scheduled = value == "true" || value == "1"
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	if _, err := readFlags(rest); err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return ExitUsage
+	}
+	selfupdate.SetCurrentVersion(Version)
+	result, err := selfupdate.Run(selfupdate.Input{
+		Repo: strings.TrimSpace(env("TOKENBOARD_RELEASE_REPO")),
+		Tag:  strings.TrimSpace(env("TOKENBOARD_RELEASE_TAG")),
+		Env:  env,
+		Stderr: func(line string) {
+			fmt.Fprintln(stderr, upload.RedactURLs(line))
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, upload.RedactURLs(err.Error()))
+		if scheduled {
+			return ExitOK
+		}
+		return ExitFailure
+	}
+	payload, _ := json.MarshalIndent(map[string]any{
+		"version": result.Version,
+		"updated": result.Updated,
+	}, "", "  ")
+	fmt.Fprintln(stdout, string(payload))
+	return ExitOK
+}
+
 func usageLine() string {
-	return fmt.Sprintf("Usage: tokenboard <preview|sync|warm-hooks> [--source %s]", strings.Join(sourceChoices(), "|"))
+	return fmt.Sprintf("Usage: tokenboard <preview|sync|warm-hooks|self-update> [--source %s]",
+		strings.Join(sourceChoices(), "|"))
 }
 
 func versionString() string {

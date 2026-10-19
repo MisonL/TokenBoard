@@ -22,11 +22,13 @@ import {
   resolveArchiveUrl,
   resolveArchiveUrls,
   resolveRepoUrl,
+  migrateToBinaryClient,
   runUpgrade
 } from './upgrade.mjs'
 import { runArchiveFallback } from './upgrade-archive.mjs'
 import { errorMessage, movePath, runStep, samePath } from './upgrade-utils.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
+import { defaultReleaseRepo } from './client-binary.mjs'
 
 test('upgrade child output is captured and scrubbed of credentials', () => {
   const out = []
@@ -2518,4 +2520,85 @@ test('archive-style upgrades leave upgradedCommit null when rev-parse fails', ()
   })
 
   assert.equal(merged[merged.length - 1].upgradedCommit, null)
+})
+
+test('migrateToBinaryClient installs the release and flips clientType without touching the checkout', async () => {
+  const merged = []
+  const installed = []
+  const result = await migrateToBinaryClient({
+    flags: {},
+    env: {},
+    configDirectory: '/home/user/.tokenboard',
+    install: async (options) => {
+      installed.push(options)
+      return { version: '1.2.3', path: '/home/user/.tokenboard/bin/tokenboard', tag: 'v1.2.3' }
+    },
+    mergeConfigFile: (patch) => {
+      merged.push(patch)
+      return { ...patch }
+    },
+    log: () => {}
+  })
+
+  assert.deepEqual(installed, [
+    {
+      repo: defaultReleaseRepo,
+      tag: undefined,
+      baseUrl: undefined,
+      configDir: '/home/user/.tokenboard',
+      log: installed[0].log
+    }
+  ])
+  // Only the switch is recorded: the install path is derived from the config
+  // directory, so a config copied to another machine cannot point at this one.
+  assert.deepEqual(merged, [{ clientType: 'binary' }])
+  assert.equal(result.clientType, 'binary')
+  assert.equal(result.installed.version, '1.2.3')
+})
+
+test('migrateToBinaryClient honors an explicit release repo, tag and base URL', async () => {
+  const installed = []
+  await migrateToBinaryClient({
+    flags: {
+      'release-tag': 'v9.9.9',
+      'release-repo': 'other/TokenBoard',
+      'release-base-url': 'https://github.example'
+    },
+    env: {},
+    configDirectory: '/home/user/.tokenboard',
+    install: async (options) => {
+      installed.push(options)
+      return { version: '9.9.9', path: '/x/tokenboard', tag: 'v9.9.9' }
+    },
+    mergeConfigFile: (patch) => ({ ...patch }),
+    log: () => {}
+  })
+
+  assert.equal(installed[0].repo, 'other/TokenBoard')
+  assert.equal(installed[0].tag, 'v9.9.9')
+  assert.equal(installed[0].baseUrl, 'https://github.example')
+})
+
+test('migrateToBinaryClient leaves clientType alone when the install fails', async () => {
+  const merged = []
+  await assert.rejects(
+    () =>
+      migrateToBinaryClient({
+        flags: {},
+        env: {},
+        configDirectory: '/home/user/.tokenboard',
+        install: async () => {
+          throw new Error('checksum mismatch for tokenboard_darwin_arm64.tar.gz')
+        },
+        mergeConfigFile: (patch) => {
+          merged.push(patch)
+          return patch
+        },
+        log: () => {}
+      }),
+    /checksum mismatch/
+  )
+  // A failed install must not flip the config: the machine would then spawn a
+  // binary that does not exist and every sync would fail.
+  assert.deepEqual(merged, [])
 })

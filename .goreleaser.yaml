@@ -1,0 +1,74 @@
+# TokenBoard Go client release configuration (spec §8).
+#
+# Cut with `goreleaser release --clean` on a version tag (`vX.Y.Z`). The
+# output this must produce is fixed by `internal/release`:
+#   - five platform builds, archive `tokenboard_<os>_<arch>.tar.gz`
+#     (`Platform()` in that package validates the same five pairs),
+#   - a `checksums.txt` manifest of sha256 digests (`Checksums()`),
+#   - the binary inside the archive named `tokenboard` (`tokenboard.exe`
+#     on Windows), which `extractBinary()` looks up by base name.
+# A change to any of these three must be mirrored there in the same change.
+version: 2
+
+project_name: tokenboard
+
+builds:
+  - id: tokenboard
+    # The Go module lives in clients/go, not at the repository root: without
+    # this GoReleaser looks for ./cmd/tokenboard at the top level and fails.
+    dir: clients/go
+    main: ./cmd/tokenboard
+    binary: tokenboard
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # `Version` in internal/cli is what `tokenboard version` prints and what
+    # self-update compares against, so an unstamped build would never match a
+    # release and every scheduled run would "update" to the same version.
+    ldflags:
+      - -s -w -X github.com/MisonL/TokenBoard/clients/go/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: tokenboard
+    formats: [tar.gz]
+    # GoReleaser's default `{{ .Os }}_{{ .Arch }}` suffix is the spelling
+    # `release.Platform()` constructs; do not re-template it per-platform.
+    # The archive format is forced to tar.gz on Windows too (the default is
+    # zip): `selfupdate.extractBinary` reads a gzip tar with no zip path.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [tar.gz]
+    files:
+      # The consumer extracts the binary by name and ignores everything else,
+      # so the readme travels with it without changing that lookup.
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  # The fork cuts releases; the default (origin) follows whatever remote the
+  # CI checkout uses, which keeps the config working for both.
+  draft: false
+  prerelease: auto
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+# No brew/scoop/winget yet (spec §8: package managers are a later phase).

@@ -29,6 +29,7 @@ test('setup install options inherit saved server profile values', () => {
       repoUrl: 'https://github.com/example/private.git',
       repoRef: 'release-branch',
       packageManager: 'bun',
+      clientType: 'git',
       scheduleTimesInput: '07:15,19:45',
       codexSymlinkRoots: ['/Volumes/Work/CodexArchive/archived_sessions']
     }
@@ -58,10 +59,27 @@ test('explicit setup flags override saved server profile values', () => {
       repoUrl: 'https://github.com/example/override.git',
       repoRef: 'override-branch',
       packageManager: 'npm',
+      clientType: 'git',
       scheduleTimesInput: '08:30,20:30',
       codexSymlinkRoots: ['/srv/codex-archive']
     }
   )
+})
+
+test('setup carries the binary client choice from flag, env or profile', () => {
+  const fromFlag = resolveSetupInstallOptions({ flags: { client: 'binary' }, env: {}, profile: {} })
+  assert.equal(fromFlag.clientType, 'binary')
+  const fromEnv = resolveSetupInstallOptions({ flags: {}, env: { TOKENBOARD_CLIENT: 'binary' }, profile: {} })
+  assert.equal(fromEnv.clientType, 'binary')
+  const fromProfile = resolveSetupInstallOptions({ flags: {}, env: {}, profile: { clientType: 'binary' } })
+  assert.equal(fromProfile.clientType, 'binary')
+  // The flag wins, so a machine already on the binary can be switched back.
+  const back = resolveSetupInstallOptions({
+    flags: { client: 'git' },
+    env: { TOKENBOARD_CLIENT: 'binary' },
+    profile: { clientType: 'binary' }
+  })
+  assert.equal(back.clientType, 'git')
 })
 
 test('setup rejects malformed or empty Codex symlink root configuration', () => {
@@ -510,4 +528,19 @@ test('setup passes repo-url override to install collector', () => {
       'research/agy-token-support-plan'
     ]
   )
+})
+
+test('setup forwards the binary client choice to the collector installer', () => {
+  assert.deepEqual(
+    buildInstallCollectorArgs({ flags: {}, clientType: 'binary', installCollectorScript: '/repo/i.mjs' }),
+    ['/repo/i.mjs', '--client', 'binary']
+  )
+  assert.deepEqual(buildInstallCollectorArgs({ flags: {}, clientType: 'git', installCollectorScript: '/repo/i.mjs' }), [
+    '/repo/i.mjs',
+    '--client',
+    'git'
+  ])
+  // Omitted clientType leaves the flag off, so install-collector falls back to
+  // its own default (git) rather than receiving an empty value.
+  assert.deepEqual(buildInstallCollectorArgs({ flags: {}, installCollectorScript: '/repo/i.mjs' }), ['/repo/i.mjs'])
 })

@@ -107,7 +107,7 @@ clients/go/
 | M3 | antigravity 三源 + 不落盘专项 | 10 | 同上 |
 | M4 | claude-code + ccusage 集成层 | 7 | hook 离线行为验证 |
 | M5 | codex 全家（context-pricing 对账最大项） | 12–14 | codex 影子 diff=0 |
-| M6 | GoReleaser/self-update/skill 改造 | 6 | 干净机 install→sync→self-update 端到端 |
+| M6 | GoReleaser/self-update/skill 改造 | 6 | 干净机 install→sync→self-update 端到端 ✅（本机 stub 发布端点跑通，见 §9 末） |
 | M7 | per-source 灰度 + 双跑 + 切换 | 6–7 | 全 source 走 Go，TS deprecated |
 
 合计 ~10–11 周单人；providers 批次可并行压缩。**每批出口标准统一：Go 测试数 ≥ 对应 TS 测试数、影子 diff=0、该批 per-source 切换可用。**
@@ -178,6 +178,22 @@ clients/go/
 - 与 TS 的已知边界：
   - `codexFileStat.ctimeMs` 由反射取平台字段（Linux `Ctim`、Darwin `Ctimespec`、Windows 无），Windows 上退化为 mtime，change detection 弱于 Node。
   - Go 侧 context pricing 的规则来源是 `DefaultRules()` + 动态目录，与 TS 的内联常量表同源但表体由 `BuildCodexContextPricingRules` 生成，影子 diff 已逐模型核对（`gpt-5.6-sol` 重定价两侧一致）。
+
+**M6 状态（GoReleaser / self-update / skill 改造，2026-10-18）**：
+
+- [x] `internal/release`：发布通道的读侧。**不碰 api.github.com**——该端点对匿名调用按 IP 限流 60 次/小时，同一 NAT 后的多台机器共用一个额度，定时自更新会随机失败。改为走 `/releases/latest` 的 302 跳转解析 tag（最多 5 跳，超限即报循环；相对 Location 按当前 URL 解析），再按 `releases/download/<tag>/<asset>` 拼下载 URL，两者与普通资产下载同一 CDN、无配额。`Repo` 校验 owner/repo；`Platform` 只接受构建矩阵的六组（`darwin|linux|windows` × `amd64|arm64`；spec §9 的 D4 写「5 平台」，实际矩阵是 3×2=6）；`Checksums` 对畸形行 fail-closed（不是跳过）；`Verify` 要求 manifest 含该资产名（未列出即拒绝安装）。
+- [x] `internal/selfupdate`：`self-update` 的写侧。顺序固定为 解析 → 下载 archive+checksums → 验 checksum → 解包 → 写 `<dir>/tokenboard.new` → 执行 `version` 验证 → rename 换入（旧版留 `.backup-<UTC>`）。先替换后验证会让机器上的 collector 彻底跑不起来，而「负责升级的东西」正是它自己，定时任务永远修不回来，所以验证必须在 swap 之前。`verifyExecutable` 按**整 token** 匹配版本号（`1.2.30` 不含 `1.2.3`），避免把截断下载当成合格版本。scheduled 路径失败时 CLI 返回 0（离线是正常状态，调度器无法处置升级失败）。
+- [x] `.goreleaser.yaml`：5 平台 tarball（Windows 也强制 tar.gz，因为 `extractBinary` 只读 gzip tar）+ `checksums.txt` + `-ldflags` 注入 `internal/cli.Version`。已用真实 GoReleaser v2.12.7 跑 `check` 与 `release --snapshot` 验证：产物名恰为 `tokenboard_<os>_<arch>.tar.gz`、`checksums.txt`、包内可执行文件名为 `tokenboard`，与 `release.Platform()`/`ArchiveName()`/`ChecksumsName()`/`binaryFileName()` 逐项对齐。
+- [x] skill 二进制客户端（`clientType`，缺省 `'git'`）：
+  - `scripts/client-binary.mjs`：**仅用于首次引导**（此时还没有二进制可以执行 `self-update`）。它实现与 `internal/release` 同口径的三条规则（跳转解析、无 checksums 即拒、`version` 验证后换入），解包用平台自带 `tar`（与 archive fallback 用 `unzip` 同思路）。
+  - `config.mjs` 增 `readClientType`（flag > `TOKENBOARD_CLIENT` > `clientType` > `'git'`），未知值报错而非静默按 git 跑；`clientType` 进入 profile-scoped 键集。
+  - `sync.mjs`：`buildSyncInvocation` 在 `binary` 下 spawn `~/.tokenboard/bin/tokenboard <preview|sync|warm-hooks> --source …`，env 契约与 git 客户端共用同一份构造（`sharedEnv`），只少一个 `TOKENBOARD_CCUSAGE_CONFIG`（Go 侧自行 materialize baseline）。升级入口抽成 `runPreCollectUpgrade`：binary 走 `self-update`（hook 模式不升级），git 保持原 checkout 升级，两者失败都只告警不中断采集。
+  - `install-collector.mjs --client binary` / `setup.mjs --client git|binary`：干净机安装直接装二进制，不 clone。
+  - `upgrade.mjs --to-binary`：迁移分支——装二进制 + 写 `clientType: 'binary'`，**不删旧 checkout**（改回 `'git'` 即回滚）；安装失败时不改配置（否则下次 sync 会去 spawn 一个不存在的二进制）。
+  - `status.mjs` 输出 `clientType`。
+- 端到端实测（2026-10-18，本机 darwin/amd64，本地 stub 发布端点）：GoReleaser 快照产物 → `installClientBinary` 引导安装 → `tokenboard version` 报 `0.0.0-SNAPSHOT-cfe61a0` → 自更新到 9.9.9（校验通过、`.backup-…` 保留旧版、再次运行为 no-op）→ `sync.mjs --mode preview` 以 binary 客户端跑通（同一 grok fixture 下与 TS 侧 `--since all` 均 1 条 snapshot）。顺带修掉一个只在真实路径暴露的缺陷：binary 分支曾把 `cwd` 设成不存在的 collector checkout，spawn 报 `ENOENT` 并被读成「客户端未安装」。
+- 未覆盖边界：真实 GitHub Releases 发布（仓库尚无 tag/CI workflow）、ccusage 随 tarball 捆绑（spec §4 的 CI 步骤，当前走三层获取的 PATH/下载路径）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
+- Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 
 **M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：
 

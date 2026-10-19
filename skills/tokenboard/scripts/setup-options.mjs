@@ -39,6 +39,7 @@ export function resolveSetupInstallOptions({
     repoUrl: flags['repo-url'] || env.TOKENBOARD_REPO_URL || profile.repoUrl,
     repoRef: flags['repo-ref'] || env.TOKENBOARD_REPO_REF || profile.repoRef,
     packageManager: flags['package-manager'] || env.TOKENBOARD_PACKAGE_MANAGER || profile.packageManager || 'pnpm',
+    clientType: flags.client || env.TOKENBOARD_CLIENT || profile.clientType || 'git',
     scheduleTimesInput: Array.isArray(scheduleTimes) ? scheduleTimes.join(',') : scheduleTimes,
     ...(codexSymlinkRoots === undefined ? {} : { codexSymlinkRoots })
   }
@@ -86,6 +87,7 @@ function readCodexSymlinkRoots({ flags, env, profile }) {
 export function buildInstallCollectorArgs({
   flags = {},
   packageManager,
+  clientType,
   installCollectorScript = './install-collector.mjs'
 } = {}) {
   const args = [installCollectorScript]
@@ -94,6 +96,9 @@ export function buildInstallCollectorArgs({
   }
   if (flags['repo-ref']) {
     args.push('--repo-ref', flags['repo-ref'])
+  }
+  if (typeof clientType === 'string' && clientType.trim()) {
+    args.push('--client', clientType)
   }
   if (typeof packageManager === 'string' && packageManager.trim()) {
     args.push('--package-manager', packageManager)

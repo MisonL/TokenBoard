@@ -47,6 +47,7 @@ test('status reports health without exposing local configuration identities or p
     deviceLinkPresent: true,
     timezone: 'Asia/Shanghai',
     source: 'all',
+    clientType: 'git',
     packageManager: 'bun',
     scheduleTimes: ['06:00', '09:00'],
     hooks: {

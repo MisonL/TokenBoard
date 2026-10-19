@@ -28,6 +28,7 @@ export function buildStatus({
     deviceLinkPresent: deviceLink.present === true,
     timezone: config.timezone,
     source: config.source,
+    clientType: config.clientType === 'binary' ? 'binary' : 'git',
     packageManager: config.packageManager || 'pnpm',
     scheduleTimes: Array.isArray(config.scheduleTimes) ? config.scheduleTimes : [],
     hooks: publicHookStatus(hooks),
@@ -144,9 +145,7 @@ function runCli() {
   // a user who only sets TOKENBOARD_STATE_DIR keeps their sync/backoff state
   // there, and status must read the same directory the collector writes.
   const stateDir =
-    process.env.TOKENBOARD_STATE_DIR?.trim() ||
-    process.env.TOKENBOARD_CONFIG_DIR?.trim() ||
-    dirname(file)
+    process.env.TOKENBOARD_STATE_DIR?.trim() || process.env.TOKENBOARD_CONFIG_DIR?.trim() || dirname(file)
   console.log(
     JSON.stringify(
       buildStatus({
@@ -194,9 +193,7 @@ function readScheduledSync(source, stateDir) {
 function readScheduledRetry(configFile, source = 'all') {
   // Same resolution as the caller: STATE_DIR || CONFIG_DIR || config dir.
   const stateDir =
-    process.env.TOKENBOARD_STATE_DIR?.trim() ||
-    process.env.TOKENBOARD_CONFIG_DIR?.trim() ||
-    dirname(configFile)
+    process.env.TOKENBOARD_STATE_DIR?.trim() || process.env.TOKENBOARD_CONFIG_DIR?.trim() || dirname(configFile)
   const statePath = scheduledRetryStatePath(stateDir, source)
   const state = readRetryState(statePath)
   if (source === 'all') return state

@@ -39,6 +39,19 @@ export function readPackageManager(flags = {}, config = {}) {
   throw new Error(`Unsupported package manager: ${value}. Expected pnpm, bun, or npm.`)
 }
 
+// Which collector implementation this machine runs: the git checkout (the
+// original install, and still the default) or the released Go binary. The
+// default is 'git' so every existing install keeps working untouched; a
+// machine only moves to 'binary' when the user asks for it, and moving back is
+// the same flag.
+export function readClientType({ flags = {}, env = process.env, config = {} } = {}) {
+  const value = flags.client || env.TOKENBOARD_CLIENT || config.clientType || 'git'
+  if (value === 'git' || value === 'binary') {
+    return value
+  }
+  throw new Error(`Unsupported client type: ${value}. Expected git or binary.`)
+}
+
 export function packageManagerCommand(packageManager, platform = process.platform) {
   if (platform !== 'win32') {
     return packageManager
@@ -322,6 +335,7 @@ const profileScopedRootKeys = new Set([
   'repoUrl',
   'repoRef',
   'packageManager',
+  'clientType',
   'scheduleTimes',
   'codexSymlinkRoots',
   'createdAt',

@@ -13,15 +13,17 @@ import {
   writeFileSync,
   writeSync
 } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { isMainModule } from './is-main.mjs'
-import { readConfig, parseArgs, collectorDir, readPackageManager } from './config.mjs'
+import { readConfig, parseArgs, collectorDir, readPackageManager, readClientType } from './config.mjs'
+import { clientBinaryPath } from './client-binary.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { normalizePathEnv } from './schedule.mjs'
 import { readSince } from './sync-options.mjs'
 import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
 import { runUpgrade } from './upgrade.mjs'
+import { runSelfUpdate } from './client-binary.mjs'
 import { errorMessage } from './error-message.mjs'
 import { acquireLock, lockHasToken, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import { runScheduledRetry, transientSyncExitCode } from './scheduled-retry.mjs'
@@ -215,24 +217,69 @@ export async function runSyncInvocation({
   return exitCode
 }
 
-async function runSync({ flags, invocation, logs }) {
-  if (shouldRunUpgrade({ flags, env: process.env })) {
-    try {
-      runUpgrade({
-        flags,
-        automatic: true,
-        log: createUpgradeLogger(logs)
-      })
-    } catch (error) {
-      console.error(`TokenBoard upgrade skipped: ${redactUrlCredentials(errorMessage(error))}`)
+// runPreCollectUpgrade is the upgrade step that runs before collection.
+//
+// A binary client owns its own upgrade: it calls its `self-update`, which
+// verifies the download against the release's checksums and swaps the binary
+// only after the new one has answered `version`. That is what decouples the
+// upgrade from the git worktree — the checkout no longer has to be clean, or
+// even present, for the client to move forward.
+//
+// A git client keeps the checkout upgrade, unchanged. Hook syncs never
+// upgrade at all: they only enqueue and reconcile usage, and a hook must not
+// make a network request it cannot afford.
+//
+// A failure on either path is a warning, never a sync failure: an offline
+// machine is a normal state, and the collector keeps working on the version it
+// has.
+export function runPreCollectUpgrade({
+  flags = {},
+  invocation,
+  logs,
+  env = process.env,
+  upgrade = runUpgrade,
+  selfUpdate = runSelfUpdate,
+  binaryExists = existsSync,
+  log = createUpgradeLogger(logs),
+  warn = (message) => console.error(message)
+} = {}) {
+  if (invocation?.clientType === 'binary') {
+    if (flags.hook === true || !binaryExists(invocation.command)) {
+      return
     }
+    try {
+      selfUpdate({ binaryPath: invocation.command, scheduled: flags.scheduled === true, log })
+    } catch (error) {
+      warn(`TokenBoard self-update skipped: ${redactUrlCredentials(errorMessage(error))}`)
+    }
+    return
   }
+
+  if (!shouldRunUpgrade({ flags, env })) {
+    return
+  }
+  try {
+    upgrade({ flags, automatic: true, log })
+  } catch (error) {
+    warn(`TokenBoard upgrade skipped: ${redactUrlCredentials(errorMessage(error))}`)
+  }
+}
+
+async function runSync({ flags, invocation, logs }) {
+  runPreCollectUpgrade({ flags, invocation, logs })
 
   const effectiveInvocation = refreshBundledCcusageConfig(invocation)
 
-  if (!existsSync(effectiveInvocation.repoDir)) {
+  // A binary install has no checkout to read: it materializes the bundled
+  // pricing baseline itself, so the collector directory is not required.
+  if (!existsSync(effectiveInvocation.repoDir) && effectiveInvocation.clientType !== 'binary') {
     console.error(`TokenBoard collector is not installed: ${effectiveInvocation.repoDir}`)
     console.error('Run setup.mjs again or run install-collector.mjs.')
+    return 1
+  }
+  if (effectiveInvocation.clientType === 'binary' && !existsSync(effectiveInvocation.command)) {
+    console.error(`TokenBoard client is not installed: ${effectiveInvocation.command}`)
+    console.error('Run setup.mjs again or run upgrade.mjs --to-binary.')
     return 1
   }
 
@@ -434,6 +481,7 @@ export function buildSyncInvocation({
   const mode = flags.mode || 'sync'
   const source = flags.source || config.source || 'all'
   const repoDir = config.collectorDir || collectorDir()
+  const clientType = readClientType({ flags, env, config })
   const packageManager = readPackageManager(flags, config)
   const since = readSince({ flags, config, env })
   const delimiter = platform === 'win32' ? ';' : ':'
@@ -442,57 +490,88 @@ export function buildSyncInvocation({
     TOKENBOARD_COORDINATOR_LOCK_TOKEN: _coordinatorLockToken,
     ...collectorEnv
   } = env
+  const onlyWhenUnset = (key, value) => {
+    if (value === undefined) return {}
+    if (Object.prototype.hasOwnProperty.call(collectorEnv, key)) return {}
+    return { [key]: value }
+  }
+  const until = normalizeUntilFlag(flags.until)
+  const codexSymlinkRoots =
+    Array.isArray(config.codexSymlinkRoots) && config.codexSymlinkRoots.length > 0
+      ? onlyWhenUnset('TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON', JSON.stringify(config.codexSymlinkRoots))
+      : {}
+  const untilArgs = until === undefined ? [] : ['--until', until]
+  // Shared by both clients: the endpoint contract is identical, so a switch
+  // between them cannot change what gets collected or where it is uploaded.
+  const sharedEnv = {
+    ...collectorEnv,
+    PATH: normalizePathEnv({
+      pathEnv,
+      homeDir,
+      nodePath,
+      delimiter
+    }),
+    TOKENBOARD_ENDPOINT: config.endpoint,
+    TOKENBOARD_UPLOAD_TOKEN: config.uploadToken,
+    TOKENBOARD_TIMEZONE: config.timezone,
+    TOKENBOARD_SOURCE: source,
+    TOKENBOARD_PACKAGE_MANAGER: packageManager,
+    ...codexSymlinkRoots,
+    ...(until !== undefined ? { TOKENBOARD_UNTIL: until } : {}),
+    TOKENBOARD_SINCE: since,
+    TOKENBOARD_DEFAULT_SINCE: since,
+    ...(flags.scheduled === true ? onlyWhenUnset('TOKENBOARD_FAIL_ON_SOURCE_ERROR', '1') : {}),
+    ...(flags.hook === true
+      ? {
+          TOKENBOARD_HOOK_MODE: '1',
+          TOKENBOARD_STATE_DIR: env.TOKENBOARD_STATE_DIR || env.TOKENBOARD_CONFIG_DIR || join(homeDir, '.tokenboard')
+        }
+      : {})
+  }
+
+  // A binary install runs the Go client directly: the same subcommand
+  // (`preview`/`sync`/`warm-hooks`), the same TOKENBOARD_* contract and the
+  // same state directory, but no node, no tsx and no git checkout. The
+  // ccusage config is the one thing it does not need: the Go client
+  // materializes the bundled baseline itself.
+  if (clientType === 'binary') {
+    const binary = clientBinaryPath({
+      configDir: env.TOKENBOARD_CONFIG_DIR || join(homeDir, '.tokenboard'),
+      platform
+    })
+    return {
+      command: binary,
+      args: [mode, '--source', source, ...untilArgs],
+      source,
+      // A binary install has no checkout: the working directory is the
+      // binary's own directory, which exists as soon as it is installed.
+      // Pointing it at the (absent) collector directory makes spawn fail with
+      // ENOENT on the command itself, which reads as "client not installed".
+      cwd: dirname(binary),
+      repoDir,
+      clientType,
+      shell: false,
+      env: sharedEnv
+    }
+  }
+
   const bundledCcusageConfig = join(repoDir, 'packages', 'collector', 'ccusage.json')
   const ccusageConfig = collectorEnv.TOKENBOARD_CCUSAGE_CONFIG?.trim()
     ? undefined
     : fileExists(bundledCcusageConfig)
       ? bundledCcusageConfig
       : undefined
-  const until = normalizeUntilFlag(flags.until)
-  const codexSymlinkRoots =
-    Array.isArray(config.codexSymlinkRoots) && config.codexSymlinkRoots.length > 0
-      ? Object.prototype.hasOwnProperty.call(collectorEnv, 'TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON')
-        ? undefined
-        : JSON.stringify(config.codexSymlinkRoots)
-      : undefined
-  const untilArgs = until === undefined ? [] : ['--until', until]
   return {
     command: nodePath,
     args: ['--import', 'tsx', 'src/cli.ts', mode, '--source', source, ...untilArgs],
     source,
     cwd: join(repoDir, 'packages', 'collector'),
     repoDir,
+    clientType,
     shell: false,
     env: {
-      ...collectorEnv,
-      PATH: normalizePathEnv({
-        pathEnv,
-        homeDir,
-        nodePath,
-        delimiter
-      }),
-      TOKENBOARD_ENDPOINT: config.endpoint,
-      TOKENBOARD_UPLOAD_TOKEN: config.uploadToken,
-      TOKENBOARD_TIMEZONE: config.timezone,
-      TOKENBOARD_SOURCE: source,
-      TOKENBOARD_PACKAGE_MANAGER: packageManager,
-      ...(ccusageConfig ? { TOKENBOARD_CCUSAGE_CONFIG: ccusageConfig } : {}),
-      ...(codexSymlinkRoots ? { TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON: codexSymlinkRoots } : {}),
-      ...(until !== undefined ? { TOKENBOARD_UNTIL: until } : {}),
-      TOKENBOARD_SINCE: since,
-      TOKENBOARD_DEFAULT_SINCE: since,
-      ...(flags.scheduled === true &&
-      !Object.prototype.hasOwnProperty.call(collectorEnv, 'TOKENBOARD_FAIL_ON_SOURCE_ERROR')
-        ? {
-            TOKENBOARD_FAIL_ON_SOURCE_ERROR: '1'
-          }
-        : {}),
-      ...(flags.hook === true
-        ? {
-            TOKENBOARD_HOOK_MODE: '1',
-            TOKENBOARD_STATE_DIR: env.TOKENBOARD_STATE_DIR || env.TOKENBOARD_CONFIG_DIR || join(homeDir, '.tokenboard')
-          }
-        : {})
+      ...sharedEnv,
+      ...(ccusageConfig ? { TOKENBOARD_CCUSAGE_CONFIG: ccusageConfig } : {})
     }
   }
 }

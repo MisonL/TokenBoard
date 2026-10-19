@@ -1,0 +1,356 @@
+// Binary client support (spec §8): a clean machine installs the release
+// tarball once, and every later upgrade is the Go binary's own
+// `self-update`.
+//
+// The download path here is the bootstrap only — it exists because the very
+// first install has no binary to run `self-update` with. Everything after that
+// belongs to `internal/release` + `internal/selfupdate`, which carry the same
+// three rules this file implements and must stay in step with:
+//   - the latest tag is found by following `/releases/latest`, never by
+//     calling the rate-limited REST API;
+//   - a release without a checksums manifest is refused, not installed;
+//   - the previous binary is kept until the new one has answered `version`.
+import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { errorMessage } from './error-message.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
+
+export const defaultReleaseRepo = 'MisonL/TokenBoard'
+export const defaultReleaseBaseUrl = 'https://github.com'
+
+// Bounds mirror internal/release: a few megabytes of binary, capped so a
+// redirect to something else cannot fill the disk.
+const maxDownloadBytes = 128 * 1024 * 1024
+const maxRedirects = 5
+const childOutputMaxBuffer = 64 * 1024 * 1024
+
+export function binaryFileName(platform = process.platform) {
+  return platform === 'win32' ? 'tokenboard.exe' : 'tokenboard'
+}
+
+// clientBinaryPath is where the skill installs the binary: the config
+// directory's own bin/, which is `~/.tokenboard/bin` for a default install.
+export function clientBinaryPath({ configDir, platform = process.platform }) {
+  return join(configDir, 'bin', binaryFileName(platform))
+}
+
+// releasePlatform maps Node's platform/arch spellings onto the GOOS/GOARCH
+// names the release assets use. Anything else has no published build.
+export function releasePlatform(platform = process.platform, arch = process.arch) {
+  const os = platform === 'win32' ? 'windows' : platform
+  if (os !== 'darwin' && os !== 'linux' && os !== 'windows') {
+    throw new Error(`TokenBoard has no release for ${platform}/${arch}`)
+  }
+  if (arch !== 'x64' && arch !== 'arm64') {
+    throw new Error(`TokenBoard has no release for ${platform}/${arch}`)
+  }
+  return `${os}_${arch === 'x64' ? 'amd64' : arch}`
+}
+
+export function archiveName(suffix) {
+  return `tokenboard_${suffix}.tar.gz`
+}
+
+export function checksumsName() {
+  return 'checksums.txt'
+}
+
+export function versionOf(tag) {
+  const trimmed = String(tag ?? '').trim()
+  return trimmed.startsWith('v') ? trimmed.slice(1) : trimmed
+}
+
+// tagFromURL pulls the tag out of a `/releases/tag/<tag>` page URL.
+export function tagFromURL(pageUrl) {
+  const marker = '/releases/tag/'
+  const index = String(pageUrl).indexOf(marker)
+  if (index < 0) return ''
+  const raw = String(pageUrl)
+    .slice(index + marker.length)
+    .split(/[?#]/)[0]
+  const decoded = decodeURIComponent(raw)
+  return decoded
+}
+
+// resolveRelease returns the tag and the two download URLs an install needs.
+// An explicit tag skips the lookup, so a pinned release installs even when the
+// latest-release page is unreachable.
+export async function resolveRelease({
+  repo = defaultReleaseRepo,
+  tag,
+  baseUrl = defaultReleaseBaseUrl,
+  platform = process.platform,
+  arch = process.arch,
+  fetcher = fetch
+} = {}) {
+  const suffix = releasePlatform(platform, arch)
+  const root = String(baseUrl).replace(/\/+$/, '')
+  let resolvedTag = typeof tag === 'string' ? tag.trim() : ''
+  if (!resolvedTag) {
+    resolvedTag = await latestTag({ repo, baseUrl: root, fetcher })
+  }
+  if (!resolvedTag) {
+    throw new Error('TokenBoard release tag is empty')
+  }
+  const downloadBase = `${root}/${repo}/releases/download/${encodeURIComponent(resolvedTag)}`
+  return {
+    tag: resolvedTag,
+    version: versionOf(resolvedTag),
+    archive: { name: archiveName(suffix), url: `${downloadBase}/${archiveName(suffix)}` },
+    checksums: { name: checksumsName(), url: `${downloadBase}/${checksumsName()}` }
+  }
+}
+
+// latestTag follows the releases-latest redirect to the tag page. Redirects
+// are followed by hand so a loop is reported instead of walked, and so the
+// request never depends on the anonymous REST quota.
+export async function latestTag({ repo, baseUrl, fetcher = fetch }) {
+  let current = `${baseUrl}/${repo}/releases/latest`
+  for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    const response = await fetcher(current, { redirect: 'manual' })
+    if (response.status === 404) {
+      throw new Error(`TokenBoard release lookup returned HTTP 404 for ${repo}`)
+    }
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location')
+      if (!location) {
+        throw new Error(`TokenBoard release lookup returned HTTP ${response.status} without a Location`)
+      }
+      current = new URL(location, current).toString()
+      continue
+    }
+    if (response.status !== 200) {
+      throw new Error(`TokenBoard release lookup returned HTTP ${response.status}`)
+    }
+    const tag = tagFromURL(current)
+    if (!tag) {
+      throw new Error('TokenBoard release lookup did not land on a tag page')
+    }
+    return tag
+  }
+  throw new Error(`TokenBoard release lookup redirected more than ${maxRedirects} times`)
+}
+
+// downloadBytes fetches an asset into memory, bounded the same way
+// internal/release bounds its downloads.
+//
+// The bound is enforced while reading, not after: a host that answers with a
+// chunked body and no Content-Length would otherwise be buffered in full
+// before the size check could refuse it.
+export async function downloadBytes({ url, name, fetcher = fetch }) {
+  const response = await fetcher(url)
+  if (!response.ok) {
+    throw new Error(`download ${name} returned HTTP ${response.status}`)
+  }
+  const declared = Number(response.headers?.get?.('content-length') ?? 0)
+  if (Number.isFinite(declared) && declared > maxDownloadBytes) {
+    throw new Error(`download ${name} exceeds ${maxDownloadBytes} bytes`)
+  }
+  if (!response.body || typeof response.body[Symbol.asyncIterator] !== 'function') {
+    // A fetcher without a streaming body (a test double, or an older runtime)
+    // still gets the post-read check.
+    const data = Buffer.from(await response.arrayBuffer())
+    if (data.length > maxDownloadBytes) {
+      throw new Error(`download ${name} exceeds ${maxDownloadBytes} bytes`)
+    }
+    return data
+  }
+  const chunks = []
+  let total = 0
+  for await (const chunk of response.body) {
+    total += chunk.length
+    if (total > maxDownloadBytes) {
+      throw new Error(`download ${name} exceeds ${maxDownloadBytes} bytes`)
+    }
+    chunks.push(Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
+}
+
+// readChecksums parses a GoReleaser checksums.txt. A line that cannot be read
+// is an error, not a skipped entry: a manifest that cannot be read in full
+// cannot vouch for the asset it covers.
+export function readChecksums(content) {
+  const entries = new Map()
+  for (const rawLine of String(content).split('\n')) {
+    const line = rawLine.replace(/\r$/, '')
+    if (!line.trim()) continue
+    const separator = line.indexOf(' ')
+    if (separator < 0) throw new Error(`invalid checksums.txt line: ${JSON.stringify(line)}`)
+    const digest = line.slice(0, separator).trim()
+    const name = line.slice(separator + 1).trim()
+    if (!name || !digest) throw new Error(`invalid checksums.txt line: ${JSON.stringify(line)}`)
+    if (!/^[0-9a-fA-F]{64}$/.test(digest)) {
+      throw new Error(`invalid checksums.txt digest: ${JSON.stringify(digest)}`)
+    }
+    entries.set(name, digest.toLowerCase())
+  }
+  if (entries.size === 0) {
+    throw new Error('checksums.txt has no entries')
+  }
+  return entries
+}
+
+// verifyChecksum refuses an asset the manifest does not cover: installing an
+// unlisted file defeats the point of the manifest.
+export function verifyChecksum(data, name, checksums) {
+  const expected = checksums.get(name)
+  if (!expected) {
+    throw new Error(`checksums.txt has no entry for ${name}`)
+  }
+  const digest = createHash('sha256').update(data).digest('hex')
+  if (digest !== expected) {
+    throw new Error(`checksum mismatch for ${name}`)
+  }
+}
+
+function runExternal(command, args, { spawn, platform = process.platform, log = () => {} }) {
+  const result = spawn(command, args, {
+    shell: platform === 'win32' && /\.(cmd|bat)$/i.test(command),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: childOutputMaxBuffer
+  })
+  const stdout = String(result.stdout ?? '')
+  const stderr = String(result.stderr ?? '')
+  if (stdout) log(redactUrlCredentials(stdout))
+  if (stderr) log(redactUrlCredentials(stderr))
+  if (result.error?.code === 'ENOBUFS') {
+    throw new Error(`${command} produced more than 64 MiB of output and was stopped`)
+  }
+  if (result.error) throw new Error(`${command} failed to start: ${errorMessage(result.error)}`)
+  if (result.signal) throw new Error(`${command} was terminated by ${result.signal}`)
+  if (result.status !== 0) throw new Error(`${command} failed with exit code ${result.status ?? 1}`)
+  return result
+}
+
+// extractBinary unpacks the release tarball and returns the executable's
+// bytes. Extraction shells out to the platform's tar (present on macOS, Linux
+// and Windows 10+), the way the archive fallback already shells out to unzip.
+export function extractBinary({ archivePath, extractDir, name, platform = process.platform, spawn = spawnSync, log }) {
+  mkdirSync(extractDir, { recursive: true })
+  runExternal('tar', ['-xzf', archivePath, '-C', extractDir, name], { spawn, platform, log })
+  const extracted = join(extractDir, name)
+  if (!existsSync(extracted)) {
+    throw new Error(`TokenBoard release tarball does not contain ${name}`)
+  }
+  if (!statSync(extracted).isFile()) {
+    throw new Error(`TokenBoard release tarball entry ${name} is not a file`)
+  }
+  const data = readFileSync(extracted)
+  if (data.length === 0) {
+    throw new Error(`TokenBoard release tarball entry ${name} is empty`)
+  }
+  return data
+}
+
+// verifyExecutable runs the staged binary's version check. A binary that
+// cannot answer is not installed: swapping it in would break the next
+// scheduled sync with no way to notice.
+export function verifyExecutable(path, version, { spawn = spawnSync } = {}) {
+  const result = spawn(path, ['version'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: childOutputMaxBuffer
+  })
+  if (result.error) throw new Error(`the downloaded TokenBoard binary does not run: ${errorMessage(result.error)}`)
+  if (result.status !== 0) {
+    throw new Error(`the downloaded TokenBoard binary does not run: exit code ${result.status ?? 1}`)
+  }
+  const printed = String(result.stdout ?? '').trim()
+  if (!printed) throw new Error('the downloaded TokenBoard binary does not run: it printed no version')
+  if (!printed.includes(version)) {
+    throw new Error(`the downloaded TokenBoard binary does not run: it printed ${JSON.stringify(printed)}`)
+  }
+}
+
+// installClientBinary bootstraps a binary install on a machine that has none.
+// It is the only place the skill downloads a release; every later upgrade is
+// the binary's own `self-update`.
+export async function installClientBinary({
+  repo = defaultReleaseRepo,
+  tag,
+  baseUrl = defaultReleaseBaseUrl,
+  configDir,
+  platform = process.platform,
+  arch = process.arch,
+  fetcher = fetch,
+  spawn = spawnSync,
+  workDir,
+  log = () => {}
+}) {
+  const target = clientBinaryPath({ configDir, platform })
+  const work = workDir || join(configDir, 'client-install')
+  const release = await resolveRelease({ repo, tag, baseUrl, platform, arch, fetcher })
+  const archivePath = join(work, release.archive.name)
+  const extractDir = join(work, 'extract')
+
+  rmSync(work, { recursive: true, force: true })
+  mkdirSync(work, { recursive: true })
+  try {
+    const archiveData = await downloadBytes({ url: release.archive.url, name: release.archive.name, fetcher })
+    const checksumData = await downloadBytes({
+      url: release.checksums.url,
+      name: release.checksums.name,
+      fetcher
+    })
+    verifyChecksum(archiveData, release.archive.name, readChecksums(checksumData.toString('utf8')))
+    writeFileSync(archivePath, archiveData, { mode: 0o600 })
+
+    const binary = extractBinary({
+      archivePath,
+      extractDir,
+      name: binaryFileName(platform),
+      platform,
+      spawn,
+      log
+    })
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
+    const staged = `${target}.new`
+    rmSync(staged, { force: true })
+    writeFileSync(staged, binary, { mode: 0o755 })
+    // The umask may have stripped the execute bit; without it the verification
+    // below would fail for a reason unrelated to the download.
+    chmodSync(staged, 0o755)
+    try {
+      verifyExecutable(staged, release.version, { spawn })
+      renameSync(staged, target)
+    } catch (error) {
+      rmSync(staged, { force: true })
+      throw error
+    }
+    log(`TokenBoard client ${release.version} installed at ${target}`)
+    return { version: release.version, path: target, tag: release.tag }
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
+}
+
+// runSelfUpdate hands the upgrade to the installed binary, which owns the
+// checksum verification and the rename-swap from here on. The scheduled path
+// passes --scheduled so an offline machine stays quiet instead of failing the
+// run.
+export function runSelfUpdate({ binaryPath, scheduled = false, spawn = spawnSync, env = process.env, log = () => {} }) {
+  if (!existsSync(binaryPath)) {
+    throw new Error(`TokenBoard client is not installed: ${binaryPath}`)
+  }
+  const args = ['self-update']
+  if (scheduled) args.push('--scheduled')
+  const result = spawn(binaryPath, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: childOutputMaxBuffer,
+    env
+  })
+  const stdout = String(result.stdout ?? '')
+  const stderr = String(result.stderr ?? '')
+  if (stdout.trim()) log(redactUrlCredentials(stdout.trim()))
+  if (stderr.trim()) log(redactUrlCredentials(stderr.trim()))
+  if (result.error) throw new Error(`TokenBoard self-update failed to start: ${errorMessage(result.error)}`)
+  if (result.status !== 0) {
+    throw new Error(`TokenBoard self-update failed with exit code ${result.status ?? 1}`)
+  }
+  return { status: 0 }
+}
