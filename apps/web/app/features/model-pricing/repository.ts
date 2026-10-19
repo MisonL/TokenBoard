@@ -253,6 +253,8 @@ export type ModelPricingDiff = {
   removals: Array<{ provider: string; modelId: string }>
   /** Keys whose stored row was positively priced and the source now reports 0/0. */
   zeroFlips: string[]
+  /** Active rows the diff considered, i.e. the catalogue before this sync. */
+  storedCount: number
 }
 
 async function diffModelPricingCatalogue(input: {
@@ -286,7 +288,7 @@ async function diffModelPricingCatalogue(input: {
   const removals = stored
     .filter((row) => !sourceKeys.has(catalogueKey(row.provider, row.modelId)))
     .map((row) => ({ provider: row.provider, modelId: row.modelId }))
-  return { changes, removals, zeroFlips }
+  return { changes, removals, zeroFlips, storedCount: stored.length }
 }
 
 function storedRowIsPositive(row: NormalizedModelPricing) {

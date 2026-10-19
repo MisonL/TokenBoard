@@ -219,10 +219,32 @@ async function runScheduledModelPricing(env: Bindings) {
           result.zeroFlips.join(', ')
       )
     }
+    // A source payload that lost most of the catalogue is the same failure class as the
+    // zero-price flips above, one order of magnitude larger: every removed model is
+    // deactivated, collectors fall back to $0 costs for them, and every cursor and ETag is
+    // invalidated by the new generation. The source has changed shape before (0025/0038
+    // were the patches for it), so this is reported loudly rather than left to the next
+    // day's successful sync.
+    if (result.status === 'success' && isCatalogueCollapse(result)) {
+      console.error(
+        `TokenBoard model pricing sync: the source deactivated ${result.removalCount} of ` +
+          `${result.storedModelCount} served model(s) in one sync — verify the upstream payload before ` +
+          'trusting the catalogue; collectors will bill the removed models at $0 until it recovers'
+      )
+    }
   } catch (error) {
     console.error(`TokenBoard model pricing sync failed: ${errorMessage(error)}`)
     throw error
   }
+}
+
+// isCatalogueCollapse reports a sync that removed the majority of the catalogue. A real
+// upstream retirement is a handful of models a day; losing more than half in one payload
+// means the response was truncated or reshaped.
+export function isCatalogueCollapse(result: { removalCount?: number; storedModelCount?: number }): boolean {
+  const removed = result.removalCount ?? 0
+  const stored = result.storedModelCount ?? 0
+  return stored > 0 && removed * 2 > stored
 }
 
 async function runScheduledNotifications(env: Bindings, now: Date) {

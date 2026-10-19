@@ -900,6 +900,78 @@ describe('worker server', () => {
     }
   })
 
+  test('scheduled model pricing sync reports a catalogue collapse', async () => {
+    const logged: string[] = []
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((line: unknown) => {
+      logged.push(String(line))
+    })
+    mockedRunModelPricingSync.mockImplementationOnce(async () => ({
+      status: 'success',
+      modelCount: 40,
+      sourceUpdatedAt: null,
+      completedAt: new Date('2026-04-29T10:00:00.000Z').toISOString(),
+      zeroFlips: [],
+      removalCount: 8_260,
+      storedModelCount: 8_300
+    }))
+
+    try {
+      const env = createEnv({ modelPricingSyncEnabled: 'true' })
+      const ctx = createExecutionContext()
+
+      worker.scheduled?.(
+        {
+          scheduledTime: Date.parse('2026-04-29T10:00:00.000Z'),
+          cron: '*/15 * * * *',
+          noRetry() {}
+        },
+        env,
+        ctx
+      )
+      await Promise.all(ctx.waitUntilPromises)
+
+      expect(logged.some((line) => line.includes('8260 of 8300'))).toBe(true)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  test('scheduled model pricing sync stays quiet for routine removals', async () => {
+    const logged: string[] = []
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation((line: unknown) => {
+      logged.push(String(line))
+    })
+    mockedRunModelPricingSync.mockImplementationOnce(async () => ({
+      status: 'success',
+      modelCount: 8_297,
+      sourceUpdatedAt: null,
+      completedAt: new Date('2026-04-29T10:00:00.000Z').toISOString(),
+      zeroFlips: [],
+      removalCount: 3,
+      storedModelCount: 8_300
+    }))
+
+    try {
+      const env = createEnv({ modelPricingSyncEnabled: 'true' })
+      const ctx = createExecutionContext()
+
+      worker.scheduled?.(
+        {
+          scheduledTime: Date.parse('2026-04-29T10:00:00.000Z'),
+          cron: '*/15 * * * *',
+          noRetry() {}
+        },
+        env,
+        ctx
+      )
+      await Promise.all(ctx.waitUntilPromises)
+
+      expect(logged.some((line) => line.includes('deactivated'))).toBe(false)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
   test('scheduled usage summary backfill exposes invalid limit configuration', async () => {
     const originalFetch = globalThis.fetch
     let pricingCompleted = false

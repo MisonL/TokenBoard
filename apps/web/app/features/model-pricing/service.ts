@@ -46,6 +46,13 @@ export type ModelPricingSyncResult = {
   // free launch and an upstream regression are indistinguishable here, so the publish applies
   // the source and this list names what flipped for the operator to verify.
   zeroFlips: string[]
+  // How much of the previously served catalogue this sync deactivated, and how large that
+  // catalogue was. A truncated or partially-shaped upstream payload reads as "every model the
+  // source no longer lists", which is the same mechanism as the zero-price regression but an
+  // order of magnitude larger — it takes the whole catalogue down for a day and invalidates
+  // every collector cursor and ETag with it.
+  removalCount?: number
+  storedModelCount?: number
 }
 
 export async function runModelPricingSync(input: {
@@ -133,7 +140,9 @@ export async function runModelPricingSync(input: {
       sourceUpdatedAt: snapshot.latestSourceUpdatedAt,
       completedAt: completedAt.toISOString(),
       changed: diff.changes.length > 0 || diff.removals.length > 0,
-      zeroFlips: diff.zeroFlips
+      zeroFlips: diff.zeroFlips,
+      removalCount: diff.removals.length,
+      storedModelCount: diff.storedCount
     }
   } catch (error) {
     const message = errorMessage(error)
