@@ -239,3 +239,55 @@ func setPending(entry *sessioncursor.Entry) {
 }
 
 var _ = filepath.Join
+
+// A snapshotless entry is dated by its mtime in the configured timezone, the
+// way the TS range check resolves it through `formatDate(value, timezone)`. A
+// mtime at 16:30Z is already the next day in Asia/Shanghai; using UTC would
+// drop an entry the TS collector keeps (or keep one it drops).
+func TestSnapshotlessEntryRangeUsesTheConfiguredTimezone(t *testing.T) {
+	mtime := time.Date(2026, 7, 20, 16, 30, 0, 0, time.UTC)
+	cursor := sessioncursor.NewState(string(contract.SourceAntigravityCLI))
+	pending := true
+	cursor.Files["session-a"] = sessioncursor.Entry{
+		MtimeMs:       float64(mtime.UnixMilli()),
+		PendingUpload: &pending,
+	}
+
+	// A non-marker key with no matching group, so the group check does not
+	// short-circuit before the range predicate runs.
+	unrelated := map[string]bool{"antigravity-cli\x002026-01-01\x00UTC\x00other": true}
+	err := ClearPendingUploadCursors(AcknowledgeInput{
+		Cursor:             &cursor,
+		Timezone:           "Asia/Shanghai",
+		Since:              "2026-07-21",
+		Now:                acknowledgeFixtureTime,
+		AcknowledgedGroups: unrelated,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := cursor.Files["session-a"]
+	if entry.PendingUpload == nil || *entry.PendingUpload {
+		t.Fatalf("the local day is 2026-07-21, so the entry is in range: %+v", entry)
+	}
+
+	// The same instant is 2026-07-20 in UTC, which the window excludes.
+	cursor = sessioncursor.NewState(string(contract.SourceAntigravityCLI))
+	cursor.Files["session-a"] = sessioncursor.Entry{
+		MtimeMs:       float64(mtime.UnixMilli()),
+		PendingUpload: &pending,
+	}
+	if err := ClearPendingUploadCursors(AcknowledgeInput{
+		Cursor:             &cursor,
+		Timezone:           "UTC",
+		Since:              "2026-07-21",
+		Now:                acknowledgeFixtureTime,
+		AcknowledgedGroups: unrelated,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entry = cursor.Files["session-a"]
+	if entry.PendingUpload == nil || !*entry.PendingUpload {
+		t.Fatalf("the UTC day is 2026-07-20, outside the window: %+v", entry)
+	}
+}

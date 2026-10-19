@@ -617,3 +617,20 @@ func TestBoundsModelNamesByUtf16CodeUnits(t *testing.T) {
 		t.Fatal("a model name over 160 UTF-16 code units must be rejected")
 	}
 }
+
+// A seconds value inside the safe-integer guard can still land outside the
+// range a JS Date can represent. TS fails closed there; formatting it would
+// date the usage in the far future and pollute the daily aggregate.
+func TestRejectsATimestampPastTheJSMillisecondRange(t *testing.T) {
+	blob := metadataBlob(
+		usageMessage(usageSpec{inputTokens: 10, outputTokens: u64(2), responseID: "response-a"}),
+		timestampField(9_000_000_000_000, nil),
+		fieldString(19, "gemini-3-flash-c"),
+	)
+	_, _, err := ParseGeneratorMetadataBlob(blob, BlobOptions{
+		CascadeID: "conversation-a", FallbackCreatedAt: "2026-06-24T00:00:00.000Z",
+	})
+	if err == nil || !strings.Contains(err.Error(), "createdAt is invalid") {
+		t.Errorf("err = %v, want 'createdAt is invalid'", err)
+	}
+}

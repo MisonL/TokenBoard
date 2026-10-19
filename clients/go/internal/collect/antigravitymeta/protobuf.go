@@ -259,6 +259,13 @@ func readCreatedAt(chatModel protoMessage, fallback string) (string, error) {
 			return "", errors.New("Invalid Antigravity generator metadata blob: createdAt is invalid")
 		}
 		millis := seconds*1000 + nanos/1_000_000
+		// TS rejects a timestamp whose Date is not finite (the JS date range
+		// ends at ±8.64e15 ms). A blob can carry a seconds value inside the
+		// safe-integer guard but past that range; formatting it would date the
+		// usage in the far future instead of failing closed.
+		if millis > maxJSMilliseconds || millis < -maxJSMilliseconds {
+			return "", errors.New("Invalid Antigravity generator metadata blob: createdAt is invalid")
+		}
 		return time.UnixMilli(millis).UTC().Format("2006-01-02T15:04:05.000Z"), nil
 	}
 	if fallback != "" {
@@ -516,3 +523,8 @@ func readVarint(input []byte, offset int) (uint64, int, error) {
 	}
 	return 0, 0, malformedProtobuf{"Truncated protobuf varint"}
 }
+
+// maxJSMilliseconds is the largest magnitude a JS Date can represent
+// (±100,000,000 days from the epoch); Number.isFinite(date.getTime()) is false
+// beyond it.
+const maxJSMilliseconds = int64(8_640_000_000_000_000)

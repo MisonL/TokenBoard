@@ -64,7 +64,7 @@ func ClearPendingUploadCursors(input AcknowledgeInput) error {
 			continue
 		}
 		if input.Since != "" && !acknowledged &&
-			!cursorEntryIsInRange(entry, input.Since) {
+			!cursorEntryIsInRange(entry, input.Since, input.Timezone) {
 			continue
 		}
 		pendingFalse := false
@@ -148,7 +148,7 @@ func isUsageDate(value string) bool {
 // snapshotless entry with no usable timestamp is always in range: it carries no
 // date to exclude it by, and dropping it would lose an upload the server may
 // still need.
-func cursorEntryIsInRange(entry sessioncursor.Entry, sinceDate string) bool {
+func cursorEntryIsInRange(entry sessioncursor.Entry, sinceDate, timezone string) bool {
 	if sinceDate == "" {
 		return true
 	}
@@ -163,14 +163,20 @@ func cursorEntryIsInRange(entry sessioncursor.Entry, sinceDate string) bool {
 	if entry.MtimeMs <= 0 {
 		return true
 	}
-	return sessionDateOf(entry.MtimeMs) >= sinceDate
+	return sessionDateOf(entry.MtimeMs, timezone) >= sinceDate
 }
 
-// sessionDateOf renders an epoch-millisecond stamp's UTC date. The TS side
-// compares an ISO timestamp's date part, which for the range check is the same
-// calendar day.
-func sessionDateOf(mtimeMs float64) string {
-	return time.UnixMilli(int64(mtimeMs)).UTC().Format("2006-01-02")
+// sessionDateOf renders an epoch-millisecond stamp's date in the configured
+// timezone. TS resolves the same predicate through `formatDate(value,
+// timezone)` (includesTimestamp in antigravity-since.ts), so an entry whose
+// mtime falls in the hours where UTC and local disagree lands on the local
+// day on both sides.
+func sessionDateOf(mtimeMs float64, timezone string) string {
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.UnixMilli(int64(mtimeMs)).UTC().Format("2006-01-02")
+	}
+	return time.UnixMilli(int64(mtimeMs)).In(location).Format("2006-01-02")
 }
 
 // compactAcknowledgedHistory folds aged-out acknowledged identities into daily

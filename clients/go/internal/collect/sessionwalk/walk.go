@@ -11,6 +11,7 @@ package sessionwalk
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -188,12 +189,9 @@ func walkDirectory(
 	if err != nil || !ok {
 		return err
 	}
-	entries, ok, err := readDirectoryEntries(currentDir)
+	entries, ok, err := readDirectoryEntries(currentDir, maxEntries)
 	if err != nil || !ok {
 		return err
-	}
-	if len(entries) > maxEntries {
-		return fmt.Errorf("Session directory %s exceeds the %d-entry scan limit", currentDir, maxEntries)
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		return entrySortPath(rootDir, currentDir, entries[i]) < entrySortPath(rootDir, currentDir, entries[j])
@@ -244,23 +242,47 @@ func assertSessionDirectory(path string) (bool, error) {
 	return true, nil
 }
 
-func readDirectoryEntries(currentDir string) ([]directoryEntry, bool, error) {
-	entries, err := os.ReadDir(currentDir)
+// readDirectoryEntries lists a directory in bounded batches. Reading it whole
+// first (`os.ReadDir`) would allocate one entry per dirent before the caller's
+// entry cap could refuse the directory, which is the situation the cap exists
+// for — a session tree that picked up a directory with millions of children.
+func readDirectoryEntries(currentDir string, maxEntries int) ([]directoryEntry, bool, error) {
+	directory, err := os.Open(currentDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("Unable to read session directory %s: %s", currentDir, errorText(err))
 	}
-	result := make([]directoryEntry, 0, len(entries))
-	for _, entry := range entries {
-		isDir := entry.IsDir()
-		if entry.Type()&os.ModeSymlink != 0 {
-			// Keep the dirent classification but let the lstat below surface
-			// the symlink refusal with the entry's full path.
-			isDir = false
+	defer directory.Close()
+
+	result := []directoryEntry{}
+	for {
+		batch, readErr := directory.ReadDir(256)
+		for _, entry := range batch {
+			isDir := entry.IsDir()
+			if entry.Type()&os.ModeSymlink != 0 {
+				// Keep the dirent classification but let the lstat below
+				// surface the symlink refusal with the entry's full path.
+				isDir = false
+			}
+			result = append(result, directoryEntry{name: entry.Name(), isDir: isDir})
 		}
-		result = append(result, directoryEntry{name: entry.Name(), isDir: isDir})
+		if maxEntries > 0 && len(result) > maxEntries {
+			return nil, false, fmt.Errorf("Session directory %s exceeds the %d-entry scan limit", currentDir, maxEntries)
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if errors.Is(readErr, fs.ErrNotExist) {
+				return nil, false, nil
+			}
+			return nil, false, fmt.Errorf("Unable to read session directory %s: %s", currentDir, errorText(readErr))
+		}
+	}
+	if maxEntries > 0 && len(result) > maxEntries {
+		return nil, false, fmt.Errorf("Session directory %s exceeds the %d-entry scan limit", currentDir, maxEntries)
 	}
 	return result, true, nil
 }

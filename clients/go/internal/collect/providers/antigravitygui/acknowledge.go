@@ -59,7 +59,7 @@ func ClearPendingUploadCursors(input AcknowledgeInput) error {
 			guiCursorEntryRequiresAcknowledgedGroup(Source(cursor.Source), key, entry, input.Timezone) && !acknowledged {
 			continue
 		}
-		if input.Since != "" && !acknowledged && !guiCursorEntryIsInRange(entry, input.Since) {
+		if input.Since != "" && !acknowledged && !guiCursorEntryIsInRange(entry, input.Since, input.Timezone) {
 			continue
 		}
 		pendingFalse := false
@@ -124,7 +124,7 @@ func guiSessionMarkerGroup(source Source, key, timezone string) (string, bool) {
 // snapshotless entry with no usable timestamp is always in range: it carries no
 // date to exclude it by, and dropping it would lose an upload the server may
 // still need.
-func guiCursorEntryIsInRange(entry sessioncursor.Entry, sinceDate string) bool {
+func guiCursorEntryIsInRange(entry sessioncursor.Entry, sinceDate, timezone string) bool {
 	if sinceDate == "" {
 		return true
 	}
@@ -139,7 +139,13 @@ func guiCursorEntryIsInRange(entry sessioncursor.Entry, sinceDate string) bool {
 	if entry.MtimeMs <= 0 {
 		return true
 	}
-	return time.UnixMilli(int64(entry.MtimeMs)).UTC().Format("2006-01-02") >= sinceDate
+	// TS resolves this through `formatDate(value, timezone)`: the local day,
+	// not the UTC one, decides whether a snapshotless entry is still in range.
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.UnixMilli(int64(entry.MtimeMs)).UTC().Format("2006-01-02") >= sinceDate
+	}
+	return time.UnixMilli(int64(entry.MtimeMs)).In(location).Format("2006-01-02") >= sinceDate
 }
 
 // guiAggregateInput accumulates one origin's daily group during compaction.
