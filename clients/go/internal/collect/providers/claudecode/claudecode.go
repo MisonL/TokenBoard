@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -386,16 +385,16 @@ func assertValidDateFilterRange(since, until, sinceField, untilField string) (st
 }
 
 func readCcusageTimeoutMs(env func(string) string) int {
-	value, err := strconv.Atoi(strings.TrimSpace(env("TOKENBOARD_CCUSAGE_TIMEOUT_MS")))
-	if err == nil && value > 0 {
+	// parseInt semantics: TS reads this with Number.parseInt(…, 10), so a
+	// trailing suffix ("1200abc", "1200.9") still yields a usable number.
+	if value, ok := contract.ParseInt(env("TOKENBOARD_CCUSAGE_TIMEOUT_MS")); ok && value > 0 {
 		return value
 	}
 	return DefaultCcusageTimeoutMs
 }
 
 func readPackageCommandRetries(env func(string) string) int {
-	value, err := strconv.Atoi(strings.TrimSpace(env("TOKENBOARD_PACKAGE_COMMAND_RETRIES")))
-	if err == nil && value >= 0 {
+	if value, ok := contract.ParseInt(env("TOKENBOARD_PACKAGE_COMMAND_RETRIES")); ok && value >= 0 {
 		return value
 	}
 	return DefaultPackageCommandRetries

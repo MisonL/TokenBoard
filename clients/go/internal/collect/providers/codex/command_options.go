@@ -2,10 +2,9 @@ package codex
 
 import (
 	"os"
-	"strconv"
-	"strings"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/ccusage"
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 // Port of codex-command-options.ts: the ccusage invocation shape for Codex and
@@ -57,8 +56,9 @@ func ReadSessionTimeoutMs(env func(string) string) int {
 }
 
 func readPackageCommandRetries() int {
-	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("TOKENBOARD_PACKAGE_COMMAND_RETRIES")))
-	if err == nil && value >= 0 {
+	// TS reads this with Number.parseInt(…, 10); Atoi would reject the
+	// trailing-suffix forms parseInt accepts.
+	if value, ok := contract.ParseInt(os.Getenv("TOKENBOARD_PACKAGE_COMMAND_RETRIES")); ok && value >= 0 {
 		return value
 	}
 	return DefaultPackageCommandRetries
@@ -70,8 +70,7 @@ func positiveIntEnv(env func(string) string, key string, fallback int) int {
 	if env == nil {
 		env = os.Getenv
 	}
-	value, err := strconv.Atoi(strings.TrimSpace(env(key)))
-	if err == nil && value > 0 {
+	if value, ok := contract.ParseInt(env(key)); ok && value > 0 {
 		return value
 	}
 	return fallback

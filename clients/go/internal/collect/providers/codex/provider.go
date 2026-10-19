@@ -6,11 +6,11 @@ package codex
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -365,16 +365,18 @@ func resolveSymlinkRootsFromOptions(options Options, env func(string) string) ([
 	return ParseSymlinkRootsJSON(configured)
 }
 
-// readBatchSize ports readBatchSize.
+// readBatchSize ports readBatchSize. TS uses Number(value), not parseInt, so
+// decimals, exponents and 0x/0o/0b prefixes are all accepted; a value that is
+// not a number at all falls back, and a fractional one is floored.
 func readBatchSize(env func(string) string) int {
-	value, err := strconv.Atoi(strings.TrimSpace(env("TOKENBOARD_CODEX_BATCH_SIZE")))
-	if err != nil || value < 1 {
+	value, ok := contract.ParseNumber(env("TOKENBOARD_CODEX_BATCH_SIZE"))
+	if !ok || math.IsNaN(value) || value < 1 {
 		return DefaultBatchSize
 	}
-	if value > MaxBatchSize {
+	if value >= MaxBatchSize {
 		return MaxBatchSize
 	}
-	return value
+	return int(math.Floor(value))
 }
 
 // scopedRunInput is the scoped (frozen-copy) collection input.

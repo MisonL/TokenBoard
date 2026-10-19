@@ -368,44 +368,6 @@ func requestTimeoutMs(config Config) int {
 	return defaultRequestTimeoutMs
 }
 
-// parseLeadingInt mirrors JavaScript's Number.parseInt(value, 10): leading
-// whitespace is skipped, an optional sign is read, and the digits that follow
-// are taken on their own — a trailing suffix ("12abc", "12.9") is ignored
-// rather than making the whole value unreadable. An optional base prefix is
-// not honoured, because base 10 stops at the "x" in "0x10", which is also what
-// parseInt does.
-//
-// A value too large for an int saturates in the sign's direction instead of
-// failing. JS has no overflow at these magnitudes, so the number it returns is
-// merely huge; reporting "unreadable" would send the caller back to a default
-// the TS side never uses.
-func parseLeadingInt(value string) (int, bool) {
-	text := strings.TrimLeft(value, " \t\n\r\v\f")
-	negative := false
-	if text != "" && (text[0] == '+' || text[0] == '-') {
-		negative = text[0] == '-'
-		text = text[1:]
-	}
-	digits := 0
-	for digits < len(text) && text[digits] >= '0' && text[digits] <= '9' {
-		digits++
-	}
-	if digits == 0 {
-		return 0, false
-	}
-	parsed, err := strconv.Atoi(text[:digits])
-	if err != nil {
-		if negative {
-			return -math.MaxInt, true
-		}
-		return math.MaxInt, true
-	}
-	if negative {
-		parsed = -parsed
-	}
-	return parsed, true
-}
-
 func isRetryableStatus(status int) bool {
 	switch status {
 	case http.StatusRequestTimeout, http.StatusTooManyRequests,
@@ -448,7 +410,7 @@ func retryDelay(response *http.Response, attempt, configuredMs int) time.Duratio
 		base = configuredMs
 	}
 	if configuredMs == 0 {
-		if parsed, ok := parseLeadingInt(os.Getenv("TOKENBOARD_FETCH_RETRY_DELAY_MS")); ok && parsed >= 0 {
+		if parsed, ok := contract.ParseInt(os.Getenv("TOKENBOARD_FETCH_RETRY_DELAY_MS")); ok && parsed >= 0 {
 			base = parsed
 		}
 	}
