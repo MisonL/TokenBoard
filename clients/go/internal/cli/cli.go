@@ -833,10 +833,16 @@ func acknowledgeUploadCursors(
 			if !hookMode {
 				continue
 			}
+			// Only Codex scopes its cursor by profile; the session-file sources
+			// write the unscoped `claude-code-cursor.json`, and the TS side
+			// passes `undefined` here for exactly that reason. Passing the
+			// endpoint origin instead pointed the acknowledgement at a
+			// `<base>.server-<hash>.json` file that never exists — and reading
+			// a missing cursor is not an error, so the run "succeeded" while
+			// no pending entry was ever cleared.
 			if err := sessioncursor.AcknowledgePendingUploads(sessioncursor.AcknowledgeInput{
 				StateDir:           stateDir,
 				Source:             source,
-				CursorScope:        cursorScope,
 				AcknowledgedGroups: acknowledged,
 			}); err != nil {
 				return fmt.Errorf("%s cursor acknowledgement failed: %w", source, err)

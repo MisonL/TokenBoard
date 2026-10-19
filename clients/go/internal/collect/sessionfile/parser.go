@@ -79,6 +79,32 @@ func Parse(input ParseInput, lines []Line) (ParseResult, error) {
 	return finish(state, input), nil
 }
 
+// ParseLines consumes the lines of one session file as they are read, the way
+// the TS `parseSessionJsonlLines` consumes its async iterable: the caller
+// streams from disk and nothing holds the whole file in memory. `Parse`
+// remains for callers that already hold the lines (tests, golden fixtures).
+func ParseLines(input ParseInput, lines func(yield func(Line) error) error) (ParseResult, error) {
+	location, err := time.LoadLocation(input.Timezone)
+	if err != nil {
+		return ParseResult{}, &timezoneError{timezone: input.Timezone}
+	}
+	state := &parseState{rows: map[string]*aggregateRow{}}
+	err = lines(func(line Line) error {
+		if line.Skipped {
+			state.skippedOversizedRows++
+			if line.ByteLength > state.largestSkippedBytes {
+				state.largestSkippedBytes = line.ByteLength
+			}
+			return nil
+		}
+		return consumeLine(state, input, location, line.Text)
+	})
+	if err != nil {
+		return ParseResult{}, err
+	}
+	return finish(state, input), nil
+}
+
 type timezoneError struct{ timezone string }
 
 func (e *timezoneError) Error() string {

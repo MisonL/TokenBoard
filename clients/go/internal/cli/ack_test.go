@@ -84,6 +84,35 @@ func TestAcknowledgeUploadCursorsClearsPendingClaudeEntriesInHookMode(t *testing
 	}
 }
 
+// The endpoint origin scopes the *Antigravity* cursors only. The session-file
+// sources write the unscoped `claude-code-cursor.json`, and reading a missing
+// cursor is not an error — so passing the origin here silently acknowledged
+// nothing, and every hook run re-uploaded everything it had already sent.
+func TestAcknowledgeUploadCursorsIgnoresTheEndpointScopeForClaudeCode(t *testing.T) {
+	stateDir := t.TempDir()
+	snapshot := hookAckFixture(t, stateDir)
+	env := func(key string) string {
+		if key == "TOKENBOARD_HOOK_MODE" {
+			return "1"
+		}
+		return ""
+	}
+	if err := acknowledgeUploadCursors(stateDir, collection{
+		collectedSources: []contract.Source{contract.SourceClaudeCode},
+		snapshots:        []contract.Snapshot{snapshot},
+	}, Options{}, "https://tokenboard.example.com", env); err != nil {
+		t.Fatal(err)
+	}
+	entry := readHookAckCursor(t, stateDir)
+	if entry.PendingUpload == nil || *entry.PendingUpload {
+		t.Errorf("pending upload must be cleared: %+v", entry)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir,
+		sessioncursor.FileName(contract.SourceClaudeCode, "https://tokenboard.example.com"))); err == nil {
+		t.Errorf("acknowledgement must not write a scoped claude-code cursor")
+	}
+}
+
 func TestAcknowledgeUploadCursorsLeavesClaudeEntriesPendingOutsideHookMode(t *testing.T) {
 	stateDir := t.TempDir()
 	snapshot := hookAckFixture(t, stateDir)

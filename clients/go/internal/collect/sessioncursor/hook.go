@@ -415,19 +415,16 @@ func parseChangedFiles(input HookInput, scan *ScanResult) (parsedFiles, error) {
 		changedKeys:  map[string]HookKey{},
 	}
 	for _, file := range scan.Files {
-		lines := []sessionfile.Line{}
-		if err := file.ReadLines(func(line sessionfile.Line) error {
-			lines = append(lines, line)
-			return nil
-		}); err != nil {
-			return parsedFiles{}, err
-		}
-		result, err := sessionfile.Parse(sessionfile.ParseInput{
+		// Stream the file's rows into the parser instead of materializing the
+		// whole file first: a compacted (rewritten) Claude session can be
+		// hundreds of megabytes, and holding every row on the heap at once
+		// turns a bounded scan into an unbounded allocation.
+		result, err := sessionfile.ParseLines(sessionfile.ParseInput{
 			Source:      input.Source,
 			Timezone:    input.Timezone,
 			CollectedAt: input.CollectedAt,
 			SessionID:   file.RelativePath,
-		}, lines)
+		}, file.ReadLines)
 		if err != nil {
 			return parsedFiles{}, err
 		}
