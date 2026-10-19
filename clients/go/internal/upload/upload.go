@@ -222,8 +222,11 @@ func parseCheckResponse(response *http.Response) (parsedResponse, error) {
 		return parsedResponse{}, fmt.Errorf("Snapshot check returned invalid response")
 	}
 	for _, row := range payload.Existing {
+		// The bound is in UTF-16 units, like the snapshot schema and TS's
+		// `value.length`; a byte count would reject a valid CJK id that is
+		// inside the limit.
 		if !contract.IsValidIsoDate(row.UsageDate) || row.Model == "" ||
-			len(row.Model) > contract.MaxUsageModelNameLength || !snapshotHashPattern.MatchString(row.SnapshotHash) ||
+			contract.UTF16Length(row.Model) > contract.MaxUsageModelNameLength || !snapshotHashPattern.MatchString(row.SnapshotHash) ||
 			!contract.IsValidSource(string(row.Source)) {
 			return parsedResponse{}, fmt.Errorf("Snapshot check returned invalid response")
 		}
@@ -359,6 +362,35 @@ func requestTimeoutMs(config Config) int {
 	return defaultRequestTimeoutMs
 }
 
+// parseLeadingInt mirrors JavaScript's Number.parseInt(value, 10): leading
+// whitespace is skipped, an optional sign is read, and the digits that follow
+// are taken on their own — a trailing suffix ("12abc", "12.9") is ignored
+// rather than making the whole value unreadable. An optional base prefix is
+// not honoured, because base 10 stops at the "x" in "0x10", which is also what
+// parseInt does.
+func parseLeadingInt(value string) (int, bool) {
+	text := strings.TrimLeft(value, " \t\n\r\v\f")
+	sign := 1
+	if text != "" && (text[0] == '+' || text[0] == '-') {
+		if text[0] == '-' {
+			sign = -1
+		}
+		text = text[1:]
+	}
+	digits := 0
+	for digits < len(text) && text[digits] >= '0' && text[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(text[:digits])
+	if err != nil {
+		return 0, false
+	}
+	return sign * parsed, true
+}
+
 func isRetryableStatus(status int) bool {
 	switch status {
 	case http.StatusRequestTimeout, http.StatusTooManyRequests,
@@ -400,8 +432,8 @@ func retryDelay(response *http.Response, attempt, configuredMs int) time.Duratio
 	if configuredMs >= 0 && configuredMs != 0 {
 		base = configuredMs
 	}
-	if configuredMs == 0 && os.Getenv("TOKENBOARD_FETCH_RETRY_DELAY_MS") != "" {
-		if parsed, err := strconv.Atoi(os.Getenv("TOKENBOARD_FETCH_RETRY_DELAY_MS")); err == nil && parsed >= 0 {
+	if configuredMs == 0 {
+		if parsed, ok := parseLeadingInt(os.Getenv("TOKENBOARD_FETCH_RETRY_DELAY_MS")); ok && parsed >= 0 {
 			base = parsed
 		}
 	}

@@ -269,10 +269,27 @@ func BoundedModel(value any) string {
 	if model == "" {
 		return UnknownModel
 	}
-	if runes := []rune(model); len(runes) > maxModelNameLength {
-		return string(runes[:maxModelNameLength])
+	return truncateUTF16(model, maxModelNameLength)
+}
+
+// truncateUTF16 mirrors JS String#slice(0, limit), which counts UTF-16 code
+// units. Counting runes instead would leave up to 320 units on an astral-plane
+// id, and contract validation — which counts units — would then reject the
+// snapshot. A cut that lands inside a surrogate pair drops the lone half, as
+// slice does.
+func truncateUTF16(value string, limit int) string {
+	units := 0
+	for index, character := range value {
+		width := 1
+		if character > 0xFFFF {
+			width = 2
+		}
+		if units+width > limit {
+			return value[:index]
+		}
+		units += width
 	}
-	return model
+	return value
 }
 
 // ParseJSONLine parses one JSONL line into an object; anything else
