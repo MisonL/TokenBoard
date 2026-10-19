@@ -1,0 +1,4 @@
+# `clients/go/scripts/check-deps.sh` mints and byte-compares these with its own
+# canonicalize step (stable key order, fixed indentation). Reformatting them
+# here would make every later `check-deps.sh` run report drift.
+clients/go/testdata/ccusage-golden/
