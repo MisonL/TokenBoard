@@ -199,10 +199,18 @@ clients/go/
 - 2026-10-20 发布链路（`.github/workflows/go-client.yml`）：
   - `test`：ubuntu/macos/windows 三平台 × `go-version-file: clients/go/go.mod`，跑 `gofmt -l`（非 Windows）、`go vet`、`go test -race`；Linux 上额外做 windows/linux/darwin arm64 交叉构建，把「3 OS × 2 arch」的另一半也纳入编译门禁。
   - `deps`：spec §5 的 ccusage 契约门禁。`pnpm install --filter @tokenboard/collector` 后跑 `clients/go/scripts/check-deps.sh`，金样本不一致即失败。本地已实测通过（`ccusage 20.0.33 output matches the goldens`）。
-  - `release`：仅 `refs/tags/v*` 触发，`needs: [test, deps]`，权限 `contents: write`，GoReleaser **固定 v2.12.7** 而非 `~> v2`——archive/checksum 命名是与 `internal/release` 的契约，跨 minor 的模板变化必须是人工审视的升级。
+  - `release`：仅 `refs/tags/v*` 触发，`needs: [test, deps]`，权限 `contents: write`，GoReleaser **固定 v2.12.7** 而非 `~> v2`——archive/checksum 命名是与 `internal/release` 的契约，跨 minor 的模板变化必须是人工审视的升级。发布前先跑 `node clients/go/scripts/bundle-ccusage.mjs`（见下条）。
   - 触发条件：GitHub **不对 tag push 应用 path 过滤**（官方 workflow syntax：「Path filters are not evaluated for pushes of tags.」），所以 `push.branches + paths` 只约束分支/PR 运行，打 tag 一定会发布。
   - 本地复现：`goreleaser check` 通过；`goreleaser release --snapshot --clean --skip=publish` 产出 6 个 `tokenboard_<os>_<arch>.tar.gz` + `checksums.txt`，包内为 `README.md` 与 `tokenboard`，二进制 `version` 报 `tokenboard (go) 0.0.0-SNAPSHOT-<sha>`（`-ldflags` 注入生效）。
-- 未覆盖边界：**尚未打过真实 tag**（workflow 已就绪，但「首次真实发布」需要人来定版本号并 push tag；本机无法验证 GitHub 上的实际运行）、ccusage 随 tarball 捆绑（spec §4 的 CI 步骤，当前走三层获取的 PATH/下载路径）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
+- 2026-10-20 ccusage 捆绑（spec §4 第 1 层）：
+  - `clients/go/scripts/bundle-ccusage.mjs`：从 registry 取 6 个 `@ccusage/ccusage-<npm-os>-<npm-arch>@<版本>`（版本读自 `internal/ccusage/version.go`），逐个按 `dist.integrity` 的 sha512 校验后落到 `dist-ccusage/ccusage_<goos>_<goarch>/ccusage[.exe]`，另取主包 `LICENSE` 为 `dist-ccusage/LICENSE.ccusage`。npm 平台段与 Go 不同（windows→win32、amd64→x64），Windows 包内成员是 `package/bin/ccusage.exe`。
+  - `.goreleaser.yaml` 用 `src: dist-ccusage/ccusage_{{ .Os }}_{{ .Arch }}/*` + `dst: .` + `strip_parent`：**`dst` 不接受模板**（实测 `ccusage{{ if … }}.exe` 被原样写成目录名），因此重命名放在 bundle 的目录布局里，归档内文件名天然就是 `ccusage` / `ccusage.exe`。
+  - Go `selfupdate`：tarball 里有 ccusage 就装到 `BundledBinDir`（与 skill 引导安装同一位置），没有则跳过（旧版本发布仍可更新）。ccusage 写入失败只告警、不撤销已成功的客户端更新——探测与下载层仍覆盖该机器。
+  - skill `installClientBinary`：首次引导同样安装捆绑 ccusage 到 `<configDir>/bin/` 并 `chmod 0755`；「成员缺失」的判定依赖「整个 tarball 已先过 checksums.txt」，所以 `tar` 的非零退出只可能是成员不存在。
+  - 实测：bundle 后 snapshot 的 6 个归档内分别是 `ccusage`/`ccusage.exe`，`file` 报出的架构与平台一一对应，本机原生 ccusage 跑出 `ccusage 20.0.33`、`tokenboard version` 为 snapshot 版本；本地 HTTP 发布端点分别跑 `installClientBinary` 与 Go `self-update`，两者都把客户端与 ccusage 装到位并可执行。
+  - 捆绑目录口径统一（2026-10-20）：`ccusage.Resolve` 原来只看写死的 `~/.tokenboard/bin`，而 skill 装到 `configDir()/bin`（`config.mjs` 的 `configDir()` = `TOKENBOARD_CONFIG_DIR || ~/.tokenboard`），`selfupdate` 则装到「客户端同级目录」——三者在设了 `TOKENBOARD_CONFIG_DIR` 的机器上互相对不上，捆绑层落空后会掉进下载层，而 hook 模式不能联网。现在 Go 侧统一走 `ccusage.BundledBinDir(env, home)`（`TOKENBOARD_CONFIG_DIR/bin`，否则 `~/.tokenboard/bin`），`selfupdate` 写同一个位置；旧安装在默认 home 下的那份仍会被找到（legacy fallback）。`TOKENBOARD_STATE_DIR` 刻意不参与：它是游标与运行锁的状态目录，skill 从不往那里装二进制。
+    - 顺带修掉一个测试污染：`selfupdate` 的测试曾把 stub ccusage 写进真实 `~/.tokenboard/bin`（`BundledBinDir` 在 `CONFIG_DIR` 未设时回落到真实 home）。现在测试显式注入 `TOKENBOARD_CONFIG_DIR` 指向临时目录。
+- 未覆盖边界：**尚未打过真实 tag**（workflow 已就绪，但「首次真实发布」需要人来定版本号并 push tag；本机无法验证 GitHub 上的实际运行）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
 - Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 
 **M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：

@@ -140,6 +140,14 @@ func TestRunReplacesTheBinaryAndKeepsABackup(t *testing.T) {
 
 func runAgainst(t *testing.T, server *httptest.Server, target, tag string) (Result, error) {
 	t.Helper()
+	return runAgainstWithConfigDir(t, server, target, tag, t.TempDir())
+}
+
+// runAgainstWithConfigDir pins TOKENBOARD_CONFIG_DIR to a test directory. The
+// bundled ccusage install follows that variable, and without it the test would
+// write into the machine's real ~/.tokenboard/bin.
+func runAgainstWithConfigDir(t *testing.T, server *httptest.Server, target, tag, configDir string) (Result, error) {
+	t.Helper()
 	return Run(Input{
 		Repo:       "MisonL/TokenBoard",
 		Tag:        tag,
@@ -148,8 +156,11 @@ func runAgainst(t *testing.T, server *httptest.Server, target, tag string) (Resu
 		Arch:       "arm64",
 		HTTPClient: server.Client(),
 		Env: func(key string) string {
-			if key == "TOKENBOARD_RELEASE_BASE_URL" {
+			switch key {
+			case "TOKENBOARD_RELEASE_BASE_URL":
 				return server.URL
+			case "TOKENBOARD_CONFIG_DIR":
+				return configDir
 			}
 			return ""
 		},
@@ -398,5 +409,128 @@ func TestPruneBackupsEscapesGlobMeta(t *testing.T) {
 	pruneBackups(filepath.Join(metaDir, "tokenboard"), filepath.Join(metaDir, "tokenboard.backup-new"))
 	if _, err := os.Stat(plainBackup); err != nil {
 		t.Errorf("the sibling directory's backup was removed by an escaped-name pattern: %v", err)
+	}
+}
+
+// Spec §4.1: the release tarball carries the platform's ccusage binary beside
+// the client. An update that installed only the client would leave a machine
+// whose ccusage version never follows the one the new client expects.
+func TestRunInstallsTheBundledCcusage(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "tokenboard")
+	if err := os.WriteFile(target, stubBinary("0.0.1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentVersion("0.0.1")
+	t.Cleanup(func() { SetCurrentVersion("dev") })
+
+	tarball := buildTarballWithFiles(t, map[string][]byte{
+		"tokenboard": stubBinary("1.2.3"),
+		"ccusage":    []byte("#!/bin/sh\necho 'ccusage 20.0.33'\n"),
+	})
+	fake := fakeRelease{tag: "v1.2.3", platform: "darwin_arm64", tarball: tarball}
+	server := fake.server(t)
+
+	configDir := t.TempDir()
+	if _, err := runAgainstWithConfigDir(t, server, target, "", configDir); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The bundled layer looks under the config directory (BundledBinDir), which
+	// is where the skill's bootstrap install puts it too.
+	bundled, err := os.ReadFile(filepath.Join(configDir, "bin", "ccusage"))
+	if err != nil {
+		t.Fatalf("the bundled ccusage was not installed: %v", err)
+	}
+	if !bytes.Contains(bundled, []byte("ccusage 20.0.33")) {
+		t.Errorf("installed ccusage is not the bundled one: %q", bundled)
+	}
+	info, err := os.Stat(filepath.Join(configDir, "bin", "ccusage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("ccusage is not executable: %v", info.Mode())
+	}
+}
+
+// A release without ccusage (an older tag) must still update the client: the
+// three-layer acquisition falls back to PATH and the download layer.
+func TestRunAcceptsAReleaseWithoutCcusage(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "tokenboard")
+	if err := os.WriteFile(target, stubBinary("0.0.1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentVersion("0.0.1")
+	t.Cleanup(func() { SetCurrentVersion("dev") })
+
+	fake := fakeRelease{tag: "v1.2.3", platform: "darwin_arm64", tarball: buildTarball(t, "tokenboard", stubBinary("1.2.3"))}
+	server := fake.server(t)
+
+	configDir := t.TempDir()
+	result, err := runAgainstWithConfigDir(t, server, target, "", configDir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.Updated {
+		t.Error("a release without ccusage must still update the client")
+	}
+	if _, err := os.Stat(filepath.Join(configDir, "bin", "ccusage")); !os.IsNotExist(err) {
+		t.Errorf("ccusage must not appear when the release has none: %v", err)
+	}
+}
+
+// buildTarballWithFiles assembles a release tarball holding several files.
+func buildTarballWithFiles(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := gzip.NewWriter(&buffer)
+	archive := tar.NewWriter(writer)
+	for name, body := range files {
+		if err := archive.WriteHeader(&tar.Header{
+			Name:     name,
+			Mode:     0o755,
+			Size:     int64(len(body)),
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := archive.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+// A tarball whose ccusage entry is malformed must fail the update, not install
+// a client whose bundled layer then downloads a different version.
+func TestRunRefusesAMalformedCcusageEntry(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "tokenboard")
+	if err := os.WriteFile(target, stubBinary("0.0.1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentVersion("0.0.1")
+	t.Cleanup(func() { SetCurrentVersion("dev") })
+
+	tarball := buildTarballWithFiles(t, map[string][]byte{
+		"tokenboard": stubBinary("1.2.3"),
+		"ccusage":    nil, // a present-but-empty entry is malformed
+	})
+	fake := fakeRelease{tag: "v1.2.3", platform: "darwin_arm64", tarball: tarball}
+	server := fake.server(t)
+
+	configDir := t.TempDir()
+	if _, err := runAgainstWithConfigDir(t, server, target, "", configDir); err == nil {
+		t.Fatal("an empty ccusage entry must fail the update")
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("the original binary must stay in place: %v", err)
 	}
 }

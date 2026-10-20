@@ -32,14 +32,19 @@ function stubBinary(version) {
 
 // buildTarball assembles a release tarball holding one executable. The real
 // extraction shells out to `tar`, so the fixture is built the same way.
-function buildTarball(dir, name, body) {
+function buildTarball(dir, name, body, extraFiles = {}) {
   const staging = join(dir, 'staging')
   mkdirSync(staging, { recursive: true })
   const file = join(staging, name)
   writeFileSync(file, body, { mode: 0o755 })
   chmodSync(file, 0o755)
+  const members = [name]
+  for (const [extraName, extraBody] of Object.entries(extraFiles)) {
+    writeFileSync(join(staging, extraName), extraBody, { mode: 0o755 })
+    members.push(extraName)
+  }
   const archivePath = join(dir, `${name}.tar.gz`)
-  const result = spawnSync('tar', ['-czf', archivePath, '-C', staging, name], { encoding: 'utf8' })
+  const result = spawnSync('tar', ['-czf', archivePath, '-C', staging, ...members], { encoding: 'utf8' })
   assert.equal(result.status, 0, `tar failed: ${result.stderr}`)
   return readFileSync(archivePath)
 }
@@ -98,7 +103,7 @@ function serveRelease({
 
 function withServer(t, options) {
   const dir = mkdtempSync(join(tmpdir(), 'tokenboard-client-'))
-  const tarball = buildTarball(dir, 'tokenboard', stubBinary(options.version ?? '1.2.3'))
+  const tarball = buildTarball(dir, 'tokenboard', stubBinary(options.version ?? '1.2.3'), options.extraFiles ?? {})
   return serveRelease({ ...options, tarball }).then(({ server, baseUrl }) => {
     t.after(() => server.close())
     return { baseUrl, dir, tarball }
@@ -351,4 +356,43 @@ test('recovery ignores a staged binary that does not run', () => {
   recoverOrphanedBinary({ binaryPath })
 
   assert.equal(readFileSync(binaryPath, 'utf8'), 'previous')
+})
+
+// Spec §4.1: the release tarball carries the platform's ccusage beside the
+// client. A fresh install must place it where the bundled layer looks, or the
+// first run falls back to a download the offline hook path cannot perform.
+test('installClientBinary installs the bundled ccusage beside the client', async (t) => {
+  const { baseUrl } = await withServer(t, {
+    platform: 'darwin_amd64',
+    version: '1.2.3',
+    extraFiles: { ccusage: '#!/bin/sh\necho "ccusage 20.0.33"\n' }
+  })
+  const configDir = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
+  const result = await installClientBinary({
+    baseUrl,
+    configDir,
+    platform: 'darwin',
+    arch: 'x64',
+    log: () => {}
+  })
+  const bundled = join(configDir, 'bin', 'ccusage')
+  assert.equal(existsSync(bundled), true, 'the bundled ccusage must be installed')
+  assert.match(readFileSync(bundled, 'utf8'), /ccusage 20\.0\.33/)
+  assert.equal(existsSync(join(configDir, 'client-install')), false)
+})
+
+// An older release without ccusage still installs the client; the three-layer
+// acquisition covers the machine afterwards.
+test('installClientBinary accepts a release without ccusage', async (t) => {
+  const { baseUrl } = await withServer(t, { platform: 'darwin_amd64', version: '1.2.3' })
+  const configDir = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
+  const result = await installClientBinary({
+    baseUrl,
+    configDir,
+    platform: 'darwin',
+    arch: 'x64',
+    log: () => {}
+  })
+  assert.equal(result.version, '1.2.3')
+  assert.equal(existsSync(join(configDir, 'bin', 'ccusage')), false)
 })

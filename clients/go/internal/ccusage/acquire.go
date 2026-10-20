@@ -106,10 +106,19 @@ func Resolve(options AcquireOptions) (Binary, error) {
 		return Binary{Path: forced, Source: "env"}, nil
 	}
 
-	bundledDir := bundledBinDir(options.HomeDir)
+	bundledDir := BundledBinDir(env, options.HomeDir)
 	bundled := filepath.Join(bundledDir, binaryName(platform))
 	if fileExists(bundled) {
 		return Binary{Path: bundled, Source: "bundled"}, nil
+	}
+	// A copy installed before the bundled directory followed
+	// TOKENBOARD_CONFIG_DIR still sits under the default home. It is a valid
+	// bundled copy, so a machine that already has one keeps working without a
+	// download.
+	if legacy := filepath.Join(defaultBundledBinDir(options.HomeDir), binaryName(platform)); legacy != bundled {
+		if fileExists(legacy) {
+			return Binary{Path: legacy, Source: "bundled"}, nil
+		}
 	}
 
 	if probed, err := lookPath("ccusage"); err == nil && probed != "" {
@@ -132,8 +141,29 @@ func Resolve(options AcquireOptions) (Binary, error) {
 	return Binary{Path: path, Source: "download"}, nil
 }
 
-// bundledBinDir is the spec's install location: ~/.tokenboard/bin.
-func bundledBinDir(homeDir string) string {
+// BundledBinDir is the directory the bundled ccusage lives in.
+//
+// The skill installs it beside its own config, so the directory follows the
+// config the client was installed with: TOKENBOARD_CONFIG_DIR, else
+// ~/.tokenboard. TOKENBOARD_STATE_DIR is deliberately not consulted — it is
+// the collector's state directory (cursors, lock), and the skill never
+// installs a binary there.
+//
+// Looking only at ~/.tokenboard/bin would miss an install made under a
+// configured directory, and the client would fall through to the download
+// layer — which hook mode cannot use.
+func BundledBinDir(env func(string) string, homeDir string) string {
+	if env == nil {
+		env = os.Getenv
+	}
+	if dir := strings.TrimSpace(env("TOKENBOARD_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, "bin")
+	}
+	return defaultBundledBinDir(homeDir)
+}
+
+// defaultBundledBinDir is the spec's install location: ~/.tokenboard/bin.
+func defaultBundledBinDir(homeDir string) string {
 	if homeDir == "" {
 		if resolved, err := os.UserHomeDir(); err == nil {
 			homeDir = resolved

@@ -304,3 +304,49 @@ func TestResolveTreatsAWhitespaceExplicitBinaryAsSet(t *testing.T) {
 		t.Fatalf("err = %v, want a missing-binary error", err)
 	}
 }
+
+// The skill installs the bundled ccusage beside its own config, which is
+// TOKENBOARD_CONFIG_DIR/bin when that is set. Looking only at
+// ~/.tokenboard/bin would miss that install and silently fall through to a
+// download the hook path cannot perform.
+func TestResolveFindsTheBundledBinaryInTheConfiguredConfigDirectory(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "custom-config")
+	bundled := filepath.Join(configDir, "bin", "ccusage")
+	binary, err := Resolve(AcquireOptions{
+		Env:        acquireEnv(map[string]string{"TOKENBOARD_CONFIG_DIR": configDir}),
+		HomeDir:    home,
+		FileExists: func(path string) bool { return path == bundled },
+		LookPath:   func(string) (string, error) { return "", os.ErrNotExist },
+		// Hook mode refuses to download: a miss fails fast instead of reaching
+		// the network, which is also the mode that cannot recover by downloading.
+		HookMode: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binary.Path != bundled || binary.Source != "bundled" {
+		t.Errorf("binary = %+v, want %s from the config directory", binary, bundled)
+	}
+}
+
+// A copy installed before the config directory was honored still works: the
+// skill that put it there keeps finding it.
+func TestResolveFallsBackToTheDefaultHomeCopy(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "custom-config")
+	legacy := filepath.Join(home, ".tokenboard", "bin", "ccusage")
+	binary, err := Resolve(AcquireOptions{
+		Env:        acquireEnv(map[string]string{"TOKENBOARD_CONFIG_DIR": configDir}),
+		HomeDir:    home,
+		FileExists: func(path string) bool { return path == legacy },
+		LookPath:   func(string) (string, error) { return "", os.ErrNotExist },
+		HookMode:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binary.Path != legacy || binary.Source != "bundled" {
+		t.Errorf("binary = %+v, want %s", binary, legacy)
+	}
+}

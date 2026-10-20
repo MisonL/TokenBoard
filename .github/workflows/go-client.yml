@@ -111,6 +111,16 @@ jobs:
           go-version-file: clients/go/go.mod
           cache-dependency-path: clients/go/go.sum
 
+      # Spec §4.1: the tarballs bundle the platform ccusage binaries so a fresh
+      # install works offline. The script pins the version from
+      # internal/ccusage and verifies each npm tarball's sha512.
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+
+      - name: bundle ccusage
+        run: node clients/go/scripts/bundle-ccusage.mjs
+
       # Pinned rather than `~> v2`: the config's archive and checksum names are
       # a contract with `internal/release`, and a template change across
       # GoReleaser minors must be a deliberate, tested bump.

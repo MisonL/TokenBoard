@@ -242,9 +242,46 @@ function runExternal(command, args, { spawn, platform = process.platform, log = 
 export function extractBinary({ archivePath, extractDir, name, platform = process.platform, spawn = spawnSync, log }) {
   mkdirSync(extractDir, { recursive: true })
   runExternal('tar', ['-xzf', archivePath, '-C', extractDir, name], { spawn, platform, log })
+  return readExtractedFile(extractDir, name, `TokenBoard release tarball does not contain ${name}`)
+}
+
+// extractOptionalEntry unpacks an entry that a release may not carry (an older
+// tag has no bundled ccusage) and returns null when it is absent. A present
+// entry is still validated: an empty or non-file entry is a malformed archive,
+// not a release without the file.
+//
+// tar exits non-zero both for an absent member and for a corrupt archive, and
+// cannot distinguish the two here — but `verifyChecksum` has already pinned the
+// whole tarball to the release's checksums.txt before extraction, so a corrupt
+// archive never reaches this helper. The catch therefore only ever sees the
+// legitimate absent-member case.
+export function extractOptionalEntry({
+  archivePath,
+  extractDir,
+  name,
+  platform = process.platform,
+  spawn = spawnSync,
+  log
+}) {
+  mkdirSync(extractDir, { recursive: true })
+  // tar exits non-zero when the member is absent; that is the case this
+  // helper exists for, so the exit status is not treated as fatal here.
+  try {
+    runExternal('tar', ['-xzf', archivePath, '-C', extractDir, name], { spawn, platform, log })
+  } catch {
+    return null
+  }
   const extracted = join(extractDir, name)
   if (!existsSync(extracted)) {
-    throw new Error(`TokenBoard release tarball does not contain ${name}`)
+    return null
+  }
+  return readExtractedFile(extractDir, name, `TokenBoard release tarball does not contain ${name}`)
+}
+
+function readExtractedFile(extractDir, name, missingMessage) {
+  const extracted = join(extractDir, name)
+  if (!existsSync(extracted)) {
+    throw new Error(missingMessage)
   }
   if (!statSync(extracted).isFile()) {
     throw new Error(`TokenBoard release tarball entry ${name} is not a file`)
@@ -349,6 +386,25 @@ export async function installClientBinary({
     } catch (error) {
       rmSync(staged, { force: true })
       throw error
+    }
+    // Spec §4.1: the tarball carries the platform's ccusage beside the client.
+    // A fresh install places it where the bundled layer looks, so the first
+    // run works offline; an older release without it simply installs no
+    // bundled copy and the probe/download layers take over.
+    const ccusageName = platform === 'win32' ? 'ccusage.exe' : 'ccusage'
+    const ccusage = extractOptionalEntry({
+      archivePath,
+      extractDir,
+      name: ccusageName,
+      platform,
+      spawn,
+      log
+    })
+    if (ccusage !== null) {
+      const ccusagePath = join(configDir, 'bin', ccusageName)
+      writeFileSync(ccusagePath, ccusage, { mode: 0o755 })
+      chmodSync(ccusagePath, 0o755)
+      log(`TokenBoard bundled ccusage installed at ${ccusagePath}`)
     }
     log(`TokenBoard client ${release.version} installed at ${target}`)
     return { version: release.version, path: target, tag: release.tag }
