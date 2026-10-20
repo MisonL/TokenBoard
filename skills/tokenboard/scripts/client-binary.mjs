@@ -505,12 +505,16 @@ function runsVersion(path, spawn) {
 }
 
 // readVersion returns the version token an executable prints, or null when it
-// cannot be run. ccusage and tokenboard spell their version lines differently,
-// so the last whitespace-separated field is the version in both.
-function readVersion(path, spawn = spawnSync) {
+// cannot be run. ccusage and tokenboard spell their version lines differently
+// ("ccusage 20.0.33" and "tokenboard (go) 1.2.3"), so the last
+// whitespace-separated field is the version in both.
+//
+// The two binaries take different flags — tokenboard answers `version`,
+// ccusage answers `--version` — so the argument list is a parameter.
+export function readVersion(path, spawn = spawnSync, args = ['--version']) {
   let result
   try {
-    result = spawn(path, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 5000 })
+    result = spawn(path, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 5000 })
   } catch {
     return null
   }

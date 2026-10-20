@@ -562,3 +562,58 @@ func TestRunRefusesAMalformedCcusageEntry(t *testing.T) {
 		t.Fatalf("the original binary must stay in place: %v", err)
 	}
 }
+
+// A release that carries no ccusage leaves the existing copy in place, and the
+// update must say so: that copy is now a version the new client was never
+// tested against, and a silent update would hide it.
+func TestRunReportsTheCcusageItLeavesBehind(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "tokenboard")
+	if err := os.WriteFile(target, stubBinary("0.0.1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	SetCurrentVersion("0.0.1")
+	t.Cleanup(func() { SetCurrentVersion("dev") })
+
+	tarball := buildTarball(t, "tokenboard", stubBinary("1.2.3"))
+	fake := fakeRelease{tag: "v1.2.3", platform: "darwin_arm64", tarball: tarball}
+	server := fake.server(t)
+
+	configDir := t.TempDir()
+	ccusagePath := filepath.Join(configDir, "bin", "ccusage")
+	if err := os.MkdirAll(filepath.Dir(ccusagePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ccusagePath, []byte("stale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	if _, err := Run(Input{
+		Repo:       "MisonL/TokenBoard",
+		Target:     target,
+		Platform:   "darwin",
+		Arch:       "arm64",
+		HTTPClient: server.Client(),
+		Stderr:     func(line string) { lines = append(lines, line) },
+		Env: func(key string) string {
+			switch key {
+			case "TOKENBOARD_RELEASE_BASE_URL":
+				return server.URL
+			case "TOKENBOARD_CONFIG_DIR":
+				return configDir
+			}
+			return ""
+		},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "carries no ccusage") && strings.Contains(line, ccusagePath) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("stderr = %v, want a report of the ccusage left in place", lines)
+	}
+}

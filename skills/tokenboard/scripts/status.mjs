@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { isMainModule } from './is-main.mjs'
 import { configPath, readConfig } from './config.mjs'
-import { binaryFileName } from './client-binary.mjs'
+import { binaryFileName, readVersion } from './client-binary.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
 import { deviceLinkStatus } from './device-link.mjs'
@@ -194,9 +194,11 @@ export function readClientStatus({ configDir, platform = process.platform, spawn
   const ccusagePath = join(binDir, ccusageName)
   return {
     present: exists(clientPath),
-    version: readVersion(clientPath, spawn),
+    // The two binaries answer different flags: tokenboard takes a `version`
+    // subcommand, ccusage a `--version` flag.
+    version: readVersion(clientPath, spawn, ['version']),
     ccusagePresent: exists(ccusagePath),
-    ccusageVersion: readVersion(ccusagePath, spawn, '--version')
+    ccusageVersion: readVersion(ccusagePath, spawn, ['--version'])
   }
 }
 
@@ -204,21 +206,6 @@ export function readClientStatus({ configDir, platform = process.platform, spawn
 // or null when it cannot run or prints nothing usable. The two binaries print
 // differently ("tokenboard (go) 1.2.3" and "ccusage 20.0.33"), so the last
 // whitespace-separated field is the version in both.
-function readVersion(path, spawn, args = ['version']) {
-  let result
-  try {
-    result = spawn(path, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 5000 })
-  } catch {
-    return null
-  }
-  if (result.error || result.status !== 0) return null
-  const fields = String(result.stdout ?? '')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-  return fields.length > 0 ? fields.at(-1) : null
-}
-
 function readUploadBackoff(stateDir) {
   try {
     const parsed = JSON.parse(readFileSync(join(stateDir, 'upload-backoff.json'), 'utf8'))

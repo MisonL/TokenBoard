@@ -184,6 +184,8 @@ node scripts/status.mjs
 
 The JSON output includes configuration-presence flags, `clientType` (`git` or `binary`), `packageManager`, `scheduleTimes`, device-link presence, and hook status, including `antigravityCli`. It must not print upload tokens, install claims, device identifiers, endpoints, or local paths.
 
+For a `clientType: binary` install it also reports a `client` block: whether the client and the bundled ccusage are present on disk, and their versions. A missing file or a version that does not match what the client expects is the signal that the install is not what the config claims; `status.mjs` reports the versions but does not print the paths they live at.
+
 Notifier hooks use `~/.tokenboard/bin/notify.cjs` and only enqueue a background sync signal. They must not run `ccusage`, scan files, or upload in the foreground hook process. On Windows, every process spawned by the notifier must set `windowsHide: true` so hook execution does not open a console window.
 
 Antigravity status line capture uses `skills/tokenboard/scripts/antigravity-statusline.mjs` and writes `~/.tokenboard/antigravity-cli-statusline.jsonl`. It must not use `~/.tokenboard/bin/notify.cjs`.
@@ -218,6 +220,12 @@ Remove the local config file and installed notifier hooks, while keeping the col
 
 ```bash
 node scripts/uninstall.mjs --remove-config
+```
+
+This keeps the installed binaries as well: a `clientType: binary` install leaves `bin/tokenboard` and the bundled `bin/ccusage` in place, because only the config file and the hooks are named for removal. Use `--remove-config-dir` to take the whole config directory (and with it the binaries) away.
+
+```bash
+node scripts/uninstall.mjs --remove-config-dir
 ```
 
 Remove the schedule, notifier hooks, collector checkout, local config, and `device-link.json` when the user asks for a full uninstall:

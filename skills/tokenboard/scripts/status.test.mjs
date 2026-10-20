@@ -783,6 +783,9 @@ test('readClientStatus reports a real installed client and bundled ccusage', () 
   try {
     mkdirSync(join(dir, 'bin'), { recursive: true })
     const spawn = (path, args) => {
+      // Each binary answers its own flag; asserting it here is what catches a
+      // probe that runs the wrong one and reads a usage line as a version.
+      assert.deepEqual(args, path.endsWith('ccusage') ? ['--version'] : ['version'])
       const printed = path.endsWith('ccusage') ? 'ccusage 20.0.33' : 'tokenboard (go) 1.2.3'
       return { status: 0, stdout: printed + '\n', stderr: '' }
     }

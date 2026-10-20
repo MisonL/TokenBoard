@@ -199,6 +199,14 @@ func Run(input Input) (Result, error) {
 		} else if err := writeExecutable(filepath.Join(ccusageDir, ccusageBinaryName(goos)), ccusageData); err != nil {
 			stderr(fmt.Sprintf("TokenBoard updated to %s, but the bundled ccusage could not be installed: %v", version, err))
 		}
+	} else if stalePath := filepath.Join(ccusage.BundledBinDir(input.Env, ""), ccusageBinaryName(goos)); fileExists(stalePath) {
+		// The release carries no ccusage, so whatever is there stays — a
+		// version this client was never tested against. Say so rather than
+		// report a clean update; the skill's bootstrap install reports the
+		// same thing.
+		stderr(fmt.Sprintf(
+			"TokenBoard updated to %s; release %s carries no ccusage, so the existing %s is left in place",
+			version, assets.Tag, stalePath))
 	}
 	stderr(fmt.Sprintf("TokenBoard updated to %s (previous binary kept at %s)", version, backup))
 	return Result{Version: version, Updated: true, BackupPath: backup}, nil
@@ -236,6 +244,12 @@ func escapeGlobMeta(value string) string {
 		builder.WriteRune(char)
 	}
 	return builder.String()
+}
+
+// fileExists reports whether path is an existing regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func pinned(tag string) bool { return strings.TrimSpace(tag) != "" }
