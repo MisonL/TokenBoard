@@ -323,3 +323,32 @@ test('downloadBytes enforces the size bound while streaming, not only after the 
     /exceeds/
   )
 })
+
+// A swap killed between the two renames can leave the *staged* binary behind
+// as well as the backup. The staged one is newer, but a kill during its write
+// leaves a truncated file, so it is restored only after it answers `version`;
+// otherwise the known-good backup wins.
+test('recovery prefers a staged binary that still answers version', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-staged-'))
+  const binaryPath = join(dir, binaryFileName('darwin'))
+  const staged = stubBinary('2.0.0')
+  writeFileSync(`${binaryPath}.new`, staged, { mode: 0o755 })
+  writeFileSync(`${binaryPath}.backup-20260101T000000Z`, 'old', { mode: 0o755 })
+
+  recoverOrphanedBinary({ binaryPath })
+
+  assert.equal(readFileSync(binaryPath, 'utf8'), staged)
+  assert.equal(existsSync(`${binaryPath}.new`), false, 'the staged copy must be moved, not copied')
+  assert.equal(existsSync(`${binaryPath}.backup-20260101T000000Z`), true, 'the backup is left alone')
+})
+
+test('recovery ignores a staged binary that does not run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-broken-'))
+  const binaryPath = join(dir, binaryFileName('darwin'))
+  writeFileSync(`${binaryPath}.new`, 'truncated', { mode: 0o755 })
+  writeFileSync(`${binaryPath}.backup-20260101T000000Z`, 'previous', { mode: 0o755 })
+
+  recoverOrphanedBinary({ binaryPath })
+
+  assert.equal(readFileSync(binaryPath, 'utf8'), 'previous')
+})

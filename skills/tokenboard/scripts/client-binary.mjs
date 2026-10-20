@@ -365,7 +365,14 @@ export async function installClientBinary({
 // installed" on every sync with no way back. The backup is the previous
 // working binary, so the recovery is a rename back into place — and it only
 // runs when the target is genuinely missing, so it cannot undo a good install.
-export function recoverOrphanedBinary({ binaryPath, readDir = readdirSync, rename = renameSync, log = () => {} }) {
+export function recoverOrphanedBinary({
+  binaryPath,
+  readDir = readdirSync,
+  rename = renameSync,
+  remove = rmSync,
+  spawn = spawnSync,
+  log = () => {}
+}) {
   if (existsSync(binaryPath)) {
     return null
   }
@@ -373,6 +380,19 @@ export function recoverOrphanedBinary({ binaryPath, readDir = readdirSync, renam
   // Go's backupPath is `current + ".backup-" + stamp`, so the prefix follows the
   // path actually configured rather than the platform's default file name.
   const prefix = `${basename(binaryPath)}.backup-`
+
+  // The staged copy is the newer binary, but a kill during its write leaves a
+  // truncated file. It is restored only if it still answers `version`; the
+  // known-good backup is the fallback, and a dead staged file is removed so it
+  // cannot shadow a later install.
+  const staged = `${binaryPath}.new`
+  if (existsSync(staged) && runsVersion(staged, spawn)) {
+    rename(staged, binaryPath)
+    log(`TokenBoard client was missing; restored ${binaryPath} from the staged download`)
+    return staged
+  }
+  remove(staged, { force: true })
+
   let names
   try {
     names = readDir(directory)
@@ -387,6 +407,18 @@ export function recoverOrphanedBinary({ binaryPath, readDir = readdirSync, renam
   rename(join(directory, latest), binaryPath)
   log(`TokenBoard client was missing; restored ${binaryPath} from ${latest}`)
   return join(directory, latest)
+}
+
+// runsVersion reports whether an executable answers `version` at all. The
+// output is not compared to a release: the point is only to reject a file that
+// a truncated write left unrunnable.
+function runsVersion(path, spawn) {
+  try {
+    const result = spawn(path, ['version'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' })
+    return !result.error && result.status === 0
+  } catch {
+    return false
+  }
 }
 
 // runSelfUpdate hands the upgrade to the installed binary, which owns the
