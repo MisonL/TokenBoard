@@ -46,6 +46,19 @@ function run(command, args, options = {}) {
   }
 }
 
+export function buildBinaryInstallConfig({ repo, baseUrl, updatedAt }) {
+  // Every later `self-update` resolves the feed on its own, so a non-default
+  // source has to outlive this install — the same rule `migrateToBinaryClient`
+  // follows. The tag is deliberately not recorded: it pins one install, and
+  // persisting it would freeze the client on that version.
+  return {
+    clientType: 'binary',
+    updatedAt,
+    ...(repo && repo !== defaultReleaseRepo ? { releaseRepo: repo } : {}),
+    ...(baseUrl ? { releaseBaseUrl: baseUrl } : {})
+  }
+}
+
 export function buildInstallCollectorPlan({
   dir,
   repoUrl,
@@ -95,7 +108,7 @@ function runCli() {
   if (
     printHelpIfRequested(
       process.argv.slice(2),
-      'Usage: install-collector.mjs [--repo-url URL] [--repo-ref REF] [--package-manager pnpm|bun|npm] [--client git|binary] [--release-tag TAG]'
+      'Usage: install-collector.mjs [--repo-url URL] [--repo-ref REF] [--package-manager pnpm|bun|npm] [--client git|binary] [--release-repo OWNER/REPO] [--release-tag TAG] [--release-base-url URL]'
     )
   ) {
     return
@@ -120,14 +133,16 @@ function runCli() {
     // A binary install has no checkout to clone or pull: the release tarball
     // carries everything the client needs. The config directory is the binary's
     // home, so this is the only install step.
+    const repo = flags['release-repo'] || process.env.TOKENBOARD_RELEASE_REPO || defaultReleaseRepo
+    const baseUrl = flags['release-base-url'] || process.env.TOKENBOARD_RELEASE_BASE_URL || undefined
     installClientBinary({
-      repo: flags['release-repo'] || process.env.TOKENBOARD_RELEASE_REPO || defaultReleaseRepo,
+      repo,
       tag: flags['release-tag'] || process.env.TOKENBOARD_RELEASE_TAG || undefined,
-      baseUrl: flags['release-base-url'] || process.env.TOKENBOARD_RELEASE_BASE_URL || undefined,
+      baseUrl,
       configDir: configDir()
     })
       .then((installed) => {
-        mergeConfig({ clientType: 'binary', updatedAt: new Date().toISOString() })
+        mergeConfig(buildBinaryInstallConfig({ repo, baseUrl, updatedAt: new Date().toISOString() }))
         console.log(`TokenBoard client ${installed.version} ready at ${installed.path}`)
       })
       .catch((error) => {

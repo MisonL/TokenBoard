@@ -103,6 +103,15 @@ export function buildInstallCollectorArgs({
   if (typeof packageManager === 'string' && packageManager.trim()) {
     args.push('--package-manager', packageManager)
   }
+  // Without these a `setup --release-repo` install silently used the default
+  // feed: the flag never reached the installer, so neither the download nor
+  // the recorded release source could honour it.
+  for (const name of ['release-repo', 'release-tag', 'release-base-url']) {
+    const value = flags[name]
+    if (typeof value === 'string' && value.trim()) {
+      args.push(`--${name}`, value)
+    }
+  }
   return args
 }
 

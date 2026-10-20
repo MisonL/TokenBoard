@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildInstallCollectorPlan } from './install-collector.mjs'
+import { buildBinaryInstallConfig, buildInstallCollectorPlan } from './install-collector.mjs'
+import { defaultReleaseRepo } from './client-binary.mjs'
 
 test('clones the configured collector repo before installing dependencies', () => {
   assert.deepEqual(
@@ -302,4 +303,27 @@ test('refuses a case-variant Windows config directory as a non-git collector', (
       }),
     /Refusing to replace TokenBoard config directory/
   )
+})
+
+// The install-time release source must outlive the install: every later
+// automatic `self-update` resolves the feed on its own, and dropping it would
+// move the machine back to the default repository. The tag is not recorded —
+// it pins one install and would freeze the client on that version.
+test('a binary install records a non-default release source', () => {
+  assert.deepEqual(
+    buildBinaryInstallConfig({ repo: 'other/TokenBoard', baseUrl: 'https://github.example', updatedAt: 'now' }),
+    {
+      clientType: 'binary',
+      updatedAt: 'now',
+      releaseRepo: 'other/TokenBoard',
+      releaseBaseUrl: 'https://github.example'
+    }
+  )
+})
+
+test('a default-source binary install records only the switch', () => {
+  assert.deepEqual(buildBinaryInstallConfig({ repo: defaultReleaseRepo, updatedAt: 'now' }), {
+    clientType: 'binary',
+    updatedAt: 'now'
+  })
 })

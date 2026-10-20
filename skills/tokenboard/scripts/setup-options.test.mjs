@@ -544,3 +544,32 @@ test('setup forwards the binary client choice to the collector installer', () =>
   // its own default (git) rather than receiving an empty value.
   assert.deepEqual(buildInstallCollectorArgs({ flags: {}, installCollectorScript: '/repo/i.mjs' }), ['/repo/i.mjs'])
 })
+
+// `setup.mjs --release-repo` is how a machine installs from a mirror. The flag
+// was never forwarded to the installer, so the install silently used the
+// default feed and the recorded source was the default one.
+test('setup forwards the release source flags to the collector installer', () => {
+  assert.deepEqual(
+    buildInstallCollectorArgs({
+      flags: {
+        client: 'binary',
+        'release-repo': 'other/TokenBoard',
+        'release-tag': 'v9.9.9',
+        'release-base-url': 'https://github.example'
+      },
+      clientType: 'binary',
+      installCollectorScript: '/repo/i.mjs'
+    }),
+    [
+      '/repo/i.mjs',
+      '--client',
+      'binary',
+      '--release-repo',
+      'other/TokenBoard',
+      '--release-tag',
+      'v9.9.9',
+      '--release-base-url',
+      'https://github.example'
+    ]
+  )
+})
