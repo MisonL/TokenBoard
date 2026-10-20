@@ -289,3 +289,18 @@ func serverURL(r *http.Request) string {
 	}
 	return scheme + "://" + r.Host
 }
+
+// TS gates the explicit binary on `if (forcedCcusage)`, a truthiness test: a
+// value of only whitespace is set, and the missing path is then an error. Trim
+// first made it look unset here, so one client refused the file and the other
+// silently moved on to the bundled binary.
+func TestResolveTreatsAWhitespaceExplicitBinaryAsSet(t *testing.T) {
+	_, err := Resolve(AcquireOptions{
+		Env:        acquireEnv(map[string]string{"TOKENBOARD_CCUSAGE_BIN": " "}),
+		FileExists: func(string) bool { return false },
+		LookPath:   func(string) (string, error) { return "", os.ErrNotExist },
+	})
+	if err == nil || !strings.Contains(err.Error(), "TOKENBOARD_CCUSAGE_BIN does not exist") {
+		t.Fatalf("err = %v, want a missing-binary error", err)
+	}
+}

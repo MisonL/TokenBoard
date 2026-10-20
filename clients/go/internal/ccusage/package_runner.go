@@ -54,7 +54,9 @@ func ResolvePackageRunner(input RunnerInput) (PackageRunner, error) {
 	}
 	// Boolean(env.X) in TS: any non-empty value, whitespace included.
 	forcePackageRunner := env("TOKENBOARD_FORCE_PACKAGE_RUNNER") != ""
-	forcedCcusage := strings.TrimSpace(env("TOKENBOARD_CCUSAGE_BIN"))
+	// Truthiness, not a trimmed check, for the same reason: TS sees " " as a
+	// set path and reports it missing rather than falling through.
+	forcedCcusage := env("TOKENBOARD_CCUSAGE_BIN")
 	if !forcePackageRunner && forcedCcusage != "" {
 		if !fileExists(forcedCcusage) {
 			return PackageRunner{}, fmt.Errorf("TOKENBOARD_CCUSAGE_BIN does not exist: %s", forcedCcusage)

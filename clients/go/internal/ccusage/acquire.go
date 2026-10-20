@@ -96,7 +96,10 @@ func Resolve(options AcquireOptions) (Binary, error) {
 		stderr = func(string) {}
 	}
 
-	if forced := strings.TrimSpace(env("TOKENBOARD_CCUSAGE_BIN")); forced != "" {
+	// TS gates this on truthiness, not on a trimmed value: a whitespace-only
+	// setting is "set" and then fails the existence check. Trimming here would
+	// turn that error into a silent fall-through to the bundled binary.
+	if forced := env("TOKENBOARD_CCUSAGE_BIN"); forced != "" {
 		if !fileExists(forced) {
 			return Binary{}, fmt.Errorf("TOKENBOARD_CCUSAGE_BIN does not exist: %s", forced)
 		}

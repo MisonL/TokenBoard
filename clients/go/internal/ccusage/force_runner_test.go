@@ -38,3 +38,18 @@ func TestForcePackageRunnerIsTrueForAnyNonEmptyValue(t *testing.T) {
 		t.Errorf("unset must keep the local binary, got %q", runner.Command)
 	}
 }
+
+// The same truthiness rule applies to the explicit ccusage path: TS sees a
+// whitespace-only value as a set path and reports it missing.
+func TestPackageRunnerTreatsAWhitespaceExplicitBinaryAsSet(t *testing.T) {
+	env := stubEnv(map[string]string{
+		"TOKENBOARD_CCUSAGE_BIN": " ",
+	})
+	if _, err := ResolvePackageRunner(RunnerInput{
+		Env:        env,
+		Platform:   "linux",
+		FileExists: func(string) bool { return false },
+	}); err == nil {
+		t.Fatal("a whitespace-only TOKENBOARD_CCUSAGE_BIN must be reported missing")
+	}
+}
