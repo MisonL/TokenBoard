@@ -21,6 +21,7 @@ func TestAnEmptyFlagValueIsAUsageError(t *testing.T) {
 		flag string
 		args []string
 	}{
+		{flag: "source", args: []string{"preview", "--source", ""}},
 		{flag: "endpoint", args: []string{"sync", "--endpoint", ""}},
 		{flag: "token", args: []string{"sync", "--token", ""}},
 		{flag: "since", args: []string{"sync", "--since", ""}},

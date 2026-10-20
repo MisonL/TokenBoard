@@ -11,12 +11,20 @@ import (
 // "" as unset and collected `all` instead, so a machine with
 // `TOKENBOARD_SOURCE=` exported ran successfully here and exited with an error
 // there. The two clients must agree on whether a run is well-formed.
-func TestEmptySourceIsRejectedLikeTS(t *testing.T) {
-	// The lookup cannot tell "unset" from "empty"; the implementation is what
-	// has to, so this pins the empty case.
-	empty := func(string) string { return "" }
-	if _, err := parseArgs([]string{"preview", "--source", ""}, empty); err == nil {
-		t.Error("an explicitly empty --source must be rejected")
+//
+// The lookup has to report the variable as set, because that is the whole
+// point: only the process environment can tell an exported-but-empty variable
+// from an unset one, and the exported case is the one TS rejects.
+func TestExportedEmptySourceIsRejectedLikeTS(t *testing.T) {
+	lookup := func(key string) (string, bool) {
+		if key == "TOKENBOARD_SOURCE" {
+			return "", true
+		}
+		return "", false
+	}
+	_, err := parseArgsWithLookup([]string{"preview"}, func(string) string { return "" }, lookup)
+	if err == nil || !strings.Contains(err.Error(), "Invalid source") {
+		t.Fatalf("err = %v, want an invalid-source error", err)
 	}
 }
 
