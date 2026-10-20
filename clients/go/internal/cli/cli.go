@@ -57,11 +57,27 @@ type Options struct {
 
 // Run executes one CLI invocation and returns the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
-	return RunWithEnv(context.Background(), args, os.Getenv, stdout, stderr)
+	return runWithLookup(context.Background(), args, os.LookupEnv, stdout, stderr)
 }
 
-// RunWithEnv is Run with an injectable environment, for tests.
+// RunWithEnv is Run with an injectable environment, for tests. An empty value
+// counts as unset: the injected form cannot tell the two apart, and the
+// process environment is the only place the distinction is available.
 func RunWithEnv(ctx context.Context, args []string, env Env, stdout, stderr io.Writer) int {
+	return runWithLookup(ctx, args, func(key string) (string, bool) {
+		value := env(key)
+		return value, value != ""
+	}, stdout, stderr)
+}
+
+// lookupFunc reports a variable's value and whether it is set at all.
+type lookupFunc func(string) (string, bool)
+
+func runWithLookup(ctx context.Context, args []string, lookup lookupFunc, stdout, stderr io.Writer) int {
+	env := func(key string) string {
+		value, _ := lookup(key)
+		return value
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usageLine())
 		return ExitUsage
@@ -77,7 +93,7 @@ func RunWithEnv(ctx context.Context, args []string, env Env, stdout, stderr io.W
 		return ExitOK
 	}
 
-	options, err := parseArgs(args, env)
+	options, err := parseArgsWithLookup(args, env, lookup)
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return ExitUsage
@@ -562,6 +578,17 @@ func requiredSyncConfig(options Options) []string {
 }
 
 func parseArgs(args []string, env Env) (Options, error) {
+	return parseArgsWithLookup(args, env, func(key string) (string, bool) {
+		value := env(key)
+		return value, value != ""
+	})
+}
+
+// parseArgsWithLookup resolves the options. A flag value is used as written;
+// an environment value is used only when the variable is set, because TS picks
+// it with `??` — an exported-but-empty variable is a value, and the validators
+// below reject it rather than silently taking the default.
+func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, error) {
 	command := args[0]
 	switch command {
 	case "preview", "sync", "warm-hooks":
@@ -572,11 +599,26 @@ func parseArgs(args []string, env Env) (Options, error) {
 	if err != nil {
 		return Options{}, err
 	}
-	source := firstNonEmpty(flags["source"], env("TOKENBOARD_SOURCE"), "all")
+	// flag, then a set environment value, then the default. A flag given an
+	// empty value is used as written, so --source "" is rejected below rather
+	// than quietly meaning --source all.
+	source := flags["source"]
+	if _, given := flags["source"]; !given {
+		source = "all"
+		if value, ok := lookup("TOKENBOARD_SOURCE"); ok {
+			source = value
+		}
+	}
 	if !isValidSource(source) {
 		return Options{}, fmt.Errorf("Invalid source: %s", source)
 	}
-	timezone := firstNonEmpty(flags["timezone"], env("TOKENBOARD_TIMEZONE"), localTimezone())
+	timezone := flags["timezone"]
+	if _, given := flags["timezone"]; !given {
+		timezone = localTimezone()
+		if value, ok := lookup("TOKENBOARD_TIMEZONE"); ok {
+			timezone = value
+		}
+	}
 	if err := assertValidTimezone(timezone); err != nil {
 		return Options{}, err
 	}

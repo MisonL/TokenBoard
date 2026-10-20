@@ -197,7 +197,8 @@ func resolveRunner(
 	if resolveBinary == nil {
 		resolveBinary = ccusage.Resolve
 	}
-	forceRunner := strings.TrimSpace(env("TOKENBOARD_FORCE_PACKAGE_RUNNER")) != ""
+	// Boolean(env.X) in TS: any non-empty value, whitespace included.
+	forceRunner := env("TOKENBOARD_FORCE_PACKAGE_RUNNER") != ""
 	var localBinary string
 	if !forceRunner {
 		binary, err := resolveBinary(ccusage.AcquireOptions{

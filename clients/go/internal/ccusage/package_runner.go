@@ -52,7 +52,8 @@ func ResolvePackageRunner(input RunnerInput) (PackageRunner, error) {
 	if platform == "" {
 		platform = runtime.GOOS
 	}
-	forcePackageRunner := strings.TrimSpace(env("TOKENBOARD_FORCE_PACKAGE_RUNNER")) != ""
+	// Boolean(env.X) in TS: any non-empty value, whitespace included.
+	forcePackageRunner := env("TOKENBOARD_FORCE_PACKAGE_RUNNER") != ""
 	forcedCcusage := strings.TrimSpace(env("TOKENBOARD_CCUSAGE_BIN"))
 	if !forcePackageRunner && forcedCcusage != "" {
 		if !fileExists(forcedCcusage) {
