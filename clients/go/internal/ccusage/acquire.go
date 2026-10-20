@@ -59,10 +59,10 @@ type Binary struct {
 //
 // Resolution order:
 //  1. TOKENBOARD_CCUSAGE_BIN (an explicit path; a missing file is an error).
-//  2. the bundled install at ~/.tokenboard/bin/ccusage.
+//  2. the bundled install at <configDir>/bin/ccusage.
 //  3. a ccusage found on PATH (a version mismatch warns, it does not refuse —
 //     a probe hit is still a working binary).
-//  4. a download into ~/.tokenboard/bin (never in hook mode).
+//  4. a download into <configDir>/bin (never in hook mode).
 func Resolve(options AcquireOptions) (Binary, error) {
 	env := options.Env
 	if env == nil {

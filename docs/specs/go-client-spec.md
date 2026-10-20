@@ -210,6 +210,12 @@ clients/go/
   - 实测：bundle 后 snapshot 的 6 个归档内分别是 `ccusage`/`ccusage.exe`，`file` 报出的架构与平台一一对应，本机原生 ccusage 跑出 `ccusage 20.0.33`、`tokenboard version` 为 snapshot 版本；本地 HTTP 发布端点分别跑 `installClientBinary` 与 Go `self-update`，两者都把客户端与 ccusage 装到位并可执行。
   - 捆绑目录口径统一（2026-10-20）：`ccusage.Resolve` 原来只看写死的 `~/.tokenboard/bin`，而 skill 装到 `configDir()/bin`（`config.mjs` 的 `configDir()` = `TOKENBOARD_CONFIG_DIR || ~/.tokenboard`），`selfupdate` 则装到「客户端同级目录」——三者在设了 `TOKENBOARD_CONFIG_DIR` 的机器上互相对不上，捆绑层落空后会掉进下载层，而 hook 模式不能联网。现在 Go 侧统一走 `ccusage.BundledBinDir(env, home)`（`TOKENBOARD_CONFIG_DIR/bin`，否则 `~/.tokenboard/bin`），`selfupdate` 写同一个位置；旧安装在默认 home 下的那份仍会被找到（legacy fallback）。`TOKENBOARD_STATE_DIR` 刻意不参与：它是游标与运行锁的状态目录，skill 从不往那里装二进制。
     - 顺带修掉一个测试污染：`selfupdate` 的测试曾把 stub ccusage 写进真实 `~/.tokenboard/bin`（`BundledBinDir` 在 `CONFIG_DIR` 未设时回落到真实 home）。现在测试显式注入 `TOKENBOARD_CONFIG_DIR` 指向临时目录。
+  - 同轮审查修复：
+    - `bundle-ccusage.mjs` 用 `renameSync` 把临时目录里的产物移到 `dist-ccusage/`。临时目录在 `os.tmpdir()`，Linux CI 上常与 checkout 不同挂载，`rename(2)` 会 `EXDEV`；改为 `copyFileSync`。另加 `cleanOwnedOutputs`：重跑前只清理本脚本管理的路径，避免上一次失败留下的旧版本二进制被 GoReleaser 静默打包。
+    - 主模块守卫改成 `realpathSync` 比较（与 `skills/tokenboard/scripts/is-main.mjs` 同口径）。原来的 ``import.meta.url === `file://${process.argv[1]}` `` 经 symlink 调用会静默不执行；实测 symlink 调用旧守卫 `matches=false`、新守卫 `matches=true`。
+    - LICENSE 下载补上 `dist.integrity` 的 sha512 校验，与六个平台包同口径。
+    - skill `installClientBinary` 改为**先解包 ccusage、再换入客户端**：畸形条目在机器未被改动前失败（此前会留下「已换入但安装报错」的半成品）。客户端换入后的 ccusage 写入失败只记日志、不报安装失败，与 Go `selfupdate` 一致；`install-collector.mjs` 补传 `log`，否则该警告会被默认空函数吞掉。
+    - `version.go` 注释里引用的 `version_test.go` 不存在（实际校验在 `package_runner_test.go` 的 `TestPackageSpecifierMatchesCollectorPackageJSON`），已订正。
 - 未覆盖边界：**尚未打过真实 tag**（workflow 已就绪，但「首次真实发布」需要人来定版本号并 push tag；本机无法验证 GitHub 上的实际运行）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
 - Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 

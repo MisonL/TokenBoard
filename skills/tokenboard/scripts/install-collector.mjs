@@ -139,7 +139,11 @@ function runCli() {
       repo,
       tag: flags['release-tag'] || process.env.TOKENBOARD_RELEASE_TAG || undefined,
       baseUrl,
-      configDir: configDir()
+      configDir: configDir(),
+      // The installer reports a failed bundled-ccusage write through this
+      // channel. Without it the default is a no-op and the warning is lost,
+      // leaving the client installed with no bundled copy and no sign of it.
+      log: (line) => console.log(line)
     })
       .then((installed) => {
         mergeConfig(buildBinaryInstallConfig({ repo, baseUrl, updatedAt: new Date().toISOString() }))

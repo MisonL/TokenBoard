@@ -373,6 +373,19 @@ export async function installClientBinary({
       spawn,
       log
     })
+    // Spec §4.1: the tarball carries the platform's ccusage beside the client.
+    // It is unpacked before the client is swapped in so a malformed entry
+    // fails the install while the machine is still untouched — the Go
+    // self-update extracts it before its own swap for the same reason.
+    const ccusageName = platform === 'win32' ? 'ccusage.exe' : 'ccusage'
+    const ccusage = extractOptionalEntry({
+      archivePath,
+      extractDir,
+      name: ccusageName,
+      platform,
+      spawn,
+      log
+    })
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
     const staged = `${target}.new`
     rmSync(staged, { force: true })
@@ -387,24 +400,23 @@ export async function installClientBinary({
       rmSync(staged, { force: true })
       throw error
     }
-    // Spec §4.1: the tarball carries the platform's ccusage beside the client.
-    // A fresh install places it where the bundled layer looks, so the first
-    // run works offline; an older release without it simply installs no
-    // bundled copy and the probe/download layers take over.
-    const ccusageName = platform === 'win32' ? 'ccusage.exe' : 'ccusage'
-    const ccusage = extractOptionalEntry({
-      archivePath,
-      extractDir,
-      name: ccusageName,
-      platform,
-      spawn,
-      log
-    })
+    // A fresh install places the bundled copy where the bundled layer looks,
+    // so the first run works offline; an older release without it simply
+    // installs no bundled copy and the probe/download layers take over. The
+    // client is already live at this point, so a write failure here warns
+    // instead of failing an install that succeeded — the Go self-update
+    // treats it the same way.
     if (ccusage !== null) {
       const ccusagePath = join(configDir, 'bin', ccusageName)
-      writeFileSync(ccusagePath, ccusage, { mode: 0o755 })
-      chmodSync(ccusagePath, 0o755)
-      log(`TokenBoard bundled ccusage installed at ${ccusagePath}`)
+      try {
+        writeFileSync(ccusagePath, ccusage, { mode: 0o755 })
+        chmodSync(ccusagePath, 0o755)
+        log(`TokenBoard bundled ccusage installed at ${ccusagePath}`)
+      } catch (error) {
+        log(
+          `TokenBoard client ${release.version} installed, but the bundled ccusage could not be written: ${errorMessage(error)}`
+        )
+      }
     }
     log(`TokenBoard client ${release.version} installed at ${target}`)
     return { version: release.version, path: target, tag: release.tag }

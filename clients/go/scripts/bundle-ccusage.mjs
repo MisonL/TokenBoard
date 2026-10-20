@@ -16,10 +16,11 @@
 //
 //   node clients/go/scripts/bundle-ccusage.mjs [--out DIR] [--version X.Y.Z]
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 // The six pairs the Go client publishes. The npm platform segment differs from
 // Go's: windows is win32 and amd64 is x64.
@@ -100,7 +101,10 @@ async function bundleOne(target, version, outDir) {
     const dir = join(outDir, `ccusage_${target.goos}_${target.goarch}`)
     mkdirSync(dir, { recursive: true })
     const binaryName = target.goos === 'windows' ? 'ccusage.exe' : 'ccusage'
-    renameSync(
+    // Copy rather than rename: the work directory lives under os.tmpdir(),
+    // which on Linux CI is often a different filesystem than the checkout,
+    // and rename(2) cannot cross mounts.
+    copyFileSync(
       join(work, 'package', 'bin', target.npmOs === 'win32' ? 'ccusage.exe' : 'ccusage'),
       join(dir, binaryName)
     )
@@ -111,17 +115,26 @@ async function bundleOne(target, version, outDir) {
 }
 
 async function fetchLicense(version, outDir) {
+  const packageName = `ccusage@${version}`
   const metadataResponse = await fetch(`https://registry.npmjs.org/ccusage/${version}`)
   if (!metadataResponse.ok) {
-    throw new Error(`registry returned HTTP ${metadataResponse.status} for ccusage@${version}`)
+    throw new Error(`registry returned HTTP ${metadataResponse.status} for ${packageName}`)
   }
   const metadata = await metadataResponse.json()
-  if (!metadata?.dist?.tarball) throw new Error(`registry metadata for ccusage@${version} has no tarball`)
+  if (!metadata?.dist?.tarball || !metadata?.dist?.integrity) {
+    throw new Error(`registry metadata for ${packageName} has no tarball integrity`)
+  }
   const tarballResponse = await fetch(metadata.dist.tarball)
   if (!tarballResponse.ok) {
-    throw new Error(`ccusage tarball download failed with HTTP ${tarballResponse.status}`)
+    throw new Error(`tarball download failed with HTTP ${tarballResponse.status} for ${packageName}`)
   }
   const tarball = Buffer.from(await tarballResponse.arrayBuffer())
+  // Same sha512 check as the platform packages: a tarball that changed under
+  // its version must be refused here too, not just for the binaries.
+  const actual = createHash('sha512').update(tarball).digest()
+  if (!actual.equals(integrityDigest(metadata.dist.integrity))) {
+    throw new Error(`ccusage tarball integrity mismatch for ${packageName}`)
+  }
   const work = mkdtempSync(join(tmpdir(), 'tokenboard-ccusage-license-'))
   try {
     const archivePath = join(work, 'package.tgz')
@@ -130,10 +143,20 @@ async function fetchLicense(version, outDir) {
     if (extracted.status !== 0) {
       throw new Error(`cannot extract the ccusage license: ${extracted.stderr || extracted.error}`)
     }
-    renameSync(join(work, 'package', 'LICENSE'), join(outDir, 'LICENSE.ccusage'))
+    copyFileSync(join(work, 'package', 'LICENSE'), join(outDir, 'LICENSE.ccusage'))
   } finally {
     rmSync(work, { recursive: true, force: true })
   }
+}
+
+// cleanOwnedOutputs removes only the paths this script writes, so a rerun
+// after a partial failure cannot leave a previous version's binary behind for
+// GoReleaser to package silently.
+function cleanOwnedOutputs(outDir) {
+  for (const target of targets) {
+    rmSync(join(outDir, `ccusage_${target.goos}_${target.goarch}`), { recursive: true, force: true })
+  }
+  rmSync(join(outDir, 'LICENSE.ccusage'), { force: true })
 }
 
 async function main() {
@@ -141,6 +164,7 @@ async function main() {
   const version = flags.version || readExpectedVersion()
   const outDir = flags.out || 'dist-ccusage'
   mkdirSync(outDir, { recursive: true })
+  cleanOwnedOutputs(outDir)
   for (const target of targets) {
     const name = await bundleOne(target, version, outDir)
     console.log(`bundled ${name} (ccusage ${version})`)
@@ -149,7 +173,20 @@ async function main() {
   console.log(`bundled LICENSE.ccusage (ccusage ${version})`)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// The entry guard compares canonical paths: `import.meta.url` is resolved
+// through symlinks while `process.argv[1]` is whatever the caller typed, so a
+// plain string compare silently no-ops when the script is reached through a
+// symlink (the same guard bug fixed across skills/tokenboard/scripts).
+function isMainModule(importMetaUrl, argv1 = process.argv[1]) {
+  if (!argv1) return false
+  try {
+    return realpathSync(argv1) === fileURLToPath(importMetaUrl)
+  } catch {
+    return false
+  }
+}
+
+if (isMainModule(import.meta.url)) {
   main().catch((error) => {
     console.error(`bundle-ccusage: ${error.message}`)
     process.exit(1)

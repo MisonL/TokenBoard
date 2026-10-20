@@ -381,6 +381,24 @@ test('installClientBinary installs the bundled ccusage beside the client', async
   assert.equal(existsSync(join(configDir, 'client-install')), false)
 })
 
+// A malformed bundled ccusage must fail the install before the client is
+// swapped in. Failing afterwards would leave a client whose install reported
+// an error but which is already live — the next sync would run against a
+// half-installed tree with no bundled ccusage.
+test('installClientBinary refuses a malformed ccusage without installing the client', async (t) => {
+  const { baseUrl } = await withServer(t, {
+    platform: 'darwin_amd64',
+    version: '1.2.3',
+    extraFiles: { ccusage: '' }
+  })
+  const configDir = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
+  await assert.rejects(
+    installClientBinary({ baseUrl, configDir, platform: 'darwin', arch: 'x64', log: () => {} }),
+    /ccusage is empty|does not contain ccusage/
+  )
+  assert.equal(existsSync(join(configDir, 'bin', 'tokenboard')), false, 'the client must not be installed')
+})
+
 // An older release without ccusage still installs the client; the three-layer
 // acquisition covers the machine afterwards.
 test('installClientBinary accepts a release without ccusage', async (t) => {

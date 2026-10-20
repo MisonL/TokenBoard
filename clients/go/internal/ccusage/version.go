@@ -2,11 +2,12 @@
 // run it safely (timeouts, retries, Windows shell quoting), and — per the Go
 // client spec §4 — the three-layer fail-closed acquisition
 //
-//	bundled (~/.tokenboard/bin) > PATH probe > download (never in hook mode).
+//	bundled (<configDir>/bin) > PATH probe > download (never in hook mode).
 //
 // The expected version mirrors packages/collector/package.json's ccusage pin;
-// scripts/check-deps.sh enforces the same equality in CI, and version_test.go
-// re-checks it locally so a bump on one side cannot silently drift the other.
+// scripts/check-deps.sh enforces the same equality in CI, and
+// TestPackageSpecifierMatchesCollectorPackageJSON re-checks it from the repo
+// checkout so a bump on one side cannot silently drift the other.
 package ccusage
 
 // Version is the ccusage release the client expects. Upgrading ccusage means
