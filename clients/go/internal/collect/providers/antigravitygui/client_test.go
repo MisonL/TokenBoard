@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -191,6 +192,9 @@ func TestRequestGeneratorMetadataDoesNotFollowRedirects(t *testing.T) {
 }
 
 func TestCloseGivesTheServerAGracefulShutdownFirst(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no SIGTERM for a child process: close() kills directly, and the test child is a POSIX sh script")
+	}
 	// The TS closeLanguageServer sends SIGTERM and only escalates to SIGKILL
 	// after two seconds, so the server can flush its own state. The child here
 	// records whether it saw SIGTERM; an immediate SIGKILL leaves no marker.

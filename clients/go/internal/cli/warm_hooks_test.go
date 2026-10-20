@@ -150,7 +150,7 @@ func TestWarmHookCursorsWarmEachCodexProfileCursor(t *testing.T) {
 	startedAt := time.Date(2026, 5, 22, 1, 0, 0, 0, time.UTC)
 	env := func(key string) string {
 		if key == "TOKENBOARD_CODEX_HOMES_JSON" {
-			return `["` + firstHome + `","` + secondHome + `"]`
+			return encodeJSONHomes(firstHome, secondHome)
 		}
 		return ""
 	}

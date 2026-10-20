@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
+	"runtime"
 )
 
 type subagentExpectedSnapshot struct {
@@ -666,6 +667,9 @@ func TestRetainsStableCachedChildUsageAcrossNarrowerSessionWindows(t *testing.T)
 }
 
 func TestInvalidatesCachedChildUsageWhenCtimeChangesDespiteStableMtimeAndTail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows exposes no change time through os.FileInfo; the fingerprint falls back to mtime by design")
+	}
 	home := t.TempDir()
 	stateDir := t.TempDir()
 	childFile := filepath.Join(home, "sessions", "2026", "05", "25", "rollout-child-thread.jsonl")

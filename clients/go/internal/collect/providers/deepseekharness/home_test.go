@@ -39,7 +39,7 @@ func TestSessionRootPrefersTheTokenBoardVariables(t *testing.T) {
 	t.Setenv("DSH_SESSION_ROOT", "")
 	t.Setenv("DSH_HOME", "/plain/home")
 	t.Setenv("TOKENBOARD_DSH_HOME", "/tokenboard/home")
-	if got := sessionRoot(Options{}); got != "/tokenboard/home/sessions" {
-		t.Errorf("sessionRoot = %q, want /tokenboard/home/sessions", got)
+	if want := filepath.Join("/tokenboard/home", "sessions"); sessionRoot(Options{}) != want {
+		t.Errorf("sessionRoot = %q, want %q", sessionRoot(Options{}), want)
 	}
 }

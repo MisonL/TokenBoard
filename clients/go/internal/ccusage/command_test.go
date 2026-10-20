@@ -3,7 +3,6 @@ package ccusage
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -335,8 +334,13 @@ func TestRunJSONRunsWindowsShimWithQuotedParenthesizedArguments(t *testing.T) {
 	dir := t.TempDir()
 	shim := filepath.Join(dir, "capture shim.cmd")
 	printer := filepath.Join(dir, "capture-args.bat")
+	argvFile := filepath.Join(dir, "argv.txt")
+	// The payload must be valid JSON: the arguments contain a Windows path,
+	// and a backslash inside a JSON string is an invalid escape — the client
+	// would correctly refuse the output rather than run it.
 	script := "@echo off\r\n" +
-		"echo {\"argv\":[\"%~1\",\"%~2\",\"%~3\"]}\r\n"
+		"echo %* > \"" + argvFile + "\"\r\n" +
+		"echo {}\r\n"
 	if err := os.WriteFile(printer, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +353,16 @@ func TestRunJSONRunsWindowsShimWithQuotedParenthesizedArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = exec.ErrNotFound
+	// The argument with spaces and parentheses must survive the quoting: the
+	// shim is invoked through cmd.exe, where an unquoted path would split.
+	captured, readErr := os.ReadFile(argvFile)
+	if readErr != nil {
+		t.Fatalf("the shim did not capture its arguments: %v", readErr)
+	}
+	if !strings.Contains(string(captured), "alpha beta") ||
+		!strings.Contains(string(captured), "C:\\Program Files (x86)\\TokenBoard\\") {
+		t.Errorf("captured arguments = %q", string(captured))
+	}
 }
 
 // TS reads both of these with Number.parseInt(…, 10): a trailing suffix is

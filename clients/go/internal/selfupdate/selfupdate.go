@@ -170,7 +170,7 @@ func Run(input Input) (Result, error) {
 		return Result{}, err
 	}
 	defer func() { _ = os.Remove(staged) }()
-	if err := verifyExecutable(staged, version); err != nil {
+	if err := verifyStaged(staged, version); err != nil {
 		_ = os.Remove(staged)
 		return Result{}, fmt.Errorf("the downloaded TokenBoard binary does not run: %w", err)
 	}
@@ -330,6 +330,12 @@ func writeExecutable(path string, data []byte) error {
 	}
 	return nil
 }
+
+// verifyStaged is the executable verification Run performs. It is a variable
+// so a test on a host that cannot run the fixture (Windows rejects a shell
+// script as "%1 is not a valid Win32 application") can substitute a check with
+// the same contract; production code never assigns it.
+var verifyStaged = verifyExecutable
 
 // verifyExecutable runs the staged binary's version check. A binary that
 // cannot answer is not installed: swapping it in would break the next

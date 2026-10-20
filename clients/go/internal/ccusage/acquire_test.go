@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -49,7 +50,9 @@ func TestResolveRejectsAMissingExplicitBinary(t *testing.T) {
 
 func TestResolvePrefersTheBundledBinaryOverPATH(t *testing.T) {
 	home := t.TempDir()
-	bundled := filepath.Join(home, ".tokenboard", "bin", "ccusage")
+	// The bundled file carries the platform's name: Windows ships ccusage.exe,
+	// and the acquisition looks for exactly that (binaryName).
+	bundled := filepath.Join(home, ".tokenboard", "bin", binaryName(runtime.GOOS))
 	binary, err := Resolve(AcquireOptions{
 		Env:        acquireEnv(nil),
 		HomeDir:    home,
@@ -194,7 +197,9 @@ func TestDownloadVerifiesIntegrityAndInstallsTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o100 == 0 {
+	// Windows has no execute bit: a file is executable by extension, and the
+	// mode Go reports for a freshly written file carries no permission bits.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
 		t.Errorf("installed binary must be executable: %v", info.Mode())
 	}
 }
@@ -312,7 +317,7 @@ func TestResolveTreatsAWhitespaceExplicitBinaryAsSet(t *testing.T) {
 func TestResolveFindsTheBundledBinaryInTheConfiguredConfigDirectory(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(t.TempDir(), "custom-config")
-	bundled := filepath.Join(configDir, "bin", "ccusage")
+	bundled := filepath.Join(configDir, "bin", binaryName(runtime.GOOS))
 	binary, err := Resolve(AcquireOptions{
 		Env:        acquireEnv(map[string]string{"TOKENBOARD_CONFIG_DIR": configDir}),
 		HomeDir:    home,
@@ -335,7 +340,7 @@ func TestResolveFindsTheBundledBinaryInTheConfiguredConfigDirectory(t *testing.T
 func TestResolveFallsBackToTheDefaultHomeCopy(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(t.TempDir(), "custom-config")
-	legacy := filepath.Join(home, ".tokenboard", "bin", "ccusage")
+	legacy := filepath.Join(home, ".tokenboard", "bin", binaryName(runtime.GOOS))
 	binary, err := Resolve(AcquireOptions{
 		Env:        acquireEnv(map[string]string{"TOKENBOARD_CONFIG_DIR": configDir}),
 		HomeDir:    home,

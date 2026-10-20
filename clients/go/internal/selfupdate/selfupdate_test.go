@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -41,6 +42,32 @@ func buildTarball(t *testing.T, name string, body []byte) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+// stubVerify stands in for verifyStaged where the fixture cannot be a
+// host-native executable. It accepts a staged file that names the release
+// version and refuses one that does not, which is the same contract the real
+// check enforces; on Unix the tests use the real one end to end.
+func stubVerify(path, version string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(data, []byte(version)) {
+		return fmt.Errorf("the downloaded TokenBoard binary does not run: it printed %q", string(data))
+	}
+	return nil
+}
+
+// On Windows the shell-script fixtures are not valid executables ("%1 is not
+// a valid Win32 application"), so the run tests substitute a content check
+// with the same contract. verifyExecutable keeps its own tests for the
+// version-matching rules on every platform.
+func TestMain(m *testing.M) {
+	if runtime.GOOS == "windows" {
+		verifyStaged = stubVerify
+	}
+	os.Exit(m.Run())
 }
 
 // stubBinary is a script that answers `version` the way the real binary does.

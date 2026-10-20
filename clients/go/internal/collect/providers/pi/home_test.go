@@ -24,8 +24,8 @@ func TestSessionsRootUsesTheDefault(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", "")
 	// Both set-but-empty, so this documents the empty case; the default is
 	// covered by an unconfigured machine rather than a stub.
-	if got := sessionsRoot(Options{AgentDir: "/explicit/agent"}); got != "/explicit/agent/sessions" {
-		t.Errorf("an explicit agent dir must win, got %q", got)
+	if want := filepath.Join("/explicit/agent", "sessions"); sessionsRoot(Options{AgentDir: "/explicit/agent"}) != want {
+		t.Errorf("an explicit agent dir must win, want %q", want)
 	}
 }
 
@@ -34,7 +34,7 @@ func TestSessionsRootPrefersTheTokenBoardAgentDir(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_SESSION_DIR", "")
 	t.Setenv("PI_CODING_AGENT_DIR", "/plain/pi")
 	t.Setenv("TOKENBOARD_PI_AGENT_DIR", "/tokenboard/pi")
-	if got := sessionsRoot(Options{}); got != "/tokenboard/pi/sessions" {
-		t.Errorf("sessionsRoot = %q, want /tokenboard/pi/sessions", got)
+	if want := filepath.Join("/tokenboard/pi", "sessions"); sessionsRoot(Options{}) != want {
+		t.Errorf("sessionsRoot = %q, want %q", sessionsRoot(Options{}), want)
 	}
 }

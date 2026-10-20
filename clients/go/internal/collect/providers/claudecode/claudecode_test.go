@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,15 @@ func dailyAndSession(model string, input, output float64) func(args []string) an
 			},
 		}}
 	}
+}
+
+// packageCommand mirrors internal/ccusage's packageCommand: the shim carries
+// a .cmd suffix on Windows, where the bare name is not executable.
+func packageCommand(command, platform string) string {
+	if platform == "windows" {
+		return command + ".cmd"
+	}
+	return command
 }
 
 func contains(values []string, want string) bool {
@@ -150,8 +160,10 @@ func TestCollectUsesConfiguredSinceWindow(t *testing.T) {
 	if !contains(runner.calls[0], "--since") || !contains(runner.calls[0], "20260509") {
 		t.Errorf("daily args = %v", runner.calls[0])
 	}
-	if runner.commands[0] != "npm" {
-		t.Errorf("command = %q", runner.commands[0])
+	// The package command carries the platform suffix: "npm" on POSIX,
+	// "npm.cmd" on Windows (packageCommand in internal/ccusage).
+	if want := packageCommand("npm", runtime.GOOS); runner.commands[0] != want {
+		t.Errorf("command = %q, want %q", runner.commands[0], want)
 	}
 }
 
@@ -844,7 +856,7 @@ func TestCollectFallsBackToPackageRunnerOutsideHookMode(t *testing.T) {
 	if len(snapshots) != 1 {
 		t.Errorf("snapshots = %+v", snapshots)
 	}
-	if len(runner.commands) == 0 || !strings.HasSuffix(runner.commands[0], "pnpm") {
+	if len(runner.commands) == 0 || !strings.HasSuffix(runner.commands[0], packageCommand("pnpm", runtime.GOOS)) {
 		t.Errorf("commands = %v, want the pnpm package runner", runner.commands)
 	}
 	fallbackLines := 0

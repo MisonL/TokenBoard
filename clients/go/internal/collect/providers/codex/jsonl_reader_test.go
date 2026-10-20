@@ -161,6 +161,9 @@ func TestDestroysTheInputStreamWhenTheConsumerStopsEarly(t *testing.T) {
 }
 
 func TestRejectsAnEarlyChildSessionReaderExitAfterASameSizeSourceReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("same-size replacement detection needs dev/ino, which os.FileInfo does not carry on Windows")
+	}
 	root := t.TempDir()
 	filePath := filepath.Join(root, "child.jsonl")
 	original := `{"type":"session_meta","id":"a"}` + "\n" + `{"type":"event_msg"}` + "\n"

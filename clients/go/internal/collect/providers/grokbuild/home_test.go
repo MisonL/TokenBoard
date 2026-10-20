@@ -30,7 +30,8 @@ func TestSessionRootsHonorAnEmptyHome(t *testing.T) {
 func TestSessionRootsPreferTheTokenBoardHome(t *testing.T) {
 	t.Setenv("TOKENBOARD_GROK_HOME", "/tokenboard/grok")
 	t.Setenv("GROK_HOME", "/plain/grok")
-	if roots := sessionRoots("", nil); roots[0] != "/tokenboard/grok/sessions" {
-		t.Errorf("roots[0] = %q, want /tokenboard/grok/sessions", roots[0])
+	roots := sessionRoots("", nil)
+	if want := filepath.Join("/tokenboard/grok", "sessions"); roots[0] != want {
+		t.Errorf("roots[0] = %q, want %q", roots[0], want)
 	}
 }

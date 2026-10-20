@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,33 +24,52 @@ func TestResolveHomesUsesTheDefaultWhenNothingIsConfigured(t *testing.T) {
 	}
 }
 
+// The homes are absolute paths, and "absolute" means something different on
+// Windows (a drive letter is required), so the fixtures are built from a temp
+// directory instead of POSIX literals.
+func codexHomesFixture(t *testing.T, names ...string) []string {
+	t.Helper()
+	root := t.TempDir()
+	homes := make([]string, 0, len(names))
+	for _, name := range names {
+		homes = append(homes, filepath.Join(root, name, ".codex"))
+	}
+	return homes
+}
+
 func TestResolveHomesPrefersExplicitHomes(t *testing.T) {
 	home := t.TempDir()
+	explicit := codexHomesFixture(t, "work", "personal")
 	homes, err := ResolveHomes(ResolveHomesInput{
-		ExplicitHomes: []string{"/work/.codex", "/personal/.codex"},
+		ExplicitHomes: explicit,
 		HomeDir:       home,
-		JSONValue:     `["/ignored/.codex"]`,
-		LegacyValue:   "/ignored",
+		JSONValue:     `["` + filepath.Join(t.TempDir(), "ignored", ".codex") + `"]`,
+		LegacyValue:   filepath.Join(t.TempDir(), "ignored"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/personal/.codex", "/work/.codex"}
 	// Order follows the input; only the normalization is asserted.
-	if !reflect.DeepEqual(homes, []string{"/work/.codex", "/personal/.codex"}) {
-		t.Errorf("homes = %v, want %v", homes, want)
+	if !reflect.DeepEqual(homes, explicit) {
+		t.Errorf("homes = %v, want %v", homes, explicit)
 	}
 }
 
 func TestResolveHomesParsesTheJSONList(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "a", ".codex")
+	second := filepath.Join(t.TempDir(), "b", ".codex")
+	encoded, err := json.Marshal([]string{first, " " + second + " "})
+	if err != nil {
+		t.Fatal(err)
+	}
 	homes, err := ResolveHomes(ResolveHomesInput{
-		JSONValue: `["/a/.codex", " /b/.codex "]`,
+		JSONValue: string(encoded),
 		HomeDir:   t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(homes, []string{"/a/.codex", "/b/.codex"}) {
+	if !reflect.DeepEqual(homes, []string{first, second}) {
 		t.Errorf("homes = %v", homes)
 	}
 }
@@ -70,15 +90,17 @@ func TestResolveHomesRejectsMalformedJSON(t *testing.T) {
 }
 
 func TestResolveHomesSplitsTheLegacyCommaList(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "a", ".codex")
+	second := filepath.Join(t.TempDir(), "b", ".codex")
 	homes, err := ResolveHomes(ResolveHomesInput{
-		LegacyValue: "/a/.codex,/b/.codex",
+		LegacyValue: first + "," + second,
 		HomeDir:     t.TempDir(),
 		FileExists:  func(string) bool { return false },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(homes, []string{"/a/.codex", "/b/.codex"}) {
+	if !reflect.DeepEqual(homes, []string{first, second}) {
 		t.Errorf("homes = %v", homes)
 	}
 }
@@ -98,14 +120,22 @@ func TestResolveHomesRejectsAnAmbiguousCommaPath(t *testing.T) {
 }
 
 func TestResolveHomesDedupesAndNormalizes(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "a", ".codex")
+	second := filepath.Join(root, "c", ".codex")
 	homes, err := ResolveHomes(ResolveHomesInput{
-		ExplicitHomes: []string{"/a/.codex", "/a/.codex/", "/b/../a/.codex", "/c/.codex"},
-		HomeDir:       t.TempDir(),
+		ExplicitHomes: []string{
+			first,
+			first + string(filepath.Separator),
+			filepath.Join(root, "b", "..", "a", ".codex"),
+			second,
+		},
+		HomeDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(homes, []string{"/a/.codex", "/c/.codex"}) {
+	if !reflect.DeepEqual(homes, []string{first, second}) {
 		t.Errorf("homes = %v", homes)
 	}
 }
@@ -142,11 +172,17 @@ func TestNormalizeSymlinkRootsRejectsEmptyLists(t *testing.T) {
 }
 
 func TestNormalizeSymlinkRootsDedupesAndResolves(t *testing.T) {
-	roots, err := NormalizeSymlinkRoots([]string{"/a/archive", "/a/archive/", "/a/../a/archive"})
+	root := t.TempDir()
+	archive := filepath.Join(root, "a", "archive")
+	roots, err := NormalizeSymlinkRoots([]string{
+		archive,
+		archive + string(filepath.Separator),
+		filepath.Join(root, "a", "..", "a", "archive"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(roots, []string{"/a/archive"}) {
+	if !reflect.DeepEqual(roots, []string{archive}) {
 		t.Errorf("roots = %v", roots)
 	}
 }
@@ -158,11 +194,16 @@ func TestParseSymlinkRootsJSONRejectsBadValues(t *testing.T) {
 	if _, err := ParseSymlinkRootsJSON(`"a string"`); err == nil {
 		t.Fatal("a non-array must fail")
 	}
-	roots, err := ParseSymlinkRootsJSON(`["/archive"]`)
+	archive := filepath.Join(t.TempDir(), "archive")
+	encoded, err := json.Marshal([]string{archive})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(roots, []string{"/archive"}) {
+	roots, err := ParseSymlinkRootsJSON(string(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roots, []string{archive}) {
 		t.Errorf("roots = %v", roots)
 	}
 }

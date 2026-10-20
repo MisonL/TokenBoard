@@ -263,7 +263,7 @@ func TestAcknowledgeUploadCursorsAcknowledgesEveryCodexProfileScope(t *testing.T
 		case "TOKENBOARD_HOOK_MODE":
 			return "1"
 		case "TOKENBOARD_CODEX_HOMES_JSON":
-			return `["` + firstHome + `","` + secondHome + `"]`
+			return encodeJSONHomes(firstHome, secondHome)
 		}
 		return ""
 	}

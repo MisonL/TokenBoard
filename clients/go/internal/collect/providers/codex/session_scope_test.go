@@ -128,7 +128,12 @@ func TestCreateCodexSessionScopeCleansUpWhenTmpdirContainsAComma(t *testing.T) {
 	}
 	writeScopeJSONL(t, filepath.Join(codexHome, "sessions", "2026", "05", "09", "session.jsonl"),
 		[]any{scopeTokenCountEvent("2026-05-09T04:24:07.234Z")})
+	// os.MkdirTemp("") reads the platform's temp variable: TMPDIR on POSIX,
+	// TMP/TEMP on Windows. Set all three so the fixture reaches the product on
+	// either platform.
 	t.Setenv("TMPDIR", commaTmpdir)
+	t.Setenv("TMP", commaTmpdir)
+	t.Setenv("TEMP", commaTmpdir)
 
 	_, err := CreateCodexSessionScope(SessionScopeOptions{
 		CodexHome: &codexHome,
@@ -833,6 +838,9 @@ func TestCreateCodexSessionScopeAllowsAnAppendAfterThePrefixIsCaptured(t *testin
 }
 
 func TestCreateCodexSessionScopeFailsWhenAnOversizedSessionIsReplaced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("replacement detection needs dev/ino, which os.FileInfo does not carry on Windows")
+	}
 	codexHome := t.TempDir()
 	session := filepath.Join(codexHome, "sessions", "2026", "07", "replaced.jsonl")
 	replacement := filepath.Join(codexHome, "sessions", "2026", "07", "replacement.jsonl")

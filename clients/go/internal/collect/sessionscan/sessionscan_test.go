@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -143,6 +144,9 @@ func TestTreatsAMissingRootAsNoFiles(t *testing.T) {
 // is unreadable would otherwise look like an uninstalled tool and its usage
 // would vanish without a trace.
 func TestReportsAnUnreadableDirectoryInsteadOfSkippingItSilently(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0o000 does not deny directory listing on Windows")
+	}
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
