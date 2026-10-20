@@ -85,13 +85,13 @@ func TestSinceEnvironmentChainUsesOrdinaryFallback(t *testing.T) {
 }
 
 // End to end: the rejection is the exit code the user sees, not just a parse
-// error. A TOKENBOARD_UNTIL beside the empty flag must not rescue it either —
-// that was the divergence this whole fix exists to close.
+// error. TOKENBOARD_UNTIL is set to prove an environment value cannot rescue
+// the flag. No endpoint or token is set on purpose: if the parser check is
+// ever removed, this test must fail fast at the required-config check instead
+// of collecting and reaching for the network.
 func TestAnEmptyFlagValueExitsWithUsageAndIgnoresTheEnvironment(t *testing.T) {
 	code, stdout, stderr := run(t, map[string]string{
-		"TOKENBOARD_UNTIL":    "20260131",
-		"TOKENBOARD_ENDPOINT": "https://example.invalid/ingest",
-		"TOKENBOARD_TOKEN":    "token",
+		"TOKENBOARD_UNTIL": "20260131",
 	}, "sync", "--source", "claude-code", "--until", "")
 	if code != ExitUsage {
 		t.Errorf("exit = %d, want %d; stderr: %s", code, ExitUsage, stderr)
