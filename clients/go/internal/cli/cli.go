@@ -622,13 +622,20 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 	if err := assertValidTimezone(timezone); err != nil {
 		return Options{}, err
 	}
+	// TS resolves endpoint and token with `??`: a flag given an empty value is
+	// the value, and the required-config check then reports it missing rather
+	// than silently using what the scheduler exported.
 	options := Options{
-		Command:         command,
-		Source:          source,
-		Timezone:        strings.TrimSpace(timezone),
-		Endpoint:        firstNonEmpty(flags["endpoint"], env("TOKENBOARD_ENDPOINT")),
-		UploadToken:     firstNonEmpty(flags["token"], env("TOKENBOARD_UPLOAD_TOKEN")),
-		Since:           firstNonEmpty(flags["since"], env("TOKENBOARD_SINCE"), env("TOKENBOARD_DEFAULT_SINCE")),
+		Command:     command,
+		Source:      source,
+		Timezone:    strings.TrimSpace(timezone),
+		Endpoint:    flagOrEnv(flags, "endpoint", lookup, "TOKENBOARD_ENDPOINT"),
+		UploadToken: flagOrEnv(flags, "token", lookup, "TOKENBOARD_UPLOAD_TOKEN"),
+		// TS: `flags.since ?? (env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE || '')`.
+		// The flag wins whenever it was given (including an empty value); the
+		// environment chain behind it uses `||`, so empty variables fall
+		// through there.
+		Since:           flagOrEnvChain(flags, "since", env, "TOKENBOARD_SINCE", "TOKENBOARD_DEFAULT_SINCE"),
 		HookMode:        env("TOKENBOARD_HOOK_MODE") == "1",
 		FailOnSourceErr: env("TOKENBOARD_FAIL_ON_SOURCE_ERROR") == "1",
 	}
@@ -640,6 +647,30 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 		return Options{}, err
 	}
 	return options, nil
+}
+
+// flagOrEnvChain is the `??` + `||` pair TS uses for --since: the flag wins
+// whenever it was given, including an empty value; otherwise the first
+// non-empty variable in the chain is used.
+func flagOrEnvChain(flags map[string]string, flagName string, env Env, names ...string) string {
+	if value, given := flags[flagName]; given {
+		return value
+	}
+	values := make([]string, 0, len(names))
+	for _, name := range names {
+		values = append(values, env(name))
+	}
+	return firstNonEmpty(values...)
+}
+
+// flagOrEnv resolves a value the way TS does with `??`: the flag wins whenever
+// it was given, including an empty value; otherwise a set variable is used.
+func flagOrEnv(flags map[string]string, flagName string, lookup lookupFunc, envName string) string {
+	if value, given := flags[flagName]; given {
+		return value
+	}
+	value, _ := lookup(envName)
+	return value
 }
 
 func assertSupportedUntil(options Options) error {

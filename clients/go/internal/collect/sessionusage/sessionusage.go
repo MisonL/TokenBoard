@@ -328,19 +328,14 @@ func ReadRecordAt(value any) map[string]any {
 
 // ReadSinceDate resolves --since to a local date string, or "" for full
 // history. Invalid values fail with the TS message shape.
-func ReadSinceDate(since, label string) (string, error) {
+func ReadSinceDate(since string, label string) (string, error) {
+	// The window is already resolved by the caller: the CLI applies the TS
+	// `flags.since ?? (env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE ||
+	// '')` chain, so the providers (which TS gives `options.since ?? …`) and
+	// the CLI agree on one value. A set-but-empty TOKENBOARD_SINCE therefore
+	// arrives here as the empty window and means full history, not a second
+	// fallback to the default.
 	value := since
-	if value == "" {
-		// TS: `process.env.TOKENBOARD_SINCE ?? process.env.TOKENBOARD_DEFAULT_SINCE ?? ''`.
-		// `??` only skips an unset variable, so an exported-but-empty
-		// TOKENBOARD_SINCE means full history, not the default window.
-		value = ""
-		if set, ok := os.LookupEnv("TOKENBOARD_SINCE"); ok {
-			value = set
-		} else if fallback, ok := os.LookupEnv("TOKENBOARD_DEFAULT_SINCE"); ok {
-			value = fallback
-		}
-	}
 	if value == "" {
 		return "", nil
 	}
