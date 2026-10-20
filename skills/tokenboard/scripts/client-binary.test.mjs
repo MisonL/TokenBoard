@@ -414,3 +414,24 @@ test('installClientBinary accepts a release without ccusage', async (t) => {
   assert.equal(result.version, '1.2.3')
   assert.equal(existsSync(join(configDir, 'bin', 'ccusage')), false)
 })
+
+// An older release without a bundled ccusage leaves the previous one in
+// place. That copy is now a version the new client was never tested against,
+// so the install must say so rather than report a clean install.
+test('installClientBinary warns when it leaves a stale bundled ccusage behind', async (t) => {
+  const { baseUrl } = await withServer(t, { platform: 'darwin_amd64', version: '1.2.3' })
+  const configDir = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
+  mkdirSync(join(configDir, 'bin'), { recursive: true })
+  writeFileSync(join(configDir, 'bin', 'ccusage'), '#!/bin/sh\necho "ccusage 20.0.20"\n', { mode: 0o755 })
+  const lines = []
+  await installClientBinary({
+    baseUrl,
+    configDir,
+    platform: 'darwin',
+    arch: 'x64',
+    log: (line) => lines.push(line)
+  })
+  const stale = lines.find((line) => line.includes('carries no ccusage'))
+  assert.ok(stale, `a stale bundled ccusage must be reported, got ${JSON.stringify(lines)}`)
+  assert.match(stale, /20\.0\.20/)
+})

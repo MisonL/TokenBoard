@@ -216,7 +216,7 @@ export function verifyChecksum(data, name, checksums) {
   }
 }
 
-function runExternal(command, args, { spawn, platform = process.platform, log = () => {} }) {
+function runExternal(command, args, { spawn, platform = process.platform, log = () => {}, quiet = false }) {
   const result = spawn(command, args, {
     shell: platform === 'win32' && /\.(cmd|bat)$/i.test(command),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -225,8 +225,12 @@ function runExternal(command, args, { spawn, platform = process.platform, log = 
   })
   const stdout = String(result.stdout ?? '')
   const stderr = String(result.stderr ?? '')
-  if (stdout) log(redactUrlCredentials(stdout))
-  if (stderr) log(redactUrlCredentials(stderr))
+  // A caller that expects the command to fail (an optional archive member that
+  // may be absent) must not have its stderr reported as a diagnostic.
+  if (!quiet) {
+    if (stdout) log(redactUrlCredentials(stdout))
+    if (stderr) log(redactUrlCredentials(stderr))
+  }
   if (result.error?.code === 'ENOBUFS') {
     throw new Error(`${command} produced more than 64 MiB of output and was stopped`)
   }
@@ -267,7 +271,7 @@ export function extractOptionalEntry({
   // tar exits non-zero when the member is absent; that is the case this
   // helper exists for, so the exit status is not treated as fatal here.
   try {
-    runExternal('tar', ['-xzf', archivePath, '-C', extractDir, name], { spawn, platform, log })
+    runExternal('tar', ['-xzf', archivePath, '-C', extractDir, name], { spawn, platform, log, quiet: true })
   } catch {
     return null
   }
@@ -417,6 +421,17 @@ export async function installClientBinary({
           `TokenBoard client ${release.version} installed, but the bundled ccusage could not be written: ${errorMessage(error)}`
         )
       }
+    } else {
+      // The release carries no ccusage. A copy from an earlier install stays
+      // on disk, and the client will happily run it — so say which version
+      // that is instead of reporting a clean install.
+      const ccusagePath = join(configDir, 'bin', ccusageName)
+      const staleVersion = readVersion(ccusagePath, spawn)
+      if (staleVersion !== null) {
+        log(
+          `TokenBoard client ${release.version} installed; release ${release.tag} carries no ccusage, so the existing ${ccusagePath} (${staleVersion}) is left in place`
+        )
+      }
     }
     log(`TokenBoard client ${release.version} installed at ${target}`)
     return { version: release.version, path: target, tag: release.tag }
@@ -487,6 +502,24 @@ function runsVersion(path, spawn) {
   } catch {
     return false
   }
+}
+
+// readVersion returns the version token an executable prints, or null when it
+// cannot be run. ccusage and tokenboard spell their version lines differently,
+// so the last whitespace-separated field is the version in both.
+function readVersion(path, spawn = spawnSync) {
+  let result
+  try {
+    result = spawn(path, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 5000 })
+  } catch {
+    return null
+  }
+  if (result.error || result.status !== 0) return null
+  const fields = String(result.stdout ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  return fields.length > 0 ? fields.at(-1) : null
 }
 
 // runSelfUpdate hands the upgrade to the installed binary, which owns the
