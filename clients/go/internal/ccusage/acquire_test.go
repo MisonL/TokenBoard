@@ -102,24 +102,34 @@ func TestResolveWarnsWhenTheBundledBinaryIsNotTheExpectedVersion(t *testing.T) {
 }
 
 func TestResolveFallsBackToPATHWithAVersionWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub is a shell script")
+	}
+	dir := t.TempDir()
+	probed := filepath.Join(dir, "ccusage")
+	if err := os.WriteFile(probed, []byte("#!/bin/sh\necho 'ccusage 20.0.33'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	var warnings []string
 	binary, err := Resolve(AcquireOptions{
 		Env:        acquireEnv(nil),
 		HomeDir:    t.TempDir(),
 		FileExists: func(string) bool { return false },
-		LookPath:   func(string) (string, error) { return "/usr/local/bin/ccusage", nil },
+		LookPath:   func(string) (string, error) { return probed, nil },
 		Stderr:     func(line string) { warnings = append(warnings, line) },
-		Version:    Version,
+		Version:    "0.0.0",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if binary.Path != "/usr/local/bin/ccusage" || binary.Source != "path" {
+	if binary.Path != probed || binary.Source != "path" {
 		t.Errorf("binary = %+v", binary)
 	}
-	// probeVersion runs the real binary; on a machine without one the warning
-	// is simply absent, which is the documented behavior (a mismatch warns).
-	_ = warnings
+	// A mismatch warns rather than refuses: a working binary from another
+	// layer is still usable.
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "expects 0.0.0") {
+		t.Fatalf("warnings = %v, want a version drift warning", warnings)
+	}
 }
 
 func TestResolveHookModeFailsClosedWithoutABinary(t *testing.T) {
