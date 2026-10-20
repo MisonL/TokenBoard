@@ -543,8 +543,8 @@ export function buildSyncInvocation({
     // Go client's `self-update` reads both variables, so carrying them through
     // the shared env keeps an automatic update pointed at that feed instead of
     // the compiled-in default repository.
-    ...(config.releaseRepo ? { TOKENBOARD_RELEASE_REPO: config.releaseRepo } : {}),
-    ...(config.releaseBaseUrl ? { TOKENBOARD_RELEASE_BASE_URL: config.releaseBaseUrl } : {}),
+    ...(config.releaseRepo ? onlyWhenUnset('TOKENBOARD_RELEASE_REPO', config.releaseRepo) : {}),
+    ...(config.releaseBaseUrl ? onlyWhenUnset('TOKENBOARD_RELEASE_BASE_URL', config.releaseBaseUrl) : {}),
     ...(flags.scheduled === true ? onlyWhenUnset('TOKENBOARD_FAIL_ON_SOURCE_ERROR', '1') : {}),
     ...(flags.hook === true
       ? {

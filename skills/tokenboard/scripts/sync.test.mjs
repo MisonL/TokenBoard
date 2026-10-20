@@ -1431,3 +1431,31 @@ test('hook timeout kills a streamed run and reports itself', async () => {
   assert.equal(result.status, 1)
   assert.equal(result.error.code, 'ETIMEDOUT')
 })
+
+// An operator who exports the release feed for one run is overriding the
+// recorded value; the config must not silently win over it. The other config
+// exports in this block follow the same onlyWhenUnset rule.
+test('an explicit release source in the environment wins over the config', () => {
+  const invocation = buildSyncInvocation({
+    flags: { mode: 'sync' },
+    env: {
+      TOKENBOARD_RELEASE_REPO: 'run/TokenBoard',
+      TOKENBOARD_RELEASE_BASE_URL: 'https://run.example'
+    },
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'binary',
+      releaseRepo: 'installed/TokenBoard',
+      releaseBaseUrl: 'https://installed.example'
+    },
+    homeDir: '/home/user',
+    pathEnv: '/usr/bin',
+    fileExists: () => true
+  })
+
+  assert.equal(invocation.env.TOKENBOARD_RELEASE_REPO, 'run/TokenBoard')
+  assert.equal(invocation.env.TOKENBOARD_RELEASE_BASE_URL, 'https://run.example')
+})
