@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { isMainModule } from './is-main.mjs'
 import { configPath, readConfig } from './config.mjs'
+import { binaryFileName } from './client-binary.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
 import { deviceLinkStatus } from './device-link.mjs'
@@ -18,7 +20,8 @@ export function buildStatus({
   scheduledRetry,
   scheduledSync,
   recentRuns,
-  uploadBackoff
+  uploadBackoff,
+  client
 }) {
   return {
     configured: true,
@@ -37,7 +40,21 @@ export function buildStatus({
     ...(scheduledRetry ? { scheduledRetry: publicScheduledRetry(scheduledRetry) } : {}),
     ...(scheduledSync ? { scheduledSync: publicScheduledSync(scheduledSync) } : {}),
     ...(recentRuns ? { recentRuns } : {}),
-    ...(uploadBackoff ? { uploadBackoff } : {})
+    ...(uploadBackoff ? { uploadBackoff } : {}),
+    // Only a binary install has a released client on disk. clientType alone
+    // could not tell a healthy install from one whose binary or bundled
+    // ccusage was deleted, or from an older ccusage left by an install of a
+    // release that carried none.
+    ...(client ? { client: publicClientStatus(client) } : {})
+  }
+}
+
+function publicClientStatus(client) {
+  return {
+    present: client.present === true,
+    version: typeof client.version === 'string' && client.version ? client.version : null,
+    ccusagePresent: client.ccusagePresent === true,
+    ccusageVersion: typeof client.ccusageVersion === 'string' && client.ccusageVersion ? client.ccusageVersion : null
   }
 }
 
@@ -154,12 +171,52 @@ function runCli() {
         scheduledRetry: readScheduledRetry(file, source),
         scheduledSync: readScheduledSync(source, stateDir),
         recentRuns: collectRecentRunSummary(join(stateDir, 'runs')),
-        uploadBackoff: readUploadBackoff(stateDir)
+        uploadBackoff: readUploadBackoff(stateDir),
+        client:
+          config.clientType === 'binary'
+            ? readClientStatus({ configDir: process.env.TOKENBOARD_CONFIG_DIR?.trim() || dirname(file) })
+            : undefined
       }),
       null,
       2
     )
   )
+}
+
+// readClientStatus reports what is actually installed beside the config, for
+// a binary install: the client and the bundled ccusage, with their versions.
+// A version is null when the file is missing or does not answer, which is the
+// signal that the install is not what the config claims.
+export function readClientStatus({ configDir, platform = process.platform, spawn = spawnSync, exists = existsSync }) {
+  const binDir = join(configDir, 'bin')
+  const clientPath = join(binDir, binaryFileName(platform))
+  const ccusageName = platform === 'win32' ? 'ccusage.exe' : 'ccusage'
+  const ccusagePath = join(binDir, ccusageName)
+  return {
+    present: exists(clientPath),
+    version: readVersion(clientPath, spawn),
+    ccusagePresent: exists(ccusagePath),
+    ccusageVersion: readVersion(ccusagePath, spawn, '--version')
+  }
+}
+
+// readVersion runs the file's version command and returns the version token,
+// or null when it cannot run or prints nothing usable. The two binaries print
+// differently ("tokenboard (go) 1.2.3" and "ccusage 20.0.33"), so the last
+// whitespace-separated field is the version in both.
+function readVersion(path, spawn, args = ['version']) {
+  let result
+  try {
+    result = spawn(path, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 5000 })
+  } catch {
+    return null
+  }
+  if (result.error || result.status !== 0) return null
+  const fields = String(result.stdout ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  return fields.length > 0 ? fields.at(-1) : null
 }
 
 function readUploadBackoff(stateDir) {

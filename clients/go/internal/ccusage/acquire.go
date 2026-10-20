@@ -109,6 +109,7 @@ func Resolve(options AcquireOptions) (Binary, error) {
 	bundledDir := BundledBinDir(env, options.HomeDir)
 	bundled := filepath.Join(bundledDir, binaryName(platform))
 	if fileExists(bundled) {
+		warnVersionDrift(bundled, expected, stderr)
 		return Binary{Path: bundled, Source: "bundled"}, nil
 	}
 	// A copy installed before the bundled directory followed
@@ -117,15 +118,13 @@ func Resolve(options AcquireOptions) (Binary, error) {
 	// download.
 	if legacy := filepath.Join(defaultBundledBinDir(options.HomeDir), binaryName(platform)); legacy != bundled {
 		if fileExists(legacy) {
+			warnVersionDrift(legacy, expected, stderr)
 			return Binary{Path: legacy, Source: "bundled"}, nil
 		}
 	}
 
 	if probed, err := lookPath("ccusage"); err == nil && probed != "" {
-		if detected, ok := probeVersion(probed); ok && detected != expected {
-			stderr(fmt.Sprintf(
-				"TokenBoard ccusage: %s reports version %s; this client expects %s", probed, detected, expected))
-		}
+		warnVersionDrift(probed, expected, stderr)
 		return Binary{Path: probed, Source: "path"}, nil
 	}
 
@@ -139,6 +138,23 @@ func Resolve(options AcquireOptions) (Binary, error) {
 		return Binary{}, fmt.Errorf("ccusage download failed: %w", err)
 	}
 	return Binary{Path: path, Source: "download"}, nil
+}
+
+// warnVersionDrift reports a binary whose version is not the expected one. A
+// mismatch warns rather than refuses: a working binary from another layer is
+// still usable, and refusing would strand a machine that cannot download.
+//
+// This applies to the bundled layer too. The install path normally puts the
+// release's own ccusage there, but an install or downgrade from a tag without
+// one leaves the previous copy in place, and a status report that says
+// nothing would hide a version the client was never tested against.
+func warnVersionDrift(path, expected string, stderr func(string)) {
+	detected, ok := probeVersion(path)
+	if !ok || detected == expected {
+		return
+	}
+	stderr(fmt.Sprintf(
+		"TokenBoard ccusage: %s reports version %s; this client expects %s", path, detected, expected))
 }
 
 // BundledBinDir is the directory the bundled ccusage lives in.

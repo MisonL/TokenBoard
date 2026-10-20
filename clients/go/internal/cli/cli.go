@@ -639,8 +639,11 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 		HookMode:        env("TOKENBOARD_HOOK_MODE") == "1",
 		FailOnSourceErr: env("TOKENBOARD_FAIL_ON_SOURCE_ERROR") == "1",
 	}
+	// TS: `untilFlag ?? (supportsUntil(...) ? env.TOKENBOARD_UNTIL ?? '' : '')`.
+	// The `??` on the flag means an empty --until is the final value, so the
+	// environment is consulted only when the flag was not given at all.
 	options.Until = flags["until"]
-	if options.Until == "" && supportsUntil(options) {
+	if _, given := flags["until"]; !given && supportsUntil(options) {
 		options.Until = env("TOKENBOARD_UNTIL")
 	}
 	if err := assertSupportedUntil(options); err != nil {

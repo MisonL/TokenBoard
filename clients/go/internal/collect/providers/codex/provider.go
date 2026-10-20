@@ -250,6 +250,11 @@ func (run *providerRun) collectNonHookUsage() ([]contract.Snapshot, error) {
 	if until == "" {
 		until = run.env("TOKENBOARD_UNTIL")
 	}
+	// Provider-level fallback for callers that do not resolve the window
+	// themselves. The CLI always passes a resolved string, so this only fires
+	// for a direct Options{} caller. It cannot distinguish "the flag was given
+	// empty" from "nothing was configured"; the CLI distinguishes them before
+	// it gets here (flagOrEnvChain / the `??` rule in parseArgsWithLookup).
 	rangeArgs, err := buildRangeArgs(since, until)
 	if err != nil {
 		return nil, err

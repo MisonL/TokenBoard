@@ -60,3 +60,18 @@ func TestSinceEnvironmentChainUsesOrdinaryFallback(t *testing.T) {
 		t.Errorf("since = %q, want the environment default", options.Since)
 	}
 }
+
+// --until resolves with `??` in TS: `untilFlag ?? (supportsUntil ? env : ”)`.
+// An empty flag is therefore the final value and the environment is never
+// consulted, exactly as for --since. Falling through to TOKENBOARD_UNTIL would
+// silently truncate the window the operator asked to leave open.
+func TestAnEmptyUntilFlagDoesNotFallThroughToTheEnvironment(t *testing.T) {
+	t.Setenv("TOKENBOARD_UNTIL", "20260429")
+	options, err := parseArgs([]string{"sync", "--source", "claude-code", "--until", ""}, os.Getenv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if options.Until != "" {
+		t.Errorf("Until = %q, want the empty flag value", options.Until)
+	}
+}

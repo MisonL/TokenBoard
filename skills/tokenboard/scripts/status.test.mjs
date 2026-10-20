@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { buildStatus, collectRecentRunSummary } from './status.mjs'
+import { buildStatus, collectRecentRunSummary, readClientStatus } from './status.mjs'
 import { scheduledRetryLegacyStatePath, scheduledRetryStatePath } from './scheduled-retry.mjs'
 import { scheduledSyncStatePath } from './scheduled-sync-state.mjs'
 
@@ -733,4 +733,85 @@ test('status surfaces an active upload pause and omits an absent one', () => {
     uploadBackoff: { pausedUntil: '2026-10-15T00:00:00.000Z', consecutiveFailures: 5 }
   })
   assert.deepEqual(paused.uploadBackoff, { pausedUntil: '2026-10-15T00:00:00.000Z', consecutiveFailures: 5 })
+})
+
+// A binary install's health is not visible from clientType alone: the client
+// or the bundled ccusage can be missing or be a version the client was never
+// tested against (an install from a tag without a bundled copy leaves the
+// previous one in place). Status reports what is actually on disk.
+test('status reports the installed binary and bundled ccusage', () => {
+  const status = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: { clientType: 'binary', timezone: 'UTC', source: 'all' },
+    client: {
+      present: true,
+      version: '1.2.3',
+      ccusagePresent: true,
+      ccusageVersion: '20.0.33'
+    }
+  })
+  assert.equal(status.client.present, true)
+  assert.equal(status.client.version, '1.2.3')
+  assert.equal(status.client.ccusagePresent, true)
+  assert.equal(status.client.ccusageVersion, '20.0.33')
+})
+
+test('status reports a missing binary instead of implying a healthy install', () => {
+  const status = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: { clientType: 'binary', timezone: 'UTC', source: 'all' },
+    client: { present: false, version: null, ccusagePresent: false, ccusageVersion: null }
+  })
+  assert.equal(status.client.present, false)
+  assert.equal(status.client.version, null)
+  assert.equal(status.client.ccusagePresent, false)
+})
+
+// A git install has no released binary to report.
+test('status omits the client block for a git install', () => {
+  const status = buildStatus({
+    configPath: '/home/user/.tokenboard/config.json',
+    config: { clientType: 'git', timezone: 'UTC', source: 'all' }
+  })
+  assert.equal(status.client, undefined)
+})
+
+// The probe reports what is on disk, not what the config claims: a deleted
+// binary or an unreadable one must not look like a healthy install.
+test('readClientStatus reports a real installed client and bundled ccusage', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-status-'))
+  try {
+    mkdirSync(join(dir, 'bin'), { recursive: true })
+    const spawn = (path, args) => {
+      const printed = path.endsWith('ccusage') ? 'ccusage 20.0.33' : 'tokenboard (go) 1.2.3'
+      return { status: 0, stdout: printed + '\n', stderr: '' }
+    }
+    const status = readClientStatus({ configDir: dir, platform: 'darwin', spawn, exists: () => true })
+    assert.deepEqual(status, {
+      present: true,
+      version: '1.2.3',
+      ccusagePresent: true,
+      ccusageVersion: '20.0.33'
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('readClientStatus reports missing files without running them', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-status-'))
+  try {
+    const status = readClientStatus({
+      configDir: dir,
+      platform: 'darwin',
+      spawn: () => assert.fail('a missing binary must not be executed'),
+      exists: (path) => path.endsWith('ccusage')
+    })
+    assert.equal(status.present, false)
+    assert.equal(status.version, null)
+    assert.equal(status.ccusagePresent, true)
+    assert.equal(status.ccusageVersion, null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

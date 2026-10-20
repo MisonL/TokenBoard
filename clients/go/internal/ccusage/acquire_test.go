@@ -67,6 +67,40 @@ func TestResolvePrefersTheBundledBinaryOverPATH(t *testing.T) {
 	}
 }
 
+func TestResolveWarnsWhenTheBundledBinaryIsNotTheExpectedVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub is a shell script")
+	}
+	home := t.TempDir()
+	binDir := filepath.Join(home, ".tokenboard", "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bundled := filepath.Join(binDir, "ccusage")
+	// A real script, because the warning comes from running --version.
+	if err := os.WriteFile(bundled, []byte("#!/bin/sh\necho 'ccusage 20.0.33'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var warnings []string
+	binary, err := Resolve(AcquireOptions{
+		Env:        acquireEnv(nil),
+		HomeDir:    home,
+		FileExists: func(path string) bool { return path == bundled },
+		LookPath:   func(string) (string, error) { return "", os.ErrNotExist },
+		Stderr:     func(line string) { warnings = append(warnings, line) },
+		Version:    "0.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binary.Source != "bundled" {
+		t.Fatalf("binary = %+v, want the bundled layer", binary)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "expects 0.0.0") {
+		t.Fatalf("warnings = %v, want a version drift warning", warnings)
+	}
+}
+
 func TestResolveFallsBackToPATHWithAVersionWarning(t *testing.T) {
 	var warnings []string
 	binary, err := Resolve(AcquireOptions{

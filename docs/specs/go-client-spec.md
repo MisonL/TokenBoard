@@ -65,9 +65,9 @@ clients/go/
 ## 4. ccusage 集成（三层，fail-closed）
 
 优先级：**捆绑 > 探测 > 下载**。
-1. **捆绑**：CI 从 npm registry 下载 `@ccusage/ccusage-<platform>-<arch>@<version>` tarball，验 `dist.integrity`（sha512），随 GoReleaser tarball 分发；安装脚本放 `~/.tokenboard/bin/`。MIT 再分发需附许可声明。
+1. **捆绑**：CI 从 npm registry 下载 `@ccusage/ccusage-<platform>-<arch>@<version>` tarball，验 `dist.integrity`（sha512），随 GoReleaser tarball 分发；安装脚本放 `<configDir>/bin/`（`TOKENBOARD_CONFIG_DIR`，缺省即 `~/.tokenboard/bin/`）。MIT 再分发需附许可声明。
 2. **探测**：PATH 上已有 ccusage 可用；版本与 client 期望不符 → stderr 告警（不拒绝）。
-3. **下载**：`tokenboard doctor` / sync 时检测两者皆无 → 下载期望版本到 `~/.tokenboard/bin/`，sha512 不符即拒用。**hook 模式禁止下载**（禁联网纪律），只用已有版本否则该 source unavailable。
+3. **下载**：sync/preview 时检测两者皆无 → 下载期望版本到 `<configDir>/bin/`，sha512 不符即拒用。**hook 模式禁止下载**（禁联网纪律），只用已有版本否则该 source unavailable。（当前 Go/TS collector 都没有 `doctor` 子命令。）
 - 版本策略（D3）：`clients/go/internal/ccusage/version.go` 记录期望版本；升级依赖时跑 §5 门禁。期望版本一般等于 TS 侧 package.json 的版本（升级同 PR 双改）。
 
 ## 5. 依赖升级门禁（D3 的兜底机制）
