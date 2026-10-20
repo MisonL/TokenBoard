@@ -475,7 +475,8 @@ func TestRunInstallsTheBundledCcusage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o111 == 0 {
+	// Windows has no execute bit; a file runs by extension there.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("ccusage is not executable: %v", info.Mode())
 	}
 }
