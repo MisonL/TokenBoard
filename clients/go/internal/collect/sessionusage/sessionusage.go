@@ -331,7 +331,15 @@ func ReadRecordAt(value any) map[string]any {
 func ReadSinceDate(since, label string) (string, error) {
 	value := since
 	if value == "" {
-		value = firstNonEmpty(os.Getenv("TOKENBOARD_SINCE"), os.Getenv("TOKENBOARD_DEFAULT_SINCE"))
+		// TS: `process.env.TOKENBOARD_SINCE ?? process.env.TOKENBOARD_DEFAULT_SINCE ?? ''`.
+		// `??` only skips an unset variable, so an exported-but-empty
+		// TOKENBOARD_SINCE means full history, not the default window.
+		value = ""
+		if set, ok := os.LookupEnv("TOKENBOARD_SINCE"); ok {
+			value = set
+		} else if fallback, ok := os.LookupEnv("TOKENBOARD_DEFAULT_SINCE"); ok {
+			value = fallback
+		}
 	}
 	if value == "" {
 		return "", nil
@@ -345,15 +353,6 @@ func ReadSinceDate(since, label string) (string, error) {
 	}
 	compact := strings.ReplaceAll(normalized, "-", "")
 	return compact[:4] + "-" + compact[4:6] + "-" + compact[6:8], nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 // AssertValidDateFilter mirrors iso-calendar-date.ts assertValidDateFilter:
