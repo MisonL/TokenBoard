@@ -275,6 +275,21 @@ func TestDerivesEndpointOriginAndBuildsCursorURLsWithoutRetainingEndpointPaths(t
 	if got := EndpointOriginFromEndpoint("not a URL"); got != "" {
 		t.Fatalf("EndpointOriginFromEndpoint(\"not a URL\") = %q, want the unset value", got)
 	}
+	// TS returns `new URL(endpoint).origin`, which lowercases the host and
+	// drops the scheme's default port. The origin is the pricing cache's
+	// identity, and the two clients share one state directory, so an origin
+	// spelled differently here would invalidate a cache the other side wrote.
+	for endpoint, want := range map[string]string{
+		"https://Example.COM:443/api/v1/ingest": "https://example.com",
+		"http://Example.COM:80/x":               "http://example.com",
+		"https://example.com:8443/x":            "https://example.com:8443",
+		"https://[::1]:8443/x":                  "https://[::1]:8443",
+		"https://[::1]/x":                       "https://[::1]",
+	} {
+		if got := EndpointOriginFromEndpoint(endpoint); got != want {
+			t.Errorf("EndpointOriginFromEndpoint(%q) = %q, want %q", endpoint, got, want)
+		}
+	}
 
 	pageURL, err := url.Parse(ModelPricingURL("https://tokenboard.example", "opaque cursor"))
 	if err != nil {
