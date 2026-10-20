@@ -29,9 +29,15 @@ import (
 	"github.com/MisonL/TokenBoard/clients/go/internal/upload"
 )
 
-// Exit codes shared with the TS collector. 75 is the scheduler retry
-// contract: a transient failure the launchd/systemd/schtasks wrapper may
-// re-run.
+// Exit codes. 75 is the scheduler retry contract: a transient failure the
+// launchd/systemd/schtasks wrapper may re-run.
+//
+// ExitUsage is deliberately 2, where the TS collector returns 1 for the same
+// usage error. The TS CLI has a single failure code, so a usage error and a
+// collection failure look alike there; here they do not. No consumer parses
+// the number — the skill scripts only distinguish 0, 75 and "something else"
+// — so the split is diagnostic, not a protocol difference. The exit codes
+// that are a protocol (0, 1, 75) match the TS collector exactly.
 const (
 	ExitOK        = 0
 	ExitFailure   = 1
@@ -599,9 +605,9 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 	if err != nil {
 		return Options{}, err
 	}
-	// flag, then a set environment value, then the default. A flag given an
-	// empty value is used as written, so --source "" is rejected below rather
-	// than quietly meaning --source all.
+	// flag, then a set environment value, then the default. readFlags never
+	// stores an empty value, so a flag that is present is always meaningful;
+	// an exported-but-empty TOKENBOARD_SOURCE is still a value TS rejects.
 	source := flags["source"]
 	if _, given := flags["source"]; !given {
 		source = "all"
@@ -622,9 +628,9 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 	if err := assertValidTimezone(timezone); err != nil {
 		return Options{}, err
 	}
-	// TS resolves endpoint and token with `??`: a flag given an empty value is
-	// the value, and the required-config check then reports it missing rather
-	// than silently using what the scheduler exported.
+	// TS resolves endpoint and token with `??`: a given flag wins, and an
+	// exported-but-empty variable is a value the required-config check then
+	// reports missing rather than silently using what the scheduler exported.
 	options := Options{
 		Command:     command,
 		Source:      source,
@@ -632,16 +638,15 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 		Endpoint:    flagOrEnv(flags, "endpoint", lookup, "TOKENBOARD_ENDPOINT"),
 		UploadToken: flagOrEnv(flags, "token", lookup, "TOKENBOARD_UPLOAD_TOKEN"),
 		// TS: `flags.since ?? (env.TOKENBOARD_SINCE || env.TOKENBOARD_DEFAULT_SINCE || '')`.
-		// The flag wins whenever it was given (including an empty value); the
-		// environment chain behind it uses `||`, so empty variables fall
-		// through there.
+		// The flag wins whenever it was given; the environment chain behind it
+		// uses `||`, so empty variables fall through there.
 		Since:           flagOrEnvChain(flags, "since", env, "TOKENBOARD_SINCE", "TOKENBOARD_DEFAULT_SINCE"),
 		HookMode:        env("TOKENBOARD_HOOK_MODE") == "1",
 		FailOnSourceErr: env("TOKENBOARD_FAIL_ON_SOURCE_ERROR") == "1",
 	}
 	// TS: `untilFlag ?? (supportsUntil(...) ? env.TOKENBOARD_UNTIL ?? '' : '')`.
-	// The `??` on the flag means an empty --until is the final value, so the
-	// environment is consulted only when the flag was not given at all.
+	// readFlags rejects an empty --until, so the environment is consulted
+	// exactly when the flag is absent.
 	options.Until = flags["until"]
 	if _, given := flags["until"]; !given && supportsUntil(options) {
 		options.Until = env("TOKENBOARD_UNTIL")
@@ -653,8 +658,8 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 }
 
 // flagOrEnvChain is the `??` + `||` pair TS uses for --since: the flag wins
-// whenever it was given, including an empty value; otherwise the first
-// non-empty variable in the chain is used.
+// whenever it was given; otherwise the first non-empty variable in the chain
+// is used.
 func flagOrEnvChain(flags map[string]string, flagName string, env Env, names ...string) string {
 	if value, given := flags[flagName]; given {
 		return value
@@ -667,7 +672,7 @@ func flagOrEnvChain(flags map[string]string, flagName string, env Env, names ...
 }
 
 // flagOrEnv resolves a value the way TS does with `??`: the flag wins whenever
-// it was given, including an empty value; otherwise a set variable is used.
+// it was given; otherwise a set variable is used.
 func flagOrEnv(flags map[string]string, flagName string, lookup lookupFunc, envName string) string {
 	if value, given := flags[flagName]; given {
 		return value
@@ -698,10 +703,19 @@ func supportsUntil(options Options) bool {
 }
 
 // readFlags mirrors the TS readFlags: non-flag arguments are silently
-// ignored, every flag must be followed by a value, and a flag at the end of
-// the line or right before another flag is a usage error ("Missing value
-// for --key") — a bare flag must never fall back to the environment default.
-// `--key=value` is a deliberate Go extension the TS parser does not accept.
+// ignored, every flag must be followed by a non-empty value, and a flag at the
+// end of the line, right before another flag, or followed by "" is a usage
+// error ("Missing value for --key") — a bare flag must never fall back to the
+// environment default.
+//
+// The empty check is the TS parser's `if (!value)`: an empty string is not a
+// value there, so `--until ""` fails before any `??` resolution runs. Without
+// it Go accepted the empty value and each flag's own resolution decided what
+// it meant, which is how an explicitly empty flag could still pick up the
+// environment.
+//
+// `--key=value` is a deliberate Go extension the TS parser does not accept;
+// it follows the same rule, so a flag value is always non-empty either way.
 func readFlags(args []string) (map[string]string, error) {
 	flags := map[string]string{}
 	for index := 0; index < len(args); index++ {
@@ -711,10 +725,13 @@ func readFlags(args []string) (map[string]string, error) {
 		}
 		body := strings.TrimPrefix(arg, "--")
 		if key, value, found := strings.Cut(body, "="); found {
+			if value == "" {
+				return nil, fmt.Errorf("Missing value for --%s", key)
+			}
 			flags[key] = value
 			continue
 		}
-		if index+1 >= len(args) || strings.HasPrefix(args[index+1], "--") {
+		if index+1 >= len(args) || strings.HasPrefix(args[index+1], "--") || args[index+1] == "" {
 			return nil, fmt.Errorf("Missing value for --%s", body)
 		}
 		flags[body] = args[index+1]
