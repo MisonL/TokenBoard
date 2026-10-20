@@ -240,15 +240,6 @@ func lookupEnv(env func(string) string, key string) string {
 	return env(key)
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func defaultHome() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

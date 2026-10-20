@@ -192,3 +192,19 @@ func TestResolveCollectionRangeWithNilEnvReadsTheProcessEnvironment(t *testing.T
 		t.Fatalf("sinceDate = %q, want the process environment's 2026-06-01", rangeValue.SinceDate)
 	}
 }
+
+// TS resolves the since chain with `||`, which treats only the empty string as
+// false. A whitespace-only TOKENBOARD_SINCE is therefore the value, and
+// parseCompactDate rejects it. firstNonEmpty trimmed before deciding, so it
+// skipped the whitespace and quietly collected from TOKENBOARD_DEFAULT_SINCE
+// instead — a silent downgrade the TS collector does not make.
+func TestAWhitespaceOnlySinceIsRejectedLikeTS(t *testing.T) {
+	env := envFrom(map[string]string{
+		"TOKENBOARD_SINCE":         "   ",
+		"TOKENBOARD_DEFAULT_SINCE": "20260101",
+	})
+	_, err := ResolveCollectionRange(nil, "UTC", env)
+	if err == nil || !strings.Contains(err.Error(), "Invalid Antigravity since date") {
+		t.Fatalf("err = %v, want the invalid-since message", err)
+	}
+}

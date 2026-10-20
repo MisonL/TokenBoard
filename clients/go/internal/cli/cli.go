@@ -752,9 +752,13 @@ func sourceChoices() []string {
 	return append(choices, "all")
 }
 
+// firstNonEmpty is the TS `a || b` chain: only the empty string is false
+// there, so a whitespace-only value survives to whatever validates it. The
+// self-update call sites trim their inputs first, which matches the skill's
+// trimmedString(...) || default; the --since chain passes them through raw.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
+		if value != "" {
 			return value
 		}
 	}

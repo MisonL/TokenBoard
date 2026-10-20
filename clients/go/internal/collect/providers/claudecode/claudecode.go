@@ -424,9 +424,13 @@ func homeDir(options Options) string {
 	return home
 }
 
+// firstNonEmpty is the TS `a || b` chain: only the empty string is false
+// there, so a whitespace-only value is a value. Trimming before the test would
+// skip it and quietly fall through to the next variable, which is the silent
+// downgrade the TS collector avoids by letting its date validation reject it.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
+		if value != "" {
 			return value
 		}
 	}

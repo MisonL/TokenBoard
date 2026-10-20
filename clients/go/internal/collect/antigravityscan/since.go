@@ -174,9 +174,13 @@ func lookupEnv(env func(string) string, key string) string {
 	return env(key)
 }
 
+// firstNonEmpty is the TS `a || b` chain: only the empty string is false
+// there, so a whitespace-only value is a value that reaches parseCompactDate
+// and is rejected. Trimming before the test would skip it and silently collect
+// from TOKENBOARD_DEFAULT_SINCE instead.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
+		if value != "" {
 			return value
 		}
 	}
