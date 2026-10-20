@@ -196,7 +196,13 @@ clients/go/
   - `self-update` 的 `--tag`/`--repo` 曾解析后丢弃，现在都进 `Input`，且 flag 优先于环境变量（与 skill 的 `flags['release-repo'] || env.…` 同序）。
   - 安装时指定的发布源此前只用于那一次安装，后续自动更新回落到默认仓库。现在 `migrateToBinaryClient` 把非默认的 `releaseRepo`/`releaseBaseUrl` 写入配置，`buildSyncInvocation` 经 `sharedEnv` 传给 client，`runPreCollectUpgrade` 也把 invocation 的 env 传给 self-update spawn（此前完全没传，用了 ambient env）。`release-tag` 刻意不持久化——它只钉住一次安装。
   - `swap` 注释曾声称两次 rename 之间没有空窗，实际目标路径在该窗口缺失。注释订正；skill 侧新增 `recoverOrphanedBinary`，在目标缺失时从最新 `.backup-*` 恢复（前缀取自配置路径的 basename，与 Go 的 `backupPath` 同源）。
-- 未覆盖边界：真实 GitHub Releases 发布（仓库尚无 tag/CI workflow）、ccusage 随 tarball 捆绑（spec §4 的 CI 步骤，当前走三层获取的 PATH/下载路径）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
+- 2026-10-20 发布链路（`.github/workflows/go-client.yml`）：
+  - `test`：ubuntu/macos/windows 三平台 × `go-version-file: clients/go/go.mod`，跑 `gofmt -l`（非 Windows）、`go vet`、`go test -race`；Linux 上额外做 windows/linux/darwin arm64 交叉构建，把「3 OS × 2 arch」的另一半也纳入编译门禁。
+  - `deps`：spec §5 的 ccusage 契约门禁。`pnpm install --filter @tokenboard/collector` 后跑 `clients/go/scripts/check-deps.sh`，金样本不一致即失败。本地已实测通过（`ccusage 20.0.33 output matches the goldens`）。
+  - `release`：仅 `refs/tags/v*` 触发，`needs: [test, deps]`，权限 `contents: write`，GoReleaser **固定 v2.12.7** 而非 `~> v2`——archive/checksum 命名是与 `internal/release` 的契约，跨 minor 的模板变化必须是人工审视的升级。
+  - 触发条件：GitHub **不对 tag push 应用 path 过滤**（官方 workflow syntax：「Path filters are not evaluated for pushes of tags.」），所以 `push.branches + paths` 只约束分支/PR 运行，打 tag 一定会发布。
+  - 本地复现：`goreleaser check` 通过；`goreleaser release --snapshot --clean --skip=publish` 产出 6 个 `tokenboard_<os>_<arch>.tar.gz` + `checksums.txt`，包内为 `README.md` 与 `tokenboard`，二进制 `version` 报 `tokenboard (go) 0.0.0-SNAPSHOT-<sha>`（`-ldflags` 注入生效）。
+- 未覆盖边界：**尚未打过真实 tag**（workflow 已就绪，但「首次真实发布」需要人来定版本号并 push tag；本机无法验证 GitHub 上的实际运行）、ccusage 随 tarball 捆绑（spec §4 的 CI 步骤，当前走三层获取的 PATH/下载路径）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
 - Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 
 **M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：
