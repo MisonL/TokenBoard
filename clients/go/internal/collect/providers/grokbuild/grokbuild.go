@@ -208,9 +208,29 @@ func toUsageEvent(counters map[string]any, occurredAt time.Time, sessionID, mode
 func sessionRoots(grokHome string, env func(string) string) []string {
 	home := grokHome
 	if home == "" {
-		home = firstNonEmpty(lookupEnv(env, "TOKENBOARD_GROK_HOME"), lookupEnv(env, "GROK_HOME"), defaultHome())
+		// TS chains these with `??`: the first variable that is *set* wins
+		// even when it is empty, and an empty home resolves to a relative
+		// path. Only a genuinely unset variable falls through to the default.
+		home = defaultHome()
+		for _, key := range []string{"GROK_HOME", "TOKENBOARD_GROK_HOME"} {
+			if value, ok := lookupSet(env, key); ok {
+				home = value
+			}
+		}
 	}
 	return []string{filepath.Join(home, "sessions"), filepath.Join(home, "archived_sessions")}
+}
+
+// lookupSet reports a variable's value and whether it is set at all. The
+// injected form cannot tell unset from empty, so it treats a non-empty value
+// as set; a nil env reads the process environment, where the distinction
+// exists and `??` depends on it.
+func lookupSet(env func(string) string, key string) (string, bool) {
+	if env == nil {
+		return os.LookupEnv(key)
+	}
+	value := env(key)
+	return value, value != ""
 }
 
 func lookupEnv(env func(string) string, key string) string {

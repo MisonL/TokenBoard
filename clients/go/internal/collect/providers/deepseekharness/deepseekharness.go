@@ -311,13 +311,39 @@ func sessionRoot(options Options) string {
 	if options.SessionRoot != "" {
 		return options.SessionRoot
 	}
-	explicitRoot := firstNonEmpty(lookupEnv(options.Env, "TOKENBOARD_DSH_SESSION_ROOT"), lookupEnv(options.Env, "DSH_SESSION_ROOT"))
-	if options.DSHHome == "" && explicitRoot != "" {
+	// The explicit root is picked with `??` but tested for truthiness before
+	// use, so an empty one falls through to the home chain below.
+	explicitRoot, hasRoot := "", false
+	for _, key := range []string{"DSH_SESSION_ROOT", "TOKENBOARD_DSH_SESSION_ROOT"} {
+		if value, ok := lookupSet(options.Env, key); ok {
+			explicitRoot, hasRoot = value, true
+		}
+	}
+	if options.DSHHome == "" && hasRoot && explicitRoot != "" {
 		return explicitRoot
 	}
-	home := firstNonEmpty(options.DSHHome, lookupEnv(options.Env, "TOKENBOARD_DSH_HOME"),
-		lookupEnv(options.Env, "DSH_HOME"), defaultHome())
+	// The home chain, by contrast, adopts a set-but-empty variable: `??` has
+	// no truthiness test, and an empty home resolves to a relative path.
+	home := defaultHome()
+	for _, key := range []string{"DSH_HOME", "TOKENBOARD_DSH_HOME"} {
+		if value, ok := lookupSet(options.Env, key); ok {
+			home = value
+		}
+	}
+	if options.DSHHome != "" {
+		home = options.DSHHome
+	}
 	return filepath.Join(home, "sessions")
+}
+
+// lookupSet reports whether a variable is set, which is what `??` depends on.
+// The injected form cannot tell unset from empty.
+func lookupSet(env func(string) string, key string) (string, bool) {
+	if env == nil {
+		return os.LookupEnv(key)
+	}
+	value := env(key)
+	return value, value != ""
 }
 
 func lookupEnv(env func(string) string, key string) string {

@@ -248,9 +248,29 @@ func sessionsRoot(options Options) string {
 	if options.AgentDir == "" && explicitSessionDir != "" {
 		return explicitSessionDir
 	}
-	home := firstNonEmpty(options.AgentDir, lookupEnv(options.Env, "TOKENBOARD_PI_AGENT_DIR"),
-		lookupEnv(options.Env, "PI_CODING_AGENT_DIR"), defaultAgentDir())
+	// TS chains these with `??`: a variable that is set wins even when empty,
+	// and an empty home resolves to a relative path. Only an unset variable
+	// falls through to the default.
+	home := defaultAgentDir()
+	for _, key := range []string{"PI_CODING_AGENT_DIR", "TOKENBOARD_PI_AGENT_DIR"} {
+		if value, ok := lookupSet(options.Env, key); ok {
+			home = value
+		}
+	}
+	if options.AgentDir != "" {
+		home = options.AgentDir
+	}
 	return filepath.Join(home, "sessions")
+}
+
+// lookupSet reports whether a variable is set, which is what `??` depends on.
+// The injected form cannot tell unset from empty.
+func lookupSet(env func(string) string, key string) (string, bool) {
+	if env == nil {
+		return os.LookupEnv(key)
+	}
+	value := env(key)
+	return value, value != ""
 }
 
 func lookupEnv(env func(string) string, key string) string {
