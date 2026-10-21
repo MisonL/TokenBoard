@@ -154,7 +154,7 @@ export async function loadModelPricingCatalogue(input: {
 // cache file stays the single source of truth across runs. Keyed by endpoint
 // origin: a run that touches two servers must ask each, and the hook path
 // never reaches here at all.
-const inFlightPricing = new Map<string, Promise<ModelPricingCatalogue>>()
+const inFlightPricing = new Map<string, Promise<DynamicCcusageConfigResult>>()
 
 // resetModelPricingMemo clears the per-process memo. Tests call it between
 // cases; production code never needs to, because a collector process runs one

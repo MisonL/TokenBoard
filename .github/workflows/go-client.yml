@@ -68,6 +68,28 @@ jobs:
 
   # Spec §5: the ccusage JSON shape is the one contract with no upstream schema
   # or changelog, so this gate is the only defence against a silent drift.
+  # The TS collector is the reference implementation the Go client is compared
+  # against, so its types must stay sound even though the tests run through
+  # vitest (which does not typecheck). A memo typed as the wrong promise broke
+  # the build while every runtime test stayed green; this step is what catches
+  # that class of mistake.
+  typecheck:
+    name: workspace typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -r typecheck
+
   deps:
     name: ccusage contract
     runs-on: ubuntu-latest
@@ -252,7 +274,7 @@ jobs:
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, deps, shadow, release-dry-run]
+    needs: [test, typecheck, deps, shadow, release-dry-run]
     runs-on: ubuntu-latest
     permissions:
       contents: write
