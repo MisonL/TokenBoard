@@ -27,17 +27,20 @@ describe('zstd frames', () => {
   })
 
   test('decodes every frame of a concatenated stream', () => {
-    // Node's own zstdDecompressSync stops after the first frame, which is why
-    // frames are delimited here instead of decompressed in one call. Each frame
-    // is handed back as a byte range the caller decompresses on its own.
+    // Frames are delimited here rather than decompressed in one call. Node 24.19
+    // stopped after the first frame of a concatenated stream and 24.22 decodes
+    // them all, so the passing of a multi-frame buffer to zstdDecompressSync is
+    // not something this module may rely on. The assertion only pins the hazard
+    // the original single-call approach had: whatever the runtime does with the
+    // whole stream, each frame must still come back as its own byte range.
     const stream = Buffer.concat([frame('one\n'), frame('two\n'), frame('three\n')])
     const [first, second, third] = scanZstdFrames(stream)
 
-    expect(zstdDecompressSync(stream).toString()).toBe('one\n')
     expect(scanZstdFrames(stream)).toHaveLength(3)
     expect(decompressZstdFrame(stream, first).toString()).toBe('one\n')
     expect(decompressZstdFrame(stream, second).toString()).toBe('two\n')
     expect(decompressZstdFrame(stream, third).toString()).toBe('three\n')
+    expect(zstdDecompressSync(stream).toString()).not.toBe('')
   })
 
   test('decodes frames written with a content checksum', () => {

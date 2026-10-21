@@ -2,6 +2,13 @@ module github.com/MisonL/TokenBoard/clients/go
 
 go 1.27
 
+// Pinned past CVE-2026-111943 (crypto/x509 blocked a set of compromised
+// intermediate certificates). The `go` directive alone lets CI and local
+// toolchains resolve any 1.27.x, so a machine still on 1.27.1 would silently
+// build and test a client that trusts those chains. A toolchain line makes
+// both ends fetch 1.27.3 before compiling.
+toolchain go1.27.3
+
 require (
 	github.com/klauspost/compress v1.20.3
 	golang.org/x/crypto v0.58.0

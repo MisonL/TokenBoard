@@ -185,8 +185,9 @@ func TestNormalizesAssistantMessageIntoDailySnapshot(t *testing.T) {
 }
 
 func TestReadsEveryFrameOfACompressedLog(t *testing.T) {
-	// klauspost's reader, like Node's, stops after the first frame; all three
-	// must land.
+	// klauspost's reader stops after the first frame, and Node's did the same
+	// until 24.22; the frame-by-frame reader must land all three regardless of
+	// what a single-call decompressor would return.
 	lines := []string{
 		newMessage().withUsage(map[string]any{"inputTokens": 100, "outputTokens": 10, "cacheReadTokens": 0}).at(eventMs, 1).render(t),
 		newMessage().withUsage(map[string]any{"inputTokens": 200, "outputTokens": 20, "cacheReadTokens": 0}).at(eventMs+1000, 2).render(t),

@@ -123,7 +123,9 @@ describe('collectDeepSeekHarnessUsage', () => {
   })
 
   test('reads every frame of a compressed log', async () => {
-    // Node's own zstd decompress stops after the first frame; all three must land.
+    // Older Node builds decompress only the first frame of a concatenated log;
+    // the per-frame reader must land all three regardless of what the runtime
+    // does with the whole buffer.
     const home = await dshHome({
       'project/session-a/session.jsonl.zstd': {
         compress: true,
