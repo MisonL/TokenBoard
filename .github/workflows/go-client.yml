@@ -111,10 +111,11 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
-      # The TS side runs through tsx, and its providers use node:sqlite; both
-      # come from the collector package's own dependencies.
+      # The TS side runs through tsx and imports usage-core, whose own
+      # dependencies (zod) are installed only when the workspace dependency is
+      # included — hence the trailing "..." on the filter.
       - name: install collector dependencies
-        run: pnpm install --frozen-lockfile --filter @tokenboard/collector
+        run: pnpm install --frozen-lockfile --filter @tokenboard/collector...
 
       - name: build the client
         working-directory: clients/go
