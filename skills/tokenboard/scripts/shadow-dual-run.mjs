@@ -22,6 +22,7 @@ import { isMainModule } from './is-main.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { configDir, readConfig } from './config.mjs'
 import { errorMessage } from './error-message.mjs'
+import { readSince } from './sync-options.mjs'
 
 // The sources `tokenboard shadow` can compare with data on a normal machine.
 // The two Antigravity GUI sources need a language server and are outside the
@@ -35,6 +36,14 @@ export const dualRunSources = [
   'pi',
   'antigravity-cli'
 ]
+
+// defaultDualRunSince is sync's own default window, so a dual run compares
+// the dataset production collects rather than the collector's "everything"
+// default. They differ: the collector only knows the --since flag and
+// TOKENBOARD_SINCE, and treats both absent as full history.
+export function defaultDualRunSince({ config = {}, env = {}, now = new Date() } = {}) {
+  return readSince({ env, config, now })
+}
 
 // Sources whose collector shells out to ccusage. A comparison of these is only
 // meaningful when both sides run the same ccusage binary, so the harness pins
@@ -52,7 +61,8 @@ line per source to the dual-run log (default: the config directory's
 logs/shadow-dual-run.jsonl).
 
 --client   path to the Go client (default: the installed binary)
---since    passed through to the collector (default: the config lookback)
+--since    the window both sides collect (default: the scheduled sync's
+           lookback, so the comparison covers the days production sends)
 --until    compare only days up to and including this date; pass yesterday
            to keep the actively-written current day out of the comparison
 --hook     compare the incremental hook path (claude-code and codex only)
@@ -296,7 +306,8 @@ function run() {
   const argv = process.argv.slice(2)
   if (printHelpIfRequested(argv, usage)) return 0
   const flags = parseRunArgs(argv)
-  const config = readDualRunConfig({ config: readConfig() })
+  const stored = readConfig()
+  const config = readDualRunConfig({ config: stored })
   if (flags.client) config.binary = String(flags.client)
   if (!existsSync(config.binary)) {
     console.error(`TokenBoard Go client is not installed: ${config.binary}`)
@@ -304,7 +315,7 @@ function run() {
     return 1
   }
   const sources = typeof flags.source === 'string' ? [flags.source] : dualRunSources
-  const since = typeof flags.since === 'string' ? flags.since : undefined
+  const since = typeof flags.since === 'string' ? flags.since : defaultDualRunSince({ config: stored })
   const until = typeof flags.until === 'string' ? flags.until : undefined
   const hook = flags.hook === true
   const logPath = typeof flags.log === 'string' ? flags.log : config.logPath

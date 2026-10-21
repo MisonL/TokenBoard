@@ -9,6 +9,7 @@ import {
   dualRunSources,
   exitCodeForDualRun,
   isUnavailable,
+  defaultDualRunSince,
   readRecentRecords,
   readDualRunConfig,
   summarizeDualRun
@@ -303,4 +304,32 @@ test('buildShadowInvocation keeps --until for a preview comparison', () => {
   const invocation = buildShadowInvocation({ config, source: 'codex', until: '2026-10-20' })
   assert.deepEqual(invocation.args, ['shadow', '--source', 'codex', '--until', '2026-10-20'])
   assert.equal(invocation.env.TOKENBOARD_UNTIL, '2026-10-20')
+})
+
+// A dual run must compare what production actually collects. The scheduled
+// sync sends a lookback window (seven days by default), and the collector's
+// own default is "everything" when neither the flag nor the variable is set —
+// so a harness that stays silent compares the full history while production
+// collects a week. That is a different dataset: on this machine it reaches
+// rows from months back that the collector has always failed to price, and
+// the run fails for a reason no scheduled sync would ever hit.
+test('the harness sends the same lookback window the scheduled sync sends', () => {
+  const now = new Date('2026-10-21T12:00:00Z')
+  const since = defaultDualRunSince({ config: { timezone: 'UTC' }, now })
+  assert.equal(since, '20261014')
+})
+
+test('a configured lookback changes the default window', () => {
+  const now = new Date('2026-10-21T12:00:00Z')
+  const since = defaultDualRunSince({ config: { timezone: 'UTC', lookbackDays: 30 }, now })
+  assert.equal(since, '20260921')
+})
+
+// The hook window comes from the cursor, but both clients still record the
+// sync's window in the run: keeping the default means a hook comparison starts
+// from the same baseline the scheduled runs do.
+test('buildShadowInvocation omits --since when the caller passes none, leaving the default to the caller', () => {
+  const config = { binary: '/bin/tokenboard', collectorDir: '/repo', timezone: 'UTC' }
+  const invocation = buildShadowInvocation({ config, source: 'pi' })
+  assert.equal(invocation.env.TOKENBOARD_SINCE, undefined)
 })
