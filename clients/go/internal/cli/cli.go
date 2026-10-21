@@ -167,9 +167,15 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 			return ExitOK
 		})
 	case "shadow":
-		return withRunLock(stateDir, stderr, func() int {
-			return runShadow(ctx, options, env, stdout, stderr)
-		})
+		// Shadow does not take the run lock. Both sides of the comparison
+		// collect into their own temporary state directories and shadow never
+		// touches a real cursor, so the lock would protect nothing — while a
+		// comparison can run for twenty minutes on a large history, and
+		// holding the machine's lock for that long makes scheduled syncs and
+		// hooks fail with the lock timeout (observed 2026-10-21: the 18:00
+		// sync timed out behind a shadow run). A concurrent sync is safe: both
+		// sides only read the session files.
+		return runShadow(ctx, options, env, stdout, stderr)
 	case "sync":
 		return runSync(ctx, options, env, stateDir, startedAt, stdout, stderr)
 	default:

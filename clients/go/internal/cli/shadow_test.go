@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
+	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 )
 
 // shadowSnapshot is the snapshot the stubbed provider and the stubbed TS
@@ -362,6 +364,30 @@ func TestShadowDefaultsToPreviewEvenWithHookModeSet(t *testing.T) {
 	}
 	if seenHookMode {
 		t.Error("hook mode must come from the flag, not from the ambient environment")
+	}
+}
+
+// Shadow must not serialize on the real collector run lock. Both sides of the
+// comparison use temporary state directories — the TypeScript child locks in
+// its own — and shadow writes no real cursor, so the only effect of taking the
+// machine's lock is that a 20-minute comparison stalls scheduled syncs and
+// hooks until they fail with the lock timeout. This reproduced on 2026-10-21:
+// a shadow run started at 18:00 and the 18:00 scheduled sync failed with
+// "Timed out waiting for cursor lock".
+func TestShadowDoesNotTakeTheRealCollectorLock(t *testing.T) {
+	env, _ := shadowEnv(t)
+	stateDir := t.TempDir()
+	env["TOKENBOARD_STATE_DIR"] = stateDir
+	held, err := state.Acquire(filepath.Join(stateDir, "collector-run.lock"), time.Second)
+	if err != nil || held == nil {
+		t.Fatalf("could not hold the run lock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+	stubShadowTS(t, []contract.Snapshot{shadowSnapshot()}, nil)
+
+	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s; a held real lock must not block shadow", code, stderr, stdout)
 	}
 }
 
