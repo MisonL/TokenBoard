@@ -80,7 +80,7 @@ clients/go/
 ## 6. 影子验证（语义等价的保证，三层）
 
 1. **fixture 测试平移**：TS 测试的输入文件树（JSONL/SQLite）直接复用为 Go golden 输入，期望值提取为 golden JSON；按 provider 分批。
-2. **`tokenboard shadow` 命令**（已实现）：同 env 下运行 TS `preview` 与 Go 采集，两组快照按 snapshotKey（source/usageDate/timezone/model）排序规范化 diff（剔除 collectedAt——按 hash payload 比较），非空即 exit 1 输出结构化差异（`onlyInTs`/`onlyInGo`/`differing` 字段级）。隔离方式：两侧各用独立的临时 `TOKENBOARD_STATE_DIR`（比 spec 原定的 `TOKENBOARD_SHADOW=1` no-op 写更直接：真实 cursor 完全不可达），preview 本身不上传；TS 子进程清掉 `TOKENBOARD_HOOK_MODE` 保证全量语义。需要 `TOKENBOARD_COLLECTOR_DIR` 指向 checkout（`packages/collector/src/cli.ts` 必须存在），子进程用 `node --import tsx`。CI 中全部 home/工具目录 env 指向 fixture（`XDG_DATA_HOME/CODEX_HOME/DSH_HOME/GROK_HOME/PI_CODING_AGENT_DIR/…`），不依赖真实用户数据。
+2. **`tokenboard shadow` 命令**（已实现）：同 env 下运行 TS `preview` 与 Go 采集，两组快照按 snapshotKey（source/usageDate/timezone/model）排序规范化 diff（剔除 collectedAt——按 hash payload 比较），非空即 exit 1 输出结构化差异（`onlyInTs`/`onlyInGo`/`differing` 字段级）。隔离方式：两侧各用独立的临时 `TOKENBOARD_STATE_DIR`（比 spec 原定的 `TOKENBOARD_SHADOW=1` no-op 写更直接：真实 cursor 完全不可达），preview 本身不上传；TS 子进程清掉 `TOKENBOARD_HOOK_MODE` 保证全量语义。需要 `TOKENBOARD_COLLECTOR_DIR` 指向 checkout（`packages/collector/src/cli.ts` 必须存在），子进程用 `node --import tsx`。CI 中全部 home/工具目录 env 指向 fixture（`XDG_DATA_HOME/CODEX_HOME/DSH_HOME/GROK_HOME/PI_CODING_AGENT_DIR/…`），不依赖真实用户数据。**CI 门禁已接入（2026-10-21）**：workflow 的 `shadow` job 先跑 `cmd/shadow-fixtures` 生成 grok-build / pi / deepseek-harness / opencode 四个文件型源的 fixture 树并导出 env，再逐个跑 `tokenboard shadow --source <s>`，任一 diff 即失败；`release` 以 `needs: [test, deps, shadow]` 为前置。claude-code / codex 需要 ccusage 与更复杂的会话 fixture，antigravity 三源需要 language-server，暂不进 CI 门禁。
 3. **生产双跑**：本机 crontab TS 上传 + Go shadow 7 天，人审无 diff 后切换。
 - 限制：影子只覆盖全量 preview 语义；hook 增量路径靠单测 + 切换后小流量观察。
 

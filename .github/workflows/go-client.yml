@@ -89,13 +89,65 @@ jobs:
       - name: check the ccusage output contract
         run: clients/go/scripts/check-deps.sh
 
+  # Spec §6.2: the shadow gate. Runs the TypeScript collector and this client
+  # over the same fixture homes and fails on any snapshot difference, so a
+  # semantic drift between the two implementations breaks CI instead of
+  # waiting for a production dual-run.
+  shadow:
+    name: shadow diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/go/go.mod
+          cache-dependency-path: clients/go/go.sum
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      # The TS side runs through tsx, and its providers use node:sqlite; both
+      # come from the collector package's own dependencies.
+      - name: install collector dependencies
+        run: pnpm install --frozen-lockfile --filter @tokenboard/collector
+
+      - name: build the client
+        working-directory: clients/go
+        run: go build -o "$RUNNER_TEMP/tokenboard" ./cmd/tokenboard
+
+      # Writes one fixture home per file-backed source and exports the env
+      # variables that point the providers at them. Nothing here reads the
+      # runner's real home.
+      - name: write fixtures
+        working-directory: clients/go
+        run: go run ./cmd/shadow-fixtures -root "$RUNNER_TEMP/fixtures" -format env >> "$GITHUB_ENV"
+
+      - name: shadow diff
+        env:
+          TOKENBOARD_COLLECTOR_DIR: ${{ github.workspace }}
+          TOKENBOARD_TIMEZONE: UTC
+          TOKENBOARD_SINCE: all
+          TOKENBOARD_STATE_DIR: ${{ runner.temp }}/shadow-state
+        run: |
+          set -euo pipefail
+          for source in grok-build pi deepseek-harness opencode; do
+            echo "::group::shadow $source"
+            "$RUNNER_TEMP/tokenboard" shadow --source "$source"
+            echo "::endgroup::"
+          done
+
   # Spec §9 M6: a release is cut from a version tag. The configuration and the
   # artifact names are pinned by internal/release, so `check` runs before
   # anything is published.
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, deps]
+    needs: [test, deps, shadow]
     runs-on: ubuntu-latest
     permissions:
       contents: write
