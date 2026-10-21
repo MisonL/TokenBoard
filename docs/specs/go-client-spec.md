@@ -227,8 +227,16 @@ clients/go/
 - [x] `tokenboard shadow` 命令（§6.2）：TS `preview` 与 Go 采集同 env 对比，按 hash payload 做键序规范化 diff，结构化输出 + exit 1；两侧独立临时 state dir，真实 cursor 不可达。
 - [x] CI 门禁：`shadow` job 覆盖 grok-build / pi / deepseek-harness / opencode / claude-code / codex / antigravity-cli 七个源（`cmd/shadow-fixtures` 生成六个文件型源的 fixture；antigravity-cli 用 `scripts/antigravity-fixture.mts` + HOME 替换）；`release` 以 `needs: [test, deps, shadow]` 前置。GUI 两源因 language-server 不进 CI。
 - [x] per-source 映射（§7）：`config.perSource` 校验与客户端选择；具名 source 跟随映射，未映射沿用 `clientType`；`all` 运行要求映射与 `clientType` 一致（TS collector 无子集参数），否则 fail-closed。
-- [x] 真实数据双跑：codex 近 14 天 3 条快照 match；claude-code 排除当天 184 条快照 match（当天差异为活写竞态，已记录）。
+- [x] 真实数据双跑：codex 近 14 天 3 条快照 match；claude-code 排除当天 184 条快照 match（当天差异为活写竞态，已记录）。2026-10-21 复测（`shadow-dual-run.mjs`）：claude-code 277、codex 3、grok-build 4、deepseek-harness 4，全部 match；同时修掉一个真实缺陷——Grok Build 与 DSH 在未设 home 变量时扫的是 `~` 而不是 `~/.grok` / `~/.dsh`，CI fixture 永远显式设变量所以从未暴露，真实数据双跑一眼看穿（`21b9433`）。
 - [ ] 逐源切换本身与「全部 source 走 Go 稳定 2 周」的翻转：待操作决策；切换前对目标 source 跑 `tokenboard shadow` 确认 diff=0。
+
+**本机 hook 负载实测（2026-10-21，7 天 run 记录 + ccusage 计时）**：
+
+- 频率：7 天 458 次运行、311 次真正调用 ccusage（其余是 cooldown skip 与「无变更快速返回」），累计 634 分钟墙钟，约 91 min/天；3 天窗口内 TokenBoard 进程占墙钟 4.9%。
+- 冷却有效：311 次真实重算里只有 10 次（3%）发生在「前 30 分钟已有成功记录」的情况下，即冷却机制本身没有失效。其余 301 次发生在失败之后——失败不写 `last-success.json`，冷却无从生效，这是失败放大的机制而非配置错误。
+- 单次成本：`ccusage claude session` 在本机 18 GB / 10328 个会话文件上峰值 RSS **4.6–7.6 GB**、耗时 20–68 s；`claude daily` 另有 4.7 GB / 32 s。**`--since/--until` 只过滤输出、不减少扫描量**（窄窗口 68 s vs 30 天窗口 63 s，实测）。
+- 失败放大的根因（2026-10-14 高峰 188 次运行 / 156 次失败）：`TokenBoard model pricing: hook mode has no usable cache` 被当作 hook 失败上抛。该行本身是「回退到 bundled 静态定价并继续」的提示，不属于致命错误；当时它让每次 hook 都 exit 1，于是冷却永不生效、重算不断。已在后续版本不再表现为失败（3 天内该错误 0 次）。
+- 与采集实现无关的部分：`ccusage` 的全树扫描是外部依赖的限制，Go 侧调用同一个二进制，实测峰值 RSS 7.0 GB 与 TS 侧同量级。要真正降低内存只能等 ccusage 提供增量/流式接口，或改由 collector 自己投影——后者会偏离「两侧同口径」的迁移前提，不在本次范围。
 
 - Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 
