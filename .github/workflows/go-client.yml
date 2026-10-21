@@ -146,6 +146,26 @@ jobs:
             echo "::endgroup::"
           done
 
+      # antigravity-cli has no environment override for its conversations
+      # directory: both implementations resolve it under the home directory, so
+      # the fixture home is swapped in through HOME. The GUI sources are not
+      # covered here — they need a language server, which CI does not run.
+      - name: write antigravity fixture
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ag-home/.gemini/antigravity-cli"
+          node_modules/.bin/tsx clients/go/scripts/antigravity-fixture.mts \
+            "$RUNNER_TEMP/ag-home/.gemini/antigravity-cli"
+
+      - name: shadow diff (antigravity-cli)
+        env:
+          HOME: ${{ runner.temp }}/ag-home
+          TOKENBOARD_COLLECTOR_DIR: ${{ github.workspace }}
+          TOKENBOARD_TIMEZONE: UTC
+          TOKENBOARD_SINCE: all
+          TOKENBOARD_STATE_DIR: ${{ runner.temp }}/shadow-state-ag
+        run: '"$RUNNER_TEMP/tokenboard" shadow --source antigravity-cli'
+
   # Spec §9 M6: a release is cut from a version tag. The configuration and the
   # artifact names are pinned by internal/release, so `check` runs before
   # anything is published.
