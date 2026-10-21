@@ -59,7 +59,7 @@ type parseState struct {
 // valid; an unloadable zone fails with the TS message so a caller sees the
 // same diagnostic either side of the migration.
 func Parse(input ParseInput, lines []Line) (ParseResult, error) {
-	location, err := time.LoadLocation(input.Timezone)
+	location, err := contract.LoadLocation(input.Timezone)
 	if err != nil {
 		return ParseResult{}, &timezoneError{timezone: input.Timezone}
 	}
@@ -84,7 +84,7 @@ func Parse(input ParseInput, lines []Line) (ParseResult, error) {
 // streams from disk and nothing holds the whole file in memory. `Parse`
 // remains for callers that already hold the lines (tests, golden fixtures).
 func ParseLines(input ParseInput, lines func(yield func(Line) error) error) (ParseResult, error) {
-	location, err := time.LoadLocation(input.Timezone)
+	location, err := contract.LoadLocation(input.Timezone)
 	if err != nil {
 		return ParseResult{}, &timezoneError{timezone: input.Timezone}
 	}

@@ -1896,7 +1896,7 @@ func formatUsageDate(timestamp, timezone string) (string, error) {
 	if cached, ok := usageDateFormatters.Load(timezone); ok {
 		location = cached.(*time.Location)
 	} else {
-		loaded, err := time.LoadLocation(timezone)
+		loaded, err := contract.LoadLocation(timezone)
 		if err != nil {
 			return "", fmt.Errorf("Invalid timezone for Codex context pricing usage date: %s", timezone)
 		}

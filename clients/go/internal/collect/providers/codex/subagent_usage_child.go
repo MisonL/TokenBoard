@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/collate"
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 const (
@@ -454,7 +455,7 @@ func subagentTimezoneLocation(timezone string) (*time.Location, error) {
 	if ok {
 		return cached, nil
 	}
-	location, err := time.LoadLocation(timezone)
+	location, err := contract.LoadLocation(timezone)
 	if err != nil {
 		return nil, err
 	}

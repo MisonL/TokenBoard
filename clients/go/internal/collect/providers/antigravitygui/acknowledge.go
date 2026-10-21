@@ -7,6 +7,7 @@ import (
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/antigravitymeta"
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessioncursor"
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 // AcknowledgeInput is one post-upload cursor acknowledgement for a GUI/IDE
@@ -141,7 +142,7 @@ func guiCursorEntryIsInRange(entry sessioncursor.Entry, sinceDate, timezone stri
 	}
 	// TS resolves this through `formatDate(value, timezone)`: the local day,
 	// not the UTC one, decides whether a snapshotless entry is still in range.
-	location, err := time.LoadLocation(timezone)
+	location, err := contract.LoadLocation(timezone)
 	if err != nil {
 		return time.UnixMilli(int64(entry.MtimeMs)).UTC().Format("2006-01-02") >= sinceDate
 	}

@@ -62,7 +62,7 @@ type Aggregate struct {
 // NewAggregate builds an aggregate for one source. The timezone must already
 // be validated by the caller.
 func NewAggregate(source contract.Source, timezone string, collectedAt string, costAvailable bool) (*Aggregate, error) {
-	location, err := time.LoadLocation(timezone)
+	location, err := contract.LoadLocation(timezone)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ func ReadEventTimestamp(value any) (time.Time, bool) {
 // FormatDate renders a timestamp's local calendar date in the given zone,
 // matching the TS formatDate.
 func FormatDate(at time.Time, timezone string) string {
-	location, err := time.LoadLocation(timezone)
+	location, err := contract.LoadLocation(timezone)
 	if err != nil {
 		location = time.UTC
 	}

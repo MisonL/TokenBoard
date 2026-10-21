@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/collect/sessionusage"
+	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
 // CollectionRange is a resolved Antigravity collection window: whether the run
@@ -68,7 +69,7 @@ func ResolveCollectionRange(since *string, timezone string, env func(string) str
 	if err != nil {
 		return CollectionRange{}, err
 	}
-	location, err := time.LoadLocation(timezone)
+	location, err := contract.LoadLocation(timezone)
 	if err != nil {
 		return CollectionRange{}, err
 	}

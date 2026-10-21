@@ -315,9 +315,44 @@ var (
 	timezoneValid = map[string]bool{}
 )
 
+// offsetZonePattern is the offset zone identifier Intl accepts: a sign, two
+// digits of hour, and optional two digits of minutes with or without a colon
+// — ±HH, ±HHMM, ±HH:MM. Exactly what ECMA-402's TimeZoneOffsetString allows
+// for hours 00-23 and minutes 00-59.
+var offsetZonePattern = regexp.MustCompile(`^[+-](\d{2})(?::?(\d{2}))?$`)
+
+// LoadLocation resolves a timezone name the way the TS side's Intl.DateTimeFormat
+// does: an IANA name through the zone database, or an offset identifier as a
+// fixed-offset zone. Callers that format dates must go through this rather than
+// time.LoadLocation, which knows nothing about offsets.
+//
+// The offset form exists because Intl accepts it and the TS collector
+// therefore collects under it; refusing the run here would make the two
+// clients disagree on a timezone one of them supports.
+func LoadLocation(name string) (*time.Location, error) {
+	if match := offsetZonePattern.FindStringSubmatch(name); match != nil {
+		hours, _ := strconv.Atoi(match[1])
+		minutes, _ := strconv.Atoi(match[2])
+		// Intl rejects +24:00 and +08:60, so a value outside these bounds is
+		// not a zone this client may accept.
+		if hours > 23 || minutes > 59 {
+			return nil, fmt.Errorf("unknown time zone %s", name)
+		}
+		offset := hours*3600 + minutes*60
+		if name[0] == '-' {
+			offset = -offset
+		}
+		// Intl canonicalizes "-00:00" to "+00:00"; FixedZone keeps the name
+		// as given, which is what a caller round-tripping the label expects.
+		return time.FixedZone(name, offset), nil
+	}
+	return time.LoadLocation(name)
+}
+
 // IsValidTimezone mirrors usage-core isValidTimezone: non-empty, no leading
 // or trailing whitespace, within the length bound, and loadable as an IANA
-// zone. Valid names are cached case-insensitively like the TS Set does.
+// zone or an Intl offset identifier. Valid names are cached case-insensitively
+// like the TS Set does.
 func IsValidTimezone(value string) bool {
 	timezone := strings.TrimSpace(value)
 	if timezone == "" || timezone != value || utf16Length(timezone) > MaxUsageTimezoneLength {
@@ -339,9 +374,9 @@ func IsValidTimezone(value string) bool {
 	if cached {
 		return ok
 	}
-	_, err := time.LoadLocation(timezone)
-	// The TS side additionally caches the resolved canonical name; Go's
-	// LoadLocation already normalizes, so caching the requested name covers it.
+	_, err := LoadLocation(timezone)
+	// The TS side additionally caches the resolved canonical name; LoadLocation
+	// resolves the same name the same way, so caching the requested one covers it.
 	timezoneMu.Lock()
 	timezoneValid[cacheKey] = err == nil
 	timezoneMu.Unlock()

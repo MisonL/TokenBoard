@@ -518,7 +518,7 @@ func formatDate(value, timezone string) (string, error) {
 	if !ok {
 		return normalizeDate(value)
 	}
-	location, err := time.LoadLocation(timezone)
+	location, err := contract.LoadLocation(timezone)
 	if err != nil {
 		return "", fmt.Errorf("Invalid timezone for ccusage session date: %s", timezone)
 	}

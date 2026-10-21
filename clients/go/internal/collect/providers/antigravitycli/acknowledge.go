@@ -172,7 +172,7 @@ func cursorEntryIsInRange(entry sessioncursor.Entry, sinceDate, timezone string)
 // mtime falls in the hours where UTC and local disagree lands on the local
 // day on both sides.
 func sessionDateOf(mtimeMs float64, timezone string) string {
-	location, err := time.LoadLocation(timezone)
+	location, err := contract.LoadLocation(timezone)
 	if err != nil {
 		return time.UnixMilli(int64(mtimeMs)).UTC().Format("2006-01-02")
 	}

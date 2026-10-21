@@ -373,3 +373,43 @@ func TestLengthBoundsCountUTF16Units(t *testing.T) {
 		t.Fatal("one unit over the limit must be rejected")
 	}
 }
+
+// Intl — and therefore usage-core and every TS provider that formats a date
+// with it — accepts offset time zone identifiers (±HH:MM, ±HHMM, hours
+// 00-23, minutes 00-59). LoadLocation has no such names, so the TS client
+// collects under "+08:00" while this one refused the run outright.
+func TestIsValidTimezoneAcceptsIntlOffsetZones(t *testing.T) {
+	valid := []string{
+		"+08:00", "-05:30", "+0800", "-0530", "+00:00", "-00:00", "+23:59", "-23:59",
+		// Intl also takes a bare two-digit hour and resolves it to :00.
+		"+08", "-08", "+23", "-00",
+	}
+	invalid := []string{"+24:00", "+24", "+08:60", "+8:00", "+8", "+08:0", "+080", "08:00", "++08:00"}
+	for _, value := range valid {
+		if !IsValidTimezone(value) {
+			t.Errorf("%q should be valid: Intl accepts offset time zones", value)
+		}
+	}
+	for _, value := range invalid {
+		if IsValidTimezone(value) {
+			t.Errorf("%q should be invalid", value)
+		}
+	}
+}
+
+func TestLoadLocationResolvesOffsetZones(t *testing.T) {
+	for name, want := range map[string]int{"+08:00": 8 * 3600, "-05:30": -(5*3600 + 1800), "+0800": 8 * 3600} {
+		location, err := LoadLocation(name)
+		if err != nil {
+			t.Errorf("LoadLocation(%q): %v", name, err)
+			continue
+		}
+		if _, offset := time.Date(2026, 10, 21, 0, 0, 0, 0, location).Zone(); offset != want {
+			t.Errorf("LoadLocation(%q) offset = %d, want %d", name, offset, want)
+		}
+	}
+	location, err := LoadLocation("Asia/Shanghai")
+	if err != nil || location.String() != "Asia/Shanghai" {
+		t.Errorf("LoadLocation(Asia/Shanghai) = %v, %v", location, err)
+	}
+}
