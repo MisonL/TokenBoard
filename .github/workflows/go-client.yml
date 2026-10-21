@@ -239,6 +239,13 @@ jobs:
           echo "$version" | grep -Eq '^tokenboard \(go\) 0\.0\.0-SNAPSHOT-' \
             || { echo "unexpected version line: $version"; exit 1; }
 
+      # The upgrade path end to end: serve a release the way GitHub does, run
+      # self-update against it, and assert the swap, the backup, the bundled
+      # ccusage and the no-op second run. Needs dist/ and dist-ccusage/ from
+      # the steps above.
+      - name: self-update end to end
+        run: node clients/go/scripts/e2e-self-update.mjs
+
   # Spec §9 M6: a release is cut from a version tag. The configuration and the
   # artifact names are pinned by internal/release, so `check` runs before
   # anything is published.
