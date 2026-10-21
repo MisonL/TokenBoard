@@ -161,6 +161,10 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 			}
 			return ExitOK
 		})
+	case "shadow":
+		return withRunLock(stateDir, stderr, func() int {
+			return runShadow(ctx, options, env, stdout, stderr)
+		})
 	case "sync":
 		return runSync(ctx, options, env, stateDir, startedAt, stdout, stderr)
 	default:
@@ -605,7 +609,7 @@ func parseArgs(args []string, env Env) (Options, error) {
 func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, error) {
 	command := args[0]
 	switch command {
-	case "preview", "sync", "warm-hooks":
+	case "preview", "sync", "warm-hooks", "shadow":
 	default:
 		return Options{}, fmt.Errorf("Usage: %s", usageLine())
 	}
@@ -889,7 +893,7 @@ func runSelfUpdate(args []string, env Env, stdout, stderr io.Writer) int {
 }
 
 func usageLine() string {
-	return fmt.Sprintf("Usage: tokenboard <preview|sync|warm-hooks|self-update> [--source %s]",
+	return fmt.Sprintf("Usage: tokenboard <preview|sync|warm-hooks|shadow|self-update> [--source %s]",
 		strings.Join(sourceChoices(), "|"))
 }
 
