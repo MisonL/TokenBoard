@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
+import { createPhaseTimings } from '../phase-timings'
 import { clearPendingUploadCursors } from './session-cursor'
 import { tokenCountEvent, writeJsonl } from './codex-test-helpers'
 
@@ -99,6 +100,43 @@ describe('Codex hook scoped reconciliation', () => {
         expect.arrayContaining(['codex', 'daily', '--since', '20260522', '--until', '20260522']),
         expect.arrayContaining(['codex', 'session', '--since', '20260522', '--until', '20260522'])
       ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+  // Codex reaches ccusage through four different call sites (scoped daily,
+  // scoped session, per-home session counts, unbounded scans). The sink has to
+  // cover whichever one ran, or a codex run reports no phase attribution at
+  // all and the numbers look like "nothing took time".
+  test('records cursor scan and ccusage phase timings for a hook collection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-hook-timings-'))
+    const codexHome = join(root, 'codex')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(codexHome, 'sessions', '2026', '05', '22', 'session.jsonl')
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-22T01:00:00.000Z', 10)])
+      await setFileMtime(sessionFile, '2026-05-22T01:00:00.000Z')
+      const timings = createPhaseTimings()
+
+      await collectCodexUsage({
+        codexHome,
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        timings,
+        runner: async (_command: string, args: string[]) => {
+          await new Promise((resolve) => setTimeout(resolve, args.includes('session') ? 20 : 5))
+          return args.includes('session') ? changedDateSessionResult(10) : changedDateDailyResult(10)
+        }
+      })
+
+      expect(Object.keys(timings.snapshot()).sort()).toEqual(['ccusageDaily', 'ccusageSession', 'cursorScan'])
+      await clearPendingUploadCursors({ stateDir, source: 'codex' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

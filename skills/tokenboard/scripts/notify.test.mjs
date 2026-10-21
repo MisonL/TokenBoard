@@ -173,6 +173,56 @@ test('notify passes the coordinator lock token to its child sync', () => {
   assert.equal(invocation.options.env.TOKENBOARD_STATE_DIR, '/state')
 })
 
+test('notify carries the sync phase timings back to the coordinator', () => {
+  const result = executeTokenBoardSync('claude-code', {
+    syncScriptPath: '/repo/sync.mjs',
+    env: { TOKENBOARD_STATE_DIR: '/state' },
+    lockToken: 'coordinator-token',
+    spawn: () => ({
+      status: 0,
+      stdout: JSON.stringify({ upserted: 3, timings: { ccusageDaily: 91_000, ccusageSession: 40_500, upload: 220 } })
+    })
+  })
+
+  assert.deepEqual(result, {
+    source: 'claude-code',
+    exitCode: 0,
+    timings: { ccusageDaily: 91_000, ccusageSession: 40_500, upload: 220 }
+  })
+})
+
+// The hook path is the one that runs unattended, so a child that printed
+// something unexpected must not turn a successful sync into a failed one.
+test('notify ignores unparseable or non-numeric sync timings', () => {
+  for (const stdout of [
+    undefined,
+    '',
+    'not json',
+    '[]',
+    JSON.stringify({ upserted: 1 }),
+    JSON.stringify({ timings: 'x' })
+  ]) {
+    const result = executeTokenBoardSync('codex', {
+      syncScriptPath: '/repo/sync.mjs',
+      env: { TOKENBOARD_STATE_DIR: '/state' },
+      lockToken: 'coordinator-token',
+      spawn: () => ({ status: 0, stdout })
+    })
+    assert.deepEqual(result, { source: 'codex', exitCode: 0 }, `stdout: ${String(stdout)}`)
+  }
+
+  const filtered = executeTokenBoardSync('codex', {
+    syncScriptPath: '/repo/sync.mjs',
+    env: { TOKENBOARD_STATE_DIR: '/state' },
+    lockToken: 'coordinator-token',
+    spawn: () => ({
+      status: 0,
+      stdout: JSON.stringify({ timings: { upload: 5, bogus: 'slow', negative: -1 } })
+    })
+  })
+  assert.deepEqual(filtered.timings, { upload: 5 })
+})
+
 test('notify refuses to start a hook sync without coordinator lock ownership', () => {
   assert.throws(
     () =>

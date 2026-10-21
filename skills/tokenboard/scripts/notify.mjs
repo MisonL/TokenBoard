@@ -84,7 +84,38 @@ export function executeTokenBoardSync(source, options = {}) {
     if (failure.diagnostics) error.diagnostics = failure.diagnostics
     throw error
   }
-  return { source, exitCode: 0 }
+  const timings = parseSyncTimings(result.stdout)
+  return timings ? { source, exitCode: 0, timings } : { source, exitCode: 0 }
+}
+
+// The collector prints per-phase durations next to its upload result. They are
+// the only attribution a hook run gets — it writes no logs of its own — so the
+// coordinator forwards them into the run record. A child that printed anything
+// unexpected still counts as a successful sync; timings are additive, never
+// load-bearing.
+const syncTimingKeyPattern = /^[A-Za-z][A-Za-z0-9]{0,31}$/
+const maxSyncTimingPhases = 16
+
+export function parseSyncTimings(stdout) {
+  if (typeof stdout !== 'string' || stdout.length === 0) return undefined
+  let parsed
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+  const raw = parsed.timings
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const timings = {}
+  for (const [name, value] of Object.entries(raw)) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) continue
+    if (!syncTimingKeyPattern.test(name)) continue
+    timings[name] = Math.round(value)
+  }
+  const names = Object.keys(timings)
+  if (names.length === 0) return undefined
+  return Object.fromEntries(names.slice(0, maxSyncTimingPhases).map((name) => [name, timings[name]]))
 }
 
 function scheduleTrailingNotify(trigger, delayMs, options = {}) {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
 import { errorMessage } from './error-message'
 import { createPricingDiagnosticSink } from './pricing-diagnostics'
+import { createPhaseTimings, timePhase, type PhaseTimings } from './phase-timings'
 import { collectAntigravityCliUsage } from './providers/antigravity-cli'
 import {
   collectAntigravityIdeUsage,
@@ -58,6 +59,7 @@ type CollectionContext = {
   since: string
   until: string
   cursorScope?: string
+  timings?: PhaseTimings
   deps: CliDeps
   env: CliEnv
 }
@@ -145,11 +147,13 @@ export async function runCollectorCli(
 
     const collectionStartedAtMs = startedAtMs
     const cursorScope = options.command === 'sync' ? cursorScopeFromEndpoint(options.endpoint) : undefined
+    const timings = options.command === 'sync' ? createPhaseTimings() : undefined
     const collectionContext = {
       timezone: options.timezone,
       since: options.since,
       until: options.until,
       cursorScope,
+      timings,
       deps: collectorDeps,
       env: options.endpoint ? { ...env, TOKENBOARD_ENDPOINT: options.endpoint } : env
     }
@@ -184,13 +188,15 @@ export async function runCollectorCli(
     let uploadError: unknown
     let result: unknown
     try {
-      result = await deps.uploadSnapshots(
-        {
-          endpoint: options.endpoint,
-          uploadToken: options.uploadToken,
-          timezone: options.timezone
-        },
-        collection.snapshots
+      result = await timePhase(timings, 'upload', () =>
+        deps.uploadSnapshots(
+          {
+            endpoint: options.endpoint,
+            uploadToken: options.uploadToken,
+            timezone: options.timezone
+          },
+          collection.snapshots
+        )
       )
       uploadSucceeded = true
     } catch (error) {
@@ -213,17 +219,25 @@ export async function runCollectorCli(
     }
     if (uploadSucceeded) await recordUploadSuccess(uploadStateDir)
 
-    await ackUploadCursors({
-      collectedSources: collection.collectedSources,
-      cursorScope,
-      since: options.since,
-      snapshots: collection.snapshots,
-      timezone: options.timezone,
-      deps,
-      env
-    })
+    await timePhase(timings, 'cursorAck', () =>
+      ackUploadCursors({
+        collectedSources: collection.collectedSources,
+        cursorScope,
+        since: options.since,
+        snapshots: collection.snapshots,
+        timezone: options.timezone,
+        deps,
+        env
+      })
+    )
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since, options.until)
-    collectorDeps.stdout(JSON.stringify(result, null, 2))
+    const timingsSnapshot = timings?.snapshot() ?? {}
+    const uploadResult = result
+    const payload =
+      typeof uploadResult === 'object' && uploadResult !== null
+        ? { ...uploadResult, timings: timingsSnapshot }
+        : { result: uploadResult, timings: timingsSnapshot }
+    collectorDeps.stdout(JSON.stringify(payload, null, 2))
     if (collectionFailed) {
       collectorDeps.stderr(`One or more sources failed: ${formatSourceFailures(collection.sourceFailures)}`)
       return 1
@@ -354,13 +368,13 @@ async function collectSnapshots(source: CliSource, context: CollectionContext) {
 }
 
 async function collectAllSnapshots(context: CollectionContext) {
-  const { cursorScope, deps, env, since, timezone, until } = context
+  const { cursorScope, deps, env, since, timezone, timings, until } = context
   const snapshots: UsageSnapshot[] = []
   const collectedSources: CliSource[] = []
   const sourceFailures: SourceFailure[] = []
   const hookMode = env.TOKENBOARD_HOOK_MODE === '1'
   const failFast = hookMode
-  const standardContext = { timezone, since, until, stderr: deps.stderr, env }
+  const standardContext = { timezone, since, until, stderr: deps.stderr, env, timings }
   await collectOptionalSource(
     'claude-code',
     () => deps.collectClaudeCodeUsage({ ...standardContext, stateDir: resolveStateDir(env) }),
@@ -502,8 +516,8 @@ async function noopAntigravityCollector(): Promise<UsageSnapshot[]> {
 }
 
 function collectSingleSource(source: ConcreteCliSource, context: CollectionContext) {
-  const { cursorScope, deps, env, since, timezone, until } = context
-  const standardContext = { timezone, since, until, stderr: deps.stderr, env }
+  const { cursorScope, deps, env, since, timezone, timings, until } = context
+  const standardContext = { timezone, since, until, stderr: deps.stderr, env, timings }
   if (source === 'claude-code') {
     return deps.collectClaudeCodeUsage({ ...standardContext, stateDir: resolveStateDir(env) })
   }

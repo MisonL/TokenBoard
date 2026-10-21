@@ -6,6 +6,7 @@ import { errorMessage } from '../error-message'
 import { normalizeCcusageDailyJson, readCcusageSessionAttribution } from '../normalize-ccusage'
 import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
 import { prepareDynamicCcusageConfig, type PricingFetcher } from '../model-pricing'
+import { phaseNames, timePhase, type PhaseTimings } from '../phase-timings'
 import {
   codexCommandArgs,
   packageCommandOptions,
@@ -99,10 +100,11 @@ export type CollectCodexUsageOptions = {
   codexSymlinkRoots?: readonly string[]
   env?: NodeJS.ProcessEnv
   pricingFetcher?: PricingFetcher
+  timings?: PhaseTimings
 }
 
 export async function collectCodexUsage(options: CollectCodexUsageOptions = {}): Promise<UsageSnapshot[]> {
-  const runner = options.runner ?? runJsonCommand
+  const runner = timeCcusageRunner(options.runner ?? runJsonCommand, options.timings)
   const env = options.env ?? process.env
   const stateDir = options.stateDir?.trim() || env.TOKENBOARD_STATE_DIR?.trim() || env.TOKENBOARD_CONFIG_DIR?.trim()
   const prepared = await prepareDynamicCcusageConfig({
@@ -324,15 +326,17 @@ async function collectCodexHookUsageAttempt(
   const codexHomes = resolveCodexHomesFromOptions(input.options)
   const codexSymlinkRoots = resolveCodexSymlinkRootsFromOptions(input.options)
   const timezone = input.options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
-  const incremental = await collectCodexHookProfiles({
-    codexHomes,
-    codexSymlinkRoots,
-    stateDir: input.options.stateDir,
-    stderr: input.options.stderr,
-    timezone,
-    collectedAt: input.collectedAt,
-    forcePendingUploadRescan
-  })
+  const incremental = await timePhase(input.options.timings, phaseNames.cursorScan, () =>
+    collectCodexHookProfiles({
+      codexHomes,
+      codexSymlinkRoots,
+      stateDir: input.options.stateDir,
+      stderr: input.options.stderr,
+      timezone,
+      collectedAt: input.collectedAt,
+      forcePendingUploadRescan
+    })
+  )
 
   if (!incremental.changed) {
     return []
@@ -2036,4 +2040,17 @@ function readBatchSize(env: NodeJS.ProcessEnv = process.env) {
 
 function commandEnvForOptions(options: CollectCodexUsageOptions, extra: NodeJS.ProcessEnv = {}) {
   return { ...(options.env ?? process.env), ...extra }
+}
+
+// Every ccusage call in this provider funnels through one runner, but through
+// several call sites (scoped batches, per-home session counts, frozen bounded
+// batches, unbounded scans). Timing each call site by hand would leave the
+// next one unmeasured, so the timing wraps the runner itself and reads the
+// report name the call site already put in the args.
+function timeCcusageRunner(runner: CommandRunner, timings?: PhaseTimings): CommandRunner {
+  if (!timings) return runner
+  return (command, args, runOptions) =>
+    timePhase(timings, args.includes('session') ? phaseNames.ccusageSession : phaseNames.ccusageDaily, () =>
+      runner(command, args, runOptions)
+    )
 }

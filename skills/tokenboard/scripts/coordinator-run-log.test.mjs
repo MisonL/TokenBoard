@@ -28,6 +28,27 @@ test('coordinator writes run logs and last success for successful sync', () => {
   assert.equal(fs.files.get('/state/last-success.json'), '2026-05-22T10:00:00.000Z')
 })
 
+// A hook run writes no log of its own, so the run log is the only place its
+// phase timings can land. Losing them in the cycle record would leave the
+// measurement unreachable right where it is meant to be read.
+test('coordinator keeps the sync phase timings in the run log', () => {
+  const fs = memoryRuntime()
+  const timings = { cursorScan: 1_200, ccusageDaily: 91_000, ccusageSession: 40_500, upload: 220 }
+  coordinatedSync(
+    { kind: 'notify', source: 'claude-code' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => Date.parse('2026-05-22T10:00:00.000Z'),
+      process: fakeProcess(101),
+      executeSync: () => ({ source: 'claude-code', exitCode: 0, timings })
+    }
+  )
+
+  const lastRun = JSON.parse(fs.files.get('/state/last-run.json'))
+  assert.deepEqual(lastRun.cycles[0].result.timings, timings)
+})
+
 test('coordinator uses a Windows-safe run log filename', () => {
   const fs = memoryRuntime()
   coordinatedSync(

@@ -458,6 +458,67 @@ describe('runCollectorCli', () => {
     expect(JSON.parse(stdout[0])).toEqual([codexSnapshot])
   })
 
+  // The sync result is the only machine-readable record of a run, and the
+  // upload response alone cannot say whether the run spent its time in ccusage
+  // or in the upload. Timings ride alongside the upload result, without
+  // replacing it.
+  test('reports per-phase timings next to the upload result on sync', async () => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          options?.timings?.record('ccusageDaily', 12.4)
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => ({ upserted: 1 })
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual({
+      upserted: 1,
+      timings: expect.objectContaining({ ccusageDaily: 12, upload: expect.any(Number) })
+    })
+  })
+
+  test('keeps the preview output a bare snapshot array', async () => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          options?.timings?.record('ccusageDaily', 12.4)
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([codexSnapshot])
+  })
+
   test('syncs selected source to the configured endpoint with the upload token', async () => {
     const uploaded: Array<{ endpoint: string; uploadToken: string; snapshots: UsageSnapshot[] }> = []
 

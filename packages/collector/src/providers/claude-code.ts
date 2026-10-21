@@ -6,6 +6,7 @@ import { runJsonCommand, type CommandRunner } from '../command'
 import { normalizeCcusageDailyJson } from '../normalize-ccusage'
 import { ccusagePackageSpecifier, resolvePackageRunner, type PackageRunner } from '../package-runner'
 import { prepareDynamicCcusageConfig, type PricingFetcher } from '../model-pricing'
+import { phaseNames, timePhase, type PhaseTimings } from '../phase-timings'
 import { assertHookReconciliationSnapshots, collectHookIncremental, isHookMode } from './hook-incremental'
 import { mergeSnapshots } from './session-cursor'
 import { assertValidDateFilterRange } from '../iso-calendar-date'
@@ -20,6 +21,7 @@ export type CollectUsageOptions = {
   stateDir?: string
   env?: NodeJS.ProcessEnv
   pricingFetcher?: PricingFetcher
+  timings?: PhaseTimings
 }
 
 const DEFAULT_PACKAGE_COMMAND_RETRIES = 2
@@ -95,15 +97,17 @@ async function collectClaudeHookUsage(input: {
 }) {
   const claudeHome = readClaudeHome(input.env)
   const timezone = input.options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone
-  const incremental = await collectHookIncremental({
-    source: 'claude-code',
-    sessionsDir: join(claudeHome, 'projects'),
-    cursorName: 'claude-code-cursor.json',
-    stateDir: input.options.stateDir,
-    stderr: input.options.stderr,
-    timezone,
-    collectedAt: input.collectedAt
-  })
+  const incremental = await timePhase(input.options.timings, phaseNames.cursorScan, () =>
+    collectHookIncremental({
+      source: 'claude-code',
+      sessionsDir: join(claudeHome, 'projects'),
+      cursorName: 'claude-code-cursor.json',
+      stateDir: input.options.stateDir,
+      stderr: input.options.stderr,
+      timezone,
+      collectedAt: input.collectedAt
+    })
+  )
 
   if (!incremental.changed) {
     return []
@@ -139,34 +143,38 @@ async function collectClaudeCcusageRange(input: {
   collectedAt: string
   env: NodeJS.ProcessEnv
 }) {
-  const json = await input.runner(
-    input.packageRunner.command,
-    input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', [
-      'claude',
-      'daily',
-      '--json',
-      '--breakdown',
-      ...input.rangeArgs
-    ]),
-    packageCommandOptions({
-      env: input.env,
-      timeoutMs: readCcusageTimeoutMs(input.env),
-      stderr: input.options.stderr
-    })
+  const json = await timePhase(input.options.timings, phaseNames.ccusageDaily, () =>
+    input.runner(
+      input.packageRunner.command,
+      input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', [
+        'claude',
+        'daily',
+        '--json',
+        '--breakdown',
+        ...input.rangeArgs
+      ]),
+      packageCommandOptions({
+        env: input.env,
+        timeoutMs: readCcusageTimeoutMs(input.env),
+        stderr: input.options.stderr
+      })
+    )
   )
-  const sessions = await input.runner(
-    input.packageRunner.command,
-    input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', [
-      'claude',
-      'session',
-      '--json',
-      ...input.rangeArgs
-    ]),
-    packageCommandOptions({
-      env: input.env,
-      timeoutMs: readCcusageTimeoutMs(input.env),
-      stderr: input.options.stderr
-    })
+  const sessions = await timePhase(input.options.timings, phaseNames.ccusageSession, () =>
+    input.runner(
+      input.packageRunner.command,
+      input.packageRunner.runPackageArgs(ccusagePackageSpecifier, 'ccusage', [
+        'claude',
+        'session',
+        '--json',
+        ...input.rangeArgs
+      ]),
+      packageCommandOptions({
+        env: input.env,
+        timeoutMs: readCcusageTimeoutMs(input.env),
+        stderr: input.options.stderr
+      })
+    )
   )
 
   return normalizeCcusageDailyJson(json, {

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test, vi } from 'vitest'
 import { collectClaudeCodeUsage } from './claude-code'
+import { createPhaseTimings } from '../phase-timings'
 import { clearPendingUploadCursors } from './session-cursor'
 
 const bundledCcusageConfigArgs = [
@@ -121,6 +122,72 @@ describe('Claude hook sync collection', () => {
           sessionCount: 1
         })
       ])
+      await clearPendingUploadCursors({ stateDir, source: 'claude-code' })
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // A hook run is the expensive path production uses, and its total says
+  // nothing about which of its three phases (cursor scan, daily scan, session
+  // scan) actually cost the time. The sink must see each phase separately.
+  test('records a timing for each phase of a hook collection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-claude-hook-'))
+    const claudeHome = join(root, 'claude')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(claudeHome, 'projects', 'project-a', 'session.jsonl')
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeHome)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(sessionFile, [
+        {
+          type: 'assistant',
+          timestamp: '2026-05-22T02:00:00.000Z',
+          message: { model: 'claude-sonnet-4-5', usage: { input_tokens: 8, output_tokens: 13 } },
+          costUSD: 0.12
+        }
+      ])
+      const timings = createPhaseTimings()
+
+      await collectClaudeCodeUsage({
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        since: 'all',
+        timings,
+        async runner(_command, args) {
+          await new Promise((resolve) => setTimeout(resolve, args.includes('session') ? 20 : 5))
+          if (args.includes('session')) {
+            return {
+              data: [
+                {
+                  sessionId: 's1',
+                  lastActivity: '2026-05-22T02:00:00.000Z',
+                  modelBreakdowns: { 'claude-sonnet-4-5': { inputTokens: 16, outputTokens: 26 } }
+                }
+              ]
+            }
+          }
+          return {
+            data: [
+              {
+                date: '2026-05-22',
+                breakdown: {
+                  'claude-sonnet-4-5': { inputTokens: 16, outputTokens: 26, totalTokens: 42, costUSD: 0.24 }
+                }
+              }
+            ]
+          }
+        }
+      })
+
+      const measured = timings.snapshot()
+      expect(Object.keys(measured).sort()).toEqual(['ccusageDaily', 'ccusageSession', 'cursorScan'])
+      expect(measured.ccusageSession).toBeGreaterThanOrEqual(measured.ccusageDaily)
       await clearPendingUploadCursors({ stateDir, source: 'claude-code' })
     } finally {
       vi.unstubAllEnvs()
