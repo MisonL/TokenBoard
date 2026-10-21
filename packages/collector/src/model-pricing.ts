@@ -143,7 +143,59 @@ export async function loadModelPricingCatalogue(input: {
   return { ...fetched, source: 'network' }
 }
 
+// A `--source all` run collects claude-code and codex in one process, and each
+// provider prepared its own catalogue. When the endpoint has no pricing route
+// the fetch fails and nothing is written to the cache, so the second provider
+// repeated the same doomed request: a run against a route-less server made two
+// 404 round trips of ~0.8s each, every time.
+//
+// The memo covers exactly that case. A successful refresh (or a fresh on-disk
+// cache) already makes the second call cheap, so it is not memoized and the
+// cache file stays the single source of truth across runs. Keyed by endpoint
+// origin: a run that touches two servers must ask each, and the hook path
+// never reaches here at all.
+const inFlightPricing = new Map<string, Promise<ModelPricingCatalogue>>()
+
+// resetModelPricingMemo clears the per-process memo. Tests call it between
+// cases; production code never needs to, because a collector process runs one
+// command and exits.
+export function resetModelPricingMemo() {
+  inFlightPricing.clear()
+}
+
 export async function prepareDynamicCcusageConfig(input: {
+  endpoint?: string
+  stateDir?: string
+  hookMode?: boolean
+  explicitConfigPath?: string
+  now?: Date
+  fetcher?: PricingFetcher
+  stderr?: (line: string) => void
+}): Promise<DynamicCcusageConfigResult> {
+  // The memo is keyed by everything that can change the answer. Wall clock and
+  // the fetcher deliberately are not: within one collector process there is one
+  // run, and sharing its one attempt is the point.
+  const memoKey = JSON.stringify([
+    endpointOriginFromEndpoint(input.endpoint) ?? '',
+    input.stateDir?.trim() || defaultStateDir(),
+    input.hookMode === true,
+    input.explicitConfigPath?.trim() ?? ''
+  ])
+  const memoized = inFlightPricing.get(memoKey)
+  if (memoized) return memoized
+  const prepared = loadDynamicCcusageConfig(input)
+  inFlightPricing.set(memoKey, prepared)
+  try {
+    return await prepared
+  } catch (error) {
+    // A throw is not a result to reuse: the next provider must be free to try
+    // again rather than inherit a failure that may have been transient.
+    inFlightPricing.delete(memoKey)
+    throw error
+  }
+}
+
+async function loadDynamicCcusageConfig(input: {
   endpoint?: string
   stateDir?: string
   hookMode?: boolean

@@ -11,6 +11,7 @@ import {
   loadModelPricingCatalogue,
   modelPricingUrl,
   prepareDynamicCcusageConfig,
+  resetModelPricingMemo,
   validateModelPricingResponse,
   type CollectorPricingModel,
   type PricingFetcher
@@ -723,3 +724,75 @@ async function tempDirectory() {
   tempDirectories.push(directory)
   return directory
 }
+
+// A `--source all` run collects claude-code and codex in one process, and each
+// provider loads the catalogue itself. When the endpoint has no pricing route
+// the fetch fails and nothing is cached, so the second provider repeats the
+// same doomed request: an all-source run against a route-less server made two
+// 404 round trips of ~0.8s each. One process needs one attempt.
+describe('per-process pricing catalogue memo', () => {
+  afterEach(() => resetModelPricingMemo())
+
+  test('a failed refresh is not retried by the next provider in the same run', async () => {
+    const stateDir = await tempDirectory()
+    let fetched = 0
+    const fetcher: PricingFetcher = async () => {
+      fetched += 1
+      throw new Error('Model pricing source returned HTTP 404')
+    }
+    const now = new Date('2026-09-10T00:00:00.000Z')
+
+    const first = await prepareDynamicCcusageConfig({
+      endpoint: 'https://tokenboard.example',
+      stateDir,
+      now,
+      fetcher,
+      stderr: () => {}
+    })
+    const second = await prepareDynamicCcusageConfig({
+      endpoint: 'https://tokenboard.example',
+      stateDir,
+      now,
+      fetcher,
+      stderr: () => {}
+    })
+
+    expect(fetched).toBe(1)
+    expect(second.configPath).toBe(first.configPath)
+  })
+
+  // The memo is per endpoint: a run that touches two servers must ask each.
+  test('does not share a catalogue across different endpoints', async () => {
+    const stateDir = await tempDirectory()
+    let fetched = 0
+    const fetcher: PricingFetcher = async () => {
+      fetched += 1
+      throw new Error('Model pricing source returned HTTP 404')
+    }
+    const now = new Date('2026-09-10T00:00:00.000Z')
+
+    await prepareDynamicCcusageConfig({ endpoint: 'https://a.example', stateDir, now, fetcher, stderr: () => {} })
+    await prepareDynamicCcusageConfig({ endpoint: 'https://b.example', stateDir, now, fetcher, stderr: () => {} })
+
+    expect(fetched).toBe(2)
+  })
+
+  // A successful refresh already lands in the shared on-disk cache, so the
+  // memo must not change what a provider sees there.
+  test('a successful refresh still writes the cache both providers read', async () => {
+    const stateDir = await tempDirectory()
+    let fetched = 0
+    const fetcher: PricingFetcher = async () => {
+      fetched += 1
+      return jsonResponse({ models: [model('gpt-6-astra')], nextCursor: null })
+    }
+    const now = new Date('2026-09-10T00:00:00.000Z')
+
+    const first = await prepareDynamicCcusageConfig({ endpoint: 'https://tokenboard.example', stateDir, now, fetcher })
+    const second = await prepareDynamicCcusageConfig({ endpoint: 'https://tokenboard.example', stateDir, now, fetcher })
+
+    expect(fetched).toBe(1)
+    expect(second.configPath).toBe(first.configPath)
+    expect(second.coveredModelIds.has('gpt-6-astra')).toBe(true)
+  })
+})
