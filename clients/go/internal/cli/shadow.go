@@ -65,6 +65,12 @@ type shadowFieldDiff struct {
 // client and with the TypeScript collector, normalize both result sets, and
 // diff them. Each side gets its own temporary state directory, so neither can
 // touch the machine's real cursors; preview never uploads on either side.
+//
+// The two scans run sequentially, so a source whose files are being written
+// while the comparison runs (an active Claude Code session, say) can differ
+// on the current day even when the implementations agree: the second scan
+// sees the newer bytes, and pro-rata cost allocation shifts with them. Use
+// --until <yesterday> for a stable comparison of settled days.
 func runShadow(ctx context.Context, options Options, env Env, stdout, stderr io.Writer) int {
 	repoDir := strings.TrimSpace(env("TOKENBOARD_COLLECTOR_DIR"))
 	if repoDir == "" {
