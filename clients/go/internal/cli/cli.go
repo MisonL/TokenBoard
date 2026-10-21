@@ -232,13 +232,21 @@ func syncLocked(
 		upload.RecordSuccess(stateDir)
 	} else {
 		if !collect.IsTransientNetworkError(uploadErr) {
-			recorded := upload.RecordFailure(stateDir, uploadErr, time.Now())
-			suffix := ""
-			if recorded.PausedUntil != "" {
-				suffix = fmt.Sprintf("; pausing uploads until %s", recorded.PausedUntil)
+			// The backoff bookkeeping must not replace the original upload error:
+			// if recording the failure itself fails (disk full, permissions), say
+			// so and keep classifying the one that actually failed the sync.
+			recorded, recordErr := upload.RecordFailure(stateDir, uploadErr, time.Now())
+			if recordErr != nil {
+				fmt.Fprintf(stderr, "TokenBoard upload failure could not be recorded: %s\n",
+					upload.Summarize(recordErr))
+			} else {
+				suffix := ""
+				if recorded.PausedUntil != "" {
+					suffix = fmt.Sprintf("; pausing uploads until %s", recorded.PausedUntil)
+				}
+				fmt.Fprintf(stderr, "TokenBoard upload failed (%d consecutive non-transient failures%s)\n",
+					recorded.ConsecutiveFailures, suffix)
 			}
-			fmt.Fprintf(stderr, "TokenBoard upload failed (%d consecutive non-transient failures%s)\n",
-				recorded.ConsecutiveFailures, suffix)
 		}
 		// The TS collector prints the failure itself before classifying it;
 		// keep that so the scheduled runner's log names the cause. URLs are

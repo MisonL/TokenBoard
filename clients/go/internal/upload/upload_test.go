@@ -262,7 +262,10 @@ func TestBackoffPausesAfterFiveConsecutiveFailures(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.UTC)
 	for i := 0; i < 4; i++ {
-		state := RecordFailure(dir, os.ErrPermission, now)
+		state, recordErr := RecordFailure(dir, os.ErrPermission, now)
+		if recordErr != nil {
+			t.Fatalf("record %d: %v", i+1, recordErr)
+		}
 		if state.ConsecutiveFailures != i+1 {
 			t.Fatalf("failure %d recorded as %d", i+1, state.ConsecutiveFailures)
 		}
@@ -270,7 +273,10 @@ func TestBackoffPausesAfterFiveConsecutiveFailures(t *testing.T) {
 			t.Fatalf("paused early at failure %d", i+1)
 		}
 	}
-	state := RecordFailure(dir, os.ErrPermission, now)
+	state, recordErr := RecordFailure(dir, os.ErrPermission, now)
+	if recordErr != nil {
+		t.Fatalf("record 5: %v", recordErr)
+	}
 	if state.ConsecutiveFailures != 5 {
 		t.Fatalf("5th failure = %d", state.ConsecutiveFailures)
 	}
@@ -290,7 +296,9 @@ func TestBackoffPausesAfterFiveConsecutiveFailures(t *testing.T) {
 func TestBackoffSuccessClearsState(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
-	RecordFailure(dir, os.ErrPermission, now)
+	if _, err := RecordFailure(dir, os.ErrPermission, now); err != nil {
+		t.Fatalf("record: %v", err)
+	}
 	RecordSuccess(dir)
 	if _, err := os.Stat(filepath.Join(dir, "upload-backoff.json")); !os.IsNotExist(err) {
 		t.Error("success must remove the state file")
@@ -303,7 +311,10 @@ func TestBackoffSuccessClearsState(t *testing.T) {
 func TestBackoffSummarizesLongErrors(t *testing.T) {
 	dir := t.TempDir()
 	long := strings.Repeat("x", 500)
-	state := RecordFailure(dir, errString(long), time.Now().UTC())
+	state, recordErr := RecordFailure(dir, errString(long), time.Now().UTC())
+	if recordErr != nil {
+		t.Fatalf("record: %v", recordErr)
+	}
 	if len(state.LastErrorSummary) > 200 {
 		t.Errorf("summary not truncated: %d", len(state.LastErrorSummary))
 	}
@@ -511,5 +522,20 @@ func TestRetryDelayClampsBaseBeforeShift(t *testing.T) {
 	delay := retryDelay(nil, 3, 1<<62)
 	if delay <= 0 || delay > maxRetryDelayMs*time.Millisecond {
 		t.Fatalf("delay %v out of range", delay)
+	}
+}
+
+// A state directory that cannot be written must surface the failure: the
+// caller prints "could not be recorded" the way the TS collector does, and a
+// silent write failure would leave the run claiming a pause that was never
+// persisted.
+func TestRecordFailureReportsAWriteFailure(t *testing.T) {
+	parent := t.TempDir()
+	blocked := filepath.Join(parent, "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordFailure(blocked, os.ErrPermission, time.Now()); err == nil {
+		t.Fatal("a write failure must be reported, not swallowed")
 	}
 }

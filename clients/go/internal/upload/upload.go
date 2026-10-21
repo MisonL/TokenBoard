@@ -504,8 +504,10 @@ func IsPaused(stateDir string, now time.Time) (string, bool) {
 
 // RecordFailure counts one non-transient upload failure and pauses uploads
 // for a day once five accumulate. Pending snapshots stay in the cursor, so
-// pausing loses nothing.
-func RecordFailure(stateDir string, uploadErr error, now time.Time) BackoffState {
+// pausing loses nothing. A failed write is returned, not swallowed: the caller
+// reports it the way the TS collector does, and a silent failure would leave
+// the run claiming a pause that was never persisted.
+func RecordFailure(stateDir string, uploadErr error, now time.Time) (BackoffState, error) {
 	previous := LoadBackoff(stateDir)
 	state := BackoffState{
 		ConsecutiveFailures: 1,
@@ -517,8 +519,7 @@ func RecordFailure(stateDir string, uploadErr error, now time.Time) BackoffState
 	if state.ConsecutiveFailures >= uploadFailurePauseThreshold {
 		state.PausedUntil = now.Add(uploadFailurePauseMs).UTC().Format(time.RFC3339Nano)
 	}
-	writeBackoff(stateDir, state)
-	return state
+	return state, writeBackoff(stateDir, state)
 }
 
 // RecordSuccess clears the backoff state entirely.
@@ -526,21 +527,23 @@ func RecordSuccess(stateDir string) {
 	_ = os.Remove(filepath.Join(stateDir, backoffFileName))
 }
 
-func writeBackoff(stateDir string, state BackoffState) {
+func writeBackoff(stateDir string, state BackoffState) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return
+		return err
 	}
 	payload, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
 	tmp := filepath.Join(stateDir, fmt.Sprintf("%s.tmp-go-%d", backoffFileName, os.Getpid()))
 	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
-		return
+		return err
 	}
 	if err := os.Rename(tmp, filepath.Join(stateDir, backoffFileName)); err != nil {
 		_ = os.Remove(tmp)
+		return err
 	}
+	return nil
 }
 
 // Summarize truncates an error message to 200 characters with an ellipsis,
