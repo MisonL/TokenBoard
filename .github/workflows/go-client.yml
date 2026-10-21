@@ -168,6 +168,26 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Production runs the incremental hook path for the two ccusage-backed
+      # sources, not the full preview above, so the hook path gets its own
+      # comparison. Each run needs its own fresh state directory: a hook run
+      # is driven by its cursor, and a reused one would only re-read what an
+      # earlier run already acknowledged.
+      - name: shadow diff (hook path)
+        env:
+          TOKENBOARD_COLLECTOR_DIR: ${{ github.workspace }}
+          TOKENBOARD_TIMEZONE: UTC
+          TOKENBOARD_SINCE: all
+          TOKENBOARD_CCUSAGE_BIN: ${{ github.workspace }}/packages/collector/node_modules/.bin/ccusage
+        run: |
+          set -euo pipefail
+          for source in claude-code codex; do
+            echo "::group::shadow --hook $source"
+            TOKENBOARD_STATE_DIR="$RUNNER_TEMP/shadow-hook-$source" \
+              "$RUNNER_TEMP/tokenboard" shadow --source "$source" --hook
+            echo "::endgroup::"
+          done
+
       # antigravity-cli has no environment override for its conversations
       # directory: both implementations resolve it under the home directory, so
       # the fixture home is swapped in through HOME. The GUI sources are not
