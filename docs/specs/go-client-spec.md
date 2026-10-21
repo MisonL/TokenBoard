@@ -221,6 +221,14 @@ clients/go/
     - skill `installClientBinary` 改为**先解包 ccusage、再换入客户端**：畸形条目在机器未被改动前失败（此前会留下「已换入但安装报错」的半成品）。客户端换入后的 ccusage 写入失败只记日志、不报安装失败，与 Go `selfupdate` 一致；`install-collector.mjs` 补传 `log`，否则该警告会被默认空函数吞掉。
     - `version.go` 注释里引用的 `version_test.go` 不存在（实际校验在 `package_runner_test.go` 的 `TestPackageSpecifierMatchesCollectorPackageJSON`），已订正。
 - 未覆盖边界：**尚未打过真实 tag**（workflow 已就绪，但「首次真实发布」需要人来定版本号并 push tag；本机无法验证 GitHub 上的实际运行）、brew/scoop/winget（spec §8 列为二期）、D8（与上游作者对齐）仍未确认。
+**M7 状态（per-source 灰度 + 双跑，2026-10-21）**：
+
+- [x] `tokenboard shadow` 命令（§6.2）：TS `preview` 与 Go 采集同 env 对比，按 hash payload 做键序规范化 diff，结构化输出 + exit 1；两侧独立临时 state dir，真实 cursor 不可达。
+- [x] CI 门禁：`shadow` job 覆盖 grok-build / pi / deepseek-harness / opencode / claude-code / codex / antigravity-cli 七个源（`cmd/shadow-fixtures` 生成六个文件型源的 fixture；antigravity-cli 用 `scripts/antigravity-fixture.mts` + HOME 替换）；`release` 以 `needs: [test, deps, shadow]` 前置。GUI 两源因 language-server 不进 CI。
+- [x] per-source 映射（§7）：`config.perSource` 校验与客户端选择；具名 source 跟随映射，未映射沿用 `clientType`；`all` 运行要求映射与 `clientType` 一致（TS collector 无子集参数），否则 fail-closed。
+- [x] 真实数据双跑：codex 近 14 天 3 条快照 match；claude-code 排除当天 184 条快照 match（当天差异为活写竞态，已记录）。
+- [ ] 逐源切换本身与「全部 source 走 Go 稳定 2 周」的翻转：待操作决策；切换前对目标 source 跑 `tokenboard shadow` 确认 diff=0。
+
 - Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 
 **M3 调研要点（2026-10-16，未写入实现）**：antigravity 三源在 TS 侧共 ~11.5k 行（含测试），分四层：
