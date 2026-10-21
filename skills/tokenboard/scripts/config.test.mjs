@@ -9,6 +9,8 @@ import {
   normalizeActiveServerConfig,
   packageManagerCommand,
   readClientType,
+  readPerSource,
+  resolveClientForSource,
   readConfig,
   serverOriginFromEndpoint,
   stripUtf8Bom,
@@ -710,3 +712,50 @@ function collectChildExit(child) {
     child.on('close', (status) => resolve(status === 0 ? '' : stderr || `exit ${status}`))
   })
 }
+
+test('readPerSource maps go/ts spellings onto the client types', () => {
+  assert.deepEqual(readPerSource({}), {})
+  assert.deepEqual(readPerSource({ perSource: { pi: 'go', codex: 'ts' } }), {
+    pi: 'binary',
+    codex: 'git'
+  })
+  assert.deepEqual(readPerSource({ perSource: { pi: 'binary', codex: 'git' } }), {
+    pi: 'binary',
+    codex: 'git'
+  })
+})
+
+test('readPerSource fails closed on a malformed map', () => {
+  assert.throws(() => readPerSource({ perSource: [] }), /perSource/)
+  assert.throws(() => readPerSource({ perSource: { pi: 1 } }), /pi/)
+  assert.throws(() => readPerSource({ perSource: { pi: 'python' } }), /pi/)
+})
+
+test('resolveClientForSource lets a named source follow its map entry', () => {
+  assert.equal(
+    resolveClientForSource({ flags: {}, env: {}, config: { perSource: { pi: 'go' } }, source: 'pi' }),
+    'binary'
+  )
+  // An unmapped source keeps the machine-wide client.
+  assert.equal(
+    resolveClientForSource({ flags: {}, env: {}, config: { perSource: { pi: 'go' } }, source: 'codex' }),
+    'git'
+  )
+})
+
+test('resolveClientForSource refuses an all-source run that would split clients', () => {
+  assert.throws(
+    () => resolveClientForSource({ flags: {}, env: {}, config: { perSource: { pi: 'go' } }, source: 'all' }),
+    /perSource/
+  )
+  // A map that agrees with the machine client is fine.
+  assert.equal(
+    resolveClientForSource({
+      flags: {},
+      env: {},
+      config: { clientType: 'binary', perSource: { pi: 'go', codex: 'binary' } },
+      source: 'all'
+    }),
+    'binary'
+  )
+})

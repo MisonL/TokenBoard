@@ -32,6 +32,11 @@ export function buildStatus({
     timezone: config.timezone,
     source: config.source,
     clientType: config.clientType === 'binary' ? 'binary' : 'git',
+    // The per-source rollout map from spec §7, reported as written so an
+    // operator can see which sources have moved without reading the file.
+    ...(config.perSource && typeof config.perSource === 'object' && !Array.isArray(config.perSource)
+      ? { perSource: config.perSource }
+      : {}),
     packageManager: config.packageManager || 'pnpm',
     scheduleTimes: Array.isArray(config.scheduleTimes) ? config.scheduleTimes : [],
     hooks: publicHookStatus(hooks),

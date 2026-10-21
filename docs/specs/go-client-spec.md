@@ -86,8 +86,9 @@ clients/go/
 
 ## 7. 灰度切换（per-source）
 
-- config 增 `perSource: {"pi":"go","codex":"ts",...}`（缺省全 `ts`）；`sync.mjs buildSyncInvocation` 据此 spawn TS（`node --import tsx …`）或 Go 二进制；env 构造代码两端共用不复制。
-- 回滚 = 字段改回 `ts`。**未通过 §3.2 双向兼容测试的 source 不许切**。
+- config 增 `perSource: {"pi":"go","codex":"ts",...}`（缺省全 `ts`）；`sync.mjs buildSyncInvocation` 据此 spawn TS（`node --import tsx …`）或 Go 二进制；env 构造代码两端共用不复制。**已实现（2026-10-21）**：`config.mjs` 的 `readPerSource` 校验映射（`go`/`binary`→Go 二进制，`ts`/`git`→checkout，未知值 fail-closed），`resolveClientForSource` 决定每次调用的客户端——具名 source 用自身条目，未映射的 source 沿用机器级 `clientType`；`perSource` 进入 profile-scoped 键集，`status.mjs` 原样输出。
+- **已知限制**：`--source all` 一次只跑一个客户端（TS collector 无"只采集这些 source"的参数，Go 侧也未扩展子集契约）。映射与 `clientType` 不一致时 `all` 运行 fail-closed 报错，提示逐 source 同步或统一映射；不会静默用单一客户端采集全部。
+- 回滚 = 字段改回 `ts`（具名 source 的运行即时生效；`all` 运行要求映射与 `clientType` 一致）。**未通过 §3.2 双向兼容测试的 source 不许切**。
 - 全部 source 走 Go 且稳定 2 周 → 默认值翻转为 `go`，TS collector 标记 deprecated。
 
 ## 8. 升级通道

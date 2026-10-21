@@ -1459,3 +1459,105 @@ test('an explicit release source in the environment wins over the config', () =>
   assert.equal(invocation.env.TOKENBOARD_RELEASE_REPO, 'run/TokenBoard')
   assert.equal(invocation.env.TOKENBOARD_RELEASE_BASE_URL, 'https://run.example')
 })
+
+// perSource overrides the client for one source. An explicitly named source
+// runs on the client its mapping names, so a machine can move source by source
+// instead of flipping the whole install.
+test('perSource runs a named source on the client it maps to', () => {
+  for (const [mapped, expectedCommand] of [
+    ['go', normalizeMemoryPath('/home/user/.tokenboard/bin/tokenboard')],
+    ['binary', normalizeMemoryPath('/home/user/.tokenboard/bin/tokenboard')],
+    ['ts', '/usr/local/bin/node']
+  ]) {
+    const invocation = buildSyncInvocation({
+      flags: { source: 'pi' },
+      env: {},
+      config: {
+        endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+        uploadToken: 'test-upload-token',
+        timezone: 'Asia/Shanghai',
+        collectorDir: '/repo',
+        perSource: { pi: mapped }
+      },
+      homeDir: '/home/user',
+      nodePath: '/usr/local/bin/node',
+      pathEnv: '/usr/bin',
+      fileExists: () => true
+    })
+
+    assert.equal(invocation.command, expectedCommand, `perSource pi=${mapped}`)
+    assert.deepEqual(invocation.args.slice(-2), ['--source', 'pi'])
+  }
+})
+
+// An all-source run cannot split itself across two clients: the TS collector
+// has no "collect only these sources" flag, and the Go client would collect
+// the rest. Refuse instead of silently running one client for everything.
+test('perSource refuses an all-source run that maps to more than one client', () => {
+  assert.throws(
+    () =>
+      buildSyncInvocation({
+        flags: {},
+        env: {},
+        config: {
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          uploadToken: 'test-upload-token',
+          timezone: 'Asia/Shanghai',
+          collectorDir: '/repo',
+          perSource: { pi: 'go', codex: 'ts' }
+        },
+        homeDir: '/home/user',
+        nodePath: '/usr/local/bin/node',
+        pathEnv: '/usr/bin',
+        fileExists: () => true
+      }),
+    /perSource/
+  )
+})
+
+// An all-source run whose mapping agrees with the machine clientType runs
+// that client: the map names only sources that are already on it.
+test('perSource runs an all-source request when the mapping agrees', () => {
+  const invocation = buildSyncInvocation({
+    flags: {},
+    env: {},
+    config: {
+      endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+      uploadToken: 'test-upload-token',
+      timezone: 'Asia/Shanghai',
+      collectorDir: '/repo',
+      clientType: 'binary',
+      perSource: { pi: 'go', codex: 'binary' }
+    },
+    homeDir: '/home/user',
+    nodePath: '/usr/local/bin/node',
+    pathEnv: '/usr/bin',
+    fileExists: () => true
+  })
+
+  assert.equal(invocation.command, normalizeMemoryPath('/home/user/.tokenboard/bin/tokenboard'))
+  assert.deepEqual(invocation.args, ['sync', '--source', 'all'])
+})
+
+// An unknown client name in the mapping is a configuration error, not a
+// silent fallback to the global clientType.
+test('perSource rejects an unknown client name', () => {
+  assert.throws(
+    () =>
+      buildSyncInvocation({
+        flags: { source: 'pi' },
+        env: {},
+        config: {
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          uploadToken: 'test-upload-token',
+          timezone: 'Asia/Shanghai',
+          collectorDir: '/repo',
+          perSource: { pi: 'python' }
+        },
+        homeDir: '/home/user',
+        pathEnv: '/usr/bin',
+        fileExists: () => true
+      }),
+    /pi/
+  )
+})

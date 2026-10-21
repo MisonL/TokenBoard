@@ -52,6 +52,70 @@ export function readClientType({ flags = {}, env = process.env, config = {} } = 
   throw new Error(`Unsupported client type: ${value}. Expected git or binary.`)
 }
 
+// The per-source rollout map from spec §7: {pi: 'go', codex: 'ts', ...}. A
+// mapping is the operator's explicit choice for that source and outranks the
+// machine-wide clientType, so a migration can move one source at a time
+// instead of flipping the whole install.
+//
+// 'go' and 'binary' both mean the released Go binary; 'ts' and 'git' both mean
+// the checkout. Keeping both spellings means the map can echo the language of
+// whichever side it is describing.
+const sourceClientAliases = new Map([
+  ['go', 'binary'],
+  ['binary', 'binary'],
+  ['ts', 'git'],
+  ['git', 'git']
+])
+
+export function readPerSource(config = {}) {
+  const mapping = config.perSource
+  if (mapping === undefined) return {}
+  if (mapping === null || typeof mapping !== 'object' || Array.isArray(mapping)) {
+    throw new Error('Invalid perSource: expected an object mapping source names to git or binary.')
+  }
+  const resolved = {}
+  for (const [source, value] of Object.entries(mapping)) {
+    if (typeof value !== 'string') {
+      throw new Error(`Invalid perSource entry for ${source}: expected git, ts, go or binary.`)
+    }
+    const client = sourceClientAliases.get(value)
+    if (!client) {
+      throw new Error(`Invalid perSource entry for ${source}: ${value}. Expected git, ts, go or binary.`)
+    }
+    resolved[source] = client
+  }
+  return resolved
+}
+
+// resolveClientForSource picks the client for one invocation. A named source
+// uses its perSource entry when it has one; 'all' is the case that cannot be
+// split, so it requires every mapped source to agree with the machine-wide
+// client and refuses a mixed map rather than silently running one client for
+// everything.
+export function resolveClientForSource({ flags = {}, env = process.env, config = {}, source }) {
+  const defaultClient = readClientType({ flags, env, config })
+  const perSource = readPerSource(config)
+  const mapped = perSource[source]
+  if (mapped !== undefined) {
+    return mapped
+  }
+  if (source !== 'all') {
+    return defaultClient
+  }
+  // An all-source run collects everything with one client. A map that names a
+  // different client for any source cannot be honored, and picking either side
+  // would silently collect the other's sources incorrectly.
+  const conflicting = Object.entries(perSource).filter(([, client]) => client !== defaultClient)
+  if (conflicting.length > 0) {
+    const detail = conflicting.map(([name, client]) => `${name}=${client === 'binary' ? 'go' : 'ts'}`).join(', ')
+    throw new Error(
+      `perSource maps ${detail}, which differs from the machine clientType (${defaultClient === 'binary' ? 'go' : 'ts'}). ` +
+        'An all-source run needs one client; sync each source separately or set perSource to a single client.'
+    )
+  }
+  return defaultClient
+}
+
 export function packageManagerCommand(packageManager, platform = process.platform) {
   if (platform !== 'win32') {
     return packageManager
@@ -336,6 +400,7 @@ const profileScopedRootKeys = new Set([
   'repoRef',
   'packageManager',
   'clientType',
+  'perSource',
   'scheduleTimes',
   'codexSymlinkRoots',
   'createdAt',

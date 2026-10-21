@@ -16,7 +16,7 @@ import {
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { isMainModule } from './is-main.mjs'
-import { readConfig, parseArgs, collectorDir, readPackageManager, readClientType } from './config.mjs'
+import { readConfig, parseArgs, collectorDir, readPackageManager, resolveClientForSource } from './config.mjs'
 import { clientBinaryPath } from './client-binary.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { normalizePathEnv } from './schedule.mjs'
@@ -500,7 +500,7 @@ export function buildSyncInvocation({
   const mode = flags.mode || 'sync'
   const source = flags.source || config.source || 'all'
   const repoDir = config.collectorDir || collectorDir()
-  const clientType = readClientType({ flags, env, config })
+  const clientType = resolveClientForSource({ flags, env, config, source })
   const packageManager = readPackageManager(flags, config)
   const since = readSince({ flags, config, env })
   const delimiter = platform === 'win32' ? ';' : ':'

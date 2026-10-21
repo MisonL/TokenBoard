@@ -818,3 +818,20 @@ test('readClientStatus reports missing files without running them', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// The per-source rollout map is reported as written, and only when present,
+// so an operator can see which sources have moved to the binary client.
+test('status reports the perSource rollout map', () => {
+  const base = {
+    configPath: '/home/user/.tokenboard/config.json',
+    config: {
+      timezone: 'UTC',
+      source: 'all',
+      perSource: { pi: 'go', codex: 'ts' }
+    },
+    hooks: {}
+  }
+  assert.deepEqual(buildStatus(base).perSource, { pi: 'go', codex: 'ts' })
+  delete base.config.perSource
+  assert.equal('perSource' in buildStatus(base), false)
+})
