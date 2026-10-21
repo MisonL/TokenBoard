@@ -237,6 +237,8 @@ clients/go/
 - 单次成本：`ccusage claude session` 在本机 18 GB / 10328 个会话文件上峰值 RSS **4.6–7.6 GB**、耗时 20–68 s；`claude daily` 另有 4.7 GB / 32 s。**`--since/--until` 只过滤输出、不减少扫描量**（窄窗口 68 s vs 30 天窗口 63 s，实测）。
 - 失败放大的根因（2026-10-14 高峰 188 次运行 / 156 次失败）：`TokenBoard model pricing: hook mode has no usable cache` 被当作 hook 失败上抛。该行本身是「回退到 bundled 静态定价并继续」的提示，不属于致命错误；当时它让每次 hook 都 exit 1，于是冷却永不生效、重算不断。已在后续版本不再表现为失败（3 天内该错误 0 次）。
 - 与采集实现无关的部分：`ccusage` 的全树扫描是外部依赖的限制，Go 侧调用同一个二进制，实测峰值 RSS 7.0 GB 与 TS 侧同量级。要真正降低内存只能等 ccusage 提供增量/流式接口，或改由 collector 自己投影——后者会偏离「两侧同口径」的迁移前提，不在本次范围。
+- **已实施的优化（2026-10-21，`70f981a`，TS 与 Go 两侧同步）**：① oversized Codex 行摘要按 scan 折叠——原来一次运行打印十条近义行（日志里 3475 行、570 个连续块），现在按家族（child session / context pricing）合并成一条汇总，同时兼容「单 scan」与「across N scans」两种既有形态；② stale canonical attribution skip 折叠成计数（525 行 / 69 次运行，平均每次 7.6 行）；③ 定价目录按进程 memo——`--source all` 下 claude-code 与 codex 各加载一次，在端点无定价路由时两次请求都白付（实测每次 ~0.8 s），现降为一次（实测 2 → 1）。memo 只覆盖「本轮已尝试」这一情形：成功刷新本就落共享磁盘缓存并跨运行复用，抛错会清除 memo 以免下一个 provider 继承一次可能瞬时的失败。
+- **经实测否决的两条**：① 给 claude 侧加 `--offline`——它用的是 ccusage 内置/过期价表，实测会让 GLM-5.3-Flash 成本偏低 14%、deepseek-v4.1-flash 逐日偏差，破坏 `costUsd` 口径，不能用；② 给 `ccusage` 传 `--id`/缩小窗口减少扫描量——实测不减少全树扫描（1 天窗口 68 s vs 30 天 63 s）。
 
 - Windows 换入语义：`os.Rename` 在 Windows 上走 `MoveFileEx(..., MOVEFILE_REPLACE_EXISTING)`（Go 1.27 GOROOT `internal/syscall/windows/syscall_windows.go:357`），能覆盖已存在的目标文件；`swap` 的两步 rename 顺序（先 current→backup，再 staged→current）之所以在 Windows 也可行，是因为第一步只移动**正在运行的镜像**（Windows 允许对运行中的 exe 改名），第二步的目标 `current` 此时已不存在，不依赖覆盖语义。**未在本机（darwin）实测 Windows**，只做了 `GOOS=windows go build` 与源码级论证；这条留给首个 Windows 二进制用户验证。
 
