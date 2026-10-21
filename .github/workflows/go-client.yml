@@ -134,9 +134,13 @@ jobs:
           TOKENBOARD_TIMEZONE: UTC
           TOKENBOARD_SINCE: all
           TOKENBOARD_STATE_DIR: ${{ runner.temp }}/shadow-state
+          # The claude-code and codex paths run ccusage; point both sides at
+          # the copy the collector dependency already installed, so neither
+          # downloads one and both run the same binary.
+          TOKENBOARD_CCUSAGE_BIN: ${{ github.workspace }}/packages/collector/node_modules/.bin/ccusage
         run: |
           set -euo pipefail
-          for source in grok-build pi deepseek-harness opencode; do
+          for source in grok-build pi deepseek-harness opencode claude-code codex; do
             echo "::group::shadow $source"
             "$RUNNER_TEMP/tokenboard" shadow --source "$source"
             echo "::endgroup::"

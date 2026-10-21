@@ -59,6 +59,16 @@ func main() {
 	} else {
 		assignments = append(assignments, struct{ name, value string }{"TOKENBOARD_OPENCODE_DB", path})
 	}
+	if dir, err := writeClaude(filepath.Join(*root, "claude")); err != nil {
+		fail(err)
+	} else {
+		assignments = append(assignments, struct{ name, value string }{"CLAUDE_CONFIG_DIR", dir})
+	}
+	if dir, err := writeCodex(filepath.Join(*root, "codex")); err != nil {
+		fail(err)
+	} else {
+		assignments = append(assignments, struct{ name, value string }{"CODEX_HOME", dir})
+	}
 
 	var out strings.Builder
 	for _, assignment := range assignments {
@@ -196,6 +206,11 @@ func writeOpenCode(dir string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, "opencode.db")
+	// Re-running the fixture writer over an existing root must not fail on
+	// the table it created last time.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return "", err
@@ -211,4 +226,63 @@ func writeOpenCode(dir string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// writeClaude mirrors the Claude Code fixture: assistant entries carrying the
+// message.usage block ccusage aggregates, under the projects directory the
+// provider and ccusage both read.
+func writeClaude(home string) (string, error) {
+	entry := func(uuid, parent, model string, input, cacheCreate, cacheRead, output int64) map[string]any {
+		return map[string]any{
+			"parentUuid":  parent,
+			"isSidechain": false,
+			"userType":    "external",
+			"cwd":         "/work",
+			"sessionId":   "s1",
+			"version":     "2.1.0",
+			"type":        "assistant",
+			"uuid":        uuid,
+			"timestamp":   "2026-07-31T20:00:00.000Z",
+			"message": map[string]any{
+				"id": "msg_" + uuid, "type": "message", "role": "assistant", "model": model,
+				"usage": map[string]any{
+					"input_tokens":                input,
+					"cache_creation_input_tokens": cacheCreate,
+					"cache_read_input_tokens":     cacheRead,
+					"output_tokens":               output,
+				},
+			},
+		}
+	}
+	return home, writeJSONL(filepath.Join(home, "projects", "enc-proj", "session-1.jsonl"), []any{
+		entry("a1", "u1", "claude-sonnet-5", 1000, 200, 3000, 50),
+		entry("a2", "a1", "claude-sonnet-5", 10, 0, 500, 20),
+	})
+}
+
+// writeCodex mirrors the Codex fixture: a session rollout whose token_count
+// event carries the cumulative usage ccusage reads.
+func writeCodex(home string) (string, error) {
+	session := filepath.Join(home, "sessions", "2026", "07", "31", "rollout-2026-07-31T20-00-00-s1.jsonl")
+	lines := []any{
+		map[string]any{"timestamp": "2026-07-31T19:59:00.000Z", "type": "session_meta", "payload": map[string]any{
+			"id": "s1", "timestamp": "2026-07-31T19:59:00.000Z", "cwd": "/work",
+			"originator": "codex_cli_rs", "cli_version": "0.50.0",
+		}},
+		map[string]any{"timestamp": "2026-07-31T20:00:00.000Z", "type": "turn_context", "payload": map[string]any{"model": "gpt-6.1-sol"}},
+		map[string]any{"timestamp": "2026-07-31T20:00:05.000Z", "type": "event_msg", "payload": map[string]any{
+			"type": "token_count",
+			"info": map[string]any{
+				"total_token_usage": map[string]any{
+					"input_tokens": 1000, "cached_input_tokens": 400,
+					"output_tokens": 50, "reasoning_output_tokens": 10, "total_tokens": 1050,
+				},
+				"last_token_usage": map[string]any{
+					"input_tokens": 1000, "cached_input_tokens": 400,
+					"output_tokens": 50, "reasoning_output_tokens": 10, "total_tokens": 1050,
+				},
+			},
+		}},
+	}
+	return home, writeJSONL(session, lines)
 }
