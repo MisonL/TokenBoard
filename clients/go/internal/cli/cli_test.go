@@ -556,3 +556,42 @@ func TestSystemTimezoneNameResolvesValidOrEmpty(t *testing.T) {
 		t.Fatalf("systemTimezoneName must not return %q", name)
 	}
 }
+
+// The CLI validates the timezone before any provider runs, so an offset zone
+// Intl accepts has to survive that gate and actually shift the calendar day.
+// The fixture's event is at 2026-07-31T20:00:00Z, which is 2026-08-01 in
+// +08:00 and still 2026-07-31 in UTC — so a UTC fallback would fail this.
+func TestPreviewAcceptsAnOffsetTimezone(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "enc-cwd", "session-1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	crossing := `{"method":"_x.ai/session/update","timestamp":1785528000,"params":{"update":{"sessionUpdate":"turn_completed","usage":{"inputTokens":1000,"outputTokens":10,"cachedReadTokens":0,"modelUsage":{"grok-4.5":{"inputTokens":1000,"outputTokens":10,"cachedReadTokens":0}}}}}}`
+	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), []byte(crossing+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := run(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":  "+08:00",
+		"TOKENBOARD_GROK_HOME": home,
+	}, "preview", "--source", "grok-build")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s", code, stderr)
+	}
+	var snapshots []contract.Snapshot
+	if err := json.Unmarshal([]byte(stdout), &snapshots); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].Timezone != "+08:00" {
+		t.Errorf("timezone = %q, want the offset as given", snapshots[0].Timezone)
+	}
+	if snapshots[0].UsageDate != "2026-08-01" {
+		t.Errorf("usageDate = %q, want 2026-08-01 (the next day in +08:00)", snapshots[0].UsageDate)
+	}
+	if err := snapshots[0].Validate(); err != nil {
+		t.Errorf("snapshot fails the upload contract: %v", err)
+	}
+}
