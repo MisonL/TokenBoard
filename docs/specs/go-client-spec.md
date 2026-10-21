@@ -197,6 +197,7 @@ clients/go/
   - `self-update` 的 `--tag`/`--repo` 曾解析后丢弃，现在都进 `Input`，且 flag 优先于环境变量（与 skill 的 `flags['release-repo'] || env.…` 同序）。
   - 安装时指定的发布源此前只用于那一次安装，后续自动更新回落到默认仓库。现在 `migrateToBinaryClient` 把非默认的 `releaseRepo`/`releaseBaseUrl` 写入配置，`buildSyncInvocation` 经 `sharedEnv` 传给 client，`runPreCollectUpgrade` 也把 invocation 的 env 传给 self-update spawn（此前完全没传，用了 ambient env）。`release-tag` 刻意不持久化——它只钉住一次安装。
   - `swap` 注释曾声称两次 rename 之间没有空窗，实际目标路径在该窗口缺失。注释订正；skill 侧新增 `recoverOrphanedBinary`，在目标缺失时从最新 `.backup-*` 恢复（前缀取自配置路径的 basename，与 Go 的 `backupPath` 同源）。
+- 2026-10-21 发布链路预检：workflow 新增 `release-dry-run` job——`bundle-ccusage` + `goreleaser check` + `goreleaser release --snapshot --clean --skip=publish`，并断言产物契约（恰好 6 个 `tokenboard_<os>_<arch>.tar.gz` + `checksums.txt`；每个归档含 `tokenboard[.exe]`、`ccusage[.exe]`、`README.md`、`LICENSE.ccusage`；Linux 归档内二进制 `version` 必须是 `tokenboard (go) 0.0.0-SNAPSHOT-<sha>`，不是 `dev`）。`release` 以 `needs: [test, deps, shadow, release-dry-run]` 前置，首次真实 tag 不再是对该流水线的第一次执行。
 - 2026-10-20 发布链路（`.github/workflows/go-client.yml`）：
   - `test`：ubuntu/macos/windows 三平台 × `go-version-file: clients/go/go.mod`，跑 `gofmt -l`（非 Windows）、`go vet`、`go test -race`；Linux 上额外做 windows/linux/darwin arm64 交叉构建，把「3 OS × 2 arch」的另一半也纳入编译门禁。
   - `deps`：spec §5 的 ccusage 契约门禁。`pnpm install --filter @tokenboard/collector` 后跑 `clients/go/scripts/check-deps.sh`，金样本不一致即失败。本地已实测通过（`ccusage 20.0.33 output matches the goldens`）。

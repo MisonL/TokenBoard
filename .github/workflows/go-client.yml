@@ -166,13 +166,82 @@ jobs:
           TOKENBOARD_STATE_DIR: ${{ runner.temp }}/shadow-state-ag
         run: '"$RUNNER_TEMP/tokenboard" shadow --source antigravity-cli'
 
+  # The release pipeline itself is otherwise untested until the first tag:
+  # a snapshot build exercises GoReleaser's config, the ldflags stamp, the
+  # ccusage bundling and the archive layout, and asserts the artifact names
+  # that internal/release constructs before anything is published.
+  release-dry-run:
+    name: Release dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/go/go.mod
+          cache-dependency-path: clients/go/go.sum
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+
+      - name: bundle ccusage
+        run: node clients/go/scripts/bundle-ccusage.mjs
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.12.7
+          args: check
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.12.7
+          args: release --snapshot --clean --skip=publish
+
+      - name: verify the release artifact contract
+        run: |
+          set -euo pipefail
+          cd dist
+          for name in \
+            tokenboard_darwin_amd64.tar.gz tokenboard_darwin_arm64.tar.gz \
+            tokenboard_linux_amd64.tar.gz tokenboard_linux_arm64.tar.gz \
+            tokenboard_windows_amd64.tar.gz tokenboard_windows_arm64.tar.gz \
+            checksums.txt; do
+            test -f "$name" || { echo "missing artifact: $name"; exit 1; }
+          done
+          test "$(ls -1 ./*.tar.gz | wc -l)" -eq 6
+          test "$(wc -l < checksums.txt)" -eq 6
+          for archive in ./*.tar.gz; do
+            entries=$(tar -tzf "$archive")
+            case "$archive" in
+              *windows*) binary=tokenboard.exe; ccusage=ccusage.exe ;;
+              *)         binary=tokenboard;     ccusage=ccusage ;;
+            esac
+            for entry in "$binary" "$ccusage" README.md LICENSE.ccusage; do
+              echo "$entries" | grep -qx "$entry" \
+                || { echo "$archive is missing $entry"; exit 1; }
+            done
+          done
+          # The stamped version is what self-update compares against; a build
+          # left at the "dev" default would never match a release.
+          mkdir -p ../verify
+          tar -xzf tokenboard_linux_amd64.tar.gz -C ../verify tokenboard
+          version=$(../verify/tokenboard version)
+          echo "built version: $version"
+          echo "$version" | grep -Eq '^tokenboard \(go\) 0\.0\.0-SNAPSHOT-' \
+            || { echo "unexpected version line: $version"; exit 1; }
+
   # Spec §9 M6: a release is cut from a version tag. The configuration and the
   # artifact names are pinned by internal/release, so `check` runs before
   # anything is published.
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, deps, shadow]
+    needs: [test, deps, shadow, release-dry-run]
     runs-on: ubuntu-latest
     permissions:
       contents: write
