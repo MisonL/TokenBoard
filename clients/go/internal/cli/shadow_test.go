@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MisonL/TokenBoard/clients/go/internal/collect"
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
 
@@ -226,6 +227,172 @@ func TestShadowIgnoresInheritedHookMode(t *testing.T) {
 	stubShadowTS(t, []contract.Snapshot{shadowSnapshot()}, nil)
 
 	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
+	}
+}
+
+// The dual run compares full preview semantics, and the hook path is a
+// different code path: incremental cursor scan, narrow ccusage window,
+// reconciliation assertions. Production uses that path, so a shadow gate that
+// only compares previews leaves it unverified. `shadow --hook` compares the
+// hook path on both sides instead, over an isolated state dir so a fresh
+// cursor makes the hook scan cover the whole tree.
+func TestShadowCanCompareTheHookPath(t *testing.T) {
+	repoDir := t.TempDir()
+	srcDir := filepath.Join(repoDir, "packages", "collector", "src")
+	if err := os.MkdirAll(srcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "cli.ts"), []byte("// fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stubSource(t, contract.SourceClaudeCode, stubProvider{snapshots: []contract.Snapshot{shadowSnapshot()}})
+
+	var seenHookMode bool
+	previous := runShadowTS
+	runShadowTS = func(_ context.Context, input shadowTSInput) ([]contract.Snapshot, error) {
+		seenHookMode = input.HookMode
+		return []contract.Snapshot{shadowSnapshot()}, nil
+	}
+	t.Cleanup(func() { runShadowTS = previous })
+
+	code, stdout, stderr := runShadowCLI(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":      "UTC",
+		"TOKENBOARD_COLLECTOR_DIR": repoDir,
+	}, "shadow", "--source", "claude-code", "--hook")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
+	}
+	if !seenHookMode {
+		t.Error("the TypeScript side must run in hook mode too, or the two sides compare different paths")
+	}
+}
+
+// hookModeProbe answers like stubProvider but records what the provider was
+// told about hook mode, which is how the Go side actually decides between the
+// hook and preview paths.
+type hookModeProbe struct {
+	snapshots []contract.Snapshot
+	seen      string
+}
+
+func (p *hookModeProbe) Collect(_ context.Context, options collect.Options) ([]contract.Snapshot, error) {
+	if options.Env != nil {
+		p.seen = options.Env("TOKENBOARD_HOOK_MODE")
+	}
+	return p.snapshots, nil
+}
+
+// --hook must reach the Go provider, not just the TypeScript child. The
+// providers branch on TOKENBOARD_HOOK_MODE themselves, so a flag that only
+// sets Options.HookMode would leave the Go side collecting the full preview
+// while the TS child runs the hook path — a comparison of two different code
+// paths, reported as if it were an implementation difference.
+func TestShadowHookModeReachesTheGoProvider(t *testing.T) {
+	repoDir := t.TempDir()
+	srcDir := filepath.Join(repoDir, "packages", "collector", "src")
+	if err := os.MkdirAll(srcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "cli.ts"), []byte("// fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := &hookModeProbe{snapshots: []contract.Snapshot{shadowSnapshot()}}
+	stubSource(t, contract.SourceClaudeCode, probe)
+	stubShadowTS(t, []contract.Snapshot{shadowSnapshot()}, nil)
+
+	code, stdout, stderr := runShadowCLI(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":      "UTC",
+		"TOKENBOARD_COLLECTOR_DIR": repoDir,
+	}, "shadow", "--source", "claude-code", "--hook")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
+	}
+	if probe.seen != "1" {
+		t.Errorf("provider saw TOKENBOARD_HOOK_MODE = %q, want \"1\"", probe.seen)
+	}
+}
+
+// The same wiring must strip an ambient hook mode when --hook was not given:
+// a shadow started from a notifier's environment still compares previews, and
+// the provider must not see the notifier's flag.
+func TestShadowStripsAmbientHookModeFromTheGoProvider(t *testing.T) {
+	repoDir := t.TempDir()
+	srcDir := filepath.Join(repoDir, "packages", "collector", "src")
+	if err := os.MkdirAll(srcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "cli.ts"), []byte("// fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probe := &hookModeProbe{snapshots: []contract.Snapshot{shadowSnapshot()}}
+	stubSource(t, contract.SourceClaudeCode, probe)
+	stubShadowTS(t, []contract.Snapshot{shadowSnapshot()}, nil)
+
+	code, stdout, stderr := runShadowCLI(t, map[string]string{
+		"TOKENBOARD_TIMEZONE":      "UTC",
+		"TOKENBOARD_COLLECTOR_DIR": repoDir,
+		"TOKENBOARD_HOOK_MODE":     "1",
+	}, "shadow", "--source", "claude-code")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
+	}
+	if probe.seen != "" {
+		t.Errorf("provider saw TOKENBOARD_HOOK_MODE = %q, want it stripped without --hook", probe.seen)
+	}
+}
+
+// Without --hook the comparison stays a full preview on both sides, and an
+// inherited TOKENBOARD_HOOK_MODE must not flip it.
+func TestShadowDefaultsToPreviewEvenWithHookModeSet(t *testing.T) {
+	env, _ := shadowEnv(t)
+	env["TOKENBOARD_HOOK_MODE"] = "1"
+	var seenHookMode bool
+	previous := runShadowTS
+	runShadowTS = func(_ context.Context, input shadowTSInput) ([]contract.Snapshot, error) {
+		seenHookMode = input.HookMode
+		return []contract.Snapshot{shadowSnapshot()}, nil
+	}
+	t.Cleanup(func() { runShadowTS = previous })
+
+	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
+	}
+	if seenHookMode {
+		t.Error("hook mode must come from the flag, not from the ambient environment")
+	}
+}
+
+// Both clients reject --until in hook mode, because the hook window comes
+// from the changed cursor dates rather than a flag. Shadow must refuse the
+// combination before it starts a long collection, not halfway through when the
+// TypeScript child reports a usage error.
+func TestShadowRejectsUntilInHookMode(t *testing.T) {
+	env, _ := shadowEnv(t)
+	stubSource(t, contract.SourceClaudeCode, stubProvider{snapshots: []contract.Snapshot{shadowSnapshot()}})
+	calls := stubShadowTS(t, []contract.Snapshot{shadowSnapshot()}, nil)
+	code, _, stderr := runShadowCLI(t, env, "shadow", "--source", "claude-code", "--hook", "--until", "2026-07-30")
+	if code != ExitUsage || !strings.Contains(stderr, "--until") {
+		t.Errorf("code = %d, stderr = %q; want a usage error naming --until", code, stderr)
+	}
+	if *calls != 0 {
+		t.Errorf("TS side ran %d times; a rejected invocation must not collect", *calls)
+	}
+}
+
+// An ambient TOKENBOARD_UNTIL is ignored in hook mode, the way the TypeScript
+// client ignores it: the hook window is computed from the cursors, so an
+// inherited variable is not a contradiction and must not fail the run. Only an
+// explicitly typed --until is a usage error.
+func TestShadowIgnoresAmbientUntilInHookMode(t *testing.T) {
+	env, _ := shadowEnv(t)
+	stubSource(t, contract.SourceClaudeCode, stubProvider{snapshots: []contract.Snapshot{shadowSnapshot()}})
+	stubShadowTS(t, []contract.Snapshot{shadowSnapshot()}, nil)
+	env["TOKENBOARD_UNTIL"] = "2026-07-30"
+
+	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "claude-code", "--hook")
 	if code != ExitOK {
 		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
 	}

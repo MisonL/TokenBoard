@@ -45,7 +45,7 @@ const ccusageSources = new Set(['claude-code', 'codex'])
 // any other one is a usage error on both clients, not a silently ignored flag.
 const untilSources = ccusageSources
 
-export const usage = `Usage: shadow-dual-run.mjs [--client PATH] [--since YYYYMMDD] [--until YYYY-MM-DD] [--log PATH] [--source NAME]
+export const usage = `Usage: shadow-dual-run.mjs [--client PATH] [--since YYYYMMDD] [--until YYYY-MM-DD] [--hook] [--log PATH] [--source NAME]
 
 Runs \`tokenboard shadow\` for every comparable source and appends one JSON
 line per source to the dual-run log (default: the config directory's
@@ -55,6 +55,8 @@ logs/shadow-dual-run.jsonl).
 --since    passed through to the collector (default: the config lookback)
 --until    compare only days up to and including this date; pass yesterday
            to keep the actively-written current day out of the comparison
+--hook     compare the incremental hook path (claude-code and codex only)
+           instead of a full preview
 --source   run one source instead of all of them
 --log      append the results here instead of the default log`
 
@@ -102,26 +104,41 @@ function firstExisting(candidates) {
 // `until` narrows the comparison to settled days. Only claude-code and codex
 // accept it, so the other sources get an unbounded comparison — their files
 // are not appended to mid-run the way an active Claude Code session's are.
-export function buildShadowInvocation({ config, source, since, until, env = process.env }) {
+//
+// `hook` compares the incremental hook path instead of a full preview. That is
+// the path production actually runs, so a dual run that only ever compares
+// previews leaves the code that collects every scheduled event unverified.
+// Only the two hook-installed sources have a hook path at all.
+//
+// `--hook` wins over `--until`: both clients reject --until in hook mode
+// (the hook window comes from the changed cursor dates, not a flag), and
+// silently passing the pair would fail every ccusage source. The trade is
+// accepted — hook mode cannot exclude the actively-written current day, so
+// same-day rows carry the known live-write race and same-instant cost deltas.
+export function buildShadowInvocation({ config, source, since, until, hook = false, env = process.env }) {
   const supportsUntil = untilSources.has(source)
+  const useHook = hook && untilSources.has(source)
+  const passUntil = until && supportsUntil && !useHook
   const childEnv = {
     ...env,
     TOKENBOARD_COLLECTOR_DIR: config.collectorDir,
     TOKENBOARD_TIMEZONE: config.timezone
   }
   if (since) childEnv.TOKENBOARD_SINCE = since
-  if (until && supportsUntil) childEnv.TOKENBOARD_UNTIL = until
+  if (passUntil) childEnv.TOKENBOARD_UNTIL = until
   if (config.ccusageBin && ccusageSources.has(source)) {
     childEnv.TOKENBOARD_CCUSAGE_BIN = config.ccusageBin
   }
   if (config.codexSymlinkRoots?.length) {
     childEnv.TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON = JSON.stringify(config.codexSymlinkRoots)
   }
-  // The dual run compares full preview semantics; a hook mode inherited from
-  // a notifier would silently compare only the two hook sources.
+  // Hook mode comes from the flag, never from the environment: an inherited
+  // TOKENBOARD_HOOK_MODE belongs to a notifier and would silently change which
+  // code path the comparison measures.
   delete childEnv.TOKENBOARD_HOOK_MODE
   const args = ['shadow', '--source', source]
-  if (until && supportsUntil) args.push('--until', until)
+  if (passUntil) args.push('--until', until)
+  if (useHook) args.push('--hook')
   return { command: config.binary, args, env: childEnv }
 }
 
@@ -289,11 +306,12 @@ function run() {
   const sources = typeof flags.source === 'string' ? [flags.source] : dualRunSources
   const since = typeof flags.since === 'string' ? flags.since : undefined
   const until = typeof flags.until === 'string' ? flags.until : undefined
+  const hook = flags.hook === true
   const logPath = typeof flags.log === 'string' ? flags.log : config.logPath
 
   const records = []
   for (const source of sources) {
-    const invocation = buildShadowInvocation({ config, source, since, until })
+    const invocation = buildShadowInvocation({ config, source, since, until, hook })
     const result = spawnSync(invocation.command, invocation.args, {
       env: invocation.env,
       encoding: 'utf8',

@@ -263,3 +263,44 @@ test('every comparable source is one the client accepts', () => {
     false
   )
 })
+
+// The dual run's default comparison is a full preview, but production runs the
+// hook path. --hook lets the harness measure the code that actually collects
+// scheduled usage.
+test('buildShadowInvocation passes --hook only for the hook-installed sources', () => {
+  const config = { binary: '/bin/tokenboard', collectorDir: '/repo', timezone: 'UTC' }
+  for (const source of ['claude-code', 'codex']) {
+    const invocation = buildShadowInvocation({ config, source, hook: true })
+    assert.ok(invocation.args.includes('--hook'), `${source} must compare the hook path`)
+  }
+  // Grok Build and the other file-backed sources have no hook mode at all;
+  // passing the flag would be a usage error on both clients.
+  const grok = buildShadowInvocation({ config, source: 'grok-build', hook: true })
+  assert.equal(grok.args.includes('--hook'), false)
+})
+
+test('buildShadowInvocation leaves the hook path off by default', () => {
+  const config = { binary: '/bin/tokenboard', collectorDir: '/repo', timezone: 'UTC' }
+  const invocation = buildShadowInvocation({ config, source: 'codex' })
+  assert.equal(invocation.args.includes('--hook'), false)
+})
+
+// Both clients reject --until in hook mode: the hook window comes from the
+// changed cursor dates, not from a flag. Passing the pair would turn every
+// claude-code/codex comparison into a usage error, so --hook must drop it.
+test('buildShadowInvocation drops --until when comparing the hook path', () => {
+  const config = { binary: '/bin/tokenboard', collectorDir: '/repo', timezone: 'UTC' }
+  const invocation = buildShadowInvocation({ config, source: 'codex', until: '2026-10-20', hook: true })
+  assert.ok(invocation.args.includes('--hook'), 'the hook path must still be selected')
+  assert.equal(invocation.args.includes('--until'), false)
+  assert.equal(invocation.env.TOKENBOARD_UNTIL, undefined)
+})
+
+// Without --hook the same arguments still narrow the comparison to settled
+// days, which is what keeps the live-write race out of a preview comparison.
+test('buildShadowInvocation keeps --until for a preview comparison', () => {
+  const config = { binary: '/bin/tokenboard', collectorDir: '/repo', timezone: 'UTC' }
+  const invocation = buildShadowInvocation({ config, source: 'codex', until: '2026-10-20' })
+  assert.deepEqual(invocation.args, ['shadow', '--source', 'codex', '--until', '2026-10-20'])
+  assert.equal(invocation.env.TOKENBOARD_UNTIL, '2026-10-20')
+})

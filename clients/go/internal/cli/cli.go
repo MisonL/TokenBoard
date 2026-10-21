@@ -59,6 +59,11 @@ type Options struct {
 	Until           string
 	HookMode        bool
 	FailOnSourceErr bool
+	// ShadowHook makes `shadow` compare the incremental hook path instead of a
+	// full preview. It is a flag, never an environment variable: the ambient
+	// TOKENBOARD_HOOK_MODE belongs to a notifier and must not silently change
+	// which code path a comparison measures.
+	ShadowHook bool
 }
 
 // Run executes one CLI invocation and returns the process exit code.
@@ -613,7 +618,27 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 	default:
 		return Options{}, fmt.Errorf("Usage: %s", usageLine())
 	}
-	flags, err := readFlags(args[1:])
+	// --hook is a boolean for `shadow` only: readFlags requires a value, and
+	// `--hook` is written bare. Pull it out first, then parse the rest
+	// normally so an unknown or valueless flag is still a usage error.
+	shadowHook := false
+	rest := args[1:]
+	if command == "shadow" {
+		kept := make([]string, 0, len(rest))
+		for _, arg := range rest {
+			switch {
+			case arg == "--hook":
+				shadowHook = true
+			case strings.HasPrefix(arg, "--hook="):
+				value := strings.TrimPrefix(arg, "--hook=")
+				shadowHook = value == "true" || value == "1"
+			default:
+				kept = append(kept, arg)
+			}
+		}
+		rest = kept
+	}
+	flags, err := readFlags(rest)
 	if err != nil {
 		return Options{}, err
 	}
@@ -655,6 +680,7 @@ func parseArgsWithLookup(args []string, env Env, lookup lookupFunc) (Options, er
 		Since:           flagOrEnvChain(flags, "since", env, "TOKENBOARD_SINCE", "TOKENBOARD_DEFAULT_SINCE"),
 		HookMode:        env("TOKENBOARD_HOOK_MODE") == "1",
 		FailOnSourceErr: env("TOKENBOARD_FAIL_ON_SOURCE_ERROR") == "1",
+		ShadowHook:      shadowHook,
 	}
 	// TS: `untilFlag ?? (supportsUntil(...) ? env.TOKENBOARD_UNTIL ?? '' : '')`.
 	// readFlags rejects an empty --until, so the environment is consulted
@@ -700,7 +726,10 @@ func assertSupportedUntil(options Options) error {
 	if options.Command == "warm-hooks" {
 		return fmt.Errorf("--until is not supported for warm-hooks; the command does not collect usage")
 	}
-	if options.HookMode {
+	// ShadowHook counts as hook mode here even though the run's own HookMode
+	// is still false at parse time: `shadow --hook --until` would otherwise
+	// pass validation and only fail later, inside the TypeScript child.
+	if options.HookMode || options.ShadowHook {
 		return fmt.Errorf("--until is not supported in hook mode; hook sync computes its own incremental window")
 	}
 	if !supportsUntil(options) {
@@ -709,8 +738,11 @@ func assertSupportedUntil(options Options) error {
 	return nil
 }
 
+// supportsUntil mirrors the TS predicate. ShadowHook counts as hook mode: a
+// `shadow --hook` run computes its own window from the cursors, so an ambient
+// TOKENBOARD_UNTIL is ignored rather than collected and rejected.
 func supportsUntil(options Options) bool {
-	return options.Command != "warm-hooks" && !options.HookMode &&
+	return options.Command != "warm-hooks" && !options.HookMode && !options.ShadowHook &&
 		(options.Source == string(contract.SourceClaudeCode) || options.Source == string(contract.SourceCodex))
 }
 

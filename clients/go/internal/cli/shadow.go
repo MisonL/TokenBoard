@@ -23,6 +23,11 @@ type shadowTSInput struct {
 	Source  string
 	Since   string
 	Until   string
+	// HookMode compares the incremental hook path instead of a full preview.
+	// Both sides must agree on which path they run, or the diff measures the
+	// difference between two different code paths rather than between two
+	// implementations.
+	HookMode bool
 	// StateDir is the temporary state directory this side owns.
 	StateDir string
 	Stderr   io.Writer
@@ -97,13 +102,21 @@ func runShadow(ctx context.Context, options Options, env Env, stdout, stderr io.
 	}
 	defer os.RemoveAll(tsStateDir)
 
-	// Shadow always compares full preview semantics: an inherited
-	// TOKENBOARD_HOOK_MODE would make the Go side collect only the two
-	// hook-installed sources while the TS child (whose environment strips it)
-	// runs the full scan.
-	options.HookMode = false
+	// Shadow always compares one code path on both sides. Without --hook that
+	// is a full preview, and an inherited TOKENBOARD_HOOK_MODE would make the
+	// Go side collect only the two hook-installed sources while the TS child
+	// (whose environment is set to match) runs a full scan. With --hook the
+	// operator asked for the incremental path, and both sides get it.
+	//
+	// The providers read hook mode from the environment themselves, so the
+	// flag has to reach them through Env as well: setting Options.HookMode
+	// alone would only change which sources expand and when a failure aborts,
+	// leaving the Go side on the full-preview path while the TS child ran the
+	// hook path.
+	options.HookMode = options.ShadowHook
+	goEnv := shadowCollectEnv(env, options.HookMode)
 
-	outcome, abortErr := collectAll(ctx, options, env, goStateDir, "", stderr)
+	outcome, abortErr := collectAll(ctx, options, goEnv, goStateDir, "", stderr)
 	if abortErr != nil {
 		fmt.Fprintf(stderr, "shadow: Go collection failed: %v\n", abortErr)
 		return ExitFailure
@@ -118,6 +131,7 @@ func runShadow(ctx context.Context, options Options, env Env, stdout, stderr io.
 		Source:   options.Source,
 		Since:    options.Since,
 		Until:    options.Until,
+		HookMode: options.HookMode,
 		StateDir: tsStateDir,
 		Stderr:   stderr,
 	})
@@ -252,7 +266,7 @@ func execShadowTS(ctx context.Context, input shadowTSInput) ([]contract.Snapshot
 	}
 	cmd := exec.CommandContext(ctx, node, args...)
 	cmd.Dir = filepath.Join(input.RepoDir, "packages", "collector")
-	cmd.Env = shadowChildEnv(input.StateDir)
+	cmd.Env = shadowChildEnv(input.StateDir, input.HookMode)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if input.Stderr != nil {
@@ -269,11 +283,12 @@ func execShadowTS(ctx context.Context, input shadowTSInput) ([]contract.Snapshot
 }
 
 // shadowChildEnv is the process environment with the TypeScript side's state
-// directory swapped in and hook mode removed: a shadow run is always a full
-// preview, and the two sides must not share cursors.
-func shadowChildEnv(stateDir string) []string {
+// directory swapped in. Hook mode is set explicitly, never inherited: the
+// child must run the same code path the Go side runs, and an ambient
+// TOKENBOARD_HOOK_MODE belongs to a notifier rather than to this comparison.
+func shadowChildEnv(stateDir string, hookMode bool) []string {
 	parent := os.Environ()
-	out := make([]string, 0, len(parent)+1)
+	out := make([]string, 0, len(parent)+2)
 	for _, entry := range parent {
 		if strings.HasPrefix(entry, "TOKENBOARD_STATE_DIR=") ||
 			strings.HasPrefix(entry, "TOKENBOARD_HOOK_MODE=") {
@@ -281,5 +296,26 @@ func shadowChildEnv(stateDir string) []string {
 		}
 		out = append(out, entry)
 	}
-	return append(out, "TOKENBOARD_STATE_DIR="+stateDir)
+	out = append(out, "TOKENBOARD_STATE_DIR="+stateDir)
+	if hookMode {
+		out = append(out, "TOKENBOARD_HOOK_MODE=1")
+	}
+	return out
+}
+
+// shadowCollectEnv is shadowChildEnv's counterpart for the Go side: providers
+// branch on TOKENBOARD_HOOK_MODE rather than on Options, so the same explicit
+// set/strip applies to the environment they are handed. It runs before
+// collection, so an ambient hook mode from the notifier that started the run
+// cannot silently change which path this comparison measures.
+func shadowCollectEnv(env Env, hookMode bool) Env {
+	return func(key string) string {
+		if key == "TOKENBOARD_HOOK_MODE" {
+			if hookMode {
+				return "1"
+			}
+			return ""
+		}
+		return env(key)
+	}
 }
