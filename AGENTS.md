@@ -27,6 +27,7 @@ pnpm format:check
 - `pnpm format`：按根目录 Prettier 配置格式化 JavaScript、TypeScript 和 JSON 源文件。
 - `pnpm format:check`：检查上述文件是否符合统一格式，不修改工作树。
 - `cd clients/go && go test ./... -race`：运行 Go 客户端（M0+M1 阶段）的测试；`go vet ./...` 与 `GOOS=windows go build ./...` 是跨平台改动的最小验证。
+- `cd clients/go && go run ./cmd/tokenboard shadow --source <s>`：同 env 下跑 TS `preview` 与 Go 采集并做规范化 diff（需 `TOKENBOARD_COLLECTOR_DIR` 指向本仓库；正被写入的源用 `--until <昨天>` 避开活写竞态）；CI 的 `shadow` job 用 `cmd/shadow-fixtures` 生成的 fixture 跑 grok-build/pi/deepseek-harness/opencode 四个源。
 - `node scripts/clients-go-gen-goldens.mjs`：从 `packages/usage-core` 重新生成 Go 契约层的金样本（`clients/go/internal/contract/goldens/snapshot-hash.json`）；仅在 TS 侧 schema 变更时运行，输出需 diff 审查后提交。
 - `node skills/tokenboard/scripts/status.mjs`：检查本机 collector、设备身份、hook、计划任务和最近同步状态；输出应脱敏。
 - `node --test skills/tokenboard/scripts/*.test.mjs`：运行 skill 脚本的 Node 测试。
