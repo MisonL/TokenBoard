@@ -240,10 +240,12 @@ func lookupEnv(env func(string) string, key string) string {
 	return env(key)
 }
 
+// defaultHome is the TS fallback `join(homedir(), '.grok')`: the user's home
+// is the parent of the tool's directory, not the directory itself.
 func defaultHome() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return home
+	return filepath.Join(home, ".grok")
 }
