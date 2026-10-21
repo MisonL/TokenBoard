@@ -111,6 +111,14 @@ To move one source at a time, add a `perSource` map to the config instead of fli
 
 An existing Git collector checkout with tracked or untracked changes, or one whose status cannot be read, stops the upgrade before any fetch or checkout. This deliberate stop does not try the ZIP archive fallback; resolve or preserve the local worktree first.
 
+Before moving any source onto the binary client, compare the two implementations on this machine's own data:
+
+```bash
+node scripts/shadow-dual-run.mjs --until <yesterday>
+```
+
+It runs `tokenboard shadow` for every source the machine has, appends one JSON line per source to `~/.tokenboard/logs/shadow-dual-run.jsonl`, and exits nonzero only on a real difference or failure. It uploads nothing, installs no schedule, and never touches the real cursors. A source reported as `not-installed` simply is not on this machine; `busy` means a concurrent sync held the collector lock and the comparison was skipped. Pass `--until <yesterday>` so the day still being written is out of scope — two sequential scans of a live session legitimately differ on the current day.
+
 For legacy multi-profile Codex configuration, `CODEX_HOME` remains a comma-separated list. If a single home path itself contains a comma, use the unambiguous `TOKENBOARD_CODEX_HOMES_JSON` environment variable with a non-empty JSON array of paths instead; do not put that path in `CODEX_HOME`.
 
 Do not run `upgrade.mjs` from notifier hooks. Hook-triggered syncs pass `--hook` to `sync.mjs`; this is the supported boundary that disables auto-upgrade during Codex or Claude Code session-end events. Antigravity CLI status line capture does not trigger hook sync; scheduled or manual sync reads local Antigravity history metadata.

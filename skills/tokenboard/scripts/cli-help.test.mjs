@@ -54,7 +54,8 @@ const helpScripts = [
   { name: 'antigravity-statusline.mjs', args: [] },
   { name: 'status.mjs', args: [] },
   { name: 'rotate-token.mjs', args: [] },
-  { name: 'notify.mjs', args: [] }
+  { name: 'notify.mjs', args: [] },
+  { name: 'shadow-dual-run.mjs', args: [] }
 ]
 
 test('hasHelpFlag recognizes only the help spellings', () => {

@@ -30,6 +30,7 @@ pnpm format:check
 - `cd clients/go && go run ./cmd/tokenboard shadow --source <s>`：同 env 下跑 TS `preview` 与 Go 采集并做规范化 diff（需 `TOKENBOARD_COLLECTOR_DIR` 指向本仓库；正被写入的源用 `--until <昨天>` 避开活写竞态）；CI 的 `shadow` job 用 `cmd/shadow-fixtures` 生成的 fixture 跑 grok-build/pi/deepseek-harness/opencode 四个源。
 - `node scripts/clients-go-gen-goldens.mjs`：从 `packages/usage-core` 重新生成 Go 契约层的金样本（`clients/go/internal/contract/goldens/snapshot-hash.json`）；仅在 TS 侧 schema 变更时运行，输出需 diff 审查后提交。
 - `node skills/tokenboard/scripts/status.mjs`：检查本机 collector、设备身份、hook、计划任务和最近同步状态；输出应脱敏。
+- `node skills/tokenboard/scripts/shadow-dual-run.mjs [--until <昨天>]`：生产双跑（spec §6.3）——逐源跑 `tokenboard shadow` 比较真实数据的 TS 与 Go 实现，结果追加进 `~/.tokenboard/logs/shadow-dual-run.jsonl`；不安装计划任务、不上传、不碰真实 cursor，只有 `diff`/`error` 才 exit 1。
 - `node --test skills/tokenboard/scripts/*.test.mjs`：运行 skill 脚本的 Node 测试。
 
 ### 目录速览
