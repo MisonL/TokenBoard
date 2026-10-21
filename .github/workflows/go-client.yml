@@ -183,6 +183,10 @@ jobs:
           go-version-file: clients/go/go.mod
           cache-dependency-path: clients/go/go.sum
 
+      # setup-node enables package-manager caching from package.json's
+      # packageManager field, which makes it look for pnpm on PATH.
+      - uses: pnpm/action-setup@v6
+
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
@@ -256,6 +260,10 @@ jobs:
         with:
           go-version-file: clients/go/go.mod
           cache-dependency-path: clients/go/go.sum
+
+      # setup-node enables package-manager caching from package.json's
+      # packageManager field, which makes it look for pnpm on PATH.
+      - uses: pnpm/action-setup@v6
 
       # Spec §4.1: the tarballs bundle the platform ccusage binaries so a fresh
       # install works offline. The script pins the version from
