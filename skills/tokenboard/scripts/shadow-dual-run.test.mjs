@@ -333,3 +333,40 @@ test('buildShadowInvocation omits --since when the caller passes none, leaving t
   const invocation = buildShadowInvocation({ config, source: 'pi' })
   assert.equal(invocation.env.TOKENBOARD_SINCE, undefined)
 })
+
+// The Go client attributes today's token growth to the source being written
+// while the comparison ran. The harness must keep that count visible in the
+// log — an operator wants to know the day was not still — without turning the
+// run red, or every dual run on a machine with an active session reports a
+// false failure.
+test('live-write rows are recorded but do not fail the run', () => {
+  const key = (model) => ({ source: 'claude-code', usageDate: '2026-10-22', timezone: 'Asia/Shanghai', model })
+  const stdout = report({ status: 'match', snapshots: 298, liveWrite: [key('a'), key('b')] })
+  const record = classifyShadowRun({ source: 'claude-code', status: 0, stdout, stderr: '' })
+  assert.equal(record.status, 'match')
+  assert.equal(record.liveWrite, 2)
+  assert.equal(exitCodeForDualRun([record]), 0)
+})
+
+// A report with no liveWrite field (an older client, or a run with no
+// differences) must not grow a spurious zero.
+test('a run without live-write rows has no liveWrite field', () => {
+  const record = classifyShadowRun({ source: 'pi', status: 0, stdout: report(), stderr: '' })
+  assert.equal(record.status, 'match')
+  assert.equal('liveWrite' in record, false)
+})
+
+// A real difference still fails the run even when the same report also
+// carries live-write rows: the client only labels rows it can explain.
+test('a diff with live-write rows alongside still fails', () => {
+  const key = (model) => ({ source: 'codex', usageDate: '2026-10-22', timezone: 'UTC', model })
+  const stdout = report({
+    status: 'diff',
+    liveWrite: [key('a')],
+    differing: [{ key: key('b'), fields: [{ field: 'inputTokens', ts: 1, go: 2 }] }]
+  })
+  const record = classifyShadowRun({ source: 'codex', status: 1, stdout, stderr: '' })
+  assert.equal(record.status, 'diff')
+  assert.equal(record.liveWrite, 1)
+  assert.equal(exitCodeForDualRun([record]), 1)
+})

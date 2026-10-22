@@ -231,6 +231,8 @@ clients/go/
 - [x] hook 路径覆盖（2026-10-21）：`tokenboard shadow --hook` 让两侧都走 hook 增量路径，`shadow-dual-run.mjs --hook` 透传。实现时发现并修掉一个真实缺陷：Go provider 自己从 `TOKENBOARD_HOOK_MODE` 环境变量读 hook 模式，而 `--hook` 最初只设置了 `Options.HookMode`（只影响 source 展开与 fail-fast），没能传到 provider——Go 侧仍在跑全量 preview，TS 子进程却已走 hook 路径，这样的「对比」比的是两条不同代码路径。修复后本机实测 codex hook 3 条快照 match；claude-code 因当天有活跃写入单独验证。仍未覆盖的是热 cursor 增量（shadow 两侧都用全新 state dir），见 §6 限制。
 - [ ] 逐源切换本身与「全部 source 走 Go 稳定 2 周」的翻转：待操作决策；切换前对目标 source 跑 `tokenboard shadow` 确认 diff=0。
   - **切换前复验（2026-10-22，Go 侧含 `--single-thread` 的新二进制）**：`shadow-dual-run.mjs --client <新二进制>`，默认 7 天窗口（`20261015` 起，与生产 lookback 同口径），claude-code / codex 额外传 `--until 2026-10-21` 排除当天活写竞态。grok-build、deepseek-harness、opencode、pi、antigravity-cli、claude-code（111 条快照）、codex（2 条快照）全部 match，0 diff。该次复验的必要性在于 ccusage 调用参数两侧必须同步：`--single-thread` 只加在 Go 侧会造成假 diff，加在两侧则输出逐字节一致。
+  - **活写竞态根因（2026-10-22 实测定位）**：hook 口径不能传 `--until`，当天必然进对比，此前每次双跑都报 `diff`。逐层排查后确认不是移植缺陷，而是两个叠加机制：① 两次扫描顺序执行（Go 先、TS 后），当天被写入的会话文件在两次读取之间增长，后扫一侧 token 更多；② ccusage 对 `cost=0` 的模型行（订阅/免费额度，本机 7 个）由 collector 按 `父行总成本 × 该行 token / 父行总 token` pro-rata 分摊，当天总 token 变化会连带改变这些行的成本——这也解释了为何这些行在单次运行内共享同一个精确比值（4.4e-16 内一致）。两侧 `readCostUsd` 逐行等价，同一份 ccusage 输入算出同一结果；22 天里只有当天漂移，21 个已沉降日期在两次运行间完全一致。
+  - **因此新增的判定（2026-10-22）**：`shadowReport.liveWrite` 把可归因于活写的行单列，`isLiveWriteDifference` 要求三条同时成立才放行——① 行日期等于该行时区的今天；② 差异字段只有 token 计数与 `costUsd`（`sessionCount`/`correction` 任一不同即不算）；③ 每个 token 字段都满足「后扫的 TS ≥ 先扫的 Go」（追加只能增加用量，反向减少说明两次读取本身不一致）。`costUsd` 不约束方向：零成本行的分摊会随分母反向移动，属同一成因。只在一侧出现的行永远不放行。任何条件不满足仍是 `diff` + exit 1。`shadow-dual-run.mjs` 记录 `liveWrite` 计数但不算失败，避免活跃机器上双跑恒红。
 
 **本机 hook 负载实测（2026-10-21，7 天 run 记录 + ccusage 计时）**：
 

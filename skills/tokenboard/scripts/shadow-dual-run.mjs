@@ -166,6 +166,14 @@ export function classifyShadowRun({ source, status, stdout, stderr }) {
     status: 'error',
     ...(report ? { snapshots: report.snapshots ?? 0 } : {})
   }
+  // liveWrite rows are differences the Go client already attributed to the
+  // source being written while the comparison ran. They are recorded so the
+  // log still shows the day was not perfectly still, but they do not make the
+  // run a diff: on a machine with an active session every daily comparison
+  // would otherwise be red, and a permanently red gate gets ignored.
+  if (report?.liveWrite?.length) {
+    record.liveWrite = report.liveWrite.length
+  }
   if (report && report.status === 'match') {
     record.status = 'match'
     return record

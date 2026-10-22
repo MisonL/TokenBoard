@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/MisonL/TokenBoard/clients/go/internal/contract"
 )
@@ -38,12 +39,19 @@ type shadowTSInput struct {
 var runShadowTS = execShadowTS
 
 // shadowReport is the JSON document `tokenboard shadow` prints.
+//
+// LiveWrite lists rows whose difference is explained by the source still being
+// written while the comparison ran. The two scans are sequential — this client
+// first, then the TypeScript collector — so a session file that grows between
+// them legitimately yields more tokens on the TypeScript side. Those rows are
+// reported but do not make the run a diff; see isLiveWriteDifference.
 type shadowReport struct {
 	Status    string              `json:"status"`
 	Snapshots int                 `json:"snapshots,omitempty"`
 	OnlyInTS  []shadowSnapshotKey `json:"onlyInTs,omitempty"`
 	OnlyInGo  []shadowSnapshotKey `json:"onlyInGo,omitempty"`
 	Differing []shadowDifference  `json:"differing,omitempty"`
+	LiveWrite []shadowSnapshotKey `json:"liveWrite,omitempty"`
 }
 
 // shadowSnapshotKey identifies one snapshot row, matching the key both sides
@@ -140,7 +148,7 @@ func runShadow(ctx context.Context, options Options, env Env, stdout, stderr io.
 		return ExitFailure
 	}
 
-	report := compareShadow(outcome.snapshots, tsSnapshots)
+	report := compareShadow(outcome.snapshots, tsSnapshots, time.Now())
 	payload, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		fmt.Fprintf(stderr, "shadow: %v\n", err)
@@ -156,7 +164,10 @@ func runShadow(ctx context.Context, options Options, env Env, stdout, stderr io.
 // compareShadow normalizes both sides to a key-ordered map and reports the
 // differences. collectedAt is wall clock, not semantics, and is excluded by
 // comparing the hash payloads (which already omit it).
-func compareShadow(goSnapshots, tsSnapshots []contract.Snapshot) shadowReport {
+//
+// now is the comparison's clock, used to recognise the live-write race; it is
+// a parameter so the classification is testable without touching the clock.
+func compareShadow(goSnapshots, tsSnapshots []contract.Snapshot, now time.Time) shadowReport {
 	goByKey := shadowSnapshotMap(goSnapshots)
 	tsByKey := shadowSnapshotMap(tsSnapshots)
 
@@ -187,9 +198,14 @@ func compareShadow(goSnapshots, tsSnapshots []contract.Snapshot) shadowReport {
 				report.Snapshots++
 				continue
 			}
+			fields := shadowFieldDiffs(tsSnapshot, goSnapshot)
+			if isLiveWriteDifference(goSnapshot, tsSnapshot, fields, now) {
+				report.LiveWrite = append(report.LiveWrite, shadowKeyOf(goSnapshot))
+				continue
+			}
 			report.Differing = append(report.Differing, shadowDifference{
 				Key:    shadowKeyOf(goSnapshot),
-				Fields: shadowFieldDiffs(tsSnapshot, goSnapshot),
+				Fields: fields,
 			})
 		}
 	}
@@ -197,6 +213,68 @@ func compareShadow(goSnapshots, tsSnapshots []contract.Snapshot) shadowReport {
 		report.Status = "diff"
 	}
 	return report
+}
+
+// isLiveWriteDifference reports whether a differing row is explained by the
+// source still being appended to while the comparison ran, rather than by the
+// two implementations disagreeing.
+//
+// The two scans are sequential — this client collects first, then the
+// TypeScript collector — so a session file that grows between them yields more
+// usage on the TypeScript side. Every condition below must hold; anything else
+// stays a difference:
+//
+//   - the row is for today in its own timezone. Settled dates have no writes
+//     left to race, so a difference there is always real drift, and the
+//     --until <yesterday> comparison is what proves those dates.
+//   - only token counts and costUsd differ. sessionCount and correction are
+//     never derived from a partial read, so a difference in either is a real
+//     disagreement even on today's row.
+//   - every token field is non-decreasing towards the later scan. Appending can
+//     only add usage; a row where the later scan sees fewer tokens means the
+//     read itself disagrees, not the timing.
+//
+// costUsd is deliberately not direction-constrained. A row ccusage prices at 0
+// (a subscription or free-quota model) is allocated cost pro-rata from its day
+// total, so when another model's usage grows between the two scans the day's
+// denominator changes and the share shrinks — the cost moves opposite to the
+// token growth. That is the same single cause, and a real pricing bug would
+// also show on a settled date, which this rule never excuses.
+func isLiveWriteDifference(goSnapshot, tsSnapshot contract.Snapshot, fields []shadowFieldDiff, now time.Time) bool {
+	if !isToday(goSnapshot.UsageDate, goSnapshot.Timezone, now) {
+		return false
+	}
+	for _, field := range fields {
+		switch field.Field {
+		case "inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens", "totalTokens":
+			// The diff carries the field values as the concrete types the
+			// snapshots hold (int64 for tokens), not as JSON-decoded floats.
+			goValue, goOK := field.Go.(int64)
+			tsValue, tsOK := field.TS.(int64)
+			if !goOK || !tsOK || tsValue < goValue {
+				return false
+			}
+		case "costUsd":
+			// Explained by the day denominator; see the comment above.
+		default:
+			return false
+		}
+	}
+	return len(fields) > 0
+}
+
+// isToday answers whether usageDate is today's calendar date in the row's own
+// timezone. An unparseable date is never treated as today: the row then stays
+// a difference rather than being excused.
+func isToday(usageDate, timezone string, now time.Time) bool {
+	if usageDate == "" {
+		return false
+	}
+	location, err := contract.LoadLocation(timezone)
+	if err != nil {
+		return false
+	}
+	return now.In(location).Format("2006-01-02") == usageDate
 }
 
 func shadowSnapshotMap(snapshots []contract.Snapshot) map[string]contract.Snapshot {

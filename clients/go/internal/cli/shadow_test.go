@@ -423,3 +423,155 @@ func TestShadowIgnoresAmbientUntilInHookMode(t *testing.T) {
 		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
 	}
 }
+
+// liveWriteSnapshot is a row for *today* whose TypeScript side (the later
+// scan) saw more usage than the Go side did. That shape is what an actively
+// written session file produces, and shadow must not report it as drift.
+func liveWriteSnapshot(now time.Time) (goSnapshot, tsSnapshot contract.Snapshot) {
+	goSnapshot = shadowSnapshot()
+	goSnapshot.UsageDate = now.Format("2006-01-02")
+	goSnapshot.Timezone = "UTC"
+	goSnapshot.InputTokens = 1000
+	goSnapshot.OutputTokens = 10
+	goSnapshot.TotalTokens = 1010
+	goSnapshot.CostUSD = 1
+
+	tsSnapshot = goSnapshot
+	tsSnapshot.InputTokens = 1200
+	tsSnapshot.TotalTokens = 1210
+	tsSnapshot.CostUSD = 1.2
+	return goSnapshot, tsSnapshot
+}
+
+// A row on today's date where the later scan only saw more tokens is the
+// live-write race, not a disagreement: both clients read the same file, and
+// the TypeScript side simply ran after more bytes were appended.
+func TestShadowTreatsTodaysGrowthAsLiveWriteNotDiff(t *testing.T) {
+	env, _ := shadowEnv(t)
+	goSnapshot, tsSnapshot := liveWriteSnapshot(time.Now())
+	stubSource(t, contract.SourceGrokBuild, stubProvider{snapshots: []contract.Snapshot{goSnapshot}})
+	stubShadowTS(t, []contract.Snapshot{tsSnapshot}, nil)
+
+	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s; today's token growth must not fail the run", code, stderr, stdout)
+	}
+	var report shadowReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if report.Status != "match" {
+		t.Errorf("status = %q, want match", report.Status)
+	}
+	if len(report.LiveWrite) != 1 || report.LiveWrite[0].Model != "grok-4.5" {
+		t.Errorf("liveWrite = %+v, want the row reported as live write", report.LiveWrite)
+	}
+	if len(report.Differing) != 0 {
+		t.Errorf("differing = %+v, want none", report.Differing)
+	}
+}
+
+// The same shape on a settled date is real drift: nothing is writing to it any
+// more, so the two implementations genuinely disagree.
+func TestShadowStillReportsSettledDateDifferences(t *testing.T) {
+	env, _ := shadowEnv(t)
+	goSnapshot, tsSnapshot := liveWriteSnapshot(time.Now())
+	goSnapshot.UsageDate = "2026-07-31"
+	tsSnapshot.UsageDate = "2026-07-31"
+	stubSource(t, contract.SourceGrokBuild, stubProvider{snapshots: []contract.Snapshot{goSnapshot}})
+	stubShadowTS(t, []contract.Snapshot{tsSnapshot}, nil)
+
+	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitFailure {
+		t.Fatalf("code = %d, want %d; stderr = %s", code, ExitFailure, stderr)
+	}
+	var report shadowReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if report.Status != "diff" || len(report.Differing) != 1 {
+		t.Errorf("report = %+v, want a diff on the settled date", report)
+	}
+	if len(report.LiveWrite) != 0 {
+		t.Errorf("liveWrite = %+v, want none on a settled date", report.LiveWrite)
+	}
+}
+
+// Appending can only add usage, so a later scan that sees *fewer* tokens is not
+// the live-write race — the two reads disagree, and that must stay a diff even
+// on today's row.
+func TestShadowDoesNotExcuseShrinkingTokensOnTodaysRow(t *testing.T) {
+	env, _ := shadowEnv(t)
+	goSnapshot, tsSnapshot := liveWriteSnapshot(time.Now())
+	goSnapshot.InputTokens = 1200
+	goSnapshot.TotalTokens = 1210
+	tsSnapshot.InputTokens = 1000
+	tsSnapshot.TotalTokens = 1010
+	stubSource(t, contract.SourceGrokBuild, stubProvider{snapshots: []contract.Snapshot{goSnapshot}})
+	stubShadowTS(t, []contract.Snapshot{tsSnapshot}, nil)
+
+	code, _, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitFailure {
+		t.Fatalf("code = %d, want %d; stderr = %s", code, ExitFailure, stderr)
+	}
+}
+
+// sessionCount is not derived from a partial read, so a difference in it is a
+// real disagreement even on today's row.
+func TestShadowDoesNotExcuseSessionCountOnTodaysRow(t *testing.T) {
+	env, _ := shadowEnv(t)
+	goSnapshot, tsSnapshot := liveWriteSnapshot(time.Now())
+	tsSnapshot.SessionCount = goSnapshot.SessionCount + 1
+	stubSource(t, contract.SourceGrokBuild, stubProvider{snapshots: []contract.Snapshot{goSnapshot}})
+	stubShadowTS(t, []contract.Snapshot{tsSnapshot}, nil)
+
+	code, _, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitFailure {
+		t.Fatalf("code = %d, want %d; stderr = %s", code, ExitFailure, stderr)
+	}
+}
+
+// A cost-only difference on today's row is the pro-rata allocation moving with
+// the day's denominator, which is the same single cause as token growth.
+func TestShadowTreatsTodaysCostOnlyDifferenceAsLiveWrite(t *testing.T) {
+	env, _ := shadowEnv(t)
+	goSnapshot, tsSnapshot := liveWriteSnapshot(time.Now())
+	tsSnapshot.InputTokens = goSnapshot.InputTokens
+	tsSnapshot.TotalTokens = goSnapshot.TotalTokens
+	tsSnapshot.CostUSD = 1.15
+	stubSource(t, contract.SourceGrokBuild, stubProvider{snapshots: []contract.Snapshot{goSnapshot}})
+	stubShadowTS(t, []contract.Snapshot{tsSnapshot}, nil)
+
+	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitOK {
+		t.Fatalf("code = %d, stderr = %s; stdout = %s", code, stderr, stdout)
+	}
+	var report shadowReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if len(report.LiveWrite) != 1 {
+		t.Errorf("liveWrite = %+v, want one row", report.LiveWrite)
+	}
+}
+
+// A row only one side collected is never excused, even on today's date: a
+// missing row is not a timing artefact.
+func TestShadowStillReportsOneSidedRowsOnTodaysDate(t *testing.T) {
+	env, _ := shadowEnv(t)
+	goSnapshot, _ := liveWriteSnapshot(time.Now())
+	stubSource(t, contract.SourceGrokBuild, stubProvider{snapshots: []contract.Snapshot{goSnapshot}})
+	stubShadowTS(t, nil, nil)
+
+	code, stdout, stderr := runShadowCLI(t, env, "shadow", "--source", "grok-build")
+	if code != ExitFailure {
+		t.Fatalf("code = %d, want %d; stderr = %s", code, ExitFailure, stderr)
+	}
+	var report shadowReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if len(report.OnlyInGo) != 1 {
+		t.Errorf("onlyInGo = %+v, want the row reported", report.OnlyInGo)
+	}
+}
