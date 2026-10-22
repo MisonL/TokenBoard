@@ -194,7 +194,7 @@ Rotated logs are capped at 1 MiB and kept for 7 days.
 
 ## Development
 
-Node.js 22.18 or newer is required.
+Node.js 22.23.4+ or 24.22.1+ is required (the range is `^22.23.4 || ^24.22.1 || >=26.12.1`; older releases are missing security fixes for CVE-2026-111497 and the Node TLS hostname bypasses). `.npmrc` sets `engine-strict=true`, so an unsupported Node fails the install instead of warning.
 
 ```bash
 pnpm install

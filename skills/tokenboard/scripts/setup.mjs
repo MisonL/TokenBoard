@@ -16,6 +16,7 @@ import { withCredentialsLock } from './credentials-lock.mjs'
 import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
 import { errorMessage } from './error-message.mjs'
+import { assertSupportedNodeVersion } from './node-version.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
@@ -35,6 +36,16 @@ const usage =
 
 if (printHelpIfRequested(process.argv.slice(2), usage)) {
   process.exit(0)
+}
+
+// The install this script triggers would be refused later by pnpm's
+// engine-strict check, but only after it has already cloned a checkout and
+// written the config. Refuse up front, before any local state exists.
+try {
+  assertSupportedNodeVersion(process.versions.node)
+} catch (error) {
+  console.error(errorMessage(error))
+  process.exit(1)
 }
 
 const flags = parseArgs(process.argv.slice(2))

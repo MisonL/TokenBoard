@@ -18,13 +18,14 @@ import { homedir } from 'node:os'
 import { isMainModule } from './is-main.mjs'
 import { readConfig, parseArgs, collectorDir, readPackageManager, resolveClientForSource } from './config.mjs'
 import { clientBinaryPath } from './client-binary.mjs'
-import { printHelpIfRequested } from './cli-help.mjs'
+import { printHelpIfRequested, hasHelpFlag } from './cli-help.mjs'
 import { normalizePathEnv } from './schedule.mjs'
 import { readSince } from './sync-options.mjs'
 import { closeScheduledLogRuntime, createScheduledLogRuntime } from './logs.mjs'
 import { runUpgrade } from './upgrade.mjs'
 import { runSelfUpdate } from './client-binary.mjs'
 import { errorMessage } from './error-message.mjs'
+import { assertSupportedNodeVersion } from './node-version.mjs'
 import { acquireLock, lockHasToken, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import { runScheduledRetry, transientSyncExitCode } from './scheduled-retry.mjs'
 import { currentProcessStartIdentity } from './process-liveness.mjs'
@@ -50,6 +51,17 @@ export function readHookSyncTimeoutMs(env = process.env) {
 }
 
 if (isMain()) {
+  // Checked before `runCli` reads the config: a scheduled or hook run on an
+  // unsupported Node must fail loudly instead of half-executing a sync. `--help`
+  // stays a pure read on any runtime, which is what the CLI contract tests assert.
+  if (!hasHelpFlag(process.argv.slice(2))) {
+    try {
+      assertSupportedNodeVersion(process.versions.node)
+    } catch (error) {
+      console.error(redactUrlCredentials(errorMessage(error)))
+      process.exit(1)
+    }
+  }
   runCli()
     .then((code) => process.exit(code))
     .catch((error) => {

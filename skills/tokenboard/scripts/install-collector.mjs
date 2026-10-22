@@ -15,6 +15,7 @@ import {
 } from './config.mjs'
 import { defaultReleaseRepo, installClientBinary } from './client-binary.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
+import { assertSupportedNodeVersion } from './node-version.mjs'
 import {
   buildCloneSteps,
   buildDefaultBranchPullSteps,
@@ -112,6 +113,17 @@ function runCli() {
     )
   ) {
     return
+  }
+  // Before the clone: pnpm's engine-strict check only fires once the checkout
+  // exists, and a git install on an unsupported Node should not leave a fresh
+  // clone behind just to refuse it. The binary install below needs no Node at
+  // all past this point, but the Go client it drops in is what later syncs run,
+  // and those syncs do require the floor.
+  try {
+    assertSupportedNodeVersion(process.versions.node)
+  } catch (error) {
+    console.error(errorMessage(error))
+    process.exit(1)
   }
   const flags = parseArgs(process.argv.slice(2))
   const dir = collectorDir()

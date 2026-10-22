@@ -596,4 +596,4 @@ git rev-list --left-right --count master...origin/master
 - collector 依赖外部 usage 工具；升级相关依赖时必须同步更新 provider 测试、package-runner 测试和 `pnpm-lock.yaml`。
 - 判断 client 健康状态时，区分 client 代码问题、主机网络问题和用户未配置问题。
 - TokenBoard 定时同步日志默认位于用户配置目录下的 `logs/daily-sync.out.log` 和 `logs/daily-sync.err.log`。
-- 项目要求 Node.js `>=22.18.0`、pnpm `10.21.0`；collector 依赖外部 `ccusage`/`@ccusage/codex`，缺少本地来源应按 unavailable 处理，不能创建空目录伪造成功。
+- 项目要求 Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`、pnpm `10.21.0`；根 `.npmrc` 设 `engine-strict=true`，且 `setup.mjs`/`sync.mjs`/`install-collector.mjs` 入口会硬拒更低版本（安全下限，见 `skills/tokenboard/scripts/node-version.mjs`）。改这条线要同步四个 `package.json` 的 `engines`、`.npmrc`、README 和 SKILL.md 的排障文案，`node-floor-docs.test.mjs` 会守住一致性。collector 依赖外部 `ccusage`/`@ccusage/codex`，缺少本地来源应按 unavailable 处理，不能创建空目录伪造成功。
