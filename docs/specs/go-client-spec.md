@@ -230,6 +230,7 @@ clients/go/
 - [x] 真实数据双跑：codex 近 14 天 3 条快照 match；claude-code 排除当天 184 条快照 match（当天差异为活写竞态，已记录）。2026-10-21 复测（`shadow-dual-run.mjs`）：claude-code 277、codex 3、grok-build 4、deepseek-harness 4，全部 match；同时修掉一个真实缺陷——Grok Build 与 DSH 在未设 home 变量时扫的是 `~` 而不是 `~/.grok` / `~/.dsh`，CI fixture 永远显式设变量所以从未暴露，真实数据双跑一眼看穿（`21b9433`）。
 - [x] hook 路径覆盖（2026-10-21）：`tokenboard shadow --hook` 让两侧都走 hook 增量路径，`shadow-dual-run.mjs --hook` 透传。实现时发现并修掉一个真实缺陷：Go provider 自己从 `TOKENBOARD_HOOK_MODE` 环境变量读 hook 模式，而 `--hook` 最初只设置了 `Options.HookMode`（只影响 source 展开与 fail-fast），没能传到 provider——Go 侧仍在跑全量 preview，TS 子进程却已走 hook 路径，这样的「对比」比的是两条不同代码路径。修复后本机实测 codex hook 3 条快照 match；claude-code 因当天有活跃写入单独验证。仍未覆盖的是热 cursor 增量（shadow 两侧都用全新 state dir），见 §6 限制。
 - [ ] 逐源切换本身与「全部 source 走 Go 稳定 2 周」的翻转：待操作决策；切换前对目标 source 跑 `tokenboard shadow` 确认 diff=0。
+  - **切换前复验（2026-10-22，Go 侧含 `--single-thread` 的新二进制）**：`shadow-dual-run.mjs --client <新二进制>`，默认 7 天窗口（`20261015` 起，与生产 lookback 同口径），claude-code / codex 额外传 `--until 2026-10-21` 排除当天活写竞态。grok-build、deepseek-harness、opencode、pi、antigravity-cli、claude-code（111 条快照）、codex（2 条快照）全部 match，0 diff。该次复验的必要性在于 ccusage 调用参数两侧必须同步：`--single-thread` 只加在 Go 侧会造成假 diff，加在两侧则输出逐字节一致。
 
 **本机 hook 负载实测（2026-10-21，7 天 run 记录 + ccusage 计时）**：
 
