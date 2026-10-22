@@ -130,11 +130,18 @@ starting repeated immediate reconciliations.
 
 The hook-only cooldown defaults to 15 minutes to avoid repeatedly reconciling a large active Codex
 history. Set `TOKENBOARD_NOTIFY_COOLDOWN_MS` to an integer number of milliseconds from `60000`
-through `3600000` to tune the maximum delay after the most recent successful TokenBoard reconciliation when
+through `7200000` to tune the maximum delay after the most recent successful TokenBoard reconciliation when
 no shared sync lock is contended; hook hosts cannot inject that env var reliably, so the same
 range can be configured durably as the `notifyCooldownMs` key in the TokenBoard config file
 (env wins when both are set). The hook handler persists its signal before the background notifier
 validates this setting; shared lock timeouts still schedule a one-minute retry.
+
+A hook trigger that lands within half an hour of a scheduled sync time is skipped. The schedule
+times come from the config file's `scheduleTimes` (what `setup.mjs --schedule-times` writes) or
+`TOKENBOARD_SCHEDULE_TIMES`, and are compared in the machine's local time because launchd, systemd
+and the Windows task scheduler all fire on local wall-clock time. The scheduled run scans
+`config.source` — `all` by default — so it collects the same usage the skipped hook would have; the
+skipped trigger's signal stays queued for the next hook run to acknowledge.
 
 When a scheduled sync cannot acquire that lock within its timeout, it writes a private deferred
 retry state under the TokenBoard config directory and performs a bounded in-process retry. The retry
