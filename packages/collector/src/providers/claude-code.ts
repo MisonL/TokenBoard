@@ -151,6 +151,12 @@ async function collectClaudeCcusageRange(input: {
         'daily',
         '--json',
         '--breakdown',
+        // Loads the session JSONLs sequentially instead of all at once. ccusage
+        // peaks at 4.6-7.6 GB resident on a large history in parallel mode, and
+        // this runs as a background hook; the Codex provider passes the same
+        // flag everywhere. The cost is longer wall time, which the phase timings
+        // now make visible.
+        '--single-thread',
         ...input.rangeArgs
       ]),
       packageCommandOptions({
@@ -167,6 +173,7 @@ async function collectClaudeCcusageRange(input: {
         'claude',
         'session',
         '--json',
+        '--single-thread',
         ...input.rangeArgs
       ]),
       packageCommandOptions({

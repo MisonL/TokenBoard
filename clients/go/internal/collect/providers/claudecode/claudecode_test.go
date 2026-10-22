@@ -121,8 +121,8 @@ func TestCollectRunsDailyAndSessionAndNormalizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantDaily := append([]string{"ccusage@20.0.33", "claude", "daily", "--json", "--breakdown"}, configArgs(stateDir)...)
-	wantSession := append([]string{"ccusage@20.0.33", "claude", "session", "--json"}, configArgs(stateDir)...)
+	wantDaily := append([]string{"ccusage@20.0.33", "claude", "daily", "--json", "--breakdown", "--single-thread"}, configArgs(stateDir)...)
+	wantSession := append([]string{"ccusage@20.0.33", "claude", "session", "--json", "--single-thread"}, configArgs(stateDir)...)
 	if len(runner.calls) != 2 {
 		t.Fatalf("calls = %v, want 2", runner.calls)
 	}
@@ -437,7 +437,7 @@ func TestHookModeUsesChangedFilesToNarrowReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantDaily := append([]string{
-		"ccusage@20.0.33", "claude", "daily", "--json", "--breakdown",
+		"ccusage@20.0.33", "claude", "daily", "--json", "--breakdown", "--single-thread",
 		"--since", "20260522", "--until", "20260522", "--timezone", "Asia/Shanghai",
 	}, configArgs(stateDir)...)
 	if len(runner.calls) != 2 {

@@ -61,11 +61,19 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.33', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
+        args: [
+          'ccusage@20.0.33',
+          'claude',
+          'daily',
+          '--json',
+          '--breakdown',
+          '--single-thread',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.33', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.33', 'claude', 'session', '--json', '--single-thread', ...bundledCcusageConfigArgs]
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -103,6 +111,7 @@ describe('collectClaudeCodeUsage', () => {
           'daily',
           '--json',
           '--breakdown',
+          '--single-thread',
           '--since',
           '20260509',
           ...bundledCcusageConfigArgs
@@ -120,6 +129,7 @@ describe('collectClaudeCodeUsage', () => {
           'claude',
           'session',
           '--json',
+          '--single-thread',
           '--since',
           '20260509',
           ...bundledCcusageConfigArgs
@@ -148,11 +158,21 @@ describe('collectClaudeCodeUsage', () => {
         'daily',
         '--json',
         '--breakdown',
+        '--single-thread',
         '--since',
         '20260501',
         ...bundledCcusageConfigArgs
       ],
-      ['ccusage@20.0.33', 'claude', 'session', '--json', '--since', '20260501', ...bundledCcusageConfigArgs]
+      [
+        'ccusage@20.0.33',
+        'claude',
+        'session',
+        '--json',
+        '--single-thread',
+        '--since',
+        '20260501',
+        ...bundledCcusageConfigArgs
+      ]
     ])
   })
 
@@ -178,6 +198,7 @@ describe('collectClaudeCodeUsage', () => {
         'daily',
         '--json',
         '--breakdown',
+        '--single-thread',
         '--since',
         '20260708',
         '--until',
@@ -189,6 +210,7 @@ describe('collectClaudeCodeUsage', () => {
         'claude',
         'session',
         '--json',
+        '--single-thread',
         '--since',
         '20260708',
         '--until',
@@ -237,11 +259,19 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.33', 'claude', 'daily', '--json', '--breakdown', ...bundledCcusageConfigArgs]
+        args: [
+          'ccusage@20.0.33',
+          'claude',
+          'daily',
+          '--json',
+          '--breakdown',
+          '--single-thread',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.33', 'claude', 'session', '--json', ...bundledCcusageConfigArgs]
+        args: ['ccusage@20.0.33', 'claude', 'session', '--json', '--single-thread', ...bundledCcusageConfigArgs]
       }
     ])
   })
@@ -278,6 +308,28 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(timeouts).toEqual([1234, 1234])
+  })
+
+  // ccusage loads every session JSONL in parallel by default, which on a large
+  // history peaks at 4.6-7.6 GB of resident memory held by a background hook.
+  // The Codex provider already passes --single-thread everywhere; the Claude
+  // calls were the remaining source of that peak.
+  test('runs both ccusage calls single-threaded to bound memory', async () => {
+    const calls: string[][] = []
+
+    await collectClaudeCodeUsage({
+      since: '20260708',
+      env: { TOKENBOARD_FORCE_PACKAGE_RUNNER: '1' },
+      async runner(_command, args) {
+        calls.push(args)
+        return { data: [] }
+      }
+    })
+
+    expect(calls).toHaveLength(2)
+    for (const args of calls) {
+      expect(args).toContain('--single-thread')
+    }
   })
 
   test('passes the generated dynamic pricing config to every ccusage invocation', async () => {

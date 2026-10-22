@@ -272,10 +272,17 @@ type rangeInput struct {
 
 // collectRange runs `claude daily --json --breakdown` and `claude session
 // --json` over the same window and normalizes the pair.
+//
+// Both calls pass --single-thread. ccusage otherwise loads every session JSONL
+// in parallel, which peaks at 4.6-7.6 GB of resident memory on a large history
+// while running as a background hook; the Codex provider passes the same flag
+// everywhere. The TS provider must stay in step with this: the two clients are
+// diffed against each other on real data, so a flag present on one side only
+// would show up as a divergence.
 func collectRange(ctx context.Context, input rangeInput) ([]contract.Snapshot, error) {
 	commandOptions := packageCommandOptions(input.env, input.stderr)
 	dailyArgs, err := input.packageRunner.Args(
-		append([]string{"claude", "daily", "--json", "--breakdown"}, input.rangeArgs...), input.env, nil)
+		append([]string{"claude", "daily", "--json", "--breakdown", "--single-thread"}, input.rangeArgs...), input.env, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +291,7 @@ func collectRange(ctx context.Context, input rangeInput) ([]contract.Snapshot, e
 		return nil, err
 	}
 	sessionArgs, err := input.packageRunner.Args(
-		append([]string{"claude", "session", "--json"}, input.rangeArgs...), input.env, nil)
+		append([]string{"claude", "session", "--json", "--single-thread"}, input.rangeArgs...), input.env, nil)
 	if err != nil {
 		return nil, err
 	}
