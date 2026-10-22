@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { configDir, parseArgs, readConfig } from './config.mjs'
+import { parseScheduleTimes } from './schedule.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { coordinatedSync } from './coordinator.mjs'
 import { errorMessage } from './error-message.mjs'
@@ -14,8 +15,15 @@ import { currentProcessStartIdentity, probeProcessLiveness, probeProcessStartIde
 
 export const defaultNotifyCooldownMs = 15 * 60_000
 const minNotifyCooldownMs = 60_000
-const maxNotifyCooldownMs = 60 * 60_000
+// Two hours. A hook-triggered ccusage scan costs 4.6-7.6 GB of resident memory,
+// and at a one-hour cap a busy afternoon still produced five full scans; the
+// ceiling is what an operator can set, not a recommended value.
+const maxNotifyCooldownMs = 2 * 60 * 60_000
 const maxTrailingLockAcquireAttempts = 3
+// A trigger that lands within half an hour of a scheduled sync is skipped: the
+// scheduled run collects the same usage minutes later, and the queued signal
+// makes sure the source is not dropped.
+export const defaultScheduleWindowMs = 30 * 60_000
 
 export function runNotify(options = {}) {
   const flags = options.flags || parseArgs(options.argv || process.argv.slice(2))
@@ -27,6 +35,7 @@ export function runNotify(options = {}) {
   return coordinatedSync(trigger, {
     stateDir,
     cooldownMs: readNotifyCooldownMs(options.cooldownMs, env, options.configCooldownMs),
+    scheduleWindow: readNotifyScheduleWindow(options.scheduleTimes, env, options.configScheduleTimes),
     version: options.version || 'unknown',
     now: options.now,
     mkdir: options.mkdir,
@@ -257,6 +266,7 @@ export async function runNotifyCli(options = {}) {
           stateDir: env.TOKENBOARD_STATE_DIR || configuredDir,
           env,
           configCooldownMs: config.notifyCooldownMs,
+          configScheduleTimes: config.scheduleTimes,
           trailingProcess: Boolean(trailingLockPath) || delayMs > 0,
           version: config.updatedAt || config.createdAt || 'unknown'
         })
@@ -310,6 +320,24 @@ export function readNotifyCooldownMs(explicitValue, env = process.env, configVal
     return parseCooldownMs(configValue, 'config notifyCooldownMs must be')
   }
   return defaultNotifyCooldownMs
+}
+
+// The set of scheduled sync times the coordinator should avoid. Precedence
+// mirrors the cooldown: explicit (test injection) > env > config.json
+// `scheduleTimes` (what `setup.mjs --schedule-times` writes) > none. An absent
+// schedule disables the window entirely rather than guessing a default, so a
+// machine with no schedule never has hook runs suppressed.
+export function readNotifyScheduleWindow(
+  explicitTimes,
+  env = process.env,
+  configValue,
+  windowMs = defaultScheduleWindowMs
+) {
+  const raw = explicitTimes ?? env.TOKENBOARD_SCHEDULE_TIMES ?? configValue
+  if (raw === undefined || raw === null || raw === '') return undefined
+  const times = Array.isArray(raw) ? raw : parseScheduleTimes(raw)
+  if (times.length === 0) return undefined
+  return { times, windowMs }
 }
 
 function parseCooldownMs(value, errorPrefix) {

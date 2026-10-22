@@ -27,6 +27,15 @@ test('notify accepts an explicit bounded cooldown configuration', () => {
   assert.equal(readNotifyCooldownMs(undefined, { TOKENBOARD_NOTIFY_COOLDOWN_MS: '3600000' }), 3_600_000)
 })
 
+// Two hours is the requested ceiling: a hook-triggered ccusage scan costs 4.6-7.6 GB of
+// resident memory per run, and at the old one-hour cap a busy session still turned into
+// five full scans an afternoon. Above the cap the value is rejected rather than clamped —
+// a silently shortened cooldown would keep the load the operator was trying to remove.
+test('notify accepts a cooldown up to two hours', () => {
+  assert.equal(readNotifyCooldownMs(undefined, { TOKENBOARD_NOTIFY_COOLDOWN_MS: '7200000' }), 7_200_000)
+  assert.equal(readNotifyCooldownMs(undefined, {}, 7_200_000), 7_200_000)
+})
+
 test('notify carries its cooldown configuration into a trailing process', () => {
   const files = memoryFileMap([['/state/last-success.json', '2026-05-22T10:00:00.000Z']])
   const spawned = []
@@ -64,7 +73,7 @@ test('notify carries its cooldown configuration into a trailing process', () => 
 })
 
 test('notify rejects invalid cooldown configuration', () => {
-  for (const value of ['0', '59999', '3600001', '15m', '900000.5']) {
+  for (const value of ['0', '59999', '7200001', '15m', '900000.5']) {
     assert.throws(
       () => readNotifyCooldownMs(undefined, { TOKENBOARD_NOTIFY_COOLDOWN_MS: value }),
       /TOKENBOARD_NOTIFY_COOLDOWN_MS/

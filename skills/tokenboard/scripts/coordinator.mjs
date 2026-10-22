@@ -16,6 +16,7 @@ import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import { acknowledgeSignalSource, appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
 import { errorMessage } from './error-message.mjs'
 import { currentProcessStartIdentity, probeProcessStartIdentity } from './process-liveness.mjs'
+import { isWithinScheduleWindow } from './schedule.mjs'
 
 const defaultLockTimeoutMs = 60_000
 const defaultLockTimeoutRetryDelayMs = 60_000
@@ -139,6 +140,16 @@ function runCoordinator(trigger, runtime, result) {
     const remainingMs = cooldownRemainingMs(runtime)
     if (remainingMs > 0) {
       return skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock })
+    }
+    // Checked after the cooldown because it is the same decision: a skipped
+    // trigger has to leave its source queued, and that is what `keepCooldownTrigger`
+    // already does. The scheduled run scans `config.source` — `all` by default — so it
+    // collects the same usage the skipped hook would have; the queued signal is left
+    // for the next hook run to acknowledge. Skipping here only avoids a second full
+    // ccusage scan minutes before or after the scheduled one.
+    if (isInsideScheduledWindow(runtime)) {
+      keepCooldownTrigger(trigger, runtime, pendingSources, syncSources)
+      return { ...result, waitedForLock: lock.waited, skippedSync: true, skippedReason: 'scheduled-window' }
     }
 
     const completed = {
@@ -381,6 +392,7 @@ function buildRuntime(options = {}) {
     stateDir: readStateDir(options),
     executeSync: options.executeSync,
     cooldownMs: numberOrDefault(options.cooldownMs, 300_000),
+    scheduleWindow: options.scheduleWindow,
     lockTimeoutMs: numberOrDefault(options.lockTimeoutMs, defaultLockTimeoutMs),
     maxFollowUps: numberOrDefault(options.maxFollowUps, defaultMaxFollowUps),
     maxRunLogs: positiveIntegerOrDefault(options.maxRunLogs, defaultMaxRunLogs),
@@ -531,6 +543,12 @@ function cooldownRemainingMs(runtime) {
   const elapsedMs = runtime.now() - timestamp
   if (elapsedMs < 0) return 0
   return Math.max(0, runtime.cooldownMs - elapsedMs)
+}
+
+function isInsideScheduledWindow(runtime) {
+  const window = runtime.scheduleWindow
+  if (!window) return false
+  return isWithinScheduleWindow({ times: window.times, windowMs: window.windowMs, now: runtime.now() })
 }
 
 function scheduleTrailingSources(trigger, sources, runtime, remainingMs) {

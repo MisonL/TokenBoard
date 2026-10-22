@@ -226,6 +226,31 @@ export function windowsTaskName(startTime) {
   return `TokenBoardDailySync${startTime.replace(':', '')}`
 }
 
+// The schedule is expressed in the machine's local time — launchd, systemd and
+// the Windows task scheduler all fire on local wall-clock time — so the window
+// has to be evaluated the same way. A UTC comparison would put the window on
+// the wrong hours entirely for anyone east or west of Greenwich.
+export function isWithinScheduleWindow({ times, windowMs, now = Date.now() } = {}) {
+  if (!Array.isArray(times) || times.length === 0) return false
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return false
+
+  const windowMinutes = windowMs / 60_000
+  const local = new Date(now)
+  const currentMinutes = local.getHours() * 60 + local.getMinutes()
+
+  for (const time of times) {
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
+    if (!match) continue
+    const scheduledMinutes = Number.parseInt(match[1], 10) * 60 + Number.parseInt(match[2], 10)
+    // The distance wraps around midnight: a 23:50 trigger is ten minutes
+    // before a 00:00 schedule, not twenty-three hours and ten minutes after it.
+    const direct = Math.abs(currentMinutes - scheduledMinutes)
+    const distance = Math.min(direct, 24 * 60 - direct)
+    if (distance <= windowMinutes) return true
+  }
+  return false
+}
+
 function parseScheduleTime(time) {
   const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time)
   if (!match) {
