@@ -10,6 +10,9 @@ on:
     tags: ['v*']
     paths:
       - 'clients/go/**'
+      # The shadow gate runs the TypeScript collector against this client, so
+      # a collector-source change is exactly what it must re-verify.
+      - 'packages/collector/src/**'
       - 'packages/collector/package.json'
       - 'packages/collector/ccusage.json'
       - 'packages/usage-core/**'
@@ -17,6 +20,7 @@ on:
   pull_request:
     paths:
       - 'clients/go/**'
+      - 'packages/collector/src/**'
       - 'packages/collector/package.json'
       - 'packages/collector/ccusage.json'
       - 'packages/usage-core/**'
