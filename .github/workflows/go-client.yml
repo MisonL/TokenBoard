@@ -277,12 +277,15 @@ jobs:
             done
           done
           # The stamped version is what self-update compares against; a build
-          # left at the "dev" default would never match a release.
+          # left at the "dev" default would never match a release. GoReleaser
+          # derives the snapshot version from the latest tag: 0.0.0-SNAPSHOT
+          # before any tag exists, <tag>-SNAPSHOT once one does, so assert the
+          # shape rather than one particular version.
           mkdir -p ../verify
           tar -xzf tokenboard_linux_amd64.tar.gz -C ../verify tokenboard
           version=$(../verify/tokenboard version)
           echo "built version: $version"
-          echo "$version" | grep -Eq '^tokenboard \(go\) 0\.0\.0-SNAPSHOT-' \
+          echo "$version" | grep -Eq '^tokenboard \(go\) [0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT-' \
             || { echo "unexpected version line: $version"; exit 1; }
 
       # The upgrade path end to end: serve a release the way GitHub does, run
