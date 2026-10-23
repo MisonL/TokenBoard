@@ -5,6 +5,12 @@ on:
   # the release job, and it waits on the same gates as a branch push. GitHub
   # does not evaluate path filters for tag pushes, so the paths below gate
   # branch and pull-request runs only.
+  #
+  # workflow_dispatch exists so the gates can be run against a branch that the
+  # push filter does not cover (a feature branch, or a change to this file
+  # itself, which otherwise only gets verified once it reaches master). The
+  # release job is tag-gated, so a dispatch never publishes.
+  workflow_dispatch:
   push:
     branches: [master]
     tags: ['v*']
