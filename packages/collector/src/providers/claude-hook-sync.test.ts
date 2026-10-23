@@ -189,7 +189,13 @@ describe('Claude hook sync collection', () => {
 
       const measured = timings.snapshot()
       expect(Object.keys(measured).sort()).toEqual(['ccusageDaily', 'ccusageSession', 'cursorScan'])
-      expect(measured.ccusageSession).toBeGreaterThanOrEqual(measured.ccusageDaily)
+      // Each phase must carry its own measurement, not a shared or zeroed one.
+      // The two ccusage phases sleep for different spans, but comparing the two
+      // wall-clock readings against each other asserted an ordering the timer
+      // does not guarantee: on a loaded machine a 5ms sleep can be delayed past
+      // a 20ms one, which flipped this assertion without anything being wrong.
+      expect(measured.ccusageDaily).toBeGreaterThan(0)
+      expect(measured.ccusageSession).toBeGreaterThan(0)
       await clearPendingUploadCursors({ stateDir, source: 'claude-code' })
     } finally {
       vi.unstubAllEnvs()

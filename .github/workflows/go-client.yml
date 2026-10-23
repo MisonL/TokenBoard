@@ -94,6 +94,37 @@ jobs:
 
       - run: pnpm -r typecheck
 
+  # The TS collector is the reference implementation the Go client is diffed
+  # against, and nothing else in CI runs its 1218 tests: typecheck only proves
+  # the types line up, and the shadow gate exercises a handful of fixtures. A
+  # change to collector behaviour that the Go side has not ported yet would
+  # otherwise land silently and move the shadow baseline underneath it.
+  #
+  # Scoped to the two packages this workflow triggers on. `apps/web` has no CI
+  # of its own either, but it is not part of this baseline and adding it here
+  # would make a job that claims more than its paths cover.
+  baseline-test:
+    name: collector and usage-core test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Heavy collector tests take seconds each and the runner is shared. Every
+      # one of them carries an explicit timeout, so a failure here is real
+      # rather than the 5s default being hit under load.
+      - run: pnpm --filter @tokenboard/usage-core --filter @tokenboard/collector test
+
+      - run: pnpm format:check
+
   deps:
     name: ccusage contract
     runs-on: ubuntu-latest
@@ -301,7 +332,7 @@ jobs:
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, typecheck, deps, shadow, release-dry-run]
+    needs: [test, typecheck, baseline-test, deps, shadow, release-dry-run]
     runs-on: ubuntu-latest
     permissions:
       contents: write
