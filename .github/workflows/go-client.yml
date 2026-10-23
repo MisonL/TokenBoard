@@ -76,6 +76,19 @@ jobs:
           GOOS=linux GOARCH=arm64 go build ./...
           GOOS=darwin GOARCH=arm64 go build ./...
 
+      # `go build` never compiles _test.go, so a test file that only fails to
+      # build on another platform is invisible to the step above — and the
+      # native test matrix cannot see it either, because each runner only ever
+      # compiles for its own GOOS. `go vet` does typecheck test files, which is
+      # what makes this the cross-platform check for the test tree.
+      - name: cross vet (test files included)
+        if: runner.os == 'Linux'
+        working-directory: clients/go
+        run: |
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=arm64 go vet ./...
+          GOOS=darwin GOARCH=arm64 go vet ./...
+
   # Spec §5: the ccusage JSON shape is the one contract with no upstream schema
   # or changelog, so this gate is the only defence against a silent drift.
   # The TS collector is the reference implementation the Go client is compared
