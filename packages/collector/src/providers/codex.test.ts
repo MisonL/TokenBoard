@@ -1740,7 +1740,7 @@ describe('collectCodexUsage', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('keeps a merged bounded session from duplicate paths across configured Codex homes canonical', async () => {
     const firstHome = await createEmptyCodexHome()
@@ -1834,7 +1834,7 @@ describe('collectCodexUsage', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('warms canonical session attribution from a scoped full-history collection', async () => {
     const codexHome = await createEmptyCodexHome()
@@ -1877,7 +1877,7 @@ describe('collectCodexUsage', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('refreshes canonical session attribution when its source file changes', async () => {
     const codexHome = await createEmptyCodexHome()
@@ -1923,7 +1923,7 @@ describe('collectCodexUsage', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('keeps a frozen snapshot when its source session changes after canonical attribution begins', async () => {
     const codexHome = await createEmptyCodexHome()

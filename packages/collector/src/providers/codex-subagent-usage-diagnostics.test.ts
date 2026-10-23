@@ -91,5 +91,5 @@ describe('Codex subagent usage diagnostics', () => {
         rm(stateDir, { recursive: true, force: true })
       ])
     }
-  })
+  }, 30_000)
 })

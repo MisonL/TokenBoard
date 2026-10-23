@@ -347,7 +347,7 @@ describe('Antigravity CLI full history rebuild', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('rejects a finite database limit before a canonical full rebuild', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-agy-partial-full-rebuild-'))

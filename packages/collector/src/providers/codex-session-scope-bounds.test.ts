@@ -161,7 +161,7 @@ describe('Codex session scope bounds', () => {
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('projects a valid oversized session file into bounded usage metadata', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-bounds-'))

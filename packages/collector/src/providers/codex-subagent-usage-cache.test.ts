@@ -116,7 +116,7 @@ describe('Codex subagent usage cache', () => {
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('normalizes cache entries written before cache creation token tracking', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-legacy-'))

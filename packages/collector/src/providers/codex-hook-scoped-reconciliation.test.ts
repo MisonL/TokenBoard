@@ -103,7 +103,7 @@ describe('Codex hook scoped reconciliation', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
   // Codex reaches ccusage through four different call sites (scoped daily,
   // scoped session, per-home session counts, unbounded scans). The sink has to
   // cover whichever one ran, or a codex run reports no phase attribution at

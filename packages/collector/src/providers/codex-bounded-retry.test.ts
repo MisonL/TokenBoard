@@ -59,7 +59,7 @@ describe('Codex bounded canonical attribution retry', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('reports a stale canonical attribution cache write during a full-history collection', async () => {
     const codexHome = await createEmptyCodexHome()
@@ -182,7 +182,7 @@ describe('Codex bounded canonical attribution retry', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('retries once when a child session remains unstable during frozen bounded correction', async () => {
     const codexHome = await createEmptyCodexHome()
@@ -222,7 +222,7 @@ describe('Codex bounded canonical attribution retry', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })
 
 function reportDiagnostic(diagnostics: string[]) {

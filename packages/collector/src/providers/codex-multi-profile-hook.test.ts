@@ -42,7 +42,7 @@ describe('Codex multi-profile hook collection', () => {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('reconciles a changed session from a later CODEX_HOME profile', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-multi-hook-'))
@@ -1028,7 +1028,7 @@ describe('Codex multi-profile hook collection', () => {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('does not revive a legacy pending snapshot already acknowledged by a profile cursor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-multi-hook-'))

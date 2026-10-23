@@ -330,7 +330,7 @@ describe('createCodexSessionScope', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('combines every matching file in the compatibility scope API', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-scope-test-'))

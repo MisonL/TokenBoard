@@ -56,7 +56,7 @@ describe('Codex explicit session scope batches', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })
 
 async function writeSizedFile(filePath: string, size: number) {

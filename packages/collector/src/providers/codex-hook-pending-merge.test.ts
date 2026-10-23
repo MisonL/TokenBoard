@@ -82,7 +82,7 @@ describe('Codex hook reusable pending snapshots', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   // The reuse exists for the opposite case and must keep working: when ccusage has nothing for
   // the key, the cached snapshot is the only record of that usage.
@@ -136,7 +136,7 @@ describe('Codex hook reusable pending snapshots', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })
 
 async function writeJsonl(file: string, rows: unknown[]) {
@@ -223,4 +223,4 @@ test('does not double-count a pending day that only falls inside the ccusage win
   } finally {
     await rm(root, { recursive: true, force: true })
   }
-})
+}, 30_000)

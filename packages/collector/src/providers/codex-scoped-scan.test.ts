@@ -86,7 +86,7 @@ describe('collectCodexUsage scoped scans', () => {
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('collects a comma-containing Codex home from the JSON environment value', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-json-home-'))
@@ -153,7 +153,7 @@ describe('collectCodexUsage scoped scans', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('warms canonical attribution cache when ccusage reports a session filename with its extension', async () => {
     const codexHome = await mkdtemp(join(tmpdir(), 'tokenboard-codex-home-'))

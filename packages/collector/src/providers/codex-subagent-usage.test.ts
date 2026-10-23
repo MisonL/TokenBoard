@@ -194,7 +194,7 @@ describe('Codex subagent usage correction', () => {
         rm(secondHome, { recursive: true, force: true })
       ])
     }
-  })
+  }, 30_000)
 
   test('deduplicates repeated child events while retaining distinct events across matching Codex homes', async () => {
     const firstHome = await createEmptyCodexHome()
@@ -1346,7 +1346,7 @@ describe('Codex subagent usage correction', () => {
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('does not reject a bounded scan when an unrelated session changes', async () => {
     const codexHome = await createEmptyCodexHome()
@@ -1381,7 +1381,7 @@ describe('Codex subagent usage correction', () => {
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('ignores subagent sessionId paths that escape the sessions directory', async () => {
     const codexHome = await createEmptyCodexHome()

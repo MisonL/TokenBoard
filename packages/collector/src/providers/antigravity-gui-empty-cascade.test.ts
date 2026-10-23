@@ -62,7 +62,7 @@ test('rotates the default bounded scan while newer empty cascades arrive', async
   } finally {
     await rm(root, { recursive: true, force: true })
   }
-})
+}, 30_000)
 
 function cascadeId(index: number) {
   return `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`

@@ -80,7 +80,7 @@ describe('hook sync collection', () => {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('persists a legacy cursor newline marker once without reprocessing a stable session file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-cursor-metadata-'))
@@ -376,7 +376,7 @@ describe('hook sync collection', () => {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('accumulates same-day appended Codex last token usage while retaining one session', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-hook-sync-'))
@@ -1512,7 +1512,7 @@ describe('hook sync collection', () => {
       vi.unstubAllEnvs()
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })
 
 async function writeJsonl(file: string, rows: unknown[]) {

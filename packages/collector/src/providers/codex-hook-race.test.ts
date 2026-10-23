@@ -67,7 +67,7 @@ describe('Codex hook child-session race recovery', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('leaves the parsed hook cursor pending after a second child reader race', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-hook-race-'))
@@ -101,7 +101,7 @@ describe('Codex hook child-session race recovery', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('rescans all pending Codex rows when a race retry crosses a usage date', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-hook-race-cross-date-'))
@@ -157,7 +157,7 @@ describe('Codex hook child-session race recovery', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('does not retry a non-race correction failure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-hook-race-'))

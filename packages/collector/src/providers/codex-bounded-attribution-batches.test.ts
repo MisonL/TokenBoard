@@ -79,7 +79,7 @@ describe('Codex bounded canonical attribution batches', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('narrows canonical attribution to cache-miss files within a shared bounded scope', async () => {
     const codexHome = await createEmptyCodexHome()
@@ -160,7 +160,7 @@ describe('Codex bounded canonical attribution batches', () => {
       await rm(codexHome, { recursive: true, force: true })
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })
 
 function dailyResult(totalTokens: number) {

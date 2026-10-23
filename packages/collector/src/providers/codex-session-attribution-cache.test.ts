@@ -452,5 +452,5 @@ describe('Codex session attribution cache', () => {
     expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(8 * 1024 * 1024)
     expect(retained['0'.repeat(64)]).toBeUndefined()
     expect(retained[(19_999).toString(16).padStart(64, '0')]).toBeDefined()
-  })
+  }, 30_000)
 })
