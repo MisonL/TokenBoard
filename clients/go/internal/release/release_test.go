@@ -150,6 +150,22 @@ func TestChecksumsAndVerifyRoundTrip(t *testing.T) {
 	}
 }
 
+// The stamped build version and the release tag are compared as strings
+// (selfupdate.go:282), so this one mapping has to hold for every tag this
+// channel will accept. A tag GoReleaser did not publish under would resolve
+// to a version no build reports, and every scheduled run would reinstall.
+func TestVersionStripsTheTagPrefix(t *testing.T) {
+	cases := map[string]string{"v0.1.0": "0.1.0", "v1.2.3": "1.2.3", "v2.0.0-rc.1": "2.0.0-rc.1"}
+	for tag, want := range cases {
+		if got := Version(tag); got != want {
+			t.Errorf("Version(%q) = %q; want %q", tag, got, want)
+		}
+	}
+	if got := Version(""); got != "" {
+		t.Errorf("Version(\"\") = %q; want empty so the caller refuses it", got)
+	}
+}
+
 // A repository that is not owner/repo cannot become a URL; refusing it here
 // keeps a typo from turning into a request to the wrong host.
 func TestRepoValidation(t *testing.T) {

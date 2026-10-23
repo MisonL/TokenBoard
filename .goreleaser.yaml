@@ -75,6 +75,31 @@ release:
   # CI checkout uses, which keeps the config working for both.
   draft: false
   prerelease: auto
+  # A bare commit list does not tell an operator what a tag does or does not
+  # ship. The header states the version mapping the self-update channel
+  # depends on (`release.Version` strips the `v`, the binary reports the rest)
+  # and draws the line between this channel and the server, which deploys
+  # separately. Keep it short: the changelog follows it.
+  header: |
+    ## TokenBoard client {{ .Tag }}
+
+    This release ships the Go client only. `tokenboard version` prints
+    `tokenboard (go) {{ .Version }}` — the tag without its `v`, which is what
+    `self-update` compares against. The web app and API are deployed to
+    Cloudflare Workers by `pnpm run deploy`, not by this release.
+
+    **Switch a local collector onto this client** (from the repository
+    checkout; keeps the checkout as the rollback):
+
+    ```bash
+    node skills/tokenboard/scripts/upgrade.mjs --to-binary
+    ```
+
+    That installs the current release to `~/.tokenboard/bin/` and sets
+    `clientType: binary`. The skill's install paths take a `--release-repo`
+    / `TOKENBOARD_RELEASE_REPO` override; this repository is their default.
+    To roll a machine back, set `clientType` to `"git"` — a `perSource` map
+    cannot mix clients under `--source all`, which fails closed by design.
 
 changelog:
   use: github

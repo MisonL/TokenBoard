@@ -43,6 +43,20 @@ the release feed rather than the repository branch. Do not switch an install to
 `binary` unless the user asks for it or the release feed is confirmed to be the
 intended source for that machine.
 
+> **The binary channel has no published release as of 2026-10-23.** The client
+> is still under development and validation, so `v0.1.0` was turned back into a
+> draft. `--to-binary` and `self-update` against the default feed both fail
+> closed in that state (`self-update` exits 1 with "release lookup did not land
+> on a tag page"), which is the intended behaviour rather than a bug — there is
+> simply nothing to install. Keep installs on `git` until a release is published
+> again.
+
+To roll an install back from `binary` to `git`, do not hand-edit the config
+file: with `activeServer`/`servers` present, `clientType` is profile-scoped and a
+root-level edit is silently overridden on read. Use the config helper instead
+(`mergeConfig({ clientType: 'git' })`), which updates the root and the active
+profile together.
+
 After setup, report whether config was written, schedule was installed, and initial sync succeeded. Do not show `uploadToken`.
 
 New clients store credentials by TokenBoard server origin under `servers` and mirror the active profile to the legacy top-level `endpoint`, `uploadToken`, `deviceId`, `installationId`, and `timezone` fields. Re-running setup for a private or official server should update only that server profile while preserving credentials for other TokenBoard servers.
