@@ -124,7 +124,7 @@ clients/go/
 ## 11. 当前状态与下一步
 
 - [x] 调研完成（见 research 报告）；ccusage 已升 20.0.33（2cc5249，PR #24）
-- [ ] **前置：与上游作者对齐（D8）** —— 开工条件
+- [ ] **前置：与上游作者对齐（D8）** —— 开工条件。**事实状态：被绕过，未完成**。实施在未对齐的情况下完成了 M0–M6（PR #24 自 2026-10-04 起挂在上游未合并）。D8 的风险（skill 是上游核心资产，Go 化改变交付模式）因此仍未消解，只是推迟到合并时面对。这不是可自行推进的项：只能由上游作者回应。
 
 **M4 状态（claude-code + ccusage 集成层）**：
 
@@ -230,7 +230,9 @@ clients/go/
   - **踩到的坑（值得记）**：直接改配置文件的**根级** `clientType` 无效。本机配置有 `activeServer` + `servers` 多服务器结构，`normalizeActiveServerConfig` 会把根字段替换成 active profile 的 `profileScopedFields`，而 `clientType` 就在 profile-scoped 键集里（`config.mjs:390`）。第一次手改根字段后 `status.mjs` 仍报 `binary`，改用 `mergeConfig({ clientType: 'git' })` 才同时更新根与 profile。**回滚指令不能写成「手改 JSON」**，脚本里统一走 `mergeConfig`。
   - **无 published release 时的行为（已实测）**：`tokenboard self-update` exit 1，报 `release lookup did not land on a tag page: /MisonL/TokenBoard/releases`——**fail-closed，不会把机器误降级或误装**。而在 `sync.mjs` 里自更新失败只是 warning（`runPreCollectUpgrade` 的 catch），采集照常进行——所以即便有人留在 binary 通道，也只是每次定时同步多一行告警，不会中断上传。
   - **解除暂停的条件（缺一不可）**：
-    1. 真实数据覆盖 9 个源里至少 8 个。当前**只有 claude-code 与 codex 有真实数据**；grok-build / deepseek-harness 恒 0 快照，opencode / pi / antigravity-cli / antigravity / antigravity-ide 未安装——即 7/9 个源在本机没有可观测验证。
+    1. 真实数据覆盖 9 个源里至少 8 个。当前**只有 claude-code 与 codex 有真实数据**；`grok-build` / `deepseek-harness` / `opencode` / `pi` / `antigravity-cli` / `antigravity` / `antigravity-ide` 这 7 个源在本机没有可观测数据——即 7/9 个源没有可观测验证。
+       - **2026-10-23 复核（此前把这条写宽了）**：`grok-build` / `deepseek-harness` 并非「恒 0 快照」，而是**默认 7 天窗口内无数据**：`~/.grok/sessions` 最新 `updates.jsonl` 是 2026-10-09，`~/.dsh/sessions` 最新 `session.jsonl.zstd` 是 2026-09-18。用 `--since all` 重跑后两者都拿到数据且 **match**（各 4 快照）。因此这两源在本机**是有可观测验证的**，只是必须用全历史窗口——默认窗口会静默给出「0 快照 match」这种无信息量的结果。
+       - `opencode` / `pi` / antigravity 三源的目录确实不存在（`~/.local/share/opencode/opencode.db`、`~/.pi/agent/sessions`、`~/.gemini/antigravity*/conversations` 均缺失），这 5 源才是真正无数据的。
     2. GUI 两源（antigravity / antigravity-ide）拿到真实 language-server 数据并双跑 match；CI 不跑 language server，这是当前唯一完全没有端到端证据的路径。
     3. Windows 换入语义有真人验证。目前只有 `GOOS=windows go build` 与源码级论证（见本文件末「Windows 换入语义」条），首个 Windows 用户仍未出现。
     4. 03:41 的 `sessionCount` 瞬态 diff 定性（见 M7 台账）。
@@ -257,9 +259,10 @@ clients/go/
 - [x] per-source 映射（§7）：`config.perSource` 校验与客户端选择；具名 source 跟随映射，未映射沿用 `clientType`；`all` 运行要求映射与 `clientType` 一致（TS collector 无子集参数），否则 fail-closed。
 - [x] 真实数据双跑：codex 近 14 天 3 条快照 match；claude-code 排除当天 184 条快照 match（当天差异为活写竞态，已记录）。2026-10-21 复测（`shadow-dual-run.mjs`）：claude-code 277、codex 3、grok-build 4、deepseek-harness 4，全部 match；同时修掉一个真实缺陷——Grok Build 与 DSH 在未设 home 变量时扫的是 `~` 而不是 `~/.grok` / `~/.dsh`，CI fixture 永远显式设变量所以从未暴露，真实数据双跑一眼看穿（`21b9433`）。
 - [x] hook 路径覆盖（2026-10-21）：`tokenboard shadow --hook` 让两侧都走 hook 增量路径，`shadow-dual-run.mjs --hook` 透传。实现时发现并修掉一个真实缺陷：Go provider 自己从 `TOKENBOARD_HOOK_MODE` 环境变量读 hook 模式，而 `--hook` 最初只设置了 `Options.HookMode`（只影响 source 展开与 fail-fast），没能传到 provider——Go 侧仍在跑全量 preview，TS 子进程却已走 hook 路径，这样的「对比」比的是两条不同代码路径。修复后本机实测 codex hook 3 条快照 match；claude-code 因当天有活跃写入单独验证。仍未覆盖的是热 cursor 增量（shadow 两侧都用全新 state dir），见 §6 限制。
+- [ ] **M7 出口未达成：TS collector 尚未 deprecated。** 原始出口标准是「全 source 走 Go，TS deprecated」，两者都未发生——本机 `clientType: git`，TS 仍是生产主路径，Go 客户端只在本机以 `shadow` 对照方式运行过。达成该出口需要「发版状态：暂停」的 5 个条件全部解除，并完成 2 周稳定观察。
 - [x] 逐源切换机制本身已可用（2026-10-23 实测切换并回滚）：`upgrade.mjs --to-binary` → `clientType: binary` → 所有源由 Go 二进制执行 → 当日回滚为 `git`，两条路径都在真机上走通。`perSource` 保留为逐源开关（注意：`all` 运行要求映射与 `clientType` 一致，混合映射会 fail-closed）。**切换动作本身已验证，持续运行未验证**——见下条。
 - [ ] 「全部 source 走 Go 稳定 2 周」：**未开始，且不以上述 2026-10-23 起算**。真实启用与观察都排在「发版状态：暂停」的 5 个解除条件之后；解除后从真正启用那天重新起算 2 周。
-  - **观察期有效性的证据边界**：本机只有 `claude-code` 和 `codex` 有真实数据；`grok-build` / `deepseek-harness` 恒为 0 快照，`opencode` / `pi` / `antigravity-cli` 未安装。后五源的双跑 match 不构成有效证据，其正确性只能依赖 CI fixture 的 shadow 门禁。
+  - **观察期有效性的证据边界**：本机有可观测数据的源是 `claude-code`、`codex`、`grok-build`、`deepseek-harness` 四个（后两者须用 `--since all`，默认 7 天窗口内无数据）；`opencode` / `pi` / `antigravity-cli` / `antigravity` / `antigravity-ide` 五源的目录不存在。那五源的双跑 match 不构成有效证据，其正确性只能依赖 CI fixture 的 shadow 门禁。**注意**：默认窗口下 `grok-build` / `deepseek-harness` 会返回「0 快照 match」，那是空集匹配，没有任何信息量——不能计入覆盖率。
   - **切换依据（2026-10-23）**：二进制安装后 `shadow-dual-run.mjs --client ~/.tokenboard/bin/tokenboard --source claude-code --until 2026-10-22` 得 119 快照 match（`logs/shadow-dual-run.jsonl` 的 `04:16:46Z`、`06:36:25Z` 两条）。其余六源沿用 2026-10-22 的全源复验（见下条），本次未重跑。
   - **未定性的瞬态 diff（2026-10-23T03:41:16Z）**：默认窗口（含当天）双跑 124 快照、`liveWrite` 2、`differing` 1——`claude-code` / `2026-10-23` / `deepseek-v4.1-flash`（双跑日志里记原始拼写 `DeepSeek-V4.1-Flash`）的 `sessionCount` TS=31、Go=30，其余字段一致。两侧 `getSessionCounts`/`readSessionCountModel` 逐行同构，命令参数（`claude session --json --single-thread` + 同一 range）一致；双跑窗口内没有新建会话文件（唯一 11:30:26 早于 11:34 启动），但有 34 个会话文件在活跃追加。`isLiveWriteDifference` 按设计不放行 `sessionCount`（第三条件只覆盖 token 与 `costUsd`），因此该行被计为 `diff`。
   - **该行一度被误记为「未能复现」**：紧随其后的两次 match 用的是 `--until 2026-10-22` 沉降窗口，**不覆盖当天**，所以并没有重测这一行——正确说法是「未复测」。
