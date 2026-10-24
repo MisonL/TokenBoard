@@ -341,15 +341,34 @@ function run() {
   // what a cron entry or a human checking in should call rather than another
   // full run.
   if (flags.summary === true) {
-    const records = readRecentRecords(logPath, typeof flags.limit === 'string' ? Number(flags.limit) : 50)
+    // `--limit` reaches readRecentRecords as `slice(-limit)`. A value that is
+    // not a positive integer degrades silently there: NaN slices the whole
+    // log, and a negative number takes from the wrong end. Both look like a
+    // successful summary of a window the caller never asked for, so reject
+    // them here instead of reporting a count nobody can trust.
+    let limit = 50
+    if (flags.limit !== undefined) {
+      if (typeof flags.limit !== 'string' || !/^[1-9][0-9]*$/.test(flags.limit)) {
+        console.error('--limit must be a positive integer')
+        return 1
+      }
+      limit = Number(flags.limit)
+    }
+    const records = readRecentRecords(logPath, limit)
     if (records.length === 0) {
       console.log(`no records in ${logPath}`)
       return 0
     }
     const counts = summarizeDualRun(records)
+    // The record count alone does not say what the window covers: 31 records
+    // is a few days at four sources a day and half a year at one source a
+    // week. Print the span so a reader can tell whether the trend is recent.
+    const first = records[0]?.at
+    const last = records.at(-1)?.at
+    const span = first && last ? `${first} → ${last}` : 'unknown span'
     console.log(
-      `last ${records.length} records: ${counts.match} match, ${counts.empty} empty, ${counts.diff} diff, ` +
-        `${counts['not-installed']} not installed, ${counts.busy} busy, ${counts.error} error`
+      `last ${records.length} records (${span}): ${counts.match} match, ${counts.empty} empty, ` +
+        `${counts.diff} diff, ${counts['not-installed']} not installed, ${counts.busy} busy, ${counts.error} error`
     )
     for (const record of records.filter((r) => r.status === 'diff' || r.status === 'error').slice(-10)) {
       console.log(`${record.at} ${record.source}: ${record.status}${record.message ? ` — ${record.message}` : ''}`)

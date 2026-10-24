@@ -185,6 +185,27 @@ test('summarizeDualRun counts every outcome', () => {
   )
 })
 
+// readRecentRecords trusts its caller: it slices with a negative limit, where
+// NaN reads the whole log and a negative count reads from the wrong end. The
+// CLI rejects those before they reach it, so the only contract the function
+// owes is that a positive limit returns exactly that many trailing records.
+test('readRecentRecords returns the requested tail', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tokenboard-dual-'))
+  const logPath = join(dir, 'log.jsonl')
+  try {
+    const lines = Array.from({ length: 12 }, (_, index) =>
+      JSON.stringify({ at: `t${index}`, source: 'pi', status: 'match' })
+    )
+    writeFileSync(logPath, `${lines.join('\n')}\n`)
+
+    assert.equal(readRecentRecords(logPath, 5).length, 5)
+    assert.equal(readRecentRecords(logPath, 5).at(-1).at, 't11')
+    assert.equal(readRecentRecords(logPath, 50).length, 12)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 // --until is a usage error for any source other than claude-code and codex,
 // so the harness must not pass it to the others; doing so would turn a dual
 // run into a wall of usage errors on a machine with Grok Build.
