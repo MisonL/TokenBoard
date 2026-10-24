@@ -384,9 +384,11 @@ function trailingContinuationDelay(result, lockPath, runtime = trailingRuntime({
 // line that does not start with one of these.
 // Broad `^Skipping ` would also swallow real warnings (the Codex subagent-usage correction
 // lines report usage that silently fell out of the sync), so only the known per-source
-// unavailability skips count as noise.
+// unavailability skips count as noise. The pricing prefix must cover both of the collector's
+// spellings: the fallback paths print `TokenBoard model pricing: ...` (colon) and the
+// unpriced-model summary prints `TokenBoard model pricing unavailable ...` (space).
 const expectedDiagnosticPrefixes = [
-  /^TokenBoard model pricing /,
+  /^TokenBoard model pricing[: ]/,
   /^Skipped \d+ /,
   /^Skipping (unavailable )?\S+ source: /
 ]

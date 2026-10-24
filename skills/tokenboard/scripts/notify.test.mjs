@@ -1346,3 +1346,30 @@ test('invalid config value throws the same range error naming the config key', (
   assert.throws(() => readNotifyCooldownMs(undefined, {}, 100), /notifyCooldownMs must be between/)
   assert.throws(() => readNotifyCooldownMs(undefined, {}, 'soon'), /notifyCooldownMs must be an integer/)
 })
+
+// The collector prints its pricing fallbacks as `TokenBoard model pricing: ...` (colon), while
+// the unpriced-model warning uses `TokenBoard model pricing unavailable ...` (space). A filter
+// that only covers the space form makes a benign fallback the terminal error and buries the
+// real cause in diagnostics — which is how ten claude-code hook failures (2026-10-23/24) were
+// all attributed to the pricing cache instead of the oversized row that actually failed them.
+test('a pricing fallback diagnostic is noise in both its spellings', () => {
+  assert.throws(
+    () =>
+      executeTokenBoardSync('claude-code', {
+        lockToken: 'a'.repeat(32),
+        spawn: () => ({
+          status: 1,
+          error: undefined,
+          stderr: [
+            'TokenBoard model pricing: hook mode has no usable cache; using bundled static pricing',
+            'Session JSONL contains an oversized line with an unknown record type'
+          ].join('\n')
+        })
+      }),
+    (error) => {
+      assert.match(error.message, /oversized line with an unknown record type/)
+      assert.match(error.diagnostics ?? '', /hook mode has no usable cache/)
+      return true
+    }
+  )
+})
