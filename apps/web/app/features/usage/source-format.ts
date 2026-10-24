@@ -22,6 +22,18 @@ const sourceLabels: Record<string, string> = {
   pi: 'Pi',
   'grok-build': 'Grok Build',
   'deepseek-harness': 'DeepSeek Harness',
+  amp: 'Amp',
+  droid: 'Droid',
+  codebuff: 'Codebuff',
+  hermes: 'Hermes',
+  goose: 'Goose',
+  kilo: 'Kilo',
+  copilot: 'GitHub Copilot CLI',
+  'gemini-cli': 'Gemini CLI',
+  kimi: 'Kimi',
+  qwen: 'Qwen Code',
+  openclaw: 'OpenClaw',
+  zcode: 'ZCode',
   all: '全部来源'
 }
 

@@ -59,6 +59,29 @@ describe('usage snapshot schema', () => {
     }
   })
 
+  // The ccusage-backed tool sources price usage locally the same way Claude Code and
+  // Codex do, so their snapshots carry a real costUsd and are never cost-unavailable.
+  test('accepts the ccusage tool sources with cost', () => {
+    for (const source of [
+      'amp',
+      'droid',
+      'codebuff',
+      'hermes',
+      'goose',
+      'kilo',
+      'copilot',
+      'gemini-cli',
+      'kimi',
+      'qwen',
+      'openclaw',
+      'zcode'
+    ] as const) {
+      expect(usageSourceSchema.parse(source)).toBe(source)
+      expect(usageSnapshotSchema.parse({ ...baseSnapshot, source }).costUsd).toBe(0.01)
+      expect(isCostUnavailableSource(source)).toBe(false)
+    }
+  })
+
   // Cost is the only snapshot field the aggregation layer sums across rows. An unbounded
   // value makes that sum overflow to Infinity, which persists into the summary tables and
   // then serialises to `null` in the public JSON — where readers treat it as zero.

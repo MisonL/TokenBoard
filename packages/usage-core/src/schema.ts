@@ -10,8 +10,53 @@ export const usageSources = [
   'opencode',
   'pi',
   'grok-build',
-  'deepseek-harness'
+  'deepseek-harness',
+  'amp',
+  'droid',
+  'codebuff',
+  'hermes',
+  'goose',
+  'kilo',
+  'copilot',
+  'gemini-cli',
+  'kimi',
+  'qwen',
+  'openclaw',
+  'zcode'
 ] as const
+/**
+ * Tool sources collected through the pinned ccusage runtime. Each maps to a ccusage
+ * subcommand of the same name (`ccusage <tool> daily --json`), except gemini-cli which
+ * maps to the `gemini` subcommand to avoid clashing with the Antigravity Gemini core.
+ */
+export const ccusageToolSources = [
+  'amp',
+  'droid',
+  'codebuff',
+  'hermes',
+  'goose',
+  'kilo',
+  'copilot',
+  'gemini-cli',
+  'kimi',
+  'qwen',
+  'openclaw',
+  'zcode'
+] as const
+export const ccusageToolCommandNames: Record<(typeof ccusageToolSources)[number], string> = {
+  amp: 'amp',
+  droid: 'droid',
+  codebuff: 'codebuff',
+  hermes: 'hermes',
+  goose: 'goose',
+  kilo: 'kilo',
+  copilot: 'copilot',
+  'gemini-cli': 'gemini',
+  kimi: 'kimi',
+  qwen: 'qwen',
+  openclaw: 'openclaw',
+  zcode: 'zcode'
+}
 export const antigravityUsageSources = ['antigravity-cli', 'antigravity', 'antigravity-ide'] as const
 
 /**
