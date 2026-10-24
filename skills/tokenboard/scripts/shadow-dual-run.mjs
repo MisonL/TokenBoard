@@ -96,7 +96,7 @@ export function readDualRunConfig({ env = process.env, config = {}, homeDir = ho
       join(root, 'bin', process.platform === 'win32' ? 'ccusage.exe' : 'ccusage'),
       join(root, 'TokenBoard', 'packages', 'collector', 'node_modules', '.bin', 'ccusage')
     ]),
-    logPath: env.TOKENBOARD_SHADOW_DUAL_RUN_LOG || join(root, 'logs', 'shadow-dual-run.jsonl'),
+    logPath: dualRunLogPath({ env }),
     // The configured symlinked Codex roots, exactly as sync injects them: a
     // machine whose archived_sessions is a symlink refuses the scan without
     // this, and the dual run would report a codex failure on every run.
@@ -262,7 +262,14 @@ function lastLine(value) {
   return lines.at(-1) ?? ''
 }
 
-// summarizeDualRun condenses the day's records for a human reading the log
+// dualRunLogPath is the one place that knows where the comparison log lives.
+// status.mjs reads the same path, so a moved log (`--log` / the env override)
+// stays visible in the daily health check.
+export function dualRunLogPath({ env = process.env, root = configDir() } = {}) {
+  return env.TOKENBOARD_SHADOW_DUAL_RUN_LOG || join(root, 'logs', 'shadow-dual-run.jsonl')
+}
+
+// dualRunTrend condenses the day's records for a human reading the log
 // tail: how many sources matched, differed, were absent, and failed.
 //
 // `empty` is its own bucket. It means both sides agreed on an empty set, which
@@ -276,6 +283,31 @@ export function summarizeDualRun(records) {
     if (record.status in counts) counts[record.status] += 1
   }
   return counts
+}
+
+// summarizeDualRunTrend is the window summary status.mjs reports: counts per
+// outcome plus the span the window covers and when the last red state was.
+// It carries no record contents — a record's message can hold a client's
+// error text with local paths in it, which must not reach status output.
+export function summarizeDualRunTrend(records) {
+  if (records.length === 0) return undefined
+  const counts = summarizeDualRun(records)
+  const lastOf = (status) => records.filter((record) => record.status === status).at(-1)?.at
+  const lastDiffAt = lastOf('diff')
+  const lastErrorAt = lastOf('error')
+  return {
+    records: records.length,
+    ...(records[0]?.at ? { firstAt: records[0].at } : {}),
+    ...(records.at(-1)?.at ? { lastAt: records.at(-1).at } : {}),
+    match: counts.match,
+    empty: counts.empty,
+    diff: counts.diff,
+    notInstalled: counts['not-installed'],
+    busy: counts.busy,
+    error: counts.error,
+    ...(lastDiffAt ? { lastDiffAt } : {}),
+    ...(lastErrorAt ? { lastErrorAt } : {})
+  }
 }
 
 // exitCodeForDualRun is the run's verdict: a difference or an error fails the

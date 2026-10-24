@@ -835,3 +835,84 @@ test('status reports the perSource rollout map', () => {
   delete base.config.perSource
   assert.equal('perSource' in buildStatus(base), false)
 })
+
+// The dual run's recent verdicts belong in the daily health check: deciding
+// whether a source can move onto the Go client needs the comparison log, and
+// making the operator run a second command is how that log stops being read.
+// Only counts and timestamps are exposed — the log's records carry messages
+// that can include local paths.
+test('status reports the dual-run trend from the log the harness writes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-status-shadow-'))
+  try {
+    writeFileSync(join(root, 'config.json'), '{}\n')
+    mkdirSync(join(root, 'logs'), { recursive: true })
+    writeFileSync(
+      join(root, 'logs', 'shadow-dual-run.jsonl'),
+      [
+        JSON.stringify({ at: '2026-10-22T10:34:05.576Z', source: 'claude-code', status: 'match', snapshots: 40 }),
+        JSON.stringify({
+          at: '2026-10-23T03:41:16.038Z',
+          source: 'claude-code',
+          status: 'diff',
+          message: '/home/user/private'
+        }),
+        ''
+      ].join('\n')
+    )
+
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./status.mjs', import.meta.url))], {
+      env: { ...process.env, TOKENBOARD_CONFIG_DIR: root, TOKENBOARD_STATE_DIR: root },
+      encoding: 'utf8'
+    })
+
+    assert.equal(result.status, 0)
+    const status = JSON.parse(result.stdout)
+    assert.deepEqual(status.shadowDualRun, {
+      records: 2,
+      firstAt: '2026-10-22T10:34:05.576Z',
+      lastAt: '2026-10-23T03:41:16.038Z',
+      match: 1,
+      empty: 0,
+      diff: 1,
+      notInstalled: 0,
+      busy: 0,
+      error: 0,
+      lastDiffAt: '2026-10-23T03:41:16.038Z'
+    })
+    assert.equal(JSON.stringify(status).includes('/home/user/private'), false)
+    assert.equal(JSON.stringify(status).includes('shadow-dual-run.jsonl'), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('status finds a moved dual-run log and omits the trend when none exists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-status-shadow-move-'))
+  const moved = mkdtempSync(join(tmpdir(), 'tokenboard-status-shadow-log-'))
+  try {
+    writeFileSync(join(root, 'config.json'), '{}\n')
+    const logPath = join(moved, 'shadow-dual-run.jsonl')
+    writeFileSync(
+      logPath,
+      `${JSON.stringify({ at: '2026-10-23T13:15:14.327Z', source: 'pi', status: 'empty', snapshots: 0 })}\n`
+    )
+
+    const script = fileURLToPath(new URL('./status.mjs', import.meta.url))
+    const run = (env) =>
+      spawnSync(process.execPath, [script], {
+        env: { ...process.env, TOKENBOARD_CONFIG_DIR: root, TOKENBOARD_STATE_DIR: root, ...env },
+        encoding: 'utf8'
+      })
+
+    const movedResult = run({ TOKENBOARD_SHADOW_DUAL_RUN_LOG: logPath })
+    assert.equal(movedResult.status, 0)
+    assert.equal(JSON.parse(movedResult.stdout).shadowDualRun.empty, 1)
+
+    const absentResult = run({})
+    assert.equal(absentResult.status, 0)
+    assert.equal('shadowDualRun' in JSON.parse(absentResult.stdout), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(moved, { recursive: true, force: true })
+  }
+})

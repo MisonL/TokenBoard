@@ -11,6 +11,11 @@ import { deviceLinkStatus } from './device-link.mjs'
 import { hookStatus } from './hooks.mjs'
 import { scheduledRetryLegacyStatePath, scheduledRetryStatePath } from './scheduled-retry.mjs'
 import { readScheduledSyncState, scheduledSyncStatePath } from './scheduled-sync-state.mjs'
+import { dualRunLogPath, readRecentRecords, summarizeDualRunTrend } from './shadow-dual-run.mjs'
+
+// The window mirrors `shadow-dual-run.mjs --summary`'s default so the daily
+// check and the on-demand summary describe the same slice of the log.
+const shadowDualRunWindow = 50
 
 export function buildStatus({
   configPath,
@@ -21,7 +26,8 @@ export function buildStatus({
   scheduledSync,
   recentRuns,
   uploadBackoff,
-  client
+  client,
+  shadowDualRun
 }) {
   return {
     configured: true,
@@ -46,6 +52,10 @@ export function buildStatus({
     ...(scheduledSync ? { scheduledSync: publicScheduledSync(scheduledSync) } : {}),
     ...(recentRuns ? { recentRuns } : {}),
     ...(uploadBackoff ? { uploadBackoff } : {}),
+    // The dual run's verdicts decide whether a source may move onto the Go
+    // client. Reporting them here is what turns that log into something an
+    // operator actually reads; absent log means no comparison has run.
+    ...(shadowDualRun ? { shadowDualRun } : {}),
     // Only a binary install has a released client on disk. clientType alone
     // could not tell a healthy install from one whose binary or bundled
     // ccusage was deleted, or from an older ccusage left by an install of a
@@ -136,6 +146,16 @@ function hasValue(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+// collectShadowDualRunSummary reads the comparison log the dual run writes and
+// condenses it with the harness's own summarizer, so status and `--summary`
+// can never disagree about what a window of records said. The trend is counts
+// and timestamps only (see summarizeDualRunTrend); a read error here fails
+// status visibly rather than reporting a silently stale trend.
+export function collectShadowDualRunSummary(logPath, { exists = existsSync, read = readRecentRecords } = {}) {
+  if (!exists(logPath)) return undefined
+  return summarizeDualRunTrend(read(logPath, shadowDualRunWindow))
+}
+
 function publicHookStatus(hooks) {
   return {
     notifyHandler: hookState(hooks?.notifyHandler),
@@ -180,7 +200,8 @@ function runCli() {
         client:
           config.clientType === 'binary'
             ? readClientStatus({ configDir: process.env.TOKENBOARD_CONFIG_DIR?.trim() || dirname(file) })
-            : undefined
+            : undefined,
+        shadowDualRun: collectShadowDualRunSummary(dualRunLogPath())
       }),
       null,
       2

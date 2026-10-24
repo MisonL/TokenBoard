@@ -6,13 +6,15 @@ import test from 'node:test'
 import {
   buildShadowInvocation,
   classifyShadowRun,
+  dualRunLogPath,
   dualRunSources,
   exitCodeForDualRun,
   isUnavailable,
   defaultDualRunSince,
   readRecentRecords,
   readDualRunConfig,
-  summarizeDualRun
+  summarizeDualRun,
+  summarizeDualRunTrend
 } from './shadow-dual-run.mjs'
 
 const report = (overrides = {}) => JSON.stringify({ status: 'match', snapshots: 12, ...overrides }, null, 2)
@@ -418,4 +420,48 @@ test('a diff with live-write rows alongside still fails', () => {
   assert.equal(record.status, 'diff')
   assert.equal(record.liveWrite, 1)
   assert.equal(exitCodeForDualRun([record]), 1)
+})
+
+// The status report surfaces the dual run's recent verdicts, so the daily
+// health check answers "is the Go client still matching?" without a second
+// command. The trend is counts and a span only: a record's message can carry
+// a client's error text — including local paths — and status output must
+// never contain either.
+test('summarizeDualRunTrend condenses the window without record contents', () => {
+  const records = [
+    { at: '2026-10-22T10:34:05.576Z', source: 'claude-code', status: 'match', snapshots: 40 },
+    { at: '2026-10-22T10:58:21.024Z', source: 'codex', status: 'diff', message: '/home/user/private' },
+    { at: '2026-10-23T13:15:14.327Z', source: 'pi', status: 'not-installed' },
+    { at: '2026-10-23T13:15:15.000Z', source: 'grok-build', status: 'error', message: 'boom /private/path' }
+  ]
+  const trend = summarizeDualRunTrend(records)
+  assert.deepEqual(trend, {
+    records: 4,
+    firstAt: '2026-10-22T10:34:05.576Z',
+    lastAt: '2026-10-23T13:15:15.000Z',
+    match: 1,
+    empty: 0,
+    diff: 1,
+    notInstalled: 1,
+    busy: 0,
+    error: 1,
+    lastDiffAt: '2026-10-22T10:58:21.024Z',
+    lastErrorAt: '2026-10-23T13:15:15.000Z'
+  })
+  assert.equal(JSON.stringify(trend).includes('/home/user'), false)
+  assert.equal(JSON.stringify(trend).includes('/private'), false)
+})
+
+test('summarizeDualRunTrend has nothing to say about an empty window', () => {
+  assert.equal(summarizeDualRunTrend([]), undefined)
+})
+
+// status must find the log where the harness writes it, including a moved
+// log via the same env override `--log` sets.
+test('the dual-run log path follows the config directory and the log override', () => {
+  assert.equal(dualRunLogPath({ env: {}, root: '/cfg' }), join('/cfg', 'logs', 'shadow-dual-run.jsonl'))
+  assert.equal(
+    dualRunLogPath({ env: { TOKENBOARD_SHADOW_DUAL_RUN_LOG: '/tmp/moved.jsonl' }, root: '/cfg' }),
+    '/tmp/moved.jsonl'
+  )
 })
