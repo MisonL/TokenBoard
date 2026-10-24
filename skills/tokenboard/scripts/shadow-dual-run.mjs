@@ -68,7 +68,13 @@ logs/shadow-dual-run.jsonl).
 --hook     compare the incremental hook path (claude-code and codex only)
            instead of a full preview
 --source   run one source instead of all of them
---log      append the results here instead of the default log`
+--log      append the results here instead of the default log
+--summary  print the trend from the log instead of running a comparison
+--limit N  with --summary, how many trailing records to read (default 50)
+
+A source whose data falls entirely outside the window logs "empty" (both
+sides agreed on zero snapshots), not "match" — an empty comparison is not
+coverage. Rerun it with --since all to actually exercise that source.`
 
 // readDualRunConfig reads what one invocation needs from the install: where
 // the Go client is, where the checkout is, and how the collector is
@@ -175,7 +181,13 @@ export function classifyShadowRun({ source, status, stdout, stderr }) {
     record.liveWrite = report.liveWrite.length
   }
   if (report && report.status === 'match') {
-    record.status = 'match'
+    // A match over zero snapshots is not evidence that the two
+    // implementations agree — it is evidence that neither found anything to
+    // compare. Logging it as `match` made an empty source look covered, which
+    // is how a source whose data sits outside the configured window reads as
+    // verified every single day. `summarizeDualRun` counts these separately so
+    // the coverage claim cannot inflate itself.
+    record.status = record.snapshots > 0 ? 'match' : 'empty'
     return record
   }
   if (report && report.status === 'diff') {
@@ -252,8 +264,14 @@ function lastLine(value) {
 
 // summarizeDualRun condenses the day's records for a human reading the log
 // tail: how many sources matched, differed, were absent, and failed.
+//
+// `empty` is its own bucket. It means both sides agreed on an empty set, which
+// says nothing about whether the two implementations compute the same thing —
+// a source whose newest data predates the collection window lands here every
+// day. Folding it into `match` is what let a log full of matches look like
+// coverage when most of those sources had never compared a single row.
 export function summarizeDualRun(records) {
-  const counts = { match: 0, diff: 0, 'not-installed': 0, busy: 0, error: 0 }
+  const counts = { match: 0, empty: 0, diff: 0, 'not-installed': 0, busy: 0, error: 0 }
   for (const record of records) {
     if (record.status in counts) counts[record.status] += 1
   }
@@ -316,6 +334,29 @@ function run() {
   const flags = parseRunArgs(argv)
   const stored = readConfig()
   const config = readDualRunConfig({ config: stored })
+  const logPath = typeof flags.log === 'string' ? flags.log : config.logPath
+
+  // --summary reads the log instead of running: it answers "how has the last
+  // while actually looked" without paying for a fresh comparison, and it is
+  // what a cron entry or a human checking in should call rather than another
+  // full run.
+  if (flags.summary === true) {
+    const records = readRecentRecords(logPath, typeof flags.limit === 'string' ? Number(flags.limit) : 50)
+    if (records.length === 0) {
+      console.log(`no records in ${logPath}`)
+      return 0
+    }
+    const counts = summarizeDualRun(records)
+    console.log(
+      `last ${records.length} records: ${counts.match} match, ${counts.empty} empty, ${counts.diff} diff, ` +
+        `${counts['not-installed']} not installed, ${counts.busy} busy, ${counts.error} error`
+    )
+    for (const record of records.filter((r) => r.status === 'diff' || r.status === 'error').slice(-10)) {
+      console.log(`${record.at} ${record.source}: ${record.status}${record.message ? ` — ${record.message}` : ''}`)
+    }
+    return 0
+  }
+
   if (flags.client) config.binary = String(flags.client)
   if (!existsSync(config.binary)) {
     console.error(`TokenBoard Go client is not installed: ${config.binary}`)
@@ -326,7 +367,6 @@ function run() {
   const since = typeof flags.since === 'string' ? flags.since : defaultDualRunSince({ config: stored })
   const until = typeof flags.until === 'string' ? flags.until : undefined
   const hook = flags.hook === true
-  const logPath = typeof flags.log === 'string' ? flags.log : config.logPath
 
   const records = []
   for (const source of sources) {
@@ -343,14 +383,15 @@ function run() {
       stderr: result.stderr ?? errorMessage(result.error)
     })
     records.push(record)
-    const detail = record.status === 'match' ? `${record.snapshots} snapshots` : (record.message ?? '')
+    const detail =
+      record.status === 'match' || record.status === 'empty' ? `${record.snapshots} snapshots` : (record.message ?? '')
     console.log(`${source}: ${record.status}${detail ? ` — ${detail}` : ''}`)
   }
   appendRecords(logPath, records)
   const counts = summarizeDualRun(records)
   console.log(
-    `dual run: ${counts.match} match, ${counts.diff} diff, ${counts['not-installed']} not installed, ` +
-      `${counts.busy} busy, ${counts.error} error`
+    `dual run: ${counts.match} match, ${counts.empty} empty, ${counts.diff} diff, ` +
+      `${counts['not-installed']} not installed, ${counts.busy} busy, ${counts.error} error`
   )
   console.log(`log: ${logPath}`)
   return exitCodeForDualRun(records)

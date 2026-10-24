@@ -24,6 +24,33 @@ test('a matching run logs a match with its snapshot count', () => {
   assert.equal(record.source, 'pi')
 })
 
+// Two implementations agreeing on nothing is not agreement. A source whose
+// data sits outside the window returns a match with zero snapshots every day,
+// and calling that a match is how a log of green lines came to look like
+// coverage for sources that had never compared a row.
+test('a match over zero snapshots is logged as empty, not match', () => {
+  const record = classifyShadowRun({ source: 'grok-build', status: 0, stdout: report({ snapshots: 0 }), stderr: '' })
+  assert.equal(record.status, 'empty')
+  assert.equal(record.snapshots, 0)
+  assert.deepEqual(summarizeDualRun([record, { status: 'match' }]), {
+    match: 1,
+    empty: 1,
+    diff: 0,
+    'not-installed': 0,
+    busy: 0,
+    error: 0
+  })
+  // `empty` is not a failure: neither side errored, so the run still passes.
+  assert.equal(exitCodeForDualRun([record]), 0)
+})
+
+// A match that carries no count at all cannot be shown to have compared
+// anything, so it takes the same conservative route.
+test('a match with no snapshot count is empty', () => {
+  const record = classifyShadowRun({ source: 'pi', status: 0, stdout: JSON.stringify({ status: 'match' }), stderr: '' })
+  assert.equal(record.status, 'empty')
+})
+
 // The diff report carries the keys, and the keys are what tells a reviewer
 // whether the difference is the live-write race on the current day or real
 // drift on a settled one. The log has to keep them.
@@ -148,12 +175,13 @@ test('summarizeDualRun counts every outcome', () => {
     summarizeDualRun([
       { status: 'match' },
       { status: 'match' },
+      { status: 'empty' },
       { status: 'diff' },
       { status: 'not-installed' },
       { status: 'busy' },
       { status: 'error' }
     ]),
-    { match: 2, diff: 1, 'not-installed': 1, busy: 1, error: 1 }
+    { match: 2, empty: 1, diff: 1, 'not-installed': 1, busy: 1, error: 1 }
   )
 })
 
