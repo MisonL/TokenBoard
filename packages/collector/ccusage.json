@@ -1,0 +1,332 @@
+{
+  "$schema": "https://ccusage.com/config-schema.json",
+  "codex": {
+    "defaults": {
+      "speed": "auto"
+    }
+  },
+  "defaults": {
+    "pricingOverrides": {
+      "claude-fable-5": {
+        "cacheCreationInputTokenCost": 1.25e-5,
+        "cacheReadInputTokenCost": 1e-6,
+        "inputCostPerToken": 1e-5,
+        "outputCostPerToken": 5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-fable-5-preview": {
+        "cacheCreationInputTokenCost": 1.25e-5,
+        "cacheReadInputTokenCost": 1e-6,
+        "inputCostPerToken": 1e-5,
+        "outputCostPerToken": 5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-mythos-5": {
+        "cacheCreationInputTokenCost": 1.25e-5,
+        "cacheReadInputTokenCost": 1e-6,
+        "inputCostPerToken": 1e-5,
+        "outputCostPerToken": 5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-mythos-5-preview": {
+        "cacheCreationInputTokenCost": 1.25e-5,
+        "cacheReadInputTokenCost": 1e-6,
+        "inputCostPerToken": 1e-5,
+        "outputCostPerToken": 5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-mythos-preview": {
+        "cacheCreationInputTokenCost": 1.25e-5,
+        "cacheReadInputTokenCost": 1e-6,
+        "inputCostPerToken": 1e-5,
+        "outputCostPerToken": 5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-opus-5": {
+        "cacheCreationInputTokenCost": 6.25e-6,
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 2.5e-5,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1000000
+      },
+      "claude-opus-4-8": {
+        "cacheCreationInputTokenCost": 6.25e-6,
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 2.5e-5,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1000000
+      },
+      "claude-opus-4-7": {
+        "cacheCreationInputTokenCost": 6.25e-6,
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 2.5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-opus-4-6": {
+        "cacheCreationInputTokenCost": 6.25e-6,
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 2.5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-opus-4-5": {
+        "cacheCreationInputTokenCost": 6.25e-6,
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 2.5e-5,
+        "maxInputTokens": 200000
+      },
+      "claude-opus-4-1": {
+        "cacheCreationInputTokenCost": 1.875e-5,
+        "cacheReadInputTokenCost": 1.5e-6,
+        "inputCostPerToken": 1.5e-5,
+        "outputCostPerToken": 7.5e-5,
+        "maxInputTokens": 200000
+      },
+      "claude-opus-4": {
+        "cacheCreationInputTokenCost": 1.875e-5,
+        "cacheReadInputTokenCost": 1.5e-6,
+        "inputCostPerToken": 1.5e-5,
+        "outputCostPerToken": 7.5e-5,
+        "maxInputTokens": 200000
+      },
+      "claude-sonnet-5": {
+        "cacheCreationInputTokenCost": 2.5e-6,
+        "cacheReadInputTokenCost": 2e-7,
+        "inputCostPerToken": 2e-6,
+        "outputCostPerToken": 1e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-sonnet-4-6": {
+        "cacheCreationInputTokenCost": 3.75e-6,
+        "cacheReadInputTokenCost": 3e-7,
+        "inputCostPerToken": 3e-6,
+        "outputCostPerToken": 1.5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-sonnet-4-5": {
+        "cacheCreationInputTokenCost": 3.75e-6,
+        "cacheReadInputTokenCost": 3e-7,
+        "inputCostPerToken": 3e-6,
+        "outputCostPerToken": 1.5e-5,
+        "maxInputTokens": 200000
+      },
+      "claude-sonnet-4": {
+        "cacheCreationInputTokenCost": 3.75e-6,
+        "cacheReadInputTokenCost": 3e-7,
+        "inputCostPerToken": 3e-6,
+        "outputCostPerToken": 1.5e-5,
+        "maxInputTokens": 1000000
+      },
+      "claude-haiku-4-5": {
+        "cacheCreationInputTokenCost": 1.25e-6,
+        "cacheReadInputTokenCost": 1e-7,
+        "inputCostPerToken": 1e-6,
+        "outputCostPerToken": 5e-6,
+        "maxInputTokens": 200000
+      },
+      "claude-haiku-3-5": {
+        "cacheCreationInputTokenCost": 1e-6,
+        "cacheReadInputTokenCost": 8e-8,
+        "inputCostPerToken": 8e-7,
+        "outputCostPerToken": 4e-6,
+        "maxInputTokens": 200000
+      },
+      "claude-3-7-sonnet": {
+        "cacheCreationInputTokenCost": 3.75e-6,
+        "cacheReadInputTokenCost": 3e-7,
+        "inputCostPerToken": 3e-6,
+        "outputCostPerToken": 1.5e-5,
+        "maxInputTokens": 200000
+      },
+      "claude-3-opus": {
+        "cacheCreationInputTokenCost": 1.875e-5,
+        "cacheReadInputTokenCost": 1.5e-6,
+        "inputCostPerToken": 1.5e-5,
+        "outputCostPerToken": 7.5e-5,
+        "maxInputTokens": 200000
+      },
+      "claude-3-sonnet": {
+        "cacheCreationInputTokenCost": 3.75e-6,
+        "cacheReadInputTokenCost": 3e-7,
+        "inputCostPerToken": 3e-6,
+        "outputCostPerToken": 1.5e-5,
+        "maxInputTokens": 200000
+      },
+      "claude-3-haiku": {
+        "cacheCreationInputTokenCost": 3.125e-7,
+        "cacheReadInputTokenCost": 2.5e-8,
+        "inputCostPerToken": 2.5e-7,
+        "outputCostPerToken": 1.25e-6,
+        "maxInputTokens": 200000
+      },
+      "grok-4.5": {
+        "cacheReadInputTokenCost": 3e-7,
+        "cacheReadInputTokenCostAbove200kTokens": 6e-7,
+        "inputCostPerToken": 2e-6,
+        "inputCostPerTokenAbove200kTokens": 4e-6,
+        "outputCostPerToken": 6e-6,
+        "outputCostPerTokenAbove200kTokens": 1.2e-5,
+        "maxInputTokens": 500000
+      },
+      "gpt-5.6-sol": {
+        "cacheCreationInputTokenCost": 6.25e-6,
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 3e-5,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.6-terra": {
+        "cacheCreationInputTokenCost": 2.5e-6,
+        "cacheReadInputTokenCost": 2e-7,
+        "inputCostPerToken": 2e-6,
+        "outputCostPerToken": 1.2e-5,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.6-luna": {
+        "cacheCreationInputTokenCost": 2.5e-7,
+        "cacheReadInputTokenCost": 2e-8,
+        "inputCostPerToken": 2e-7,
+        "outputCostPerToken": 1.2e-6,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.6": {
+        "cacheCreationInputTokenCost": 6.25e-6,
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 3e-5,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.5": {
+        "cacheReadInputTokenCost": 5e-7,
+        "inputCostPerToken": 5e-6,
+        "outputCostPerToken": 3e-5,
+        "fastMultiplier": 2.5,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.5-pro": {
+        "inputCostPerToken": 3e-5,
+        "outputCostPerToken": 0.00018,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.4": {
+        "cacheReadInputTokenCost": 2.5e-7,
+        "inputCostPerToken": 2.5e-6,
+        "outputCostPerToken": 1.5e-5,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.4-mini": {
+        "cacheReadInputTokenCost": 7.5e-8,
+        "inputCostPerToken": 7.5e-7,
+        "outputCostPerToken": 4.5e-6,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.4-nano": {
+        "cacheReadInputTokenCost": 2e-8,
+        "inputCostPerToken": 2e-7,
+        "outputCostPerToken": 1.25e-6,
+        "fastMultiplier": 2,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.4-pro": {
+        "inputCostPerToken": 3e-5,
+        "outputCostPerToken": 0.00018,
+        "maxInputTokens": 1050000
+      },
+      "gpt-5.3-codex": {
+        "cacheReadInputTokenCost": 1.75e-7,
+        "inputCostPerToken": 1.75e-6,
+        "outputCostPerToken": 1.4e-5,
+        "fastMultiplier": 2,
+        "maxInputTokens": 272000
+      },
+      "gpt-5.2-codex": {
+        "cacheReadInputTokenCost": 1.75e-7,
+        "inputCostPerToken": 1.75e-6,
+        "outputCostPerToken": 1.4e-5,
+        "maxInputTokens": 272000
+      },
+      "gpt-5.2": {
+        "cacheReadInputTokenCost": 1.75e-7,
+        "inputCostPerToken": 1.75e-6,
+        "outputCostPerToken": 1.4e-5,
+        "maxInputTokens": 272000
+      },
+      "gpt-5.2-pro": {
+        "inputCostPerToken": 2.1e-5,
+        "outputCostPerToken": 0.000168,
+        "maxInputTokens": 272000
+      },
+      "gpt-5.1-codex": {
+        "cacheReadInputTokenCost": 1.25e-7,
+        "inputCostPerToken": 1.25e-6,
+        "outputCostPerToken": 1e-5,
+        "maxInputTokens": 272000
+      },
+      "gpt-5.1": {
+        "cacheReadInputTokenCost": 1.25e-7,
+        "inputCostPerToken": 1.25e-6,
+        "outputCostPerToken": 1e-5,
+        "maxInputTokens": 272000
+      },
+      "gpt-5-codex": {
+        "cacheReadInputTokenCost": 1.25e-7,
+        "inputCostPerToken": 1.25e-6,
+        "outputCostPerToken": 1e-5,
+        "maxInputTokens": 272000
+      },
+      "gpt-5": {
+        "cacheReadInputTokenCost": 1.25e-7,
+        "inputCostPerToken": 1.25e-6,
+        "outputCostPerToken": 1e-5,
+        "maxInputTokens": 272000
+      },
+      "LongCat-2.5-Preview": {
+        "inputCostPerToken": 7.5e-7,
+        "outputCostPerToken": 2.95e-6,
+        "cacheReadInputTokenCost": 1.5e-8,
+        "maxInputTokens": 1000000
+      },
+      "deepseek-flash": {
+        "inputCostPerToken": 1.5e-7,
+        "outputCostPerToken": 6e-7,
+        "cacheReadInputTokenCost": 3e-9,
+        "maxInputTokens": 1000000
+      },
+      "deepseek/deepseek-flash": {
+        "inputCostPerToken": 1.5e-7,
+        "outputCostPerToken": 6e-7,
+        "cacheReadInputTokenCost": 3e-9,
+        "maxInputTokens": 1000000
+      },
+      "longcat-2.5-preview-free": {
+        "inputCostPerToken": 0.0,
+        "outputCostPerToken": 0.0,
+        "cacheReadInputTokenCost": 0.0,
+        "maxInputTokens": 1000000
+      },
+      "MiniMax-M3.1-Flash-Preview": {
+        "inputCostPerToken": 0.0,
+        "outputCostPerToken": 0.0,
+        "cacheReadInputTokenCost": 0.0,
+        "cacheCreationInputTokenCost": 0.0,
+        "maxInputTokens": 1000000
+      },
+      "step-5-preview-free": {
+        "inputCostPerToken": 0.0,
+        "outputCostPerToken": 0.0,
+        "cacheReadInputTokenCost": 0.0,
+        "maxInputTokens": 1000000
+      }
+    }
+  }
+}

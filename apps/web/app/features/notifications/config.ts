@@ -17,7 +17,29 @@ export type WebhookEnv = Pick<
 export const defaultWebhookLogRetentionDays = 90
 export const maxWebhookLogRetentionDays = 365
 export const defaultWebhookCronBatchSize = 5
-export const maxWebhookCronBatchSize = 5
+// The ceiling exists to bound one cron invocation (each delivery is a network fetch plus D1
+// statements), but pinning it equal to the default left operators no room to drain a backlog
+// after downtime without editing code. 50 keeps a single invocation bounded while allowing
+// the env var to trade throughput for catch-up speed.
+export const maxWebhookCronBatchSize = 50
+
+// The variable name and the reason a key is rejected are operator diagnostics, not user-facing
+// copy. This Worker hosts many accounts, and any signed-in user can POST to the notifications
+// settings route, so whatever message the error carries is readable by them: naming
+// `WEBHOOK_ENCRYPTION_KEY` tells a stranger how the deployment is wired, and an unconfigured
+// deployment answers that way for every account on it. Splitting the actionable reason onto
+// `diagnostic` lets each boundary choose — the HTTP error body stays generic (jsonError echoes
+// `message`), while the delivery logs keep the detail an operator needs to fix it.
+export class WebhookConfigurationError extends ApiError {
+  constructor(readonly diagnostic: string) {
+    super('INTERNAL_SERVER_ERROR', 'Internal server error', 500)
+  }
+}
+
+// For log paths that only have an `unknown` error and must not lose the diagnostic.
+export function webhookDiagnostic(error: unknown) {
+  return error instanceof WebhookConfigurationError ? error.diagnostic : null
+}
 
 export function webhookLogRetentionDays(env: Pick<WebhookEnv, 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS'>) {
   if (env.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS === undefined) {
@@ -45,17 +67,20 @@ export function webhookCronBatchSize(env: Pick<WebhookEnv, 'TOKENBOARD_WEBHOOK_C
   return size
 }
 
+// Only the first tick of the UTC day (00:00–00:15 with the 15-minute cron), matching the
+// daily maintenance window that gates the rate-limit and device-retention prunes in
+// server.ts. A tighter cron would re-enter this window within hour 0.
 export function shouldPruneWebhookDeliveryLogs(now: Date) {
-  return now.getUTCHours() === 0
+  return now.getUTCHours() === 0 && now.getUTCMinutes() < 15
 }
 
 export function requireEncryptionKey(env: Pick<WebhookEnv, 'WEBHOOK_ENCRYPTION_KEY'>) {
   const secret = env.WEBHOOK_ENCRYPTION_KEY?.trim()
   if (!secret) {
-    throw new ApiError('INTERNAL_SERVER_ERROR', 'WEBHOOK_ENCRYPTION_KEY is not configured', 500)
+    throw new WebhookConfigurationError('WEBHOOK_ENCRYPTION_KEY is not configured')
   }
   if (decodeEncryptionKey(secret).length !== 32) {
-    throw new ApiError('INTERNAL_SERVER_ERROR', 'WEBHOOK_ENCRYPTION_KEY must be a 32-byte base64 secret', 500)
+    throw new WebhookConfigurationError('WEBHOOK_ENCRYPTION_KEY must be a 32-byte base64 secret')
   }
   return secret
 }
@@ -72,7 +97,7 @@ export function hasValidEncryptionKey(env: Pick<WebhookEnv, 'WEBHOOK_ENCRYPTION_
 export function decodeEncryptionKey(secret: string) {
   const normalized = secret.trim().replaceAll('-', '+').replaceAll('_', '/')
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.length % 4 === 1) {
-    throw new ApiError('INTERNAL_SERVER_ERROR', 'WEBHOOK_ENCRYPTION_KEY must be a 32-byte base64 secret', 500)
+    throw new WebhookConfigurationError('WEBHOOK_ENCRYPTION_KEY must be a 32-byte base64 secret')
   }
   try {
     const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))
@@ -82,7 +107,7 @@ export function decodeEncryptionKey(secret: string) {
     }
     return bytes
   } catch (_) {
-    throw new ApiError('INTERNAL_SERVER_ERROR', 'WEBHOOK_ENCRYPTION_KEY must be a 32-byte base64 secret', 500)
+    throw new WebhookConfigurationError('WEBHOOK_ENCRYPTION_KEY must be a 32-byte base64 secret')
   }
 }
 
@@ -110,20 +135,12 @@ export function publicLeaderboardUrl(env: Pick<WebhookEnv, 'BETTER_AUTH_URL'>) {
 }
 
 const providerHostRules: Record<WebhookProvider, (url: URL) => boolean> = {
-  wecom: (url) => (
-    url.host === 'qyapi.weixin.qq.com' &&
-    url.pathname === '/cgi-bin/webhook/send' &&
-    hasQueryToken(url, 'key')
-  ),
-  dingtalk: (url) => (
-    url.host === 'oapi.dingtalk.com' &&
-    url.pathname === '/robot/send' &&
-    hasQueryToken(url, 'access_token')
-  ),
-  feishu: (url) => (
-    ['open.feishu.cn', 'open.larksuite.com'].includes(url.host) &&
-    hasPathToken(url, '/open-apis/bot/v2/hook/')
-  )
+  wecom: (url) =>
+    url.host === 'qyapi.weixin.qq.com' && url.pathname === '/cgi-bin/webhook/send' && hasQueryToken(url, 'key'),
+  dingtalk: (url) =>
+    url.host === 'oapi.dingtalk.com' && url.pathname === '/robot/send' && hasQueryToken(url, 'access_token'),
+  feishu: (url) =>
+    ['open.feishu.cn', 'open.larksuite.com'].includes(url.host) && hasPathToken(url, '/open-apis/bot/v2/hook/')
 }
 
 function hasQueryToken(url: URL, name: string) {

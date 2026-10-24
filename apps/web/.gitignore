@@ -20,6 +20,9 @@ node_modules/
 .env
 .env.production
 .dev.vars
+# wrangler `--env` variants such as `.dev.vars.production` hold real secrets too; the
+# exact-name rule above does not match them.
+.dev.vars.*
 
 # local wrangler config
 wrangler.local.jsonc

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +6,19 @@ import { assertCredentialsLockOwnership, withCredentialsLock } from './credentia
 
 export function configDir() {
   return process.env.TOKENBOARD_CONFIG_DIR || join(homedir(), '.tokenboard')
+}
+
+// Only touches a directory, and only when its mode is not already private, so a directory the
+// user owns and has already locked down is left exactly as-is.
+function chmodConfigDirPrivate(dir) {
+  if (process.platform === 'win32') return
+  try {
+    const stats = statSync(dir)
+    if (!stats.isDirectory()) return
+    if ((stats.mode & 0o077) !== 0) chmodSync(dir, 0o700)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
 }
 
 export function configPath() {
@@ -17,17 +30,90 @@ export function collectorDir() {
 }
 
 export function readPackageManager(flags = {}, config = {}) {
-  const value =
-    flags['package-manager'] ||
-    process.env.TOKENBOARD_PACKAGE_MANAGER ||
-    config.packageManager ||
-    'pnpm'
+  const value = flags['package-manager'] || process.env.TOKENBOARD_PACKAGE_MANAGER || config.packageManager || 'pnpm'
 
   if (value === 'pnpm' || value === 'bun' || value === 'npm') {
     return value
   }
 
   throw new Error(`Unsupported package manager: ${value}. Expected pnpm, bun, or npm.`)
+}
+
+// Which collector implementation this machine runs: the git checkout (the
+// original install, and still the default) or the released Go binary. The
+// default is 'git' so every existing install keeps working untouched; a
+// machine only moves to 'binary' when the user asks for it, and moving back is
+// the same flag.
+export function readClientType({ flags = {}, env = process.env, config = {} } = {}) {
+  const value = flags.client || env.TOKENBOARD_CLIENT || config.clientType || 'git'
+  if (value === 'git' || value === 'binary') {
+    return value
+  }
+  throw new Error(`Unsupported client type: ${value}. Expected git or binary.`)
+}
+
+// The per-source rollout map from spec §7: {pi: 'go', codex: 'ts', ...}. A
+// mapping is the operator's explicit choice for that source and outranks the
+// machine-wide clientType, so a migration can move one source at a time
+// instead of flipping the whole install.
+//
+// 'go' and 'binary' both mean the released Go binary; 'ts' and 'git' both mean
+// the checkout. Keeping both spellings means the map can echo the language of
+// whichever side it is describing.
+const sourceClientAliases = new Map([
+  ['go', 'binary'],
+  ['binary', 'binary'],
+  ['ts', 'git'],
+  ['git', 'git']
+])
+
+export function readPerSource(config = {}) {
+  const mapping = config.perSource
+  if (mapping === undefined) return {}
+  if (mapping === null || typeof mapping !== 'object' || Array.isArray(mapping)) {
+    throw new Error('Invalid perSource: expected an object mapping source names to git or binary.')
+  }
+  const resolved = {}
+  for (const [source, value] of Object.entries(mapping)) {
+    if (typeof value !== 'string') {
+      throw new Error(`Invalid perSource entry for ${source}: expected git, ts, go or binary.`)
+    }
+    const client = sourceClientAliases.get(value)
+    if (!client) {
+      throw new Error(`Invalid perSource entry for ${source}: ${value}. Expected git, ts, go or binary.`)
+    }
+    resolved[source] = client
+  }
+  return resolved
+}
+
+// resolveClientForSource picks the client for one invocation. A named source
+// uses its perSource entry when it has one; 'all' is the case that cannot be
+// split, so it requires every mapped source to agree with the machine-wide
+// client and refuses a mixed map rather than silently running one client for
+// everything.
+export function resolveClientForSource({ flags = {}, env = process.env, config = {}, source }) {
+  const defaultClient = readClientType({ flags, env, config })
+  const perSource = readPerSource(config)
+  const mapped = perSource[source]
+  if (mapped !== undefined) {
+    return mapped
+  }
+  if (source !== 'all') {
+    return defaultClient
+  }
+  // An all-source run collects everything with one client. A map that names a
+  // different client for any source cannot be honored, and picking either side
+  // would silently collect the other's sources incorrectly.
+  const conflicting = Object.entries(perSource).filter(([, client]) => client !== defaultClient)
+  if (conflicting.length > 0) {
+    const detail = conflicting.map(([name, client]) => `${name}=${client === 'binary' ? 'go' : 'ts'}`).join(', ')
+    throw new Error(
+      `perSource maps ${detail}, which differs from the machine clientType (${defaultClient === 'binary' ? 'go' : 'ts'}). ` +
+        'An all-source run needs one client; sync each source separately or set perSource to a single client.'
+    )
+  }
+  return defaultClient
 }
 
 export function packageManagerCommand(packageManager, platform = process.platform) {
@@ -42,14 +128,6 @@ export function packageManagerCommand(packageManager, platform = process.platfor
   return 'npm.cmd'
 }
 
-export function packageManagerRunArgs(packageManager, scriptName, scriptArgs = []) {
-  if (packageManager === 'npm') {
-    return ['run', scriptName, '--', ...scriptArgs]
-  }
-
-  return ['run', scriptName, ...scriptArgs]
-}
-
 export function readConfig() {
   return normalizeActiveServerConfig(readRawConfig())
 }
@@ -60,11 +138,38 @@ function readRawConfig() {
     throw new Error(`TokenBoard config not found: ${file}`)
   }
 
-  return JSON.parse(stripUtf8Bom(readFileSync(file, 'utf8')))
+  const raw = stripUtf8Bom(readFileSync(file, 'utf8'))
+  try {
+    return JSON.parse(raw)
+  } catch (error) {
+    // `JSON.parse` embeds the offending source text in its message, and Node prints that
+    // message (and, for a syntax error, the source line itself) when it reaches an
+    // uncaught handler. The config file holds the upload token, so a truncated or
+    // hand-edited file would put the token on stderr — exactly what SKILL.md forbids.
+    // Re-throwing without the parse detail keeps the diagnosis useful and the secret out.
+    throw new Error(
+      `TokenBoard config is not valid JSON: ${file}. Fix or remove it, then retry. (${jsonErrorLocation(error)})`
+    )
+  }
+}
+
+// Only the position is carried over: `SyntaxError.message` also contains a snippet of the
+// offending text, which is the part that can hold a secret.
+export function jsonErrorLocation(error) {
+  if (!(error instanceof SyntaxError)) return 'unparseable'
+  const match = /position (\d+)/.exec(error.message)
+  return match ? `parse error at position ${match[1]}` : 'parse error'
 }
 
 export function writeConfig(config) {
-  mkdirSync(configDir(), { recursive: true })
+  // 0700 up front rather than waiting for the first sync to tighten it: the directory holds the
+  // upload token in `config.json`, and between `setup` and the first sync it would otherwise sit
+  // at the umask default. `recursive: true` does not change an existing directory's mode, so a
+  // directory the user created themselves (or one that has since been loosened) is tightened here
+  // as well — same guarantee `sync.mjs`'s `ensurePrivateStateDir` gives it on every run.
+  const dir = configDir()
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodConfigDirPrivate(dir)
   const file = configPath()
   const tempFile = `${file}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`
   try {
@@ -277,9 +382,7 @@ function persistedServerProfile(profile) {
 function persistedServerProfiles(servers) {
   const next = {}
   for (const [serverOrigin, profile] of Object.entries(servers || {})) {
-    next[serverOrigin] = profile && typeof profile === 'object'
-      ? persistedServerProfile(profile)
-      : profile
+    next[serverOrigin] = profile && typeof profile === 'object' ? persistedServerProfile(profile) : profile
   }
   return next
 }
@@ -296,7 +399,10 @@ const profileScopedRootKeys = new Set([
   'repoUrl',
   'repoRef',
   'packageManager',
+  'clientType',
+  'perSource',
   'scheduleTimes',
+  'codexSymlinkRoots',
   'createdAt',
   'updatedAt'
 ])

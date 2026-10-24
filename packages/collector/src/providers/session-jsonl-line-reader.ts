@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { lstat, open, type FileHandle } from 'node:fs/promises'
 import { TextDecoder } from 'node:util'
 import type { UsageSource } from '@tokenboard/usage-core'
+import { createSessionContentHasher } from './session-content-hash'
 import {
   createSessionJsonlMetadataScanner,
   finishSessionJsonlMetadataScan,
@@ -25,6 +25,7 @@ type ReadSessionJsonlLinesInput = {
   endOffsetBytes?: number
   maxLineBytes: number
   maxDiscardedLineBytes?: number
+  codexUsageOnly?: boolean
   source?: UsageSource
   expectedFingerprint?: SessionJsonlFileFingerprint
 }
@@ -45,14 +46,36 @@ type LineState = {
 
 export const maxDiscardedSessionJsonlLineBytes = 64 * 1024 * 1024
 
+// Record types that never carry a root-level `usage`, so an oversized row of one of these can be
+// dropped instead of failing the whole source. Every entry here is a claim that the type is not a
+// metric row; a type left out is treated as potentially billable and its oversized row is fatal.
+//
+// `attachment` and `result` are the two that were missing. Claude Code writes `attachment` rows
+// for hook output, tool listings and queued prompts, and a queued command can embed base64 images:
+// one 1.1 MB `attachment` row stopped every claude-code hook sync for a week, while four larger
+// `user` rows in the same file passed untouched because `user` was listed. `result` rows hold a
+// subagent result key, also without usage. `api-request-blob` is the third: it records a request
+// payload with a content hash, and its `message` holds only `role`/`content` — one 1.15 MB row
+// stopped every claude-code hook sync from 2026-10-23 until it was listed here.
+//
+// Listing a type here is what fixes the production path: an oversized row whose type is absent
+// from this set is fatal in `finishLine`, whatever its content. The `root-attachment` scope added
+// to session-jsonl-metadata-scanner.ts is defence in depth for callers that read without a source
+// (where `hasRelevantSessionJsonlMetadata` cannot gate on `source === 'claude-code'`) and would
+// otherwise see `attachment.usage`'s `totalTokens` as evidence that the row is metric-bearing.
+// The parser never reads that subtree — usage comes only from `record.message.usage` or
+// `record.usage` — so the task summary inside it is safe to ignore in both paths.
 const discardableSessionRecordTypes = new Set([
+  'api-request-blob',
   'assistant',
+  'attachment',
   'compacted',
   'event_msg',
   'file-history-snapshot',
   'progress',
   'queue-operation',
   'response_item',
+  'result',
   'session_meta',
   'summary',
   'task_complete',
@@ -61,15 +84,12 @@ const discardableSessionRecordTypes = new Set([
   'user'
 ])
 
-export async function* readSessionJsonlLines(
-  input: ReadSessionJsonlLinesInput
-): AsyncIterable<SessionJsonlLine> {
+export async function* readSessionJsonlLines(input: ReadSessionJsonlLinesInput): AsyncIterable<SessionJsonlLine> {
+  const codexUsageOnly = input.codexUsageOnly ?? input.source === 'codex'
   const verifiedFile = input.expectedFingerprint
     ? await openVerifiedSessionJsonlFile(input.filePath, input.expectedFingerprint)
     : undefined
-  const expectedEndOffsetBytes = input.expectedFingerprint
-    ? input.expectedFingerprint.size
-    : input.endOffsetBytes
+  const expectedEndOffsetBytes = input.expectedFingerprint ? input.expectedFingerprint.size : input.endOffsetBytes
   if (input.expectedFingerprint && input.endOffsetBytes !== input.expectedFingerprint.size) {
     await verifiedFile?.close()
     throw new Error(`Invalid verified session JSONL range: ${input.filePath}`)
@@ -93,7 +113,7 @@ export async function* readSessionJsonlLines(
       ...(expectedEndOffsetBytes === undefined ? {} : { end: expectedEndOffsetBytes - 1 })
     })
     const maxDiscardedLineBytes = input.maxDiscardedLineBytes ?? maxDiscardedSessionJsonlLineBytes
-    let line = emptyLineState()
+    let line = emptyLineState(codexUsageOnly)
     let skipLeadingLineFeed = await startsAfterCarriageReturn({
       fileHandle: verifiedFile,
       filePath: input.filePath,
@@ -103,39 +123,39 @@ export async function* readSessionJsonlLines(
     let completed = false
 
     try {
-    for await (const chunk of stream) {
-      contentHash?.update(chunk)
-      bytesRead += chunk.length
-      let offset = 0
-      if (skipLeadingLineFeed) {
-        if (chunk.length === 0) continue
-        if (chunk[0] === 0x0a) offset = 1
-        skipLeadingLineFeed = false
-      }
-      while (offset < chunk.length) {
-        const terminator = findLineTerminator(chunk, offset)
-        const end = terminator === -1 ? chunk.length : terminator
-        appendLineSegment(chunk.subarray(offset, end), line, {
-          maxLineBytes: input.maxLineBytes,
-          maxDiscardedLineBytes,
-          source: input.source
-        })
-        if (terminator === -1) break
-        yield finishLine(line, input.source)
-        line = emptyLineState()
-        const terminatorByte = chunk[terminator]
-        offset = terminator + 1
-        if (terminatorByte === 0x0d) {
-          if (offset < chunk.length && chunk[offset] === 0x0a) {
-            offset += 1
-          } else if (offset === chunk.length) {
-            skipLeadingLineFeed = true
+      for await (const chunk of stream) {
+        contentHash?.update(chunk)
+        bytesRead += chunk.length
+        let offset = 0
+        if (skipLeadingLineFeed) {
+          if (chunk.length === 0) continue
+          if (chunk[0] === 0x0a) offset = 1
+          skipLeadingLineFeed = false
+        }
+        while (offset < chunk.length) {
+          const terminator = findLineTerminator(chunk, offset)
+          const end = terminator === -1 ? chunk.length : terminator
+          appendLineSegment(chunk.subarray(offset, end), line, {
+            maxLineBytes: input.maxLineBytes,
+            maxDiscardedLineBytes,
+            source: input.source
+          })
+          if (terminator === -1) break
+          yield finishLine(line, input.source)
+          line = emptyLineState(codexUsageOnly)
+          const terminatorByte = chunk[terminator]
+          offset = terminator + 1
+          if (terminatorByte === 0x0d) {
+            if (offset < chunk.length && chunk[offset] === 0x0a) {
+              offset += 1
+            } else if (offset === chunk.length) {
+              skipLeadingLineFeed = true
+            }
           }
         }
       }
-    }
-    if (line.byteLength > 0) yield finishLine(line, input.source)
-    completed = true
+      if (line.byteLength > 0) yield finishLine(line, input.source)
+      completed = true
     } finally {
       stream.destroy()
       if (completed && input.expectedFingerprint) {
@@ -194,14 +214,13 @@ async function openVerifiedSessionJsonlFile(filePath: string, expected: SessionJ
     throw new Error(`Session file changed before reading: ${filePath}`, { cause: error })
   })
   try {
-    const [handleStat, currentPathStat] = await Promise.all([
-      fileHandle.stat(),
-      lstat(filePath).catch(() => null)
-    ])
-    if (!matchesSessionJsonlIdentity(handleStat, expected) ||
-        !matchesSessionJsonlIdentity(currentPathStat, expected) ||
-        currentPathStat?.isSymbolicLink() ||
-        !currentPathStat?.isFile()) {
+    const [handleStat, currentPathStat] = await Promise.all([fileHandle.stat(), lstat(filePath).catch(() => null)])
+    if (
+      !matchesSessionJsonlIdentity(handleStat, expected) ||
+      !matchesSessionJsonlIdentity(currentPathStat, expected) ||
+      currentPathStat?.isSymbolicLink() ||
+      !currentPathStat?.isFile()
+    ) {
       throw new Error(`Session file changed before reading: ${filePath}`)
     }
     return fileHandle
@@ -211,9 +230,16 @@ async function openVerifiedSessionJsonlFile(filePath: string, expected: SessionJ
   }
 }
 
+// Prefix verification re-hashes from byte 0, so its throughput decides how long a
+// hook sync takes on large session files. A 64 KiB buffer spent most of that time
+// in per-chunk overhead rather than in SHA-256 itself: measured on a 1.2 GB codex
+// session, 64 KiB reached 0.10 GB/s while 4 MiB reached 0.25 GB/s. The buffer is
+// still clamped to the range being verified so tiny files do not allocate 4 MiB.
+export const sessionJsonlHashBufferBytes = 4 * 1024 * 1024
+
 async function hashSessionJsonlPrefix(fileHandle: FileHandle, endOffsetBytes: number, filePath: string) {
-  const hash = createHash('sha256')
-  const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, endOffsetBytes)))
+  const hash = createSessionContentHasher()
+  const buffer = Buffer.allocUnsafe(Math.min(sessionJsonlHashBufferBytes, Math.max(1, endOffsetBytes)))
   let position = 0
   while (position < endOffsetBytes) {
     const length = Math.min(buffer.length, endOffsetBytes - position)
@@ -231,10 +257,12 @@ function assertVerifiedSessionJsonlContent(input: {
   bytesRead: number
   expected: SessionJsonlFileFingerprint | undefined
   filePath: string
-  hash: ReturnType<typeof createHash> | undefined
+  hash: ReturnType<typeof createSessionContentHasher> | undefined
 }) {
-  if (input.expected &&
-      (input.bytesRead !== input.expected.size || input.hash?.digest('hex') !== input.expected.sha256)) {
+  if (
+    input.expected &&
+    (input.bytesRead !== input.expected.size || input.hash?.digest('hex') !== input.expected.sha256)
+  ) {
     throw new Error(`Session file changed while reading: ${input.filePath}`)
   }
 }
@@ -243,24 +271,22 @@ function matchesSessionJsonlIdentity(
   stat: { dev: number; ino: number; mtimeMs: number; size: number } | null,
   expected: SessionJsonlFileFingerprint
 ) {
-  return stat !== null &&
-    stat.dev === expected.dev &&
-    stat.ino === expected.ino &&
-    stat.size >= expected.size
+  return stat !== null && stat.dev === expected.dev && stat.ino === expected.ino && stat.size >= expected.size
 }
 
-export function isSkippedOversizedSessionJsonlLine(
-  line: SessionJsonlLine
-): line is SkippedOversizedSessionJsonlLine {
+export function isSkippedOversizedSessionJsonlLine(line: SessionJsonlLine): line is SkippedOversizedSessionJsonlLine {
   return typeof line !== 'string'
 }
 
-function emptyLineState(): LineState {
+function emptyLineState(codexUsageOnly = false): LineState {
   return {
     chunks: [],
     byteLength: 0,
     skipping: false,
-    metadataScanner: createSessionJsonlMetadataScanner()
+    metadataScanner: createSessionJsonlMetadataScanner({
+      codexUsageOnly,
+      additionalRelevantKeys: codexUsageOnly ? ['total_token_usage', 'last_token_usage'] : undefined
+    })
   }
 }
 
@@ -281,11 +307,7 @@ function appendLineSegment(
     return
   }
 
-  scanSessionJsonlMetadata(
-    line.skipping ? [segment] : [...line.chunks, segment],
-    line.metadataScanner,
-    limits.source
-  )
+  scanSessionJsonlMetadata(line.skipping ? [segment] : [...line.chunks, segment], line.metadataScanner, limits.source)
   if (line.metadataScanner.invalid) {
     throw new Error('Session JSONL contains a malformed oversized line')
   }
@@ -331,9 +353,7 @@ function finishLine(line: LineState, source?: UsageSource): SessionJsonlLine {
     return { kind: 'skipped-oversized-non-usage', byteLength: line.byteLength }
   }
   const value = Buffer.concat(line.chunks, line.byteLength)
-  const withoutCarriageReturn = value.length > 0 && value[value.length - 1] === 0x0d
-    ? value.subarray(0, -1)
-    : value
+  const withoutCarriageReturn = value.length > 0 && value[value.length - 1] === 0x0d ? value.subarray(0, -1) : value
   return decodeSessionJsonlLine(withoutCarriageReturn)
 }
 

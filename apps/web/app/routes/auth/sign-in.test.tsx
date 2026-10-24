@@ -17,16 +17,26 @@ describe('sign-in route', () => {
   test('redirects authenticated users to the dashboard', async () => {
     mockedGetOptionalUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
 
-    const response = await GET[0](signInContext() as never, async () => undefined) as Response
+    const response = (await GET[0](signInContext() as never, async () => undefined)) as Response
 
     expect(response.status).toBe(302)
     expect(response.headers.get('location')).toBe('/dashboard')
   })
 
+  // The form is anonymous-only — a signed-in visitor is redirected — so a shared browser cache
+  // must not replay either branch to the next person.
+  test('does not let the page be cached', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    const response = (await GET[0](signInContext() as never, async () => undefined)) as Response
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+  })
+
   test('marks the login card as the nav login focus target', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
-    const response = await GET[0](signInContext() as never, async () => undefined) as Response
+    const response = (await GET[0](signInContext() as never, async () => undefined)) as Response
     const html = await response.text()
 
     expect(response.status).toBe(200)
@@ -39,7 +49,7 @@ describe('sign-in route', () => {
   test('keeps the sign-in action ahead of explanatory content on narrow screens', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
-    const response = await GET[0](signInContext() as never, async () => undefined) as Response
+    const response = (await GET[0](signInContext() as never, async () => undefined)) as Response
     const html = await response.text()
 
     expect(html).toContain('order-2 min-w-0 lg:order-1')
@@ -52,7 +62,7 @@ describe('sign-in route', () => {
   test('keeps compound names intact in the narrowest login layout', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
-    const response = await GET[0](signInContext() as never, async () => undefined) as Response
+    const response = (await GET[0](signInContext() as never, async () => undefined)) as Response
     const html = await response.text()
 
     expect(html).toContain('whitespace-nowrap">AI token</span>')
@@ -62,7 +72,7 @@ describe('sign-in route', () => {
   test('keeps the GitHub auth failure message visible', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
-    const response = await GET[0](signInContext({ error: 'github' }) as never, async () => undefined) as Response
+    const response = (await GET[0](signInContext({ error: 'github' }) as never, async () => undefined)) as Response
     const html = await response.text()
 
     expect(response.status).toBe(200)
@@ -72,17 +82,17 @@ describe('sign-in route', () => {
 })
 
 function signInContext(query: Record<string, string | undefined> = {}) {
+  const headers = new Headers()
   return {
     req: {
       query(name: string) {
         return query[name]
       }
     },
-    render: vi.fn(async (body: unknown) => (
-      new Response(await renderToString(body as never))
-    )),
-    redirect: vi.fn((location: string, status = 302) => (
-      new Response(null, { status, headers: { location } })
-    ))
+    header: (name: string, value: string) => {
+      headers.set(name, value)
+    },
+    render: vi.fn(async (body: unknown) => new Response(await renderToString(body as never), { headers })),
+    redirect: vi.fn((location: string, status = 302) => new Response(null, { status, headers: { location } }))
   }
 }

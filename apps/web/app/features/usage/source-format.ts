@@ -1,3 +1,4 @@
+import { costUnavailableSources, isAntigravityUsageSource, type UsageSource } from '@tokenboard/usage-core'
 import { formatUsd } from '../../lib/money'
 
 const costUnavailableLabels: Record<string, string> = {
@@ -7,6 +8,7 @@ const costUnavailableLabels: Record<string, string> = {
   'grok-build': 'Grok Build 费用不可用',
   'deepseek-harness': 'DeepSeek Harness 费用不可用'
 }
+const costUnavailableSourceSet = new Set<string>(costUnavailableSources)
 const antigravityCollectiveLabel = 'Antigravity 费用不可用'
 const mixedCollectiveLabel = '部分来源费用不可用'
 
@@ -27,12 +29,16 @@ export type SourceSplitItem = {
   source: string
 }
 
+// Sources reach this module as plain strings read back from stored rows, so a key like
+// `constructor` or `toString` would resolve to an inherited member instead of the fallback.
+// Upload validation rejects those, but the lookup stays owned-only to match the other label
+// tables in the app rather than relying on a check made somewhere else.
 export function formatSource(source: string) {
-  return sourceLabels[source] ?? source
+  return Object.prototype.hasOwnProperty.call(sourceLabels, source) ? sourceLabels[source] : source
 }
 
 export function hasUnavailableCostSource(sourceSplit: SourceSplitItem[]) {
-  return sourceSplit.some((item) => item.source in costUnavailableLabels)
+  return sourceSplit.some((item) => costUnavailableSourceSet.has(item.source))
 }
 
 /**
@@ -43,18 +49,14 @@ export function hasUnavailableCostSource(sourceSplit: SourceSplitItem[]) {
 export function formatUnavailableCostLabel(sourceSplit: SourceSplitItem[]) {
   const sources = unavailableCostSources(sourceSplit)
   if (sources.length === 0) return ''
-  if (sources.length === 1) return costUnavailableLabels[sources[0]]
-  return sources.every(isAntigravitySource)
-    ? antigravityCollectiveLabel
-    : mixedCollectiveLabel
+  if (sources.length === 1) return costUnavailableLabel(sources[0])
+  return sources.every(isAntigravitySource) ? antigravityCollectiveLabel : mixedCollectiveLabel
 }
 
 export function formatCostWithAvailability(costUsd: number, sourceSplit: SourceSplitItem[]) {
   const formatted = formatUsd(costUsd)
   const label = formatUnavailableCostLabel(sourceSplit)
-  return label
-    ? `${formatted} (${label})`
-    : formatted
+  return label ? `${formatted} (${label})` : formatted
 }
 
 export function formatModelCostWithAvailability(
@@ -64,13 +66,11 @@ export function formatModelCostWithAvailability(
 ) {
   if (modelSourceSplit?.length) return formatCostWithAvailability(costUsd, modelSourceSplit)
   const formatted = formatUsd(costUsd)
-  return hasUnavailableCostSource(reportSourceSplit)
-    ? `${formatted} (费用可用性未知)`
-    : formatted
+  return hasUnavailableCostSource(reportSourceSplit) ? `${formatted} (费用可用性未知)` : formatted
 }
 
 export function formatSourceCostNote(source: string) {
-  return costUnavailableLabels[source] ?? ''
+  return costUnavailableSourceSet.has(source) ? costUnavailableLabel(source) : ''
 }
 
 /**
@@ -83,7 +83,7 @@ export function formatCostUnavailableNotice(sourceSplit: SourceSplitItem[]) {
   const sources = unavailableCostSources(sourceSplit)
   if (sources.length === 0) return ''
   if (sources.every(isAntigravitySource)) return antigravityCollectiveLabel
-  if (sources.length === 1) return costUnavailableLabels[sources[0]]
+  if (sources.length === 1) return costUnavailableLabel(sources[0])
   return mixedCollectiveLabel
 }
 
@@ -102,16 +102,24 @@ export function formatCostUnavailableSourceName(sourceSplit: SourceSplitItem[]) 
 
 /** Every source whose cost is unavailable, named for platform-wide notices. */
 export function costUnavailableSourceNames() {
-  return [...new Set(Object.keys(costUnavailableLabels).map((source) =>
-    isAntigravitySource(source) ? 'Antigravity' : formatSource(source)))]
+  return [
+    ...new Set(
+      costUnavailableSources.map((source) => (isAntigravitySource(source) ? 'Antigravity' : formatSource(source)))
+    )
+  ]
 }
 
 function unavailableCostSources(sourceSplit: SourceSplitItem[]) {
-  return [...new Set(sourceSplit
-    .map((item) => item.source)
-    .filter((source) => source in costUnavailableLabels))]
+  return [...new Set(sourceSplit.map((item) => item.source).filter((source) => costUnavailableSourceSet.has(source)))]
 }
 
+function costUnavailableLabel(source: string) {
+  return costUnavailableLabels[source] ?? `${formatSource(source)} 费用不可用`
+}
+
+// Sources reach this module as plain strings (they are read back from stored split rows), so the
+// shared predicate is handed a cast rather than keeping a second, string-typed copy of the same
+// membership check. A new Antigravity variant is declared once, in `usage-core`.
 function isAntigravitySource(source: string) {
-  return source === 'antigravity' || source.startsWith('antigravity-')
+  return isAntigravityUsageSource(source as UsageSource)
 }

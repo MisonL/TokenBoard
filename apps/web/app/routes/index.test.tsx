@@ -17,16 +17,26 @@ describe('home route', () => {
   test('redirects authenticated users to the dashboard', async () => {
     mockedGetOptionalUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
 
-    const response = await handler[0](homeContext() as never, async () => undefined) as Response
+    const response = (await handler[0](homeContext() as never, async () => undefined)) as Response
 
     expect(response.status).toBe(302)
     expect(response.headers.get('location')).toBe('/dashboard')
   })
 
+  // The page reads the session to decide between the marketing copy and a redirect to the
+  // dashboard, so a shared browser cache must not replay either branch to the next visitor.
+  test('does not let the page be cached', async () => {
+    mockedGetOptionalUser.mockResolvedValue(null)
+
+    const response = (await handler[0](homeContext() as never, async () => undefined)) as Response
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+  })
+
   test('keeps hero copy wrapped inside narrow mobile viewports', async () => {
     mockedGetOptionalUser.mockResolvedValue(null)
 
-    const response = await handler[0](homeContext() as never, async () => undefined) as Response
+    const response = (await handler[0](homeContext() as never, async () => undefined)) as Response
     const html = await response.text()
 
     expect(response.status).toBe(200)
@@ -41,12 +51,12 @@ describe('home route', () => {
 })
 
 function homeContext() {
+  const headers = new Headers()
   return {
-    render: vi.fn(async (body: unknown) => (
-      new Response(await renderToString(body as never))
-    )),
-    redirect: vi.fn((location: string, status = 302) => (
-      new Response(null, { status, headers: { location } })
-    ))
+    header: (name: string, value: string) => {
+      headers.set(name, value)
+    },
+    render: vi.fn(async (body: unknown) => new Response(await renderToString(body as never), { headers })),
+    redirect: vi.fn((location: string, status = 302) => new Response(null, { status, headers: { location } }))
   }
 }

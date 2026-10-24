@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, rm, writeFile } from 'node:fs/promises'
+import { renameAtomic } from '../rename-atomic'
 import { dirname, join } from 'node:path'
 import { assertValidIsoCalendarDate } from '../iso-calendar-date'
 import { assertCursorWriteOwnership, withCursorLock } from './session-cursor-store'
@@ -29,15 +30,24 @@ export type CodexSessionFileFingerprint = CodexSessionFileMetadata & {
   tailSha256: string
 }
 
+export type CodexSessionFilePrefixFingerprint = {
+  dev: number
+  ino: number
+  capturedSize: number
+  prefixSize: number
+  prefixTailSha256: string
+}
+
 type ComparableCodexSessionFileFingerprint = CodexSessionFileMetadata & {
   dev?: number
   ino?: number
   tailSha256: string
 }
 
-type CacheEntry = ComparableCodexSessionFileFingerprint & CodexSessionAttribution & {
-  updatedAt: string
-}
+type CacheEntry = ComparableCodexSessionFileFingerprint &
+  CodexSessionAttribution & {
+    updatedAt: string
+  }
 
 type CacheState = {
   version: typeof cacheVersion
@@ -132,7 +142,7 @@ export async function withCodexSessionAttributionCache<T>(input: {
     }
     const result = await input.callback(api)
     await assertObservedFilesUnchanged(observedFiles)
-    cache.entries = retainCacheEntries(cache.entries, usedKeys, Date.parse(updatedAt))
+    cache.entries = retainCacheEntries(cache.entries, usedKeys, Date.parse(updatedAt), cache.timezone)
     await writeCache(cachePath, cache)
     return result
   })
@@ -162,23 +172,6 @@ async function fingerprintObservedCodexSessionFile(filePath: string) {
   }
 }
 
-export async function readCodexSessionFileMetadata(filePath: string): Promise<CodexSessionFileMetadata> {
-  try {
-    const details = await lstat(filePath)
-    assertCodexSessionFileAtPath(details)
-    return {
-      size: details.size,
-      mtimeMs: details.mtimeMs,
-      ctimeMs: details.ctimeMs
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Unable to inspect Codex session file:')) {
-      throw error
-    }
-    throw new Error('Unable to inspect Codex session file', { cause: error })
-  }
-}
-
 export async function fingerprintCodexSessionFile(filePath: string): Promise<CodexSessionFileFingerprint> {
   try {
     const pathBefore = await lstat(filePath)
@@ -191,7 +184,7 @@ export async function fingerprintCodexSessionFile(filePath: string): Promise<Cod
         throw new Error('Codex session changed while fingerprinting; retry the sync')
       }
 
-      const tailSha256 = await hashOpenFileTail(handle, opened.size)
+      const tailSha256 = await hashOpenFileRange(handle, opened.size)
       const [after, pathAfterRead] = await Promise.all([handle.stat(), lstat(filePath)])
       assertCodexSessionFileAtPath(pathAfterRead)
       if (!sameCodexSessionFileIdentity(opened, after) || !sameCodexSessionFileIdentity(pathAfterRead, opened)) {
@@ -209,39 +202,105 @@ export async function fingerprintCodexSessionFile(filePath: string): Promise<Cod
       await handle.close()
     }
   } catch (error) {
-    if (error instanceof Error && (
-      error.message.startsWith('Unable to inspect Codex session file:') ||
-      error.message.startsWith('Codex session changed while fingerprinting;')
-    )) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith('Unable to inspect Codex session file:') ||
+        error.message.startsWith('Codex session changed while fingerprinting;'))
+    ) {
       throw error
     }
     throw new Error('Unable to inspect Codex session file', { cause: error })
   }
 }
 
-export function sameCodexSessionFileMetadata(
-  left: CodexSessionFileMetadata,
-  right: CodexSessionFileMetadata
+/**
+ * Capture a bounded prefix identity for a session that may still be appended to.
+ * The prefix is immutable for this collection, while later bytes are allowed to grow.
+ */
+export async function fingerprintCodexSessionFilePrefix(
+  filePath: string,
+  prefixSize?: number
+): Promise<CodexSessionFilePrefixFingerprint> {
+  try {
+    const pathBefore = await lstat(filePath)
+    assertCodexSessionFileAtPath(pathBefore)
+    const handle = await open(filePath, 'r')
+    try {
+      const [opened, pathAfterOpen] = await Promise.all([handle.stat(), lstat(filePath)])
+      assertCodexSessionFileAtPath(pathAfterOpen)
+      if (
+        !sameCodexSessionFileIdentityOnly(pathBefore, opened) ||
+        !sameCodexSessionFileIdentityOnly(pathAfterOpen, opened)
+      ) {
+        throw new Error('Codex session changed while fingerprinting; retry the sync')
+      }
+      const capturedSize = opened.size
+      const size = prefixSize ?? capturedSize
+      if (!Number.isSafeInteger(size) || size < 0 || capturedSize < size) {
+        throw new Error('Codex session was truncated while fingerprinting; retry the sync')
+      }
+      const prefixTailSha256 = await hashOpenFileRange(handle, size)
+      const [after, pathAfterRead] = await Promise.all([handle.stat(), lstat(filePath)])
+      assertCodexSessionFileAtPath(pathAfterRead)
+      if (
+        !sameCodexSessionFileIdentityOnly(opened, after) ||
+        !sameCodexSessionFileIdentityOnly(pathAfterRead, opened) ||
+        pathAfterRead.size < capturedSize
+      ) {
+        throw new Error('Codex session changed while fingerprinting; retry the sync')
+      }
+      return {
+        dev: opened.dev,
+        ino: opened.ino,
+        capturedSize,
+        prefixSize: size,
+        prefixTailSha256
+      }
+    } finally {
+      await handle.close()
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith('Unable to inspect Codex session file:') ||
+        error.message.startsWith('Codex session changed while fingerprinting;') ||
+        error.message.startsWith('Codex session was truncated while fingerprinting;'))
+    ) {
+      throw error
+    }
+    throw new Error('Unable to inspect Codex session file', { cause: error })
+  }
+}
+
+export function sameCodexSessionFilePrefixFingerprint(
+  left: CodexSessionFilePrefixFingerprint,
+  right: CodexSessionFilePrefixFingerprint
 ) {
-  return left.size === right.size &&
-    left.mtimeMs === right.mtimeMs &&
-    left.ctimeMs === right.ctimeMs
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.prefixSize === right.prefixSize &&
+    left.prefixTailSha256 === right.prefixTailSha256
+  )
+}
+
+export function sameCodexSessionFileMetadata(left: CodexSessionFileMetadata, right: CodexSessionFileMetadata) {
+  return left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs
 }
 
 export function sameCodexSessionFileFingerprint(
   left: ComparableCodexSessionFileFingerprint,
   right: CodexSessionFileFingerprint
 ) {
-  return left.dev === right.dev &&
+  return (
+    left.dev === right.dev &&
     left.ino === right.ino &&
     sameCodexSessionFileMetadata(left, right) &&
     left.tailSha256 === right.tailSha256
+  )
 }
 
-function assertCodexSessionFileAtPath(details: {
-  isFile: () => boolean
-  isSymbolicLink: () => boolean
-}) {
+function assertCodexSessionFileAtPath(details: { isFile: () => boolean; isSymbolicLink: () => boolean }) {
   if (details.isSymbolicLink()) {
     throw new Error('Unable to inspect Codex session file: symbolic links are not supported')
   }
@@ -254,23 +313,42 @@ function sameCodexSessionFileIdentity(
   left: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number },
   right: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }
 ) {
-  return left.dev === right.dev &&
+  return (
+    left.dev === right.dev &&
     left.ino === right.ino &&
     left.size === right.size &&
     left.mtimeMs === right.mtimeMs &&
     left.ctimeMs === right.ctimeMs
+  )
 }
 
-async function hashOpenFileTail(handle: Awaited<ReturnType<typeof open>>, size: number) {
+function sameCodexSessionFileIdentityOnly(left: { dev: number; ino: number }, right: { dev: number; ino: number }) {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+async function hashOpenFileRange(handle: Awaited<ReturnType<typeof open>>, size: number) {
   const length = Math.min(size, tailBytes)
   const buffer = Buffer.alloc(length)
-  const result = await handle.read(buffer, 0, length, Math.max(0, size - length))
-  return createHash('sha256').update(buffer.subarray(0, result.bytesRead)).digest('hex')
+  const start = Math.max(0, size - length)
+  let offset = 0
+  while (offset < length) {
+    const result = await handle.read(buffer, offset, length - offset, start + offset)
+    if (result.bytesRead === 0) {
+      throw new Error('Codex session changed while fingerprinting; retry the sync')
+    }
+    offset += result.bytesRead
+  }
+  return createHash('sha256').update(buffer).digest('hex')
 }
 
 async function readCache(cachePath: string, timezone: string): Promise<CacheState> {
   try {
-    const parsed = JSON.parse(await readBoundedCacheFile(cachePath)) as unknown
+    const content = await readBoundedCacheFile(cachePath)
+    // An oversized cache is stale by definition (the retain pass never writes one), so
+    // discarding it loses only recomputable fingerprints; failing here would wedge every
+    // sync until an operator deleted the file by hand.
+    if (content === null) return emptyCache(timezone)
+    const parsed = JSON.parse(content) as unknown
     if (!isCacheState(parsed)) throw new Error('Invalid Codex session attribution cache')
     if (parsed.timezone !== timezone) return emptyCache(timezone)
     return parsed
@@ -281,14 +359,13 @@ async function readCache(cachePath: string, timezone: string): Promise<CacheStat
   }
 }
 
-async function readBoundedCacheFile(cachePath: string) {
+// Returns null when the file exceeds maxCacheBytes; content is then never read into memory.
+async function readBoundedCacheFile(cachePath: string): Promise<string | null> {
   const handle = await open(cachePath, 'r')
   try {
     const before = await handle.stat()
     if (!before.isFile()) throw new Error('Invalid Codex session attribution cache')
-    if (before.size > maxCacheBytes) {
-      throw new Error('Codex session attribution cache exceeds the ' + maxCacheBytes + '-byte limit')
-    }
+    if (before.size > maxCacheBytes) return null
     const buffer = Buffer.alloc(before.size)
     let offset = 0
     while (offset < buffer.length) {
@@ -309,16 +386,32 @@ async function readBoundedCacheFile(cachePath: string) {
 }
 
 async function writeCache(cachePath: string, cache: CacheState) {
-  const serialized = JSON.stringify(cache) + '\n'
+  let serialized = JSON.stringify(cache) + '\n'
+  // The retain pass already trims to the budget; a write-side overflow means an external or
+  // legacy oversize slipped through the read path. Evict to 75% rather than failing the sync.
   if (Buffer.byteLength(serialized) > maxCacheBytes) {
-    throw new Error('Codex session attribution cache exceeds the ' + maxCacheBytes + '-byte limit')
+    const retained = trimCacheEntriesToSerializedSize(
+      Object.entries(cache.entries).sort(
+        (left, right) =>
+          Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt) || left[0].localeCompare(right[0])
+      ),
+      cache.timezone,
+      Math.floor(maxCacheBytes * 0.75)
+    )
+    cache.entries = Object.fromEntries(retained)
+    serialized = JSON.stringify(cache) + '\n'
+    if (Buffer.byteLength(serialized) > maxCacheBytes) {
+      throw new Error('Codex session attribution cache exceeds the ' + maxCacheBytes + '-byte limit')
+    }
   }
-  await mkdir(dirname(cachePath), { recursive: true })
+  // Private like the 0600 cache file it will hold: the state directory itself must not be
+  // writable by others when this call creates it.
+  await mkdir(dirname(cachePath), { recursive: true, mode: 0o700 })
   const tempPath = cachePath + '.tmp-' + process.pid + '-' + randomBytes(8).toString('hex')
   try {
     await writeFile(tempPath, serialized, { mode: 0o600 })
     await assertCursorWriteOwnership(cachePath)
-    await rename(tempPath, cachePath)
+    await renameAtomic(tempPath, cachePath)
   } catch (error) {
     await rm(tempPath, { force: true })
     throw error
@@ -329,10 +422,11 @@ function emptyCache(timezone: string): CacheState {
   return { version: cacheVersion, timezone, entries: {} }
 }
 
-function retainCacheEntries(
+export function retainCacheEntries(
   entries: Record<string, CacheEntry>,
   usedKeys: ReadonlySet<string>,
-  nowMs: number
+  nowMs: number,
+  timezone: string
 ) {
   const cutoffMs = nowMs - cacheRetentionMs
   const used: Array<[string, CacheEntry]> = []
@@ -352,10 +446,34 @@ function retainCacheEntries(
     Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt) || left[0].localeCompare(right[0])
   used.sort(newestFirst)
   recent.sort(newestFirst)
-  return Object.fromEntries([
+  const selected = [
     ...used.slice(0, maxCacheEntries),
-    ...recent.slice(0, Math.max(0, maxCacheEntries - used.length))
-  ])
+    ...recent.slice(0, Math.max(0, maxCacheEntries - Math.min(used.length, maxCacheEntries)))
+  ]
+  return Object.fromEntries(trimCacheEntriesToSerializedSize(selected, timezone))
+}
+
+function trimCacheEntriesToSerializedSize(
+  entries: Array<[string, CacheEntry]>,
+  timezone: string,
+  budgetBytes = maxCacheBytes
+) {
+  const serializedEntries = entries.map(([key, entry]) => ({
+    entry: [key, entry] as [string, CacheEntry],
+    bytes: Buffer.byteLength(`${JSON.stringify(key)}:${JSON.stringify(entry)}`)
+  }))
+  let serializedBytes = Buffer.byteLength(
+    `{"version":${cacheVersion},"timezone":${JSON.stringify(timezone)},"entries":{` + '}}\n'
+  )
+  serializedBytes += serializedEntries.reduce((total, item) => total + item.bytes, 0)
+  serializedBytes += Math.max(0, serializedEntries.length - 1)
+
+  while (serializedBytes > budgetBytes && serializedEntries.length > 0) {
+    const removed = serializedEntries.pop()!
+    serializedBytes -= removed.bytes
+    if (serializedEntries.length > 0) serializedBytes -= 1
+  }
+  return serializedEntries.map((item) => item.entry)
 }
 
 function cacheKey(filePath: string) {
@@ -375,12 +493,14 @@ function assertAttribution(attribution: CodexSessionAttribution) {
 function isCacheState(value: unknown): value is CacheState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as Partial<CacheState>
-  return candidate.version === cacheVersion &&
+  return (
+    candidate.version === cacheVersion &&
     typeof candidate.timezone === 'string' &&
     Boolean(candidate.entries) &&
     typeof candidate.entries === 'object' &&
     !Array.isArray(candidate.entries) &&
     Object.entries(candidate.entries).every(([key, entry]) => isCacheKey(key) && isCacheEntry(entry))
+  )
 }
 
 function isCacheKey(value: string) {
@@ -390,15 +510,17 @@ function isCacheKey(value: string) {
 function isCacheEntry(value: unknown): value is CacheEntry {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as Partial<CacheEntry>
-  if (!isFiniteNumber(candidate.size) ||
-      (candidate.dev !== undefined && !isFiniteNumber(candidate.dev)) ||
-      (candidate.ino !== undefined && !isFiniteNumber(candidate.ino)) ||
-      !isFiniteNumber(candidate.mtimeMs) ||
-      !isFiniteNumber(candidate.ctimeMs) ||
-      !isSha256(candidate.tailSha256) ||
-      typeof candidate.updatedAt !== 'string' ||
-      typeof candidate.usageDate !== 'string' ||
-      typeof candidate.model !== 'string') {
+  if (
+    !isFiniteNumber(candidate.size) ||
+    (candidate.dev !== undefined && !isFiniteNumber(candidate.dev)) ||
+    (candidate.ino !== undefined && !isFiniteNumber(candidate.ino)) ||
+    !isFiniteNumber(candidate.mtimeMs) ||
+    !isFiniteNumber(candidate.ctimeMs) ||
+    !isSha256(candidate.tailSha256) ||
+    typeof candidate.updatedAt !== 'string' ||
+    typeof candidate.usageDate !== 'string' ||
+    typeof candidate.model !== 'string'
+  ) {
     return false
   }
   try {
@@ -422,8 +544,7 @@ function isMissingFileError(error: unknown) {
 }
 
 function isMissingCodexSessionFileError(error: unknown) {
-  return isMissingFileError(error) ||
-    (error instanceof Error && isMissingFileError(error.cause))
+  return isMissingFileError(error) || (error instanceof Error && isMissingFileError(error.cause))
 }
 
 function isCodexSessionFingerprintRaceError(error: unknown) {

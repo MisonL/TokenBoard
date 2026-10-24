@@ -13,16 +13,24 @@ export type UsageSummaryKey = Pick<IngestRecord, 'userId' | 'usageDate' | 'sourc
 
 export const d1MaxBoundParameters = 100
 export const d1MaxBatchStatements = 100
+// Every derived chunk size leaves at least one parameter of headroom below the D1 limit. The
+// exact-limit version is legal today, but a future change that adds a binding to the same
+// statement would push it over and fail only in production. (The snapshot-hash formula already
+// had two parameters of slack from its integer division, so subtracting the headroom there
+// changes nothing; the other two were sitting exactly on the limit.)
+export const d1BoundParameterHeadroom = 1
 export const snapshotHashKeyParameterCount = 3
 export const snapshotHashBaseParameterCount = 2
 export const summaryRefreshCheckParameterCount = 4
 export const usageSummaryBackfillStateId = 'initial'
 export const backfillLookahead = 1
 export const snapshotHashQueryChunkSize = Math.floor(
-  (d1MaxBoundParameters - snapshotHashBaseParameterCount) / snapshotHashKeyParameterCount
+  (d1MaxBoundParameters - d1BoundParameterHeadroom - snapshotHashBaseParameterCount) / snapshotHashKeyParameterCount
 )
-export const summaryRefreshCheckChunkSize = Math.floor(d1MaxBoundParameters / summaryRefreshCheckParameterCount)
-export const totalRefreshCheckChunkSize = d1MaxBoundParameters
+export const summaryRefreshCheckChunkSize = Math.floor(
+  (d1MaxBoundParameters - d1BoundParameterHeadroom) / summaryRefreshCheckParameterCount
+)
+export const totalRefreshCheckChunkSize = d1MaxBoundParameters - d1BoundParameterHeadroom
 
 export async function runStatementBatches(db: D1Database, statements: D1PreparedStatement[]) {
   const results: D1Result<unknown>[] = []
@@ -42,13 +50,8 @@ export function statementChanged(result: D1Result<unknown> | undefined) {
 }
 
 export async function snapshotHash(snapshot: UsageSnapshot) {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(snapshotHashPayload(snapshot))
-  )
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(snapshotHashPayload(snapshot)))
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 export function uniqueSummaryKeys(records: UsageSummaryKey[]) {
@@ -81,7 +84,5 @@ function assertBatchSucceeded(results: D1Result<unknown>[]) {
   if (failedIndex < 0) return
 
   const error = batchResults[failedIndex]?.error
-  throw new Error(
-    `D1 batch statement ${failedIndex + 1} failed${error ? `: ${error}` : ''}`
-  )
+  throw new Error(`D1 batch statement ${failedIndex + 1} failed${error ? `: ${error}` : ''}`)
 }

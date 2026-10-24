@@ -1,10 +1,23 @@
-import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { join } from 'node:path'
 
 export const scheduledLogFiles = ['daily-sync.out.log', 'daily-sync.err.log']
 export const defaultMaxLogBytes = 1024 * 1024
 export const defaultRetentionDays = 7
 const defaultFileSystem = {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -17,24 +30,26 @@ const defaultFileSystem = {
   writeFileSync
 }
 
-export function createScheduledLogRuntime({
-  env = process.env,
-  homeDir,
-  now = new Date(),
-  scheduled = false
-}) {
+export function createScheduledLogRuntime({ env = process.env, homeDir, now = new Date(), scheduled = false }) {
   if (!shouldManageScheduledLogs(env, scheduled)) {
     return null
   }
 
   const logDir = env.TOKENBOARD_LOG_DIR || join(homeDir, '.tokenboard', 'logs')
   rotateScheduledLogs({ logDir, now })
-  mkdirSync(logDir, { recursive: true })
+  mkdirSync(logDir, { recursive: true, mode: 0o700 })
+  chmodSync(logDir, 0o700)
+  const stdoutPath = join(logDir, 'daily-sync.out.log')
+  const stderrPath = join(logDir, 'daily-sync.err.log')
+  const stdoutFd = openSync(stdoutPath, 'a', 0o600)
+  const stderrFd = openSync(stderrPath, 'a', 0o600)
+  chmodSync(stdoutPath, 0o600)
+  chmodSync(stderrPath, 0o600)
 
   return {
     logDir,
-    stdoutFd: openSync(join(logDir, 'daily-sync.out.log'), 'a'),
-    stderrFd: openSync(join(logDir, 'daily-sync.err.log'), 'a')
+    stdoutFd,
+    stderrFd
   }
 }
 
@@ -55,7 +70,8 @@ export function rotateScheduledLogs({
   retentionDays = readPositiveInt(process.env.TOKENBOARD_LOG_RETENTION_DAYS, defaultRetentionDays),
   fileSystem = defaultFileSystem
 }) {
-  fileSystem.mkdirSync(logDir, { recursive: true })
+  fileSystem.mkdirSync(logDir, { recursive: true, mode: 0o700 })
+  fileSystem.chmodSync?.(logDir, 0o700)
   const timestamp = formatTimestamp(now)
 
   for (const fileName of scheduledLogFiles) {
@@ -67,7 +83,9 @@ export function rotateScheduledLogs({
         continue
       }
       trimFileToLastBytes(rotatedPath, maxBytes, fileSize, fileSystem)
-      fileSystem.writeFileSync(filePath, '')
+      fileSystem.chmodSync?.(rotatedPath, 0o600)
+      fileSystem.writeFileSync(filePath, '', { mode: 0o600 })
+      fileSystem.chmodSync?.(filePath, 0o600)
     }
   }
 
@@ -158,10 +176,12 @@ function isMissingFileError(error) {
 }
 
 function shouldManageScheduledLogs(env, scheduled) {
-  return scheduled ||
+  return (
+    scheduled ||
     env.TOKENBOARD_SCHEDULED_SYNC === '1' ||
     env.XPC_SERVICE_NAME === 'com.tokenboard.daily-sync' ||
     Boolean(env.INVOCATION_ID)
+  )
 }
 
 function isRotatedLogName(fileName) {

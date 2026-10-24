@@ -13,20 +13,48 @@ import { UsageDetailsFiltersForm } from './usage-details-filters'
 import { formatInteger, formatPercent, formatSource } from './usage-details-format'
 import { formatUsageMetricInteger, formatUsageMetricUsdWithAvailability } from './usage-metric-format'
 
-export function UsageDetailsPanel(props: { details: UsageDetails; filters: UsageDetailsFilters; devices: UserDevice[] }) {
+export function UsageDetailsPanel(props: {
+  details: UsageDetails
+  filters: UsageDetailsFilters
+  devices: UserDevice[]
+  /** The zone the date window is measured in — the user's own profile zone. */
+  timezone?: string
+  /** The offset of `timezone` right now, e.g. `UTC+8`. */
+  timezoneLabel?: string
+}) {
   const dailyRows = [...props.details.dailyRows].reverse()
   const selectedDevice = props.devices.find((device) => device.id === props.filters.deviceId)
   const hasUnavailableCost = hasUnavailableCostSource(props.details.modelRows)
 
   return (
     <section class="mx-auto flex max-w-7xl flex-col gap-5">
-      <UsageDetailsHeader filters={props.filters} devices={props.devices} selectedDevice={selectedDevice} />
+      <UsageDetailsHeader
+        filters={props.filters}
+        devices={props.devices}
+        selectedDevice={selectedDevice}
+        timezone={props.timezone}
+        timezoneLabel={props.timezoneLabel}
+      />
 
       <UsageMetricGrid columns={3}>
-        <UsageMetricCard label="范围 tokens" value={formatUsageMetricInteger(props.details.summary.totalTokens)} tone="lime" />
-        <UsageMetricCard label="不含缓存读" value={formatUsageMetricInteger(props.details.summary.totalTokensWithoutCacheRead)} />
+        <UsageMetricCard
+          label="范围 tokens"
+          value={formatUsageMetricInteger(props.details.summary.totalTokens)}
+          tone="lime"
+        />
+        <UsageMetricCard
+          label="不含缓存读"
+          value={formatUsageMetricInteger(props.details.summary.totalTokensWithoutCacheRead)}
+        />
         <UsageMetricCard label="缓存率" value={formatPercentRate(props.details.summary.cacheReadRate)} />
-        <UsageMetricCard label={hasUnavailableCost ? `范围费用(不含 ${formatCostUnavailableSourceName(props.details.modelRows)})` : '范围费用'} value={formatUsageMetricUsdWithAvailability(props.details.summary.costUsd, props.details.modelRows)} />
+        <UsageMetricCard
+          label={
+            hasUnavailableCost
+              ? `范围费用(不含 ${formatCostUnavailableSourceName(props.details.modelRows)})`
+              : '范围费用'
+          }
+          value={formatUsageMetricUsdWithAvailability(props.details.summary.costUsd, props.details.modelRows)}
+        />
         <UsageMetricCard label="Sessions" value={formatUsageMetricInteger(props.details.summary.sessionCount)} />
         <UsageMetricCard label="活跃天数" value={formatUsageMetricInteger(props.details.summary.activeDays)} />
       </UsageMetricGrid>
@@ -36,7 +64,13 @@ export function UsageDetailsPanel(props: { details: UsageDetails; filters: Usage
   )
 }
 
-function UsageDetailsHeader(props: { filters: UsageDetailsFilters; devices: UserDevice[]; selectedDevice?: UserDevice }) {
+function UsageDetailsHeader(props: {
+  filters: UsageDetailsFilters
+  devices: UserDevice[]
+  selectedDevice?: UserDevice
+  timezone?: string
+  timezoneLabel?: string
+}) {
   return (
     <header class="app-surface-raised rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel)] p-5">
       <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
@@ -46,6 +80,12 @@ function UsageDetailsHeader(props: { filters: UsageDetailsFilters; devices: User
           <p class="mt-2 text-sm text-[var(--app-muted)]">
             {usageDetailsSubtitle(props.filters, props.selectedDevice)}
           </p>
+          {props.timezone ? (
+            <p class="mt-1 text-xs text-[var(--app-muted)]" data-usage-details-timezone="true">
+              日期按 {props.timezone}
+              {props.timezoneLabel ? `（${props.timezoneLabel}）` : ''} 的本地日历日归属。
+            </p>
+          ) : null}
         </div>
         <UsageDetailsFiltersForm filters={props.filters} devices={props.devices} />
       </div>
@@ -59,10 +99,15 @@ function usageDetailsSubtitle(filters: UsageDetailsFilters, selectedDevice?: Use
     formatSource(filters.source),
     selectedDevice?.name,
     filters.modelQuery ? `模型包含 ${filters.modelQuery}` : null
-  ].filter(Boolean).join(' / ')
+  ]
+    .filter(Boolean)
+    .join(' / ')
 }
 
 function DailySummaryCard(props: { dailyRows: UsageDetails['dailyRows'] }) {
+  // `buildDailyDetails` seeds one row per calendar day in the range, so a length check would
+  // never fire on the page; the range is empty of *usage* when every seeded day is zero.
+  const hasUsage = props.dailyRows.some((row) => row.totalTokens > 0)
   return (
     <Card>
       <CardHeader>
@@ -70,10 +115,18 @@ function DailySummaryCard(props: { dailyRows: UsageDetails['dailyRows'] }) {
         <CardDescription>按日期聚合；展开任意日期查看当天模型明细。</CardDescription>
       </CardHeader>
       <CardContent class="space-y-3">
-        <DailySummaryHeader />
-        {props.dailyRows.map((row) => (
-          <DailySummaryRow row={row} />
-        ))}
+        {!hasUsage ? (
+          <p class="app-surface-subtle rounded-lg border border-dashed border-[var(--app-border)] p-4 text-sm text-[var(--app-muted)]">
+            当前筛选范围内没有用量。
+          </p>
+        ) : (
+          <>
+            <DailySummaryHeader />
+            {props.dailyRows.map((row) => (
+              <DailySummaryRow row={row} />
+            ))}
+          </>
+        )}
       </CardContent>
     </Card>
   )
@@ -150,7 +203,8 @@ function SourceSplit(props: {
     <span class="flex min-w-0 flex-wrap gap-2">
       {props.sourceSplit.map((item) => (
         <span class="max-w-full break-words rounded-full border border-[var(--app-border)] px-2 py-1 text-xs text-[var(--app-muted)] [overflow-wrap:anywhere]">
-          {formatSource(item.source)} {formatPercent(item.totalTokensWithoutCacheRead, props.totalTokensWithoutCacheRead)}
+          {formatSource(item.source)}{' '}
+          {formatPercent(item.totalTokensWithoutCacheRead, props.totalTokensWithoutCacheRead)}
           {' · '}
           缓存率 {formatPercentRate(item.cacheReadRate)}
         </span>

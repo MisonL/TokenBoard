@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { ccusagePackageSpecifier, resolvePackageRunner } from './package-runner'
 
-const expectedCcusagePackageSpecifier = 'ccusage@20.0.19'
+const expectedCcusagePackageSpecifier = 'ccusage@20.0.33'
 const packageJsonPath = join(dirname(dirname(fileURLToPath(import.meta.url))), 'package.json')
 
 describe('resolvePackageRunner', () => {
@@ -35,6 +35,33 @@ describe('resolvePackageRunner', () => {
       expectedCcusagePackageSpecifier,
       'daily',
       '--json'
+    ])
+  })
+
+  test('passes the checkout pricing configuration when explicitly provided', () => {
+    vi.stubEnv('TOKENBOARD_PACKAGE_MANAGER', '')
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+    vi.stubEnv('TOKENBOARD_CCUSAGE_CONFIG', packageConfigPath())
+
+    expect(
+      resolvePackageRunner().runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['daily', '--json'])
+    ).toEqual([expectedCcusagePackageSpecifier, 'daily', '--json', '--config', packageConfigPath()])
+  })
+
+  test('prefers the generated dynamic pricing configuration over the static override', () => {
+    const dynamicPath = '/tmp/tokenboard/ccusage.dynamic.json'
+    const runner = resolvePackageRunner('', process.platform, (path) => path === dynamicPath, {
+      TOKENBOARD_FORCE_PACKAGE_RUNNER: '1',
+      TOKENBOARD_DYNAMIC_CCUSAGE_CONFIG: dynamicPath,
+      TOKENBOARD_CCUSAGE_CONFIG: packageConfigPath()
+    })
+
+    expect(runner.runPackageArgs(expectedCcusagePackageSpecifier, 'ccusage', ['daily', '--json'])).toEqual([
+      'ccusage@20.0.33',
+      'daily',
+      '--json',
+      '--config',
+      dynamicPath
     ])
   })
 
@@ -129,4 +156,8 @@ describe('resolvePackageRunner', () => {
 
 function platformCommand(command: string) {
   return process.platform === 'win32' ? `${command}.cmd` : command
+}
+
+function packageConfigPath() {
+  return join(dirname(dirname(fileURLToPath(import.meta.url))), 'ccusage.json')
 }

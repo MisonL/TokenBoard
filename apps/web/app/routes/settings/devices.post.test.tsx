@@ -1,6 +1,7 @@
 import { renderToString } from 'hono/jsx/dom/server'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { requireUser } from '../../features/auth/middleware'
+import { FormError } from '../../lib/form-error'
 import {
   listDeviceAuditLogs,
   listLatestDeviceAuditLogs,
@@ -55,6 +56,21 @@ describe('devices POST route', () => {
     mockedRotateUploadToken.mockReset()
   })
 
+  test('redirects with a rendered message when a rename fails validation', async () => {
+    mockedRequireUser.mockResolvedValue({ id: 'user_1', email: 'user@example.com' } as never)
+    mockedParseDeviceNameForm.mockImplementation(() => {
+      throw new FormError('device-name-invalid', 'Device name must be 1-80 characters')
+    })
+
+    const response = (await POST[0](
+      postContext({ action: 'rename', deviceId: 'dev_1', name: '   ', view: 'cards', query: 'mac' }) as never,
+      async () => undefined
+    )) as Response
+
+    expect(response.status).toBe(303)
+    expect(response.headers.get('location')).toBe('/settings/devices?error=device-name-invalid&view=cards&query=mac')
+  })
+
   test('prevents caching one-time rotated credentials', async () => {
     const context = postContext(
       {
@@ -79,7 +95,7 @@ describe('devices POST route', () => {
     mockedListUserDevices.mockResolvedValue([] as never)
     mockedListLatestDeviceAuditLogs.mockResolvedValue(new Map() as never)
 
-    const response = await POST[0](context as never, async () => undefined) as Response
+    const response = (await POST[0](context as never, async () => undefined)) as Response
     const html = await response.text()
 
     expect(response.headers.get('Cache-Control')).toBe('no-store')
@@ -94,10 +110,13 @@ describe('devices POST route', () => {
   })
 })
 
-function postContext(body: Record<string, unknown>, options: {
-  url?: string
-  betterAuthUrl?: string
-} = {}) {
+function postContext(
+  body: Record<string, unknown>,
+  options: {
+    url?: string
+    betterAuthUrl?: string
+  } = {}
+) {
   const headers = new Headers()
   return {
     env: { DB: {}, BETTER_AUTH_URL: options.betterAuthUrl },
@@ -108,14 +127,8 @@ function postContext(body: Record<string, unknown>, options: {
     header: vi.fn((name: string, value: string) => {
       headers.set(name, value)
     }),
-    json: vi.fn((body: unknown, status = 200) => (
-      Response.json(body, { status, headers })
-    )),
-    redirect: vi.fn((location: string, status = 302) => (
-      new Response(null, { status, headers: { location } })
-    )),
-    render: vi.fn(async (body: unknown) => (
-      new Response(await renderToString(body as never), { headers })
-    ))
+    json: vi.fn((body: unknown, status = 200) => Response.json(body, { status, headers })),
+    redirect: vi.fn((location: string, status = 302) => new Response(null, { status, headers: { location } })),
+    render: vi.fn(async (body: unknown) => new Response(await renderToString(body as never), { headers }))
   }
 }

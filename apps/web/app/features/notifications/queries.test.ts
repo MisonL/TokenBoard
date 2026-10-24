@@ -75,6 +75,25 @@ describe('notification queries', () => {
     expect(bindings[0]).toEqual(['2026-04-29T01:31:00.000Z', '2026-04-29T01:31:00.000Z', 50])
   })
 
+  // The cron path is the one place a stored schedule is read without a repair fallback. The
+  // settings path already degrades to a default and flags the row (`normalizeSettingsScheduleTimes`),
+  // but this path throws, and it throws from inside `listDueWebhookSubscriptions` — before the
+  // per-subscription try/catch in `runDueWebhookNotifications`. One row with a damaged schedule
+  // therefore fails the whole batch, so every other user's daily report stops too. The cron
+  // should be at least as tolerant as the settings page, not less.
+  test('degrades a corrupt stored schedule instead of failing the whole cron batch', async () => {
+    const db = allRowsDb([
+      webhookRow({ id: 'sub_ok', scheduleTimeLocal: '09:30', scheduleTimesLocal: '09:30' }),
+      webhookRow({ id: 'sub_bad', scheduleTimeLocal: '25:99', scheduleTimesLocal: '25:99' })
+    ])
+
+    const due = await listDueWebhookSubscriptions(db, '2026-04-29T01:31:00.000Z', 50)
+
+    expect(due.map((subscription) => subscription.id)).toEqual(['sub_ok', 'sub_bad'])
+    expect(due[0].scheduleTimesLocal).toEqual(['09:30'])
+    expect(due[1].scheduleTimesLocal).toEqual(['18:00'])
+  })
+
   test('claims only due enabled subscriptions with an expired lock', async () => {
     const statements: string[] = []
     const bindings: unknown[][] = []

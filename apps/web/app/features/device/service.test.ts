@@ -110,9 +110,7 @@ describe('pairDevice', () => {
       pairingCode: 'pairing-token-fixture',
       expiresAt: '2026-04-28T10:30:00.000Z'
     })
-    expect(calls).toEqual([
-      'pair:seed-user:hash:pairing-token-fixture:new_device:none:2026-04-28T10:30:00.000Z'
-    ])
+    expect(calls).toEqual(['pair:seed-user:hash:pairing-token-fixture:new_device:none:2026-04-28T10:30:00.000Z'])
   })
 
   test('creates a reconnect pairing code for an owned device', async () => {
@@ -161,10 +159,7 @@ describe('pairDevice', () => {
         { pairingType: 'reconnect_device', targetDeviceId: 'dev_old' }
       )
     ).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect(calls).toEqual([
-      'own:seed-user:dev_old',
-      'active:seed-user:dev_old'
-    ])
+    expect(calls).toEqual(['own:seed-user:dev_old', 'active:seed-user:dev_old'])
   })
 
   test('rejects a reconnect pairing code when the active installation is revoked during creation', async () => {
@@ -407,9 +402,7 @@ describe('pairDevice', () => {
       code: 'BAD_REQUEST',
       message: 'Reconnect pairing is missing target device'
     })
-    expect(calls).toEqual([
-      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z'
-    ])
+    expect(calls).toEqual(['find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z'])
   })
 
   test('propagates new-device credential creation failure without a separate consume step', async () => {
@@ -524,9 +517,7 @@ describe('pairDevice', () => {
       code: 'UNAUTHORIZED',
       message: 'Invalid or expired pairing code'
     })
-    expect(calls).toEqual([
-      'find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z'
-    ])
+    expect(calls).toEqual(['find:hash:dev-pairing-code:2026-04-28T10:00:00.000Z'])
   })
 
   test.each(['null', '[]', '"invalid"'])('rejects non-object reconnect metadata %s', async (metadata) => {
@@ -544,23 +535,25 @@ describe('pairDevice', () => {
       }
     })
 
-    await expect(pairDevice(
-      repository,
-      {
-        pairingCode: 'dev-pairing-code',
-        deviceName: 'Reinstalled Desktop',
-        platform: 'linux',
-        timezone: 'Asia/Shanghai'
-      },
-      {
-        now: () => '2026-04-28T10:00:00.000Z',
-        endpoint: 'https://tokenboard.example.com/api/v1/ingest',
-        randomId: () => 'install-fixture',
-        randomToken: () => 'upload-token-fixture',
-        randomInstallClaim: () => 'install-claim-fixture',
-        hash: async (value) => `hash:${value}`
-      }
-    )).rejects.toMatchObject({
+    await expect(
+      pairDevice(
+        repository,
+        {
+          pairingCode: 'dev-pairing-code',
+          deviceName: 'Reinstalled Desktop',
+          platform: 'linux',
+          timezone: 'Asia/Shanghai'
+        },
+        {
+          now: () => '2026-04-28T10:00:00.000Z',
+          endpoint: 'https://tokenboard.example.com/api/v1/ingest',
+          randomId: () => 'install-fixture',
+          randomToken: () => 'upload-token-fixture',
+          randomInstallClaim: () => 'install-claim-fixture',
+          hash: async (value) => `hash:${value}`
+        }
+      )
+    ).rejects.toMatchObject({
       code: 'UNAUTHORIZED',
       message: 'Invalid or expired pairing code'
     })
@@ -854,54 +847,54 @@ describe('device management', () => {
         return {
           bind(...values: unknown[]) {
             bindings.push(values)
-              return {
-                async all() {
-                  if (statementIndex === 2) {
-                    return {
-                      results: [
-                        {
-                          id: 'inst_1',
-                          deviceId: 'dev_1',
-                          platform: 'windows',
-                          hostname: 'Office PC',
-                          clientVersion: '0.1.0',
-                          firstSeenAt: '2026-04-28T08:00:00.000Z',
-                          lastSeenAt: '2026-04-29T08:00:00.000Z',
-                          revokedAt: null,
-                          activeTokenCount: 1
-                        }
-                      ]
-                    }
-                  }
-                  if (statementIndex === 3) {
-                    return {
-                      results: [
-                        {
-                          id: 'ut_1',
-                          deviceId: 'dev_1',
-                          installationId: 'inst_1',
-                          name: 'Office PC',
-                          lastUsedAt: '2026-04-29T08:00:00.000Z',
-                          createdAt: '2026-04-28T08:00:00.000Z',
-                          revokedAt: null
-                        }
-                      ]
-                    }
-                  }
+            return {
+              async all() {
+                if (statementIndex === 2) {
                   return {
                     results: [
                       {
-                        id: 'dev_1',
-                        name: 'Office PC',
+                        id: 'inst_1',
+                        deviceId: 'dev_1',
                         platform: 'windows',
-                        lastSyncedAt: '2026-04-29T08:00:00.000Z',
-                        createdAt: '2026-04-28T08:00:00.000Z',
+                        hostname: 'Office PC',
+                        clientVersion: '0.1.0',
+                        firstSeenAt: '2026-04-28T08:00:00.000Z',
+                        lastSeenAt: '2026-04-29T08:00:00.000Z',
+                        revokedAt: null,
                         activeTokenCount: 1
                       }
                     ]
                   }
                 }
+                if (statementIndex === 3) {
+                  return {
+                    results: [
+                      {
+                        id: 'ut_1',
+                        deviceId: 'dev_1',
+                        installationId: 'inst_1',
+                        name: 'Office PC',
+                        lastUsedAt: '2026-04-29T08:00:00.000Z',
+                        createdAt: '2026-04-28T08:00:00.000Z',
+                        revokedAt: null
+                      }
+                    ]
+                  }
+                }
+                return {
+                  results: [
+                    {
+                      id: 'dev_1',
+                      name: 'Office PC',
+                      platform: 'windows',
+                      lastSyncedAt: '2026-04-29T08:00:00.000Z',
+                      createdAt: '2026-04-28T08:00:00.000Z',
+                      activeTokenCount: 1
+                    }
+                  ]
+                }
               }
+            }
           }
         }
       }
@@ -1194,30 +1187,34 @@ describe('device management', () => {
       now: '2026-04-29T09:00:00.000Z'
     })
 
-    expect(sqlStatements[0]).toContain('UPDATE upload_tokens')
+    // The touch and the audit both ask "is anything still revocable?", so they have to run
+    // before the revocations clear that. The touch also precedes the audit, which reads the
+    // `updated_at` it stamps.
+    expect(sqlStatements[0]).toContain('UPDATE devices')
     expect(sqlStatements[0]).toContain('revoked_at IS NULL')
-    expect(sqlStatements[1]).toContain('UPDATE device_installations')
-    expect(sqlStatements[2]).toContain('UPDATE devices')
-    expect(sqlStatements[3]).toContain('INSERT INTO audit_logs')
-    expect(sqlStatements[3]).toContain('device.revoke')
+    expect(sqlStatements[1]).toContain('INSERT INTO audit_logs')
+    expect(sqlStatements[1]).toContain('device.revoke')
+    expect(sqlStatements[2]).toContain('UPDATE upload_tokens')
+    expect(sqlStatements[2]).toContain('revoked_at IS NULL')
+    expect(sqlStatements[3]).toContain('UPDATE device_installations')
     expect(batchStatements).toHaveLength(4)
-    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
-    expect(bindings[1]).toEqual([
-      '2026-04-29T09:00:00.000Z',
-      '2026-04-29T09:00:00.000Z',
-      'user_1',
-      'dev_1'
-    ])
-    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1'])
-    expect(bindings[3]?.slice(1)).toEqual([
+    expect(bindings[0]).toEqual(['2026-04-29T09:00:00.000Z', 'dev_1', 'user_1', 'user_1', 'dev_1', 'user_1', 'dev_1'])
+    expect(bindings[1]?.slice(1)).toEqual([
       'user_1',
       'dev_1',
       '{"deviceId":"dev_1"}',
       '2026-04-29T09:00:00.000Z',
       'dev_1',
       'user_1',
-      '2026-04-29T09:00:00.000Z'
+      // The two EXISTS probes that decide whether anything was still revocable. The audit no
+      // longer reads `updated_at`, so a replayed revoke cannot satisfy it.
+      'user_1',
+      'dev_1',
+      'user_1',
+      'dev_1'
     ])
+    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
+    expect(bindings[3]).toEqual(['2026-04-29T09:00:00.000Z', '2026-04-29T09:00:00.000Z', 'user_1', 'dev_1'])
   })
 
   test('revokes active upload tokens for one installation', async () => {
@@ -1239,18 +1236,8 @@ describe('device management', () => {
     expect(sqlStatements[2]).toContain('UPDATE device_installations')
     expect(batchStatements).toHaveLength(3)
     expect(bindings[1]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1'])
-    expect(bindings[2]).toEqual([
-      '2026-04-29T09:00:00.000Z',
-      '2026-04-29T09:00:00.000Z',
-      'inst_1',
-      'user_1'
-    ])
-    expect(bindings[0]?.slice(1)).toEqual([
-      'user_1',
-      '2026-04-29T09:00:00.000Z',
-      'inst_1',
-      'user_1'
-    ])
+    expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', '2026-04-29T09:00:00.000Z', 'inst_1', 'user_1'])
+    expect(bindings[0]?.slice(1)).toEqual(['user_1', '2026-04-29T09:00:00.000Z', 'inst_1', 'user_1'])
   })
 
   test('revokes one upload token and clears its installation claim', async () => {
@@ -1280,13 +1267,7 @@ describe('device management', () => {
     expect(batchStatements).toHaveLength(3)
     expect(bindings[0]).toEqual(['ut_1', 'user_1'])
     expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_1'])
-    expect(bindings[3]).toEqual([
-      '2026-04-29T09:00:00.000Z',
-      'user_1',
-      'inst_1',
-      'ut_1',
-      '2026-04-29T09:00:00.000Z'
-    ])
+    expect(bindings[3]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'inst_1', 'ut_1', '2026-04-29T09:00:00.000Z'])
     expect(bindings[1]?.slice(1)).toEqual([
       'user_1',
       'user',
@@ -1307,11 +1288,7 @@ describe('device management', () => {
     const db = createRunDb(sqlStatements, bindings, {
       firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }],
       batchStatements,
-      batchResults: [
-        { meta: { changes: 1 } },
-        { meta: { changes: 0 } },
-        { meta: { changes: 1 } }
-      ]
+      batchResults: [{ meta: { changes: 1 } }, { meta: { changes: 0 } }, { meta: { changes: 1 } }]
     })
 
     await expect(
@@ -1368,11 +1345,7 @@ describe('device management', () => {
     const db = createRunDb(sqlStatements, bindings, {
       firstResults: [{ deviceId: 'dev_1', installationId: 'inst_1' }],
       batchStatements,
-      batchResults: [
-        { meta: { changes: 1 } },
-        { meta: { changes: 1 } },
-        { meta: { changes: 0 } }
-      ]
+      batchResults: [{ meta: { changes: 1 } }, { meta: { changes: 1 } }, { meta: { changes: 0 } }]
     })
 
     await revokeUploadToken(db, {
@@ -1481,13 +1454,7 @@ describe('device management', () => {
     expect(sqlStatements[4]).toContain('WHERE EXISTS')
     expect(batchStatements).toHaveLength(4)
     expect(bindings[0]).toEqual(['ut_old', 'user_1'])
-    expect(bindings[1]).toEqual([
-      'ut_new',
-      'hash:tb_upload_new',
-      '2026-04-29T09:00:00.000Z',
-      'user_1',
-      'ut_old'
-    ])
+    expect(bindings[1]).toEqual(['ut_new', 'hash:tb_upload_new', '2026-04-29T09:00:00.000Z', 'user_1', 'ut_old'])
     expect(bindings[2]).toEqual(['2026-04-29T09:00:00.000Z', 'user_1', 'ut_old', 'ut_new'])
     expect(bindings[3]).toEqual([
       'hash:tb_install_new',
@@ -1604,17 +1571,12 @@ describe('device management', () => {
 
   test('fails visibly and cleans up when token rotation changes are not reported', async () => {
     const db = createRotateTokenDb({
-      batchResults: [
-        { meta: {} },
-        { meta: { changes: 1 } },
-        { meta: { changes: 1 } },
-        { meta: { changes: 1 } }
-      ]
+      batchResults: [{ meta: {} }, { meta: { changes: 1 } }, { meta: { changes: 1 } }, { meta: { changes: 1 } }]
     })
 
-    await expect(
-      rotateUploadToken(db, { userId: 'user_1', uploadTokenId: 'ut_old' }, rotateDeps())
-    ).rejects.toThrow('D1 batch statement did not report changes: Upload token already has an active successor')
+    await expect(rotateUploadToken(db, { userId: 'user_1', uploadTokenId: 'ut_old' }, rotateDeps())).rejects.toThrow(
+      'D1 batch statement did not report changes: Upload token already has an active successor'
+    )
     expect(db.cleanupBindings).toEqual([
       ['2026-04-29T09:00:00.000Z', 'user_1', 'ut_new', 'ut_old'],
       [
@@ -1709,7 +1671,7 @@ function rotateDeps() {
 function createRotateTokenDb(options: {
   batchResults: Array<{ meta?: { changes?: number } }>
   failCleanupRun?: boolean
-}): D1Database & { cleanupBindings: unknown[][], cleanupBatchSizes: number[] } {
+}): D1Database & { cleanupBindings: unknown[][]; cleanupBatchSizes: number[] } {
   const cleanupBindings: unknown[][] = []
   const cleanupBatchSizes: number[] = []
   let batchCallCount = 0
@@ -1755,5 +1717,5 @@ function createRotateTokenDb(options: {
       }
       return options.batchResults
     }
-  } as unknown as D1Database & { cleanupBindings: unknown[][], cleanupBatchSizes: number[] }
+  } as unknown as D1Database & { cleanupBindings: unknown[][]; cleanupBatchSizes: number[] }
 }

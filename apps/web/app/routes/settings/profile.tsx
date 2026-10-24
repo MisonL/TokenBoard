@@ -7,8 +7,16 @@ import { LucideIcon } from '../../components/ui/icon'
 import { Input, Label } from '../../components/ui/input'
 import { requireUser } from '../../features/auth/middleware'
 import { PublicCardConfigEditor } from '../../features/public-card/components/card-config-editor'
-import { getCanonicalPublicOrigin, getProfileSettings, parseProfilePageForm, updateProfilePageSettings, type ProfileSettings } from '../../features/settings/service'
+import { settingsFormErrorMessage, settingsFormErrorCodeForRedirect } from '../../features/settings/errors'
+import {
+  getCanonicalPublicOrigin,
+  getProfileSettings,
+  parseProfilePageForm,
+  updateProfilePageSettings,
+  type ProfileSettings
+} from '../../features/settings/service'
 import { jsonError } from '../../lib/http'
+import { listActiveUsageTimezones } from '../../features/usage/queries/usage-timezone-scope'
 
 export const GET = createRoute(async (c) => {
   const user = await requireUser(c)
@@ -16,8 +24,19 @@ export const GET = createRoute(async (c) => {
     configuredOrigin: c.env.BETTER_AUTH_URL,
     requestOrigin: new URL(c.req.url).origin
   })
-  const profile = await getProfileSettings(c.env.DB, user.id, publicOrigin)
-  return c.render(<ProfilePage profile={profile} saved={c.req.query('saved') === '1'} email={user.email} />)
+  const [profile, collectorTimezones] = await Promise.all([
+    getProfileSettings(c.env.DB, user.id, publicOrigin),
+    listActiveUsageTimezones(c.env.DB, user.id)
+  ])
+  return c.render(
+    <ProfilePage
+      profile={profile}
+      saved={c.req.query('saved') === '1'}
+      formError={settingsFormErrorMessage(c.req.query('error'))}
+      email={user.email}
+      collectorTimezones={collectorTimezones}
+    />
+  )
 })
 
 export const POST = createRoute(async (c) => {
@@ -27,11 +46,22 @@ export const POST = createRoute(async (c) => {
     await updateProfilePageSettings(c.env.DB, user.id, input)
     return c.redirect('/settings/profile?saved=1', 303)
   } catch (error) {
+    // A plain HTML form POST cannot answer with a JSON body: the browser would render it as
+    // the page and the user's edits would be gone. Redirect back with a code the page renders.
+    const formErrorCode = settingsFormErrorCodeForRedirect(error)
+    if (formErrorCode) return c.redirect(`/settings/profile?error=${formErrorCode}`, 303)
     return jsonError(c, error)
   }
 })
 
-export function ProfilePage(props: { profile: ProfileSettings; saved: boolean; email: string }) {
+export function ProfilePage(props: {
+  profile: ProfileSettings
+  saved: boolean
+  formError?: string
+  email: string
+  /** Zones the user's collectors are currently stamping dates in, if any. */
+  collectorTimezones?: string[]
+}) {
   return (
     <main class="min-h-screen bg-[var(--app-bg)] px-4 py-4 text-[var(--app-text)] sm:px-5 sm:py-6">
       <title>公开资料 - TokenBoard</title>
@@ -46,14 +76,24 @@ export function ProfilePage(props: { profile: ProfileSettings; saved: boolean; e
         data-public-card-form="true"
         data-submit-feedback="true"
       >
-        <ProfileSettingsCard profile={props.profile} saved={props.saved} />
+        <ProfileSettingsCard
+          profile={props.profile}
+          saved={props.saved}
+          formError={props.formError}
+          collectorTimezones={props.collectorTimezones}
+        />
         <PublicLinksCard profile={props.profile} />
       </form>
     </main>
   )
 }
 
-function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean }) {
+function ProfileSettingsCard(props: {
+  profile: ProfileSettings
+  saved: boolean
+  formError?: string
+  collectorTimezones?: string[]
+}) {
   return (
     <Card class="min-w-0 self-start">
       <CardHeader>
@@ -61,19 +101,22 @@ function ProfileSettingsCard(props: { profile: ProfileSettings; saved: boolean }
         <CardDescription>默认保持私有；只有开启公开后，JSON 和 SVG 才会返回真实统计。</CardDescription>
       </CardHeader>
       <CardContent>
-        {props.saved ? (
-          <p class="app-flash-success mb-4 p-3 text-sm">设置已保存。</p>
+        {props.saved ? <p class="app-flash-success mb-4 p-3 text-sm">设置已保存。</p> : null}
+        {props.formError ? (
+          <p class="app-flash-error mb-4 p-3 text-sm" role="alert">
+            {props.formError}
+          </p>
         ) : null}
         {props.profile.profileNeedsRepair ? (
           <p class="app-flash-error mb-4 p-3 text-sm">资料里有旧格式字段，请检查后保存一次。</p>
         ) : null}
-        <ProfileSettingsFields profile={props.profile} />
+        <ProfileSettingsFields profile={props.profile} collectorTimezones={props.collectorTimezones} />
       </CardContent>
     </Card>
   )
 }
 
-function ProfileSettingsFields(props: { profile: ProfileSettings }) {
+function ProfileSettingsFields(props: { profile: ProfileSettings; collectorTimezones?: string[] }) {
   return (
     <div class="space-y-4">
       <Label>
@@ -93,15 +136,24 @@ function ProfileSettingsFields(props: { profile: ProfileSettings }) {
           data-timezone-autofill={props.profile.shouldUseBrowserTimezoneDefault ? 'true' : 'false'}
         />
       </Label>
+      <CollectorTimezoneNotice timezone={props.profile.timezone} collectorTimezones={props.collectorTimezones} />
       <ProfileCheckbox name="isPublic" checked={props.profile.isPublic} title="公开 JSON / SVG">
         允许任何人通过公开链接查看你的聚合统计。
       </ProfileCheckbox>
-      <ProfileCheckbox name="participatesInLeaderboards" checked={props.profile.participatesInLeaderboards} title="参与排行榜">
+      <ProfileCheckbox
+        name="participatesInLeaderboards"
+        checked={props.profile.participatesInLeaderboards}
+        title="参与排行榜"
+      >
         开启后会自动公开资料，排行榜才会统计你的数据。
       </ProfileCheckbox>
       <div class="flex flex-col gap-3 pt-2 sm:flex-row sm:flex-wrap">
-        <Button class="w-full sm:w-auto" type="submit" data-submitting-label="正在保存...">保存设置</Button>
-        <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard">返回控制台</LinkButton>
+        <Button class="w-full sm:w-auto" type="submit" data-submitting-label="正在保存...">
+          保存设置
+        </Button>
+        <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard">
+          返回控制台
+        </LinkButton>
       </div>
     </div>
   )
@@ -117,12 +169,35 @@ function ProfileSlugInput(props: { profile: ProfileSettings }) {
   )
 }
 
-function ProfileCheckbox(props: {
-  name: string
-  checked: boolean
-  title: string
-  children: string
-}) {
+// This form is where the split is created, so it is where it has to be explained. Saving writes
+// only the profile; each collector froze its own zone into its config at install time, and
+// nothing here reaches it. A user who changes this value and nothing else gets a dashboard whose
+// "today" is empty while the month total still counts their rows — the failure mode is silent,
+// and only shows up later on a different page.
+function CollectorTimezoneNotice(props: { timezone: string; collectorTimezones?: string[] }) {
+  const collectorTimezones = props.collectorTimezones ?? []
+  // No collectors means nothing is stamping dates yet, so there is nothing to warn about.
+  if (collectorTimezones.length === 0) return null
+
+  const stale = collectorTimezones.filter((timezone) => timezone !== props.timezone)
+
+  return (
+    <p
+      class="app-surface-subtle rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-soft)] px-3 py-2 text-xs text-[var(--app-muted)]"
+      data-timezone-collector-notice="true"
+    >
+      当前采集端按 {collectorTimezones.join('、')} 写入日期。
+      {stale.length > 0
+        ? `与这里的时区不一致时，控制台的「今日」会显示为 0；改动后请在「连接设备」页重新安装采集器。`
+        : '修改此项不会同步到已安装的采集器，改动后请在「连接设备」页重新安装。'}{' '}
+      <a class="app-accent-link font-bold underline decoration-lime-300/50 underline-offset-4" href="/settings/install">
+        去连接设备
+      </a>
+    </p>
+  )
+}
+
+function ProfileCheckbox(props: { name: string; checked: boolean; title: string; children: string }) {
   return (
     <label class="app-surface-subtle flex items-start gap-3 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)] p-3 text-sm text-[var(--app-muted)]">
       <input class="mt-1" type="checkbox" name={props.name} checked={props.checked} />
@@ -172,7 +247,12 @@ function CopyBlock(props: { label: string; value: string; targetId: string }) {
     <div>
       <p class="mb-2 text-sm font-bold text-[var(--app-muted)]">{props.label}</p>
       <div class="app-surface-subtle grid min-w-0 grid-cols-[minmax(0,1fr)_auto] overflow-hidden rounded-md border border-[var(--app-border)] bg-[var(--app-bg-soft)]">
-        <pre id={props.targetId} class="min-h-12 overflow-x-auto whitespace-pre-wrap break-all p-3 text-sm leading-6 text-[var(--app-text)]">{props.value}</pre>
+        <pre
+          id={props.targetId}
+          class="min-h-12 overflow-x-auto whitespace-pre-wrap break-all p-3 text-sm leading-6 text-[var(--app-text)]"
+        >
+          {props.value}
+        </pre>
         <button
           type="button"
           class="inline-flex h-full min-h-12 w-12 items-center justify-center border-l border-[var(--app-border)] bg-[var(--app-panel)] text-[var(--app-muted)] transition hover:bg-[var(--app-hover)] hover:text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-lime-300/30"

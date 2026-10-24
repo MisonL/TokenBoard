@@ -1,44 +1,79 @@
-import { lstat, readdir, realpath } from 'node:fs/promises'
+import { lstat, readdir } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
+import { resolveCodexSessionRoot } from './codex-symlink-policy'
+
+export type SessionJsonlResolutionOptions = {
+  rejectRootSymlink?: boolean
+  rootBoundary?: string
+  allowedRootSymlinks?: readonly string[]
+  /** Recursion cap below the root, matching `bounded-session-scan`'s default. */
+  maxDepth?: number
+  /** Per-directory entry cap, matching the Antigravity scanner's limit. */
+  maxEntries?: number
+}
+
+// The codex/claude session tree is outside TokenBoard's control, so the walk needs the same
+// ceilings its sibling scanners carry: `bounded-session-scan` caps depth at 8, and the
+// Antigravity scanner caps a single directory listing at 10k entries. Symlinked entries are
+// already rejected, so a cycle cannot recurse forever — these bounds cover a deliberately
+// deep tree and a directory too large to list in one go.
+export const maxSessionWalkDepth = 8
+export const maxSessionWalkEntries = 10_000
 
 export type SessionJsonlFiles = {
   rootDir: string
   files: AsyncGenerator<string>
 }
 
-export async function resolveSessionJsonlFiles(rootDir: string): Promise<SessionJsonlFiles | null> {
-  const resolvedRoot = await resolveSessionRoot(rootDir)
+export async function resolveSessionJsonlFiles(
+  rootDir: string,
+  options: SessionJsonlResolutionOptions = {}
+): Promise<SessionJsonlFiles | null> {
+  const resolvedRoot = await resolveSessionRoot(rootDir, options)
   if (!resolvedRoot) return null
   return {
     rootDir: resolvedRoot,
-    files: walkDirectory(resolvedRoot, resolvedRoot)
+    files: walkDirectory(resolvedRoot, resolvedRoot, options, 0)
   }
 }
 
-export async function* walkJsonlFiles(rootDir: string): AsyncGenerator<string> {
-  const resolved = await resolveSessionJsonlFiles(rootDir)
+export async function* walkJsonlFiles(
+  rootDir: string,
+  options: SessionJsonlResolutionOptions = {}
+): AsyncGenerator<string> {
+  const resolved = await resolveSessionJsonlFiles(rootDir, options)
   if (!resolved) return
   yield* resolved.files
 }
 
-async function resolveSessionRoot(rootDir: string) {
-  return realpath(rootDir).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null
-    throw new Error(`Unable to resolve session directory ${rootDir}: ${error.message}`, { cause: error })
-  })
+async function resolveSessionRoot(rootDir: string, options: SessionJsonlResolutionOptions) {
+  return resolveCodexSessionRoot(rootDir, options)
 }
 
-async function* walkDirectory(rootDir: string, currentDir: string): AsyncGenerator<string> {
-  if (!await assertSessionDirectory(currentDir)) return
+async function* walkDirectory(
+  rootDir: string,
+  currentDir: string,
+  options: SessionJsonlResolutionOptions,
+  depth: number
+): AsyncGenerator<string> {
+  const maxDepth = options.maxDepth ?? maxSessionWalkDepth
+  const maxEntries = options.maxEntries ?? maxSessionWalkEntries
+  if (depth > maxDepth) {
+    throw new Error(`Session directory ${currentDir} exceeds the ${maxDepth}-level scan depth limit`)
+  }
+  if (!(await assertSessionDirectory(currentDir))) return
   const entries = await readDirectoryEntries(currentDir)
   if (!entries) return
+  if (entries.length > maxEntries) {
+    throw new Error(`Session directory ${currentDir} exceeds the ${maxEntries}-entry scan limit`)
+  }
   for (const entry of entries.sort((left, right) => compareDirectoryEntries(rootDir, currentDir, left, right))) {
     const entryPath = join(currentDir, entry.name)
     if (entry.isSymbolicLink()) {
       throw new Error(`Unable to read session entry ${entryPath}: symbolic links are not supported`)
     }
     if (entry.isDirectory()) {
-      yield* walkDirectory(rootDir, entryPath)
+      yield* walkDirectory(rootDir, entryPath, options, depth + 1)
       continue
     }
     if (entry.name.endsWith('.jsonl')) {
@@ -95,11 +130,7 @@ function compareDirectoryEntries(
   )
 }
 
-function entrySortPath(
-  rootDir: string,
-  currentDir: string,
-  entry: { name: string; isDirectory: () => boolean }
-) {
+function entrySortPath(rootDir: string, currentDir: string, entry: { name: string; isDirectory: () => boolean }) {
   const path = normalizeSessionRelativePath(relative(rootDir, join(currentDir, entry.name)))
   return entry.isDirectory() ? `${path}/` : path
 }

@@ -43,7 +43,10 @@ test('installed schedules preserve a custom TokenBoard config directory', () => 
     const plistPath = join(harness.homeDir, 'Library', 'LaunchAgents', 'com.tokenboard.daily-sync.plist')
     const plist = readFileSync(plistPath, 'utf8')
 
-    assert.match(plist, new RegExp(`<key>TOKENBOARD_CONFIG_DIR<\\/key>\\s+<string>${escapeRegExp(harness.options.configDir)}<\\/string>`))
+    assert.match(
+      plist,
+      new RegExp(`<key>TOKENBOARD_CONFIG_DIR<\\/key>\\s+<string>${escapeRegExp(harness.options.configDir)}<\\/string>`)
+    )
   } finally {
     harness.cleanup()
   }
@@ -65,12 +68,54 @@ test('installs Linux user systemd timer through an isolated systemd harness', ()
     assert.match(timer, /OnCalendar=21:45/)
     assert.doesNotMatch(timer, /OnCalendar=09:00/)
     assert.deepEqual(harness.calls.map(commandLine), [
-      'systemctl --user --version',
+      'systemctl --user is-system-running',
       'systemctl --user daemon-reload',
       'systemctl --user enable --now tokenboard-daily-sync.timer',
       'loginctl --version',
       'loginctl enable-linger tokenboard-test'
     ])
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('Linux install fails with a diagnostic message when the user systemd bus is not running', () => {
+  const harness = createHarness('linux')
+  try {
+    harness.options.spawn = (command, args) => {
+      harness.calls.push({ command, args })
+      if (args.join(' ') === '--user is-system-running') return { status: 1 }
+      return { status: 0 }
+    }
+    assert.throws(
+      () => installSchedule({ ...harness.options, argv: ['--schedule-times', '08:15'] }),
+      /not booted with systemd|user systemd bus/i
+    )
+    // The install must stop before writing units or touching the timer.
+    assert.ok(!harness.calls.some((call) => call.args.includes('daemon-reload')))
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('a failed enable-linger logs a warning instead of failing the install', () => {
+  const harness = createHarness('linux')
+  const logs = []
+  try {
+    harness.options.log = (line) => logs.push(line)
+    harness.options.spawn = (command, args) => {
+      harness.calls.push({ command, args })
+      if (args[0] === 'enable-linger') return { status: 1, stderr: 'not authorized' }
+      return { status: 0 }
+    }
+
+    installSchedule({ ...harness.options, argv: ['--schedule-times', '08:15'] })
+
+    assert.equal(harness.calls[harness.calls.length - 1].args[0], 'enable-linger')
+    assert.ok(
+      logs.some((line) => /linger/i.test(line) && /without linger|logged in/i.test(line)),
+      `expected a linger warning, got: ${logs.join(' | ')}`
+    )
   } finally {
     harness.cleanup()
   }
@@ -88,7 +133,7 @@ test('installs Linux timer when USER is not exported', () => {
     })
 
     assert.deepEqual(harness.calls.map(commandLine), [
-      'systemctl --user --version',
+      'systemctl --user is-system-running',
       'systemctl --user daemon-reload',
       'systemctl --user enable --now tokenboard-daily-sync.timer',
       'loginctl --version',
@@ -109,18 +154,28 @@ test('creates Windows scheduled tasks through an isolated schtasks harness', () 
 
     const calls = harness.calls.map(commandLine)
     assert.equal(calls[0], 'schtasks.exe --version')
-    assert.match(calls[1], /schtasks\.exe \/Create \/F \/SC DAILY \/TN TokenBoardDailySync0815 \/TR ".+tokenboard-daily-sync\.cmd" \/ST 08:15/)
+    assert.match(
+      calls[1],
+      /schtasks\.exe \/Create \/F \/SC DAILY \/TN TokenBoardDailySync0815 \/TR ".+tokenboard-daily-sync\.cmd" \/ST 08:15/
+    )
     assert.ok(calls[1].length < 261)
-    assert.match(calls[2], /TokenBoardDailySync2145/)
-    assert.match(calls[2], /tokenboard-daily-sync\.cmd" \/ST 21:45/)
-    assert.equal(calls[3], "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $current = @('TokenBoardDailySync0815','TokenBoardDailySync2145'); Get-ScheduledTask -TaskPath '\\' | Where-Object { (($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' })) -and $current -notcontains $_.TaskName } | Unregister-ScheduledTask -Confirm:$false")
+    // Each created task gets the StartWhenAvailable patch so runs missed while asleep
+    // still fire at the next wake, matching launchd and systemd Persistent=true.
+    assert.match(calls[2], /Set-ScheduledTask -TaskName 'TokenBoardDailySync0815'/)
+    assert.match(calls[2], /StartWhenAvailable/)
+    assert.match(calls[3], /schtasks\.exe \/Create .*TokenBoardDailySync2145/)
+    assert.match(calls[4], /Set-ScheduledTask -TaskName 'TokenBoardDailySync2145'/)
+    assert.equal(
+      calls[5],
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $current = @('TokenBoardDailySync0815','TokenBoardDailySync2145'); Get-ScheduledTask -TaskPath '\\' | Where-Object { (($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' })) -and $current -notcontains $_.TaskName } | Unregister-ScheduledTask -Confirm:$false"
+    )
     const wrapperPath = join(harness.options.configDir, 'tokenboard-daily-sync.cmd')
     const wrapper = readFileSync(wrapperPath, 'utf8')
     assert.match(wrapper, /TOKENBOARD_PACKAGE_MANAGER=pnpm/)
     assert.match(wrapper, /TOKENBOARD_SCHEDULED_SYNC=1/)
     assert.match(wrapper, /TOKENBOARD_LOG_DIR=/)
     assert.match(wrapper, /PATH=/)
-    assert.match(wrapper, /"node-test" "sync-test\.mjs" --mode sync --source all --scheduled/)
+    assert.match(wrapper, /"node-test" "sync-test\.mjs" --mode sync --scheduled/)
   } finally {
     harness.cleanup()
   }

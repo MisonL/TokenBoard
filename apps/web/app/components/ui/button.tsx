@@ -8,7 +8,8 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default: 'bg-lime-300 text-stone-950 hover:bg-lime-200',
-        secondary: 'border border-[var(--app-border)] bg-[var(--app-panel-strong)] text-[var(--app-text)] hover:border-lime-300 hover:text-[var(--app-text)]',
+        secondary:
+          'border border-[var(--app-border)] bg-[var(--app-panel-strong)] text-[var(--app-text)] hover:border-lime-300 hover:text-[var(--app-text)]',
         ghost: 'text-[var(--app-muted)] hover:bg-[var(--app-hover)] hover:text-[var(--app-text)]',
         destructive: 'app-danger-button'
       },
@@ -48,6 +49,10 @@ type LinkButtonProps = VariantProps<typeof buttonVariants> & {
   class?: string
   href: string
   children?: Child
+  // A download link is not an in-app navigation, and `client-navigation.ts` tells the two
+  // apart by exactly this attribute. Without it the guard cancels the browser's download
+  // and fetches the file into `document.body`.
+  download?: string | boolean
 }
 
 export function LinkButton(props: LinkButtonProps) {

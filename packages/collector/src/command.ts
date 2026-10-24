@@ -1,24 +1,11 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { errorMessage } from './error-message'
+import { isTransientNetworkError } from './transient-error'
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000
 const DEFAULT_RETRY_DELAY_MS = 5_000
-
-const RETRYABLE_ERROR_PATTERNS = [
-  'fetch failed',
-  'unknown_certificate_verification_error',
-  'cert_',
-  'econnreset',
-  'econnrefused',
-  'etimedout',
-  'eai_again',
-  'enotfound',
-  'network',
-  'socket hang up',
-  'tls'
-]
 
 export type CommandRunnerOptions = {
   env?: NodeJS.ProcessEnv
@@ -36,30 +23,59 @@ export const runJsonCommand: CommandRunner = async (command, args, options = {})
   const shell = commandShellOption(command)
   assertWindowsShellSafeInvocation(command, args, shell)
   const invocation = buildShellInvocation(command, args, shell)
+  const timeoutMs = options.timeoutMs ?? readCommandTimeoutMs()
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const { stdout } = await execFileAsync(invocation.command, invocation.args, {
         shell: invocation.shell,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         maxBuffer: 128 * 1024 * 1024,
-        timeout: options.timeoutMs ?? readCommandTimeoutMs(),
+        timeout: timeoutMs,
         env: options.env
       })
 
       return JSON.parse(stdout)
     } catch (error) {
-      if (attempt >= maxAttempts || !isRetryableCommandError(error)) {
-        throw error
+      const failure = describeCommandFailure(error, { command, args, timeoutMs })
+      if (attempt >= maxAttempts || !isRetryableCommandError(failure)) {
+        throw failure
       }
 
-      options.onRetry?.(
-        `Retrying command after transient failure (${attempt}/${retries}): ${errorMessage(error)}`
-      )
+      options.onRetry?.(`Retrying command after transient failure (${attempt}/${retries}): ${errorMessage(failure)}`)
       await wait(options.retryDelayMs ?? readRetryDelayMs())
     }
   }
 
   throw new Error(`Command failed without a result: ${command}`)
+}
+
+// Node reports a timeout kill as a bare `Command failed: <invocation>` with `killed: true`,
+// `signal: 'SIGTERM'`, and (usually) no stderr — indistinguishable in a run record from the
+// tool itself exiting non-zero, so a sync that lost its time budget on a loaded machine reads
+// as a bug in the tool. Name the timeout, and carry any stderr the kill did leave behind.
+export function describeCommandFailure(
+  error: unknown,
+  { command, args, timeoutMs }: { command: string; args: string[]; timeoutMs: number }
+) {
+  if (!isCommandTimeoutError(error)) return error
+  const stderr = readFailureStderr(error)
+  return new Error(
+    `Command timed out after ${timeoutMs}ms: ${[command, ...args].join(' ')}${stderr ? `\n${stderr}` : ''}`
+  )
+}
+
+// `killed` is only ever set by Node itself, and the runner passes no AbortSignal — so a kill
+// signal here means the timeout fired, not an external `kill`.
+function isCommandTimeoutError(error: unknown) {
+  if (!error || typeof error !== 'object') return false
+  const { killed, signal } = error as { killed?: unknown; signal?: unknown }
+  return killed === true && signal === 'SIGTERM'
+}
+
+function readFailureStderr(error: unknown) {
+  const stderr = (error as { stderr?: unknown }).stderr
+  return typeof stderr === 'string' ? stderr.trim() : ''
 }
 
 export function commandShellOption(command: string, platform = process.platform) {
@@ -78,12 +94,14 @@ export function assertWindowsShellSafeInvocation(command: string, args: string[]
 }
 
 export function buildShellInvocation(command: string, args: string[], shell: boolean) {
-  if (!shell) return { command, args, shell: false }
+  if (!shell) return { command, args, shell: false, windowsVerbatimArguments: false }
   assertWindowsShellSafeInvocation(command, args, true)
+  const commandLine = [command, ...args].map(quoteWindowsShellArgument).join(' ')
   return {
-    command: [command, ...args].map(quoteWindowsShellArgument).join(' '),
-    args: [],
-    shell: true
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', commandLine.startsWith('"') ? `"${commandLine}"` : commandLine],
+    shell: false,
+    windowsVerbatimArguments: true
   }
 }
 
@@ -117,8 +135,7 @@ function readRetryDelayMs() {
 }
 
 function isRetryableCommandError(error: unknown) {
-  const message = errorMessage(error).toLowerCase()
-  return RETRYABLE_ERROR_PATTERNS.some((pattern) => message.includes(pattern))
+  return isTransientNetworkError(error)
 }
 
 function wait(delayMs: number) {
@@ -135,6 +152,9 @@ const windowsShellCommandMetacharacters = /[&|<>^%!"\r\n]/
 
 function quoteWindowsShellArgument(value: string) {
   const text = String(value)
+  const needsQuotes = text.length === 0 || /[\s()]/.test(text) || /\\$/.test(text)
+  if (!needsQuotes) return text
+
   const trailingBackslashes = text.match(/\\+$/)?.[0].length ?? 0
   return `"${text}${'\\'.repeat(trailingBackslashes)}"`
 }

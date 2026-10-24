@@ -28,12 +28,14 @@ describe('normalizeCcusageDailyJson', () => {
     try {
       normalizeCcusageDailyJson(
         {
-          data: [{
-            date: '2026-05-25',
-            model: 'gpt-5',
-            inputTokens: 1,
-            totalTokens: 1
-          }]
+          data: [
+            {
+              date: '2026-05-25',
+              model: 'gpt-5',
+              inputTokens: 1,
+              totalTokens: 1
+            }
+          ]
         },
         {
           source: 'codex',
@@ -57,6 +59,37 @@ describe('normalizeCcusageDailyJson', () => {
         value: OriginalDateTimeFormat
       })
     }
+  })
+
+  // A per-model row without its own cost falls back to a pro-rata share of the parent day's
+  // cost by token count. ccusage normally emits breakdowns that partition the parent, but the
+  // fallback runs on whatever tokens the rows carry, so the allocation must be pinned: each
+  // model's share of the parent cost, and the shares summing back to the parent cost.
+  test('allocates a missing model cost pro-rata from the parent day cost', () => {
+    const snapshots = normalizeCcusageDailyJson(
+      {
+        type: 'daily',
+        data: [
+          {
+            date: '2026-04-28',
+            totalTokens: 300,
+            costUSD: 3,
+            breakdown: {
+              'claude-sonnet-4-5': { inputTokens: 100, outputTokens: 0, totalTokens: 100 },
+              'claude-opus-4-1': { inputTokens: 200, outputTokens: 0, totalTokens: 200 }
+            }
+          }
+        ]
+      },
+      { source: 'claude-code', timezone: 'Asia/Shanghai', collectedAt }
+    )
+
+    expect(snapshots.map((snapshot) => [snapshot.model, snapshot.costUsd])).toEqual([
+      ['claude-sonnet-4-5', 1],
+      ['claude-opus-4-1', 2]
+    ])
+    const allocated = snapshots.reduce((total, snapshot) => total + snapshot.costUsd, 0)
+    expect(allocated).toBeCloseTo(3, 12)
   })
 
   test('normalizes ccusage daily breakdown rows into per-model snapshots', () => {
@@ -96,6 +129,78 @@ describe('normalizeCcusageDailyJson', () => {
         costUsd: 0.12,
         sessionCount: 0,
         collectedAt
+      }
+    ])
+  })
+
+  test('normalizes inconsistent Codex daily totals before schema validation', () => {
+    const snapshots = normalizeCcusageDailyJson(
+      {
+        data: [
+          {
+            date: '2026-04-28',
+            model: 'gpt-5',
+            inputTokens: 10,
+            outputTokens: 4,
+            cacheCreationTokens: 3,
+            cacheReadTokens: 20,
+            totalTokens: 15
+          }
+        ]
+      },
+      { source: 'codex', timezone: 'UTC', collectedAt }
+    )
+
+    expect(snapshots[0]).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 4,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 20,
+      totalTokens: 37
+    })
+  })
+
+  test('keeps Codex snake_case cache aliases consistent with total token normalization', () => {
+    const snapshots = normalizeCcusageDailyJson(
+      {
+        data: [
+          {
+            date: '2026-04-28',
+            model: 'gpt-5',
+            inputTokens: 10,
+            outputTokens: 2,
+            cache_creation_input_tokens: 3,
+            cache_read_input_tokens: 4
+          },
+          {
+            date: '2026-04-28',
+            model: 'gpt-5-mini',
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_write_input_tokens: 2,
+            cached_input_tokens: 5
+          }
+        ]
+      },
+      { source: 'codex', timezone: 'UTC', collectedAt }
+    )
+
+    expect(snapshots).toMatchObject([
+      {
+        model: 'gpt-5',
+        inputTokens: 10,
+        outputTokens: 2,
+        cacheCreationTokens: 3,
+        cacheReadTokens: 4,
+        totalTokens: 19
+      },
+      {
+        model: 'gpt-5-mini',
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheCreationTokens: 2,
+        cacheReadTokens: 5,
+        totalTokens: 9
       }
     ])
   })
@@ -175,49 +280,53 @@ describe('normalizeCcusageDailyJson', () => {
   })
 
   test('rejects an impossible ISO date in daily usage', () => {
-    expect(() => normalizeCcusageDailyJson(
-      {
-        data: [
-          {
-            date: '2026-02-30',
-            model: 'gpt-5',
-            inputTokens: 1,
-            totalTokens: 1
-          }
-        ]
-      },
-      { source: 'codex', timezone: 'UTC', collectedAt }
-    )).toThrow('Invalid ccusage date')
-  })
-
-  test('rejects an impossible ISO date in session metadata', () => {
-    expect(() => normalizeCcusageDailyJson(
-      {
-        data: [
-          {
-            date: '2026-04-28',
-            model: 'gpt-5',
-            inputTokens: 1,
-            totalTokens: 1
-          }
-        ]
-      },
-      {
-        source: 'codex',
-        timezone: 'UTC',
-        collectedAt,
-        sessions: {
+    expect(() =>
+      normalizeCcusageDailyJson(
+        {
           data: [
             {
-              lastActivity: '2026-04-31T12:00:00.000Z',
+              date: '2026-02-30',
               model: 'gpt-5',
               inputTokens: 1,
               totalTokens: 1
             }
           ]
+        },
+        { source: 'codex', timezone: 'UTC', collectedAt }
+      )
+    ).toThrow('Invalid ccusage date')
+  })
+
+  test('rejects an impossible ISO date in session metadata', () => {
+    expect(() =>
+      normalizeCcusageDailyJson(
+        {
+          data: [
+            {
+              date: '2026-04-28',
+              model: 'gpt-5',
+              inputTokens: 1,
+              totalTokens: 1
+            }
+          ]
+        },
+        {
+          source: 'codex',
+          timezone: 'UTC',
+          collectedAt,
+          sessions: {
+            data: [
+              {
+                lastActivity: '2026-04-31T12:00:00.000Z',
+                model: 'gpt-5',
+                inputTokens: 1,
+                totalTokens: 1
+              }
+            ]
+          }
         }
-      }
-    )).toThrow('Invalid ccusage date')
+      )
+    ).toThrow('Invalid ccusage date')
   })
 
   test('accepts cache input token aliases from companion CLIs', () => {
@@ -255,10 +364,11 @@ describe('normalizeCcusageDailyJson', () => {
   })
 
   test('normalizes codex rows with display dates and models object', () => {
-    const snapshots = normalizeCcusageDailyJson(
-      codexDisplayDateDailyInput(),
-      { source: 'codex', timezone: 'Asia/Shanghai', collectedAt }
-    )
+    const snapshots = normalizeCcusageDailyJson(codexDisplayDateDailyInput(), {
+      source: 'codex',
+      timezone: 'Asia/Shanghai',
+      collectedAt
+    })
 
     expect(snapshots).toMatchObject([
       {
@@ -286,15 +396,12 @@ describe('normalizeCcusageDailyJson', () => {
   })
 
   test('does not double-count sessions that used multiple models', () => {
-    const snapshots = normalizeCcusageDailyJson(
-      multiModelSessionCountInput(),
-      {
-        source: 'claude-code',
-        timezone: 'Asia/Shanghai',
-        collectedAt,
-        sessions: multiModelSessionRows()
-      }
-    )
+    const snapshots = normalizeCcusageDailyJson(multiModelSessionCountInput(), {
+      source: 'claude-code',
+      timezone: 'Asia/Shanghai',
+      collectedAt,
+      sessions: multiModelSessionRows()
+    })
 
     expect(snapshots).toMatchObject([
       {

@@ -1,0 +1,46 @@
+{
+  "sessions": [
+    {
+      "cacheCreationTokens": 3,
+      "cacheReadTokens": 44,
+      "firstActivity": "2026-04-28T02:00:00.000Z",
+      "inputTokens": 11,
+      "lastActivity": "2026-04-29T02:00:00.000Z",
+      "modelBreakdowns": [
+        {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 40,
+          "cost": 0.00057,
+          "inputTokens": 10,
+          "modelName": "claude-opus-4-5",
+          "outputTokens": 20
+        },
+        {
+          "cacheCreationTokens": 3,
+          "cacheReadTokens": 4,
+          "cost": 0.00004545000000000001,
+          "inputTokens": 1,
+          "modelName": "claude-sonnet-4-5",
+          "outputTokens": 2
+        }
+      ],
+      "modelsUsed": [
+        "claude-sonnet-4-5",
+        "claude-opus-4-5"
+      ],
+      "outputTokens": 22,
+      "projectPath": "proj-a",
+      "sessionId": "session-1",
+      "totalCost": 0.00061545,
+      "totalTokens": 80
+    }
+  ],
+  "totals": {
+    "cacheCreationTokens": 3,
+    "cacheReadTokens": 44,
+    "inputTokens": 11,
+    "outputTokens": 22,
+    "totalCost": 0.00061545,
+    "totalTokens": 80
+  }
+}

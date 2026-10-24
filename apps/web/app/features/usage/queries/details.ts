@@ -1,5 +1,6 @@
 import type { UsageSource } from '@tokenboard/usage-core'
 import { cacheReadRateFromTotals } from '../../../lib/usage-metrics'
+import { billableCostSql } from '../../../lib/usage-cost'
 import {
   dailyUsageScopeSql,
   normalizeDeviceFilter,
@@ -9,17 +10,22 @@ import {
   usageTableForDeviceFilter
 } from '../deduped-daily-usage'
 import { eachIsoDate, roundMetric } from './shared'
-import type {
-  UsageDetails,
-  UsageDetailsDailyRow,
-  UsageDetailsInput,
-  UsageDetailsModelRow
-} from './types'
+import type { UsageDetails, UsageDetailsDailyRow, UsageDetailsInput, UsageDetailsModelRow } from './types'
 
-export async function getUsageDetails(
-  db: D1Database,
-  input: UsageDetailsInput
-): Promise<UsageDetails> {
+// Unlike the dashboard summary, leaderboards, public cards and daily reports — which read the
+// `daily_usage_summary` cache under `TOKENBOARD_USAGE_SUMMARY_STRICT` — this query reads
+// `daily_usage` (via the legacy-dedup CTE) directly, in both strict and non-strict deployments.
+// That is deliberate, not an oversight:
+//   * the summary table has no device dimension, so the per-device filter this page offers could
+//     not be served from it at all, and reading one table keeps the page and its CSV export
+//     consistent with each other;
+//   * the cache lags while the bounded backfill catches up, and in that window the strict
+//     surfaces under-report history. The details page is where a user checks what was actually
+//     collected, so it must show the complete rows rather than the partially-warmed cache.
+// Once the cache is current the two agree on every total this page shows; `summary-parity
+// .sqlite.test.ts` pins those shared fields so the two read paths cannot drift without a
+// failing test.
+export async function getUsageDetails(db: D1Database, input: UsageDetailsInput): Promise<UsageDetails> {
   const deviceId = normalizeDeviceFilter(input.deviceId)
   const usageTable = usageTableForDeviceFilter(deviceId)
   const dedupedUsageFilter = usageDetailsDedupedFilter(deviceId)
@@ -34,7 +40,7 @@ export async function getUsageDetails(
           source,
           COALESCE(SUM(total_tokens), 0) as totalTokens,
           COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
-          COALESCE(SUM(cost_usd), 0) as costUsd,
+          COALESCE(SUM(${billableCostSql()}), 0) as costUsd,
           COALESCE(SUM(session_count), 0) as sessionCount
         FROM ${usageTable}
         WHERE user_id = ?
@@ -153,7 +159,7 @@ function modelRowsSql(usageWith: string, usageTable: string) {
       COALESCE(SUM(cache_read_tokens), 0) as cacheReadTokens,
       COALESCE(SUM(total_tokens), 0) as totalTokens,
       COALESCE(SUM(${tokensWithoutCacheReadSql()}), 0) as totalTokensWithoutCacheRead,
-      COALESCE(SUM(cost_usd), 0) as costUsd,
+      COALESCE(SUM(${billableCostSql()}), 0) as costUsd,
       COALESCE(SUM(session_count), 0) as sessionCount
     FROM ${usageTable}
     WHERE user_id = ?

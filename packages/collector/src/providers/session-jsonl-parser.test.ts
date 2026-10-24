@@ -54,6 +54,106 @@ describe('parseSessionJsonl', () => {
     expect(JSON.stringify(snapshots)).not.toContain('do not upload')
   })
 
+  test('normalizes Codex totals when cached input is reported separately', () => {
+    const parsed = parseSessionJsonl({
+      source: 'codex',
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-05-22T10:00:00.000Z',
+      sessionId: 'codex-session',
+      content: `${JSON.stringify({
+        type: 'event_msg',
+        timestamp: '2026-05-22T01:00:00.000Z',
+        payload: {
+          type: 'token_count',
+          info: {
+            model: 'gpt-5',
+            last_token_usage: {
+              input_tokens: 10,
+              cached_input_tokens: 20,
+              cache_write_input_tokens: 3,
+              output_tokens: 4,
+              total_tokens: 15,
+              cost_usd: 0.04
+            }
+          }
+        }
+      })}\n`
+    })
+
+    expect(parsed.snapshots[0]).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 4,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 20,
+      totalTokens: 37
+    })
+  })
+
+  test('normalizes a low Codex total when cached input is included in input_tokens', () => {
+    const parsed = parseSessionJsonl({
+      source: 'codex',
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-05-22T10:00:00.000Z',
+      sessionId: 'codex-session',
+      content: `${JSON.stringify({
+        type: 'event_msg',
+        timestamp: '2026-05-22T01:00:00.000Z',
+        payload: {
+          type: 'token_count',
+          info: {
+            model: 'gpt-5',
+            last_token_usage: {
+              input_tokens: 20,
+              cached_input_tokens: 5,
+              cache_write_input_tokens: 3,
+              output_tokens: 4,
+              total_tokens: 10,
+              cost_usd: 0.04
+            }
+          }
+        }
+      })}\n`
+    })
+
+    expect(parsed.snapshots[0]).toMatchObject({
+      inputTokens: 20,
+      outputTokens: 4,
+      cacheCreationTokens: 3,
+      cacheReadTokens: 5,
+      totalTokens: 27
+    })
+  })
+
+  // A legacy Codex record folds cached input into input_tokens, so its total is
+  // input + output + cache creation — adding the cache read again would count those
+  // tokens twice and push the uploaded total past what the record ever reported.
+  test('keeps a legacy Codex total free of double-counted cached input when no total is usable', () => {
+    for (const usage of [
+      { input_tokens: 100, cached_input_tokens: 40, output_tokens: 1 },
+      { input_tokens: 100, cached_input_tokens: 40, output_tokens: 1, total_tokens: 0 }
+    ]) {
+      const parsed = parseSessionJsonl({
+        source: 'codex',
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        sessionId: 'codex-session',
+        content: `${JSON.stringify({
+          type: 'event_msg',
+          timestamp: '2026-05-22T01:00:00.000Z',
+          payload: { type: 'token_count', info: { model: 'gpt-5', last_token_usage: usage } }
+        })}\n`
+      })
+
+      expect(parsed.snapshots[0]).toMatchObject({
+        inputTokens: 100,
+        outputTokens: 1,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 40,
+        totalTokens: 101
+      })
+    }
+  })
+
   test('parses Claude assistant usage rows', () => {
     const snapshots = parseSessionJsonl({
       source: 'claude-code',
@@ -274,6 +374,50 @@ describe('parseSessionJsonl', () => {
     expect(parsed.unparsedTokenLikeRows).toBe(0)
   })
 
+  test('ignores Codex request-level token_usage_record metadata duplicated by token_count', () => {
+    const parsed = parseSessionJsonl({
+      source: 'codex',
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-09-19T00:00:00.000Z',
+      sessionId: 'session',
+      content: JSON.stringify({
+        type: 'token_usage_record',
+        timestamp: '2026-09-18T12:00:00.000Z',
+        payload: {
+          usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+          turn_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+          thread_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+        }
+      })
+    })
+
+    expect(parsed.snapshots).toEqual([])
+    expect(parsed.unparsedTokenLikeRows).toBe(0)
+  })
+
+  test('ignores compacted Codex latest token usage metadata', () => {
+    const parsed = parseSessionJsonl({
+      source: 'codex',
+      timezone: 'Asia/Shanghai',
+      collectedAt: '2026-09-19T00:00:00.000Z',
+      sessionId: 'session',
+      content: JSON.stringify({
+        type: 'compacted',
+        timestamp: '2026-09-18T12:00:00.000Z',
+        payload: {
+          latest_token_usage_record: {
+            usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            turn_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+            thread_token_usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 }
+          }
+        }
+      })
+    })
+
+    expect(parsed.snapshots).toEqual([])
+    expect(parsed.unparsedTokenLikeRows).toBe(0)
+  })
+
   test('reports token-like rows that are not parsed into snapshots', () => {
     const parsed = parseSessionJsonl({
       source: 'codex',
@@ -312,27 +456,29 @@ describe('parseSessionJsonl', () => {
   })
 
   test('reports invalid timezone with parser context', () => {
-    expect(() => parseSessionJsonl({
-      source: 'codex',
-      timezone: 'Not/AZone',
-      collectedAt: '2026-05-22T10:00:00.000Z',
-      sessionId: 'codex-session',
-      content: `${JSON.stringify({
-        type: 'event_msg',
-        timestamp: '2026-05-22T01:00:00.000Z',
-        payload: {
-          type: 'token_count',
-          info: {
-            model: 'gpt-5',
-            last_token_usage: {
-              input_tokens: 10,
-              output_tokens: 5,
-              total_tokens: 15,
-              cost_usd: 0
+    expect(() =>
+      parseSessionJsonl({
+        source: 'codex',
+        timezone: 'Not/AZone',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        sessionId: 'codex-session',
+        content: `${JSON.stringify({
+          type: 'event_msg',
+          timestamp: '2026-05-22T01:00:00.000Z',
+          payload: {
+            type: 'token_count',
+            info: {
+              model: 'gpt-5',
+              last_token_usage: {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cost_usd: 0
+              }
             }
           }
-        }
-      })}\n`
-    })).toThrow('Invalid timezone for session JSONL formatDate: Not/AZone')
+        })}\n`
+      })
+    ).toThrow('Invalid timezone for session JSONL formatDate: Not/AZone')
   })
 })

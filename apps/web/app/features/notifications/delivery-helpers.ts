@@ -1,10 +1,6 @@
-import type { WebhookEnv } from './config'
+import { webhookDiagnostic, type WebhookEnv } from './config'
 import { markSubscriptionSkipped } from './delivery-state'
-import {
-  claimWebhookSubscription,
-  hasSuccessfulDailyDelivery,
-  type DueWebhookSubscription
-} from './queries'
+import { claimWebhookSubscription, hasSuccessfulDailyDelivery, type DueWebhookSubscription } from './queries'
 import { localDateInTimezone, localTimeInTimezone } from './time'
 
 export type DeliveryKind = 'daily' | 'test'
@@ -49,13 +45,16 @@ export async function shouldSkipAlreadyDelivered(input: {
   return true
 }
 
-export async function markSkippedOrThrow(input: {
-  env: WebhookEnv
-  subscription: DueWebhookSubscription
-  now: Date
-  reportDate: string
-  scheduleSlot: string | null
-}, reason: string) {
+export async function markSkippedOrThrow(
+  input: {
+    env: WebhookEnv
+    subscription: DueWebhookSubscription
+    now: Date
+    reportDate: string
+    scheduleSlot: string | null
+  },
+  reason: string
+) {
   try {
     await markSubscriptionSkipped({
       db: input.env.DB,
@@ -72,32 +71,32 @@ export async function markSkippedOrThrow(input: {
 
 export function reportDateForDelivery(kind: DeliveryKind, subscription: DueWebhookSubscription, now: Date) {
   if (kind === 'daily') {
-    return subscription.pendingReportDate ?? localDateInTimezone(new Date(subscription.nextRunAt), subscription.timezone)
+    return (
+      subscription.pendingReportDate ?? localDateInTimezone(new Date(subscription.nextRunAt), subscription.timezone)
+    )
   }
   return localDateInTimezone(now, subscription.timezone)
 }
 
-export function scheduleSlotForDelivery(
-  kind: DeliveryKind,
-  subscription: DueWebhookSubscription,
-  reportDate: string
-) {
+export function scheduleSlotForDelivery(kind: DeliveryKind, subscription: DueWebhookSubscription, reportDate: string) {
   if (kind !== 'daily') return null
-  return subscription.pendingScheduleSlot ??
+  return (
+    subscription.pendingScheduleSlot ??
     `${reportDate}T${localTimeInTimezone(new Date(subscription.nextRunAt), subscription.timezone)}`
+  )
 }
 
-export function incrementCounts(
-  counts: { sent: number; failed: number; skipped: number },
-  status: DeliveryStatus
-) {
+export function incrementCounts(counts: { sent: number; failed: number; skipped: number }, status: DeliveryStatus) {
   if (status === 'success') counts.sent += 1
   if (status === 'failure') counts.failed += 1
   if (status === 'skipped') counts.skipped += 1
 }
 
+// Log-path formatting: the webhook configuration error carries a generic user-facing message
+// plus the operator detail, so the diagnostic is preferred here while `safeWebhookErrorMessage`
+// (what lands in the user-visible delivery log) stays on the generic message.
 export function errorMessage(error: unknown) {
-  return rawErrorMessage(error).slice(0, 500)
+  return (webhookDiagnostic(error) ?? rawErrorMessage(error)).slice(0, 500)
 }
 
 export function safeWebhookErrorMessage(error: unknown) {

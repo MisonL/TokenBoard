@@ -70,7 +70,9 @@ function assertWebhookBusinessResponse(text: string) {
     }
     const code = firstCode(data.errcode, data.errorcode, data.code, data.StatusCode, data.statusCode)
     if (code !== null && code.value !== 0) {
-      throw new Error(`Webhook returned application code ${code.raw}: ${firstString(data.errmsg, data.msg, data.StatusMessage, data.statusMessage, data.message) ?? 'unknown error'}`)
+      throw new Error(
+        `Webhook returned application code ${code.raw}: ${firstString(data.errmsg, data.msg, data.StatusMessage, data.statusMessage, data.message) ?? 'unknown error'}`
+      )
     }
   } catch (error) {
     if (error instanceof SyntaxError) {
@@ -133,8 +135,14 @@ async function readBoundedResponseText(response: Response) {
       text += decoder.decode(value, { stream: true })
       bytesRead += value.byteLength
       if (bytesRead === webhookResponseTextMaxBytes) {
-        truncated = true
-        await reader.cancel()
+        // Reaching the cap exactly is only a truncation if the body continues: a response whose
+        // last byte lands on the cap is complete, and appending the suffix there would claim
+        // text was dropped when none was. One more read decides it.
+        const next = await reader.read()
+        if (!next.done) {
+          truncated = true
+          await reader.cancel()
+        }
         break
       }
     }
@@ -147,7 +155,10 @@ async function readBoundedResponseText(response: Response) {
 }
 
 class WebhookHttpError extends Error {
-  constructor(readonly status: number, body: string) {
+  constructor(
+    readonly status: number,
+    body: string
+  ) {
     super(`Webhook returned ${status}${body ? `: ${body}` : ''}`)
   }
 }

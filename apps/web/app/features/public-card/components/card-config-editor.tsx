@@ -118,11 +118,13 @@ export function PublicCardConfigEditor(props: {
       <div class="grid gap-3 sm:grid-cols-2">
         <Label>
           标题
-          <Input name="cardTitle" value={props.config.title} autocomplete="off" />
+          {/* Matches `publicCardConfigSchema`'s max(48), so the limit is enforced before submit
+              rather than only by the server's error message. */}
+          <Input name="cardTitle" value={props.config.title} autocomplete="off" maxLength={48} />
         </Label>
         <Label>
           副标题
-          <Input name="cardSubtitle" value={props.config.subtitle} autocomplete="off" />
+          <Input name="cardSubtitle" value={props.config.subtitle} autocomplete="off" maxLength={96} />
         </Label>
       </div>
 
@@ -154,7 +156,9 @@ export function PublicCardConfigEditor(props: {
       </div>
 
       <div class="flex flex-col gap-3 pt-1 sm:flex-row sm:flex-wrap">
-        <Button class="w-full sm:w-auto" type="submit" data-submitting-label="正在保存...">保存设置</Button>
+        <Button class="w-full sm:w-auto" type="submit" data-submitting-label="正在保存...">
+          保存设置
+        </Button>
         <Button
           class="w-full sm:w-auto"
           type="submit"
@@ -166,7 +170,9 @@ export function PublicCardConfigEditor(props: {
           <LucideIcon icon={RotateCcw} size={16} />
           还原默认卡片
         </Button>
-        <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard">返回控制台</LinkButton>
+        <LinkButton class="w-full sm:w-auto" variant="secondary" href="/dashboard">
+          返回控制台
+        </LinkButton>
       </div>
     </div>
   )

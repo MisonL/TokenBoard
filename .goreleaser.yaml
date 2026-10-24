@@ -1,0 +1,115 @@
+# TokenBoard Go client release configuration (spec §8).
+#
+# Cut with `goreleaser release --clean` on a version tag (`vX.Y.Z`). The
+# output this must produce is fixed by `internal/release`:
+#   - six platform builds (3 OS × 2 arch), archive
+#     `tokenboard_<os>_<arch>.tar.gz` (`Platform()` in that package validates
+#     the same six pairs),
+#   - a `checksums.txt` manifest of sha256 digests (`Checksums()`),
+#   - the binary inside the archive named `tokenboard` (`tokenboard.exe`
+#     on Windows), which `extractBinary()` looks up by base name.
+# A change to any of these three must be mirrored there in the same change.
+version: 2
+
+project_name: tokenboard
+
+builds:
+  - id: tokenboard
+    # The Go module lives in clients/go, not at the repository root: without
+    # this GoReleaser looks for ./cmd/tokenboard at the top level and fails.
+    dir: clients/go
+    main: ./cmd/tokenboard
+    binary: tokenboard
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # `Version` in internal/cli is what `tokenboard version` prints and what
+    # self-update compares against, so an unstamped build would never match a
+    # release and every scheduled run would "update" to the same version.
+    ldflags:
+      - -s -w -X github.com/MisonL/TokenBoard/clients/go/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: tokenboard
+    formats: [tar.gz]
+    # GoReleaser's default `{{ .Os }}_{{ .Arch }}` suffix is the spelling
+    # `release.Platform()` constructs; do not re-template it per-platform.
+    # The archive format is forced to tar.gz on Windows too (the default is
+    # zip): `selfupdate.extractBinary` reads a gzip tar with no zip path.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [tar.gz]
+    files:
+      # The consumer extracts the binary by name and ignores everything else,
+      # so the readme travels with it without changing that lookup.
+      - README.md
+      # Spec §4.1: ccusage is bundled rather than fetched on first run, so a
+      # fresh install works offline and the version is the one the gate in
+      # clients/go/scripts/check-deps.sh verified. bundle-ccusage.mjs lays the
+      # files out one directory per platform, and the glob copies the binary
+      # under its own base name — `ccusage`, or `ccusage.exe` on Windows —
+      # the name the bundled layer looks up (binaryName() in
+      # internal/ccusage). `dst` does not take templates, so the rename happens
+      # in the bundle layout, not here.
+      - src: dist-ccusage/ccusage_{{ .Os }}_{{ .Arch }}/*
+        dst: .
+        strip_parent: true
+      # MIT requires the notice to travel with the redistribution.
+      - src: dist-ccusage/LICENSE.ccusage
+        dst: .
+        strip_parent: true
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  # The fork cuts releases; the default (origin) follows whatever remote the
+  # CI checkout uses, which keeps the config working for both.
+  draft: false
+  prerelease: auto
+  # A bare commit list does not tell an operator what a tag does or does not
+  # ship. The header states the version mapping the self-update channel
+  # depends on (`release.Version` strips the `v`, the binary reports the rest)
+  # and draws the line between this channel and the server, which deploys
+  # separately. Keep it short: the changelog follows it.
+  header: |
+    ## TokenBoard client {{ .Tag }}
+
+    This release ships the Go client only. `tokenboard version` prints
+    `tokenboard (go) {{ .Version }}` — the tag without its `v`, which is what
+    `self-update` compares against. The web app and API are deployed to
+    Cloudflare Workers by `pnpm run deploy`, not by this release.
+
+    **Switch a local collector onto this client** (from the repository
+    checkout; keeps the checkout as the rollback):
+
+    ```bash
+    node skills/tokenboard/scripts/upgrade.mjs --to-binary
+    ```
+
+    That installs the current release to `~/.tokenboard/bin/` and sets
+    `clientType: binary`. The skill's install paths take a `--release-repo`
+    / `TOKENBOARD_RELEASE_REPO` override; this repository is their default.
+    To roll a machine back, set `clientType` to `"git"` — a `perSource` map
+    cannot mix clients under `--source all`, which fails closed by design.
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+# No brew/scoop/winget yet (spec §8: package managers are a later phase).

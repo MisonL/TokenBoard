@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { buildSyncInvocation, runWithSyncLock, shouldRunUpgrade } from './sync.mjs'
+import { memoryFileMap, sameMemoryPath } from './coordinator-test-helpers.mjs'
+import { currentProcessStartIdentity } from './process-liveness.mjs'
 
 test('builds Windows sync invocation with semicolon PATH delimiter', () => {
   const invocation = buildSyncInvocation({
@@ -22,7 +27,10 @@ test('builds Windows sync invocation with semicolon PATH delimiter', () => {
   assert.equal(invocation.command, 'C:\\Program Files\\nodejs\\node.exe')
   assert.equal(invocation.shell, false)
   assert.deepEqual(invocation.args, ['--import', 'tsx', 'src/cli.ts', 'sync', '--source', 'all'])
-  assert.equal(invocation.env.PATH, 'C:\\Users\\tokenboard\\.bun\\bin;C:\\Users\\tokenboard\\.local\\bin;C:\\Program Files\\nodejs;C:\\Windows\\System32')
+  assert.equal(
+    invocation.env.PATH,
+    'C:\\Users\\tokenboard\\.bun\\bin;C:\\Users\\tokenboard\\.local\\bin;C:\\Program Files\\nodejs;C:\\Windows\\System32'
+  )
 })
 
 test('builds Windows npm sync invocation through cmd shim', () => {
@@ -45,7 +53,7 @@ test('builds Windows npm sync invocation through cmd shim', () => {
   assert.equal(invocation.shell, false)
 })
 
-test('builds Windows bun sync invocation with bun executable', () => {
+test('builds Windows bun sync invocation with bun executable', async () => {
   const invocation = buildSyncInvocation({
     flags: { mode: 'preview', 'package-manager': 'bun' },
     config: {
@@ -66,7 +74,7 @@ test('builds Windows bun sync invocation with bun executable', () => {
   assert.deepEqual(invocation.args, ['--import', 'tsx', 'src/cli.ts', 'preview', '--source', 'all'])
 })
 
-test('sync runs upgrade by default and supports skip flag', () => {
+test('sync runs upgrade by default and supports skip flag', async () => {
   assert.equal(shouldRunUpgrade({ flags: {}, env: {} }), true)
   assert.equal(shouldRunUpgrade({ flags: { hook: true }, env: {} }), false)
   assert.equal(shouldRunUpgrade({ flags: { 'skip-upgrade': true }, env: {} }), false)
@@ -74,13 +82,13 @@ test('sync runs upgrade by default and supports skip flag', () => {
   assert.equal(shouldRunUpgrade({ flags: {}, env: { TOKENBOARD_AUTO_UPGRADE: '0' } }), false)
 })
 
-test('direct sync waits for the hook coordinator lock before running', () => {
+test('direct sync waits for the hook coordinator lock before running', async () => {
   const fs = memoryLockRuntime({
     '/state/sync.lock': JSON.stringify({ pid: 200, startedAt: '2026-07-17T01:00:00.000Z' })
   })
   let ran = false
 
-  const result = runWithSyncLock({
+  const result = await runWithSyncLock({
     flags: { mode: 'sync' },
     stateDir: '/state',
     runtime: fs.runtime,
@@ -96,7 +104,90 @@ test('direct sync waits for the hook coordinator lock before running', () => {
   assert.equal(fs.files.has('/state/sync.lock'), false)
 })
 
-test('hook child reuses the coordinator lock only with its matching token', () => {
+test('direct sync creates and restricts the state directory', async () => {
+  const fs = memoryLockRuntime()
+
+  assert.equal(
+    await runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => 'complete'
+    }),
+    'complete'
+  )
+
+  assert.deepEqual(fs.directoryOps, [
+    { type: 'mkdir', path: '/state', options: { recursive: true, mode: 0o700 } },
+    { type: 'chmod', path: '/state', mode: 0o700 }
+  ])
+})
+
+test('direct sync reports missing state directory capabilities clearly', async () => {
+  const fs = memoryLockRuntime()
+  delete fs.runtime.chmod
+
+  await assert.rejects(
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => 'unreachable'
+    }),
+    /state directory setup requires mkdir and chmod operations/
+  )
+  assert.deepEqual(fs.directoryOps, [])
+})
+
+test('direct sync refuses a symbolic-link state directory before changing permissions', async () => {
+  const fs = memoryLockRuntime()
+  const directoryOps = fs.directoryOps
+  fs.runtime.lstat = () => ({
+    isSymbolicLink: () => true,
+    isDirectory: () => false
+  })
+
+  await assert.rejects(
+    runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir: '/state',
+      runtime: fs.runtime,
+      run: () => 'unreachable'
+    }),
+    /state directory must not be a symbolic link/
+  )
+  assert.deepEqual(directoryOps, [])
+})
+
+test('direct sync binds the production lock to the current process identity', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'tokenboard-sync-lock-'))
+  const expectedIdentity = currentProcessStartIdentity()
+  let lockIdentity
+
+  try {
+    await runWithSyncLock({
+      flags: { mode: 'sync' },
+      stateDir,
+      run: () => {
+        lockIdentity = JSON.parse(readFileSync(join(stateDir, 'sync.lock'), 'utf8')).processStartIdentity
+        return 'complete'
+      }
+    })
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true })
+  }
+
+  if (expectedIdentity) {
+    assert.equal(lockIdentity, expectedIdentity)
+  } else if (lockIdentity !== undefined) {
+    // See the coordinator test: a busy Windows host may make the first
+    // identity probe unknown even though lock acquisition immediately gets a
+    // valid process-start identity.
+    assert.match(lockIdentity, /^[a-z]+:[^\s]+$/)
+  }
+})
+
+test('hook child reuses the coordinator lock only with its matching token', async () => {
   const originalLock = JSON.stringify({
     pid: 200,
     startedAt: '2026-07-17T01:00:00.000Z',
@@ -104,7 +195,7 @@ test('hook child reuses the coordinator lock only with its matching token', () =
   })
   const fs = memoryLockRuntime({ '/state/sync.lock': originalLock })
 
-  const result = runWithSyncLock({
+  const result = await runWithSyncLock({
     flags: { hook: true, mode: 'sync' },
     env: {
       TOKENBOARD_COORDINATOR_LOCK_HELD: '1',
@@ -119,18 +210,50 @@ test('hook child reuses the coordinator lock only with its matching token', () =
   assert.equal(fs.files.get('/state/sync.lock'), originalLock)
 })
 
-test('hook child cannot bypass a live coordinator lock with only the held marker', () => {
+test('hook child does not resolve a new sync lock identity when reusing the coordinator lock', async () => {
   const fs = memoryLockRuntime({
     '/state/sync.lock': JSON.stringify({
       pid: 200,
       startedAt: '2026-07-17T01:00:00.000Z',
       token: 'coordinator-token'
     })
-  }, { releaseOnSleep: false, lockTimeoutMs: 1 })
+  })
+  let identityResolutions = 0
+  fs.runtime.getProcessStartIdentity = () => {
+    identityResolutions += 1
+    return 'linux:boot-a:201'
+  }
+
+  const result = await runWithSyncLock({
+    flags: { hook: true, mode: 'sync' },
+    env: {
+      TOKENBOARD_COORDINATOR_LOCK_HELD: '1',
+      TOKENBOARD_COORDINATOR_LOCK_TOKEN: 'coordinator-token'
+    },
+    stateDir: '/state',
+    runtime: fs.runtime,
+    run: () => 'hook-complete'
+  })
+
+  assert.equal(result, 'hook-complete')
+  assert.equal(identityResolutions, 0)
+})
+
+test('hook child cannot bypass a live coordinator lock with only the held marker', async () => {
+  const fs = memoryLockRuntime(
+    {
+      '/state/sync.lock': JSON.stringify({
+        pid: 200,
+        startedAt: '2026-07-17T01:00:00.000Z',
+        token: 'coordinator-token'
+      })
+    },
+    { releaseOnSleep: false, lockTimeoutMs: 1 }
+  )
   let ran = false
 
-  assert.throws(
-    () => runWithSyncLock({
+  await assert.rejects(
+    runWithSyncLock({
       flags: { hook: true, mode: 'sync' },
       env: { TOKENBOARD_COORDINATOR_LOCK_HELD: '1' },
       stateDir: '/state',
@@ -145,18 +268,21 @@ test('hook child cannot bypass a live coordinator lock with only the held marker
   assert.equal(ran, false)
 })
 
-test('hook child cannot bypass a live coordinator lock with a mismatched token', () => {
-  const fs = memoryLockRuntime({
-    '/state/sync.lock': JSON.stringify({
-      pid: 200,
-      startedAt: '2026-07-17T01:00:00.000Z',
-      token: 'coordinator-token'
-    })
-  }, { releaseOnSleep: false, lockTimeoutMs: 1 })
+test('hook child cannot bypass a live coordinator lock with a mismatched token', async () => {
+  const fs = memoryLockRuntime(
+    {
+      '/state/sync.lock': JSON.stringify({
+        pid: 200,
+        startedAt: '2026-07-17T01:00:00.000Z',
+        token: 'coordinator-token'
+      })
+    },
+    { releaseOnSleep: false, lockTimeoutMs: 1 }
+  )
   let ran = false
 
-  assert.throws(
-    () => runWithSyncLock({
+  await assert.rejects(
+    runWithSyncLock({
       flags: { hook: true, mode: 'sync' },
       env: {
         TOKENBOARD_COORDINATOR_LOCK_HELD: '1',
@@ -174,14 +300,17 @@ test('hook child cannot bypass a live coordinator lock with a mismatched token',
   assert.equal(ran, false)
 })
 
-test('direct sync fails before collection when the coordinator lock stays busy', () => {
-  const fs = memoryLockRuntime({
-    '/state/sync.lock': JSON.stringify({ pid: 200, startedAt: '2026-07-17T01:00:00.000Z' })
-  }, { releaseOnSleep: false, lockTimeoutMs: 1 })
+test('direct sync fails before collection when the coordinator lock stays busy', async () => {
+  const fs = memoryLockRuntime(
+    {
+      '/state/sync.lock': JSON.stringify({ pid: 200, startedAt: '2026-07-17T01:00:00.000Z' })
+    },
+    { releaseOnSleep: false, lockTimeoutMs: 1 }
+  )
   let ran = false
 
-  assert.throws(
-    () => runWithSyncLock({
+  await assert.rejects(
+    runWithSyncLock({
       flags: { mode: 'sync' },
       stateDir: '/state',
       runtime: fs.runtime,
@@ -196,11 +325,11 @@ test('direct sync fails before collection when the coordinator lock stays busy',
   assert.equal(JSON.parse(fs.files.get('/state/sync.lock')).pid, 200)
 })
 
-test('direct sync exposes a structurally damaged directory lock', () => {
+test('direct sync exposes a structurally damaged directory lock', async () => {
   const fs = memoryLockRuntime()
   const writeFile = fs.runtime.writeFile
   fs.runtime.writeFile = (path, value, options) => {
-    if (path === '/state/sync.lock') {
+    if (sameMemoryPath(path, '/state/sync.lock')) {
       const error = new Error(`EISDIR: ${path}`)
       error.code = 'EISDIR'
       throw error
@@ -209,8 +338,8 @@ test('direct sync exposes a structurally damaged directory lock', () => {
   }
   let ran = false
 
-  assert.throws(
-    () => runWithSyncLock({
+  await assert.rejects(
+    runWithSyncLock({
       flags: { mode: 'sync' },
       stateDir: '/state',
       runtime: fs.runtime,
@@ -224,11 +353,11 @@ test('direct sync exposes a structurally damaged directory lock', () => {
   assert.equal(ran, false)
 })
 
-test('direct sync releases its coordinator lock when collection fails', () => {
+test('direct sync releases its coordinator lock when collection fails', async () => {
   const fs = memoryLockRuntime()
 
-  assert.throws(
-    () => runWithSyncLock({
+  await assert.rejects(
+    runWithSyncLock({
       flags: { mode: 'sync' },
       stateDir: '/state',
       runtime: fs.runtime,
@@ -242,12 +371,12 @@ test('direct sync releases its coordinator lock when collection fails', () => {
   assert.equal(fs.files.has('/state/sync.lock'), false)
 })
 
-test('direct sync preserves the primary error while reporting a lock release failure', () => {
+test('direct sync preserves the primary error while reporting a lock release failure', async () => {
   const fs = memoryLockRuntime()
   const lockPath = '/state/sync.lock'
   const originalRename = fs.runtime.rename
   fs.runtime.rename = (from, to) => {
-    if (from === lockPath) {
+    if (sameMemoryPath(from, lockPath)) {
       const error = new Error('permission denied')
       error.code = 'EACCES'
       throw error
@@ -255,8 +384,8 @@ test('direct sync preserves the primary error while reporting a lock release fai
     return originalRename(from, to)
   }
 
-  assert.throws(
-    () => runWithSyncLock({
+  await assert.rejects(
+    runWithSyncLock({
       flags: { mode: 'sync' },
       stateDir: '/state',
       runtime: fs.runtime,
@@ -266,22 +395,22 @@ test('direct sync preserves the primary error while reporting a lock release fai
     }),
     (error) => {
       assert.equal(error instanceof AggregateError, true)
-      assert.deepEqual(error.errors.map((entry) => entry.message), [
-        'collector failed',
-        'TokenBoard sync lock release failed: permission denied'
-      ])
+      assert.deepEqual(
+        error.errors.map((entry) => entry.message),
+        ['collector failed', 'TokenBoard sync lock release failed: permission denied']
+      )
       return true
     }
   )
   assert.equal(fs.files.has(lockPath), true)
 })
 
-test('direct sync fails visibly when its lock cannot be released after a successful collection', () => {
+test('direct sync fails visibly when its lock cannot be released after a successful collection', async () => {
   const fs = memoryLockRuntime()
   const lockPath = '/state/sync.lock'
   const originalRename = fs.runtime.rename
   fs.runtime.rename = (from, to) => {
-    if (from === lockPath) {
+    if (sameMemoryPath(from, lockPath)) {
       const error = new Error('permission denied')
       error.code = 'EACCES'
       throw error
@@ -289,8 +418,8 @@ test('direct sync fails visibly when its lock cannot be released after a success
     return originalRename(from, to)
   }
 
-  assert.throws(
-    () => runWithSyncLock({
+  await assert.rejects(
+    runWithSyncLock({
       flags: { mode: 'sync' },
       stateDir: '/state',
       runtime: fs.runtime,
@@ -301,14 +430,14 @@ test('direct sync fails visibly when its lock cannot be released after a success
   assert.equal(fs.files.has(lockPath), true)
 })
 
-test('direct sync does not swallow falsy collection errors', () => {
+test('direct sync does not swallow falsy collection errors', async () => {
   for (const thrown of ['', null, undefined]) {
     const fs = memoryLockRuntime()
     let didThrow = false
     let caught
 
     try {
-      runWithSyncLock({
+      await runWithSyncLock({
         flags: { mode: 'sync' },
         stateDir: '/state',
         runtime: fs.runtime,
@@ -327,13 +456,13 @@ test('direct sync does not swallow falsy collection errors', () => {
   }
 })
 
-test('direct sync preserves falsy collection errors when lock release also fails', () => {
+test('direct sync preserves falsy collection errors when lock release also fails', async () => {
   for (const thrown of ['', null, undefined]) {
     const fs = memoryLockRuntime()
     const lockPath = '/state/sync.lock'
     const originalRename = fs.runtime.rename
     fs.runtime.rename = (from, to) => {
-      if (from === lockPath) {
+      if (sameMemoryPath(from, lockPath)) {
         const error = new Error('permission denied')
         error.code = 'EACCES'
         throw error
@@ -341,8 +470,8 @@ test('direct sync preserves falsy collection errors when lock release also fails
       return originalRename(from, to)
     }
 
-    assert.throws(
-      () => runWithSyncLock({
+    await assert.rejects(
+      runWithSyncLock({
         flags: { mode: 'sync' },
         stateDir: '/state',
         runtime: fs.runtime,
@@ -366,11 +495,17 @@ test('direct sync preserves falsy collection errors when lock release also fails
 })
 
 function memoryLockRuntime(initial = {}, options = {}) {
-  const files = new Map(Object.entries(initial))
+  const files = memoryFileMap(initial)
+  const directoryOps = []
   let now = Date.parse('2026-07-17T01:00:00.000Z')
   const runtime = {
     lockTimeoutMs: options.lockTimeoutMs ?? 60_000,
-    mkdir: () => {},
+    chmod: (path, mode) => {
+      directoryOps.push({ type: 'chmod', path, mode })
+    },
+    mkdir: (path, options) => {
+      directoryOps.push({ type: 'mkdir', path, options })
+    },
     now: () => now,
     process: {
       pid: 201,
@@ -430,5 +565,5 @@ function memoryLockRuntime(initial = {}, options = {}) {
       files.set(path, String(value))
     }
   }
-  return { files, runtime }
+  return { directoryOps, files, runtime }
 }

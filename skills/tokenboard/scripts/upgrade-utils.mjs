@@ -1,5 +1,52 @@
 import { resolve, win32 as windowsPath } from 'node:path'
-export { errorMessage } from './error-message.mjs'
+import { cpSync, renameSync, rmSync, statSync } from 'node:fs'
+import { errorMessage } from './error-message.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
+export { errorMessage }
+
+// A scheduled upgrade's stdout/stderr are the log files themselves, so a child process that
+// inherits them writes straight into a file that outlives the terminal. Capture instead and
+// forward to the same stream through the credential redaction the parent's own log lines go
+// through, so a git error echoing `https://user:token@host/…` does not land in the log with
+// the credential intact. stdout is only forwarded where it was user-facing before; capture-only
+// callers (`git-ensure-default-branch`) keep using that output as data.
+const childOutputMaxBuffer = 64 * 1024 * 1024
+
+function spawnRedacted(runtime, command, args, { forwardStdout = true, stdio, ...options } = {}) {
+  const result = runtime.spawn(command, args, {
+    ...options,
+    // stdin stays on the parent's stream by default, but a capture-only caller reads the
+    // child's stdout as data: a git credential helper that prompts on stdin would otherwise
+    // read the operator's terminal and hang instead of failing on EOF.
+    stdio: stdio ?? ['inherit', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    maxBuffer: childOutputMaxBuffer
+  })
+  if (forwardStdout) forwardCapturedOutput(process.stdout, result.stdout)
+  forwardCapturedOutput(process.stderr, result.stderr)
+  // A spawn that fails outright (ENOENT) or is killed for exceeding `maxBuffer` (ENOBUFS)
+  // reports `status: null`; without this the caller would report a bare "exit code 1" and the
+  // real cause — and the diagnostic output, truncated at `childOutputMaxBuffer` — would be lost.
+  if (result.error || result.signal) {
+    throw spawnFailure(command, result)
+  }
+  return result
+}
+
+function spawnFailure(command, result) {
+  if (result.error?.code === 'ENOBUFS') {
+    return new Error(`${command} produced more than ${childOutputMaxBuffer} bytes of output and was stopped`)
+  }
+  if (result.error) {
+    return new Error(`${command} failed to start: ${errorMessage(result.error)}`)
+  }
+  return new Error(`${command} was terminated by ${result.signal}`)
+}
+
+function forwardCapturedOutput(stream, text) {
+  const message = String(text ?? '').replace(/\r?\n$/, '')
+  if (message) stream.write(`${redactUrlCredentials(message)}\n`)
+}
 
 export function runStep(step, runtime) {
   if (step.command === 'remove') {
@@ -9,6 +56,19 @@ export function runStep(step, runtime) {
 
   if (step.command === 'copy') {
     runtime.copy(step.args[0], step.args[1], step.options)
+    return
+  }
+
+  if (step.command === 'replace') {
+    replaceDirectory({
+      replacementDir: step.args[0],
+      collectorDir: step.args[1],
+      backupDir: step.args[2],
+      rename: runtime.rename,
+      copy: runtime.copy,
+      remove: runtime.remove,
+      log: runtime.log
+    })
     return
   }
 
@@ -22,13 +82,92 @@ export function runStep(step, runtime) {
     return
   }
 
-  const result = runtime.spawn(step.command, step.args, {
-    stdio: 'inherit',
+  const result = spawnRedacted(runtime, step.command, step.args, {
     shell: runtime.platform === 'win32' && step.command.endsWith('.cmd'),
     ...step.options
   })
   if (result.status !== 0) {
     throw new Error(`${step.command} failed with exit code ${result.status ?? 1}`)
+  }
+}
+
+export function movePath(source, destination, { rename = renameSync, copy = cpSync, remove = rmSync } = {}) {
+  try {
+    rename(source, destination)
+    return
+  } catch (error) {
+    if (!error || error.code !== 'EXDEV') throw error
+  }
+
+  let destinationCreated = false
+  try {
+    destinationCreated = true
+    copy(source, destination, { recursive: true, force: true, verbatimSymlinks: true })
+    remove(source, { recursive: true, force: true })
+  } catch (error) {
+    if (destinationCreated) {
+      try {
+        remove(destination, { recursive: true, force: true })
+      } catch (cleanupError) {
+        throw new Error(`${errorMessage(error)}; copied destination cleanup failed: ${errorMessage(cleanupError)}`, {
+          cause: error
+        })
+      }
+    }
+    throw error
+  }
+}
+
+export function replaceDirectory({
+  replacementDir,
+  collectorDir,
+  backupDir,
+  rename = renameSync,
+  copy = cpSync,
+  remove = rmSync,
+  log = () => {}
+}) {
+  let backupCreated = false
+  let replacementInstalled = false
+
+  try {
+    try {
+      movePath(collectorDir, backupDir, { rename, copy, remove })
+      backupCreated = true
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error
+    }
+
+    movePath(replacementDir, collectorDir, { rename, copy, remove })
+    replacementInstalled = true
+  } catch (error) {
+    const rollbackErrors = []
+    if (replacementInstalled || backupCreated) {
+      try {
+        remove(collectorDir, { recursive: true, force: true })
+      } catch (cleanupError) {
+        rollbackErrors.push(`failed to remove incomplete collector: ${errorMessage(cleanupError)}`)
+      }
+    }
+    if (backupCreated) {
+      try {
+        movePath(backupDir, collectorDir, { rename, copy, remove })
+      } catch (restoreError) {
+        rollbackErrors.push(`existing collector restore failed: ${errorMessage(restoreError)}`)
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new Error(`${errorMessage(error)}; ${rollbackErrors.join('; ')}`, { cause: error })
+    }
+    throw error
+  }
+
+  if (backupCreated) {
+    try {
+      remove(backupDir, { recursive: true, force: true })
+    } catch (cleanupError) {
+      log(`TokenBoard collector upgraded, but old checkout cleanup failed: ${errorMessage(cleanupError)}`)
+    }
   }
 }
 
@@ -38,11 +177,26 @@ export function escapePowerShellSingleQuoted(value) {
 
 export function samePath(leftPath, rightPath, platform = process.platform) {
   const pathApi = platform === 'win32' ? windowsPath : { resolve }
-  const normalize = (value) => {
-    const resolved = pathApi.resolve(String(value))
-    return platform === 'win32' ? resolved.toLowerCase() : resolved
+  const left = pathApi.resolve(String(leftPath))
+  const right = pathApi.resolve(String(rightPath))
+  if (left === right) return true
+
+  // Existing paths can be compared by filesystem identity. This handles
+  // symlinks and macOS volumes whose case-sensitivity differs from the host
+  // default without treating two distinct case-sensitive paths as aliases.
+  try {
+    const leftStat = statSync(left)
+    const rightStat = statSync(right)
+    return leftStat.dev === rightStat.dev && leftStat.ino === rightStat.ino
+  } catch {
+    // A path which is about to be created may not exist yet. Windows and the
+    // default macOS filesystem are case-insensitive, so retain a conservative
+    // lexical fallback for those platforms to protect the config directory.
+    if (platform === 'win32' || platform === 'darwin') {
+      return left.toLowerCase() === right.toLowerCase()
+    }
+    return false
   }
-  return normalize(leftPath) === normalize(rightPath)
 }
 
 export function corepackCommand(platform) {
@@ -66,17 +220,23 @@ export function buildFetchAndCheckoutRefSteps({ dir, repoRef }) {
   const normalizedRef = normalizeRepoRef(repoRef)
   if (normalizedRef.kind === 'branch') {
     return [
-      { command: 'git', args: ['fetch', '--depth', '1', 'origin', `refs/heads/${normalizedRef.name}`], options: { cwd: dir } },
+      {
+        command: 'git',
+        args: ['fetch', '--depth', '1', 'origin', `refs/heads/${normalizedRef.name}`],
+        options: { cwd: dir }
+      },
       { command: 'git', args: ['checkout', '-B', normalizedRef.name, 'FETCH_HEAD'], options: { cwd: dir } },
       { command: 'git', args: ['config', `branch.${normalizedRef.name}.remote`, 'origin'], options: { cwd: dir } },
-      { command: 'git', args: ['config', `branch.${normalizedRef.name}.merge`, `refs/heads/${normalizedRef.name}`], options: { cwd: dir } }
+      {
+        command: 'git',
+        args: ['config', `branch.${normalizedRef.name}.merge`, `refs/heads/${normalizedRef.name}`],
+        options: { cwd: dir }
+      }
     ]
   }
 
   if (normalizedRef.kind === 'branch-or-ref') {
-    return [
-      { command: 'git-fetch-branch-or-ref', args: [normalizedRef.name], options: { cwd: dir } }
-    ]
+    return [{ command: 'git-fetch-branch-or-ref', args: [normalizedRef.name], options: { cwd: dir } }]
   }
 
   return [
@@ -97,7 +257,11 @@ function ensureDefaultBranch(step, runtime) {
   fetchOriginDefaultBranch(runtime, defaultBranch, step.options)
   runGit(runtime, ['remote', 'set-head', 'origin', '--auto'], step.options)
 
-  const remoteBranch = runGitCapture(runtime, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], step.options).trim()
+  const remoteBranch = runGitCapture(
+    runtime,
+    ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+    step.options
+  ).trim()
   if (!remoteBranch.startsWith('origin/')) {
     throw new Error(`Unable to resolve origin default branch: ${remoteBranch || '(empty)'}`)
   }
@@ -112,9 +276,7 @@ function ensureDefaultBranch(step, runtime) {
 
 function resolveOriginDefaultBranch(runtime, options) {
   const output = runGitCapture(runtime, ['ls-remote', '--symref', 'origin', 'HEAD'], options)
-  const headLine = output
-    .split(/\r?\n/)
-    .find((line) => line.startsWith('ref: refs/heads/') && line.endsWith('\tHEAD'))
+  const headLine = output.split(/\r?\n/).find((line) => line.startsWith('ref: refs/heads/') && line.endsWith('\tHEAD'))
   if (!headLine) {
     throw new Error('Unable to resolve origin default branch from remote HEAD')
   }
@@ -164,21 +326,16 @@ function configureBranchTracking(runtime, branchName, options) {
 }
 
 function runGit(runtime, args, options) {
-  const result = runtime.spawn('git', args, {
-    stdio: 'inherit',
-    shell: false,
-    ...options
-  })
+  const result = spawnRedacted(runtime, 'git', args, options)
   if (result.status !== 0) {
     throw new Error(`git failed with exit code ${result.status ?? 1}`)
   }
 }
 
 function runGitCapture(runtime, args, options) {
-  const result = runtime.spawn('git', args, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'inherit'],
-    shell: false,
+  const result = spawnRedacted(runtime, 'git', args, {
+    forwardStdout: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
     ...options
   })
   if (result.status !== 0) {

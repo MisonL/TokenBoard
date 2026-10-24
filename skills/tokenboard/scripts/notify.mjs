@@ -4,15 +4,26 @@ import { spawn, spawnSync } from 'node:child_process'
 import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 import { configDir, parseArgs, readConfig } from './config.mjs'
+import { parseScheduleTimes } from './schedule.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { coordinatedSync } from './coordinator.mjs'
 import { errorMessage } from './error-message.mjs'
 import { currentProcessStartIdentity, probeProcessLiveness, probeProcessStartIdentity } from './process-liveness.mjs'
 
 export const defaultNotifyCooldownMs = 15 * 60_000
 const minNotifyCooldownMs = 60_000
-const maxNotifyCooldownMs = 60 * 60_000
+// Two hours. A hook-triggered ccusage scan costs 4.6-7.6 GB of resident memory,
+// and at a one-hour cap a busy afternoon still produced five full scans; the
+// ceiling is what an operator can set, not a recommended value.
+const maxNotifyCooldownMs = 2 * 60 * 60_000
 const maxTrailingLockAcquireAttempts = 3
+// A trigger that lands within half an hour of a scheduled sync is skipped: the
+// scheduled run collects the same usage minutes later, and the queued signal
+// makes sure the source is not dropped.
+export const defaultScheduleWindowMs = 30 * 60_000
 
 export function runNotify(options = {}) {
   const flags = options.flags || parseArgs(options.argv || process.argv.slice(2))
@@ -23,7 +34,8 @@ export function runNotify(options = {}) {
   const trigger = { kind: 'notify', source }
   return coordinatedSync(trigger, {
     stateDir,
-    cooldownMs: readNotifyCooldownMs(options.cooldownMs, env),
+    cooldownMs: readNotifyCooldownMs(options.cooldownMs, env, options.configCooldownMs),
+    scheduleWindow: readNotifyScheduleWindow(options.scheduleTimes, env, options.configScheduleTimes),
     version: options.version || 'unknown',
     now: options.now,
     mkdir: options.mkdir,
@@ -36,11 +48,19 @@ export function runNotify(options = {}) {
     unlink: options.unlink,
     sleep: options.sleep,
     process: options.process,
+    processStartIdentity: options.processStartIdentity,
+    readProcessStartIdentity: options.readProcessStartIdentity,
+    runProcessIdentity: options.runProcessIdentity,
+    platform: options.platform,
+    nodeVersion: options.nodeVersion,
+    runTasklist: options.runTasklist,
     trailingProcess: options.trailingProcess ?? hasTrailingDelay(env),
-    scheduleTrailing: options.scheduleTrailing || ((trigger, delayMs) =>
-      scheduleTrailingNotify(trigger, delayMs, { ...options, env, configDir: configDirectory })
-    ),
-    executeSync: options.executeSync || ((trigger, lockToken) => executeTokenBoardSync(trigger.source, { ...options, env, lockToken }))
+    scheduleTrailing:
+      options.scheduleTrailing ||
+      ((trigger, delayMs) => scheduleTrailingNotify(trigger, delayMs, { ...options, env, configDir: configDirectory })),
+    executeSync:
+      options.executeSync ||
+      ((trigger, lockToken) => executeTokenBoardSync(trigger.source, { ...options, env, lockToken }))
   })
 }
 
@@ -68,9 +88,43 @@ export function executeTokenBoardSync(source, options = {}) {
     throw result.error
   }
   if (result.status !== 0) {
-    throw new Error(formatSyncFailure(result))
+    const failure = formatSyncFailure(result)
+    const error = new Error(failure.message)
+    if (failure.diagnostics) error.diagnostics = failure.diagnostics
+    throw error
   }
-  return { source, exitCode: 0 }
+  const timings = parseSyncTimings(result.stdout)
+  return timings ? { source, exitCode: 0, timings } : { source, exitCode: 0 }
+}
+
+// The collector prints per-phase durations next to its upload result. They are
+// the only attribution a hook run gets — it writes no logs of its own — so the
+// coordinator forwards them into the run record. A child that printed anything
+// unexpected still counts as a successful sync; timings are additive, never
+// load-bearing.
+const syncTimingKeyPattern = /^[A-Za-z][A-Za-z0-9]{0,31}$/
+const maxSyncTimingPhases = 16
+
+export function parseSyncTimings(stdout) {
+  if (typeof stdout !== 'string' || stdout.length === 0) return undefined
+  let parsed
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+  const raw = parsed.timings
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const timings = {}
+  for (const [name, value] of Object.entries(raw)) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) continue
+    if (!syncTimingKeyPattern.test(name)) continue
+    timings[name] = Math.round(value)
+  }
+  const names = Object.keys(timings)
+  if (names.length === 0) return undefined
+  return Object.fromEntries(names.slice(0, maxSyncTimingPhases).map((name) => [name, timings[name]]))
 }
 
 function scheduleTrailingNotify(trigger, delayMs, options = {}) {
@@ -84,35 +138,38 @@ function scheduleTrailingNotify(trigger, delayMs, options = {}) {
   const nodePath = options.nodePath || process.execPath
   const scriptPath = options.notifyScriptPath || fileURLToPath(import.meta.url)
   try {
-    const child = spawnProcess(
-      nodePath,
-      [scriptPath, '--source', trigger.source],
-      {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        env: {
-          ...runtime.env,
-          TOKENBOARD_CONFIG_DIR: runtime.configDir,
-          TOKENBOARD_STATE_DIR: runtime.stateDir,
-          TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: String(delayMs),
-          TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: lockPath,
-          TOKENBOARD_NOTIFY_TRAILING_LOCK_TOKEN: lock.ownerToken,
-          TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH: '',
-          TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN: '',
-          TOKENBOARD_NOTIFY_DISPATCH_WORKER_PATH: ''
-        }
+    const child = spawnProcess(nodePath, [scriptPath, '--source', trigger.source], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: {
+        ...runtime.env,
+        TOKENBOARD_CONFIG_DIR: runtime.configDir,
+        TOKENBOARD_STATE_DIR: runtime.stateDir,
+        TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: String(delayMs),
+        TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: lockPath,
+        TOKENBOARD_NOTIFY_TRAILING_LOCK_TOKEN: lock.ownerToken,
+        TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH: '',
+        TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN: '',
+        TOKENBOARD_NOTIFY_DISPATCH_WORKER_PATH: ''
       }
-    )
+    })
+    attachTrailingSpawnErrorHandler(child, lockPath, lock.ownerToken, runtime, options)
     if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
       throw new Error('TokenBoard trailing notifier did not provide a valid process id')
     }
-    publishTrailingLock(lockPath, {
-      pid: child.pid,
-      startedAt: new Date(runtime.now()).toISOString(),
-      token: lock.ownerToken,
-      processStartIdentity: processStartIdentityForPid(child.pid, runtime)
-    }, runtime)
+    const childStartedAt = new Date(runtime.now()).toISOString()
+    publishTrailingLock(
+      lockPath,
+      {
+        pid: child.pid,
+        startedAt: childStartedAt,
+        token: lock.ownerToken,
+        identityProbeStartedAt: childStartedAt,
+        processStartIdentity: processStartIdentityForPid(child.pid, runtime)
+      },
+      runtime
+    )
     child.unref?.()
     return true
   } catch (error) {
@@ -123,6 +180,54 @@ function scheduleTrailingNotify(trigger, delayMs, options = {}) {
     }
     throw error
   }
+}
+
+function attachTrailingSpawnErrorHandler(child, lockPath, ownerToken, runtime, options) {
+  if (typeof child?.once !== 'function' && typeof child?.on !== 'function') return
+
+  let spawned = false
+  let handled = false
+  const handleError = (error) => {
+    if (spawned || handled) return
+    handled = true
+    let cleanupError
+    try {
+      const childPid = Number.isSafeInteger(child.pid) && child.pid > 0 ? child.pid : runtime.process.pid
+      releaseTrailingLock(lockPath, {
+        ...runtime,
+        process: { ...runtime.process, pid: childPid },
+        ownerToken
+      })
+    } catch (error) {
+      cleanupError = error
+    }
+
+    const reportError = typeof options.error === 'function' ? options.error : console.error
+    try {
+      reportError(
+        `TokenBoard trailing notifier spawn failed: ${errorMessage(error)}` +
+          (cleanupError ? `; trailing lock cleanup failed: ${errorMessage(cleanupError)}` : '')
+      )
+    } catch {}
+  }
+
+  if (typeof child.on === 'function') {
+    child.on('spawn', () => {
+      spawned = true
+    })
+    child.on('error', handleError)
+    return
+  }
+  child.once('spawn', () => {
+    spawned = true
+  })
+  const listenForError = () => {
+    child.once('error', (error) => {
+      handleError(error)
+      listenForError()
+    })
+  }
+  listenForError()
 }
 
 function readSource(value) {
@@ -160,6 +265,8 @@ export async function runNotifyCli(options = {}) {
           configDir: configuredDir,
           stateDir: env.TOKENBOARD_STATE_DIR || configuredDir,
           env,
+          configCooldownMs: config.notifyCooldownMs,
+          configScheduleTimes: config.scheduleTimes,
           trailingProcess: Boolean(trailingLockPath) || delayMs > 0,
           version: config.updatedAt || config.createdAt || 'unknown'
         })
@@ -194,7 +301,10 @@ export async function runNotifyCli(options = {}) {
   return exitCode
 }
 
-export function readNotifyCooldownMs(explicitValue, env = process.env) {
+// Cooldown precedence: explicit (test injection) > env (hook hosts cannot set it reliably)
+// > config.json `notifyCooldownMs` (what an operator can actually set) > default. All three
+// configured layers share the same format and range validation.
+export function readNotifyCooldownMs(explicitValue, env = process.env, configValue) {
   if (explicitValue !== undefined) {
     if (!Number.isSafeInteger(explicitValue) || explicitValue < 0) {
       throw new Error('TokenBoard notify cooldown must be a nonnegative integer')
@@ -203,14 +313,46 @@ export function readNotifyCooldownMs(explicitValue, env = process.env) {
   }
 
   const configuredValue = env.TOKENBOARD_NOTIFY_COOLDOWN_MS
-  if (configuredValue === undefined || configuredValue === '') return defaultNotifyCooldownMs
-  if (!/^[1-9][0-9]*$/.test(configuredValue)) {
-    throw new Error('TOKENBOARD_NOTIFY_COOLDOWN_MS must be an integer number of milliseconds')
+  if (configuredValue !== undefined && configuredValue !== '') {
+    return parseCooldownMs(configuredValue, 'TOKENBOARD_NOTIFY_COOLDOWN_MS must be')
   }
+  if (configValue !== undefined && configValue !== '') {
+    return parseCooldownMs(configValue, 'config notifyCooldownMs must be')
+  }
+  return defaultNotifyCooldownMs
+}
 
-  const cooldownMs = Number(configuredValue)
+// The set of scheduled sync times the coordinator should avoid. Precedence
+// mirrors the cooldown: explicit (test injection) > env > config.json
+// `scheduleTimes` (what `setup.mjs --schedule-times` writes) > none. An absent
+// schedule disables the window entirely rather than guessing a default, so a
+// machine with no schedule never has hook runs suppressed.
+export function readNotifyScheduleWindow(
+  explicitTimes,
+  env = process.env,
+  configValue,
+  windowMs = defaultScheduleWindowMs
+) {
+  const raw = explicitTimes ?? env.TOKENBOARD_SCHEDULE_TIMES ?? configValue
+  if (raw === undefined || raw === null || raw === '') return undefined
+  const times = Array.isArray(raw) ? raw : parseScheduleTimes(raw)
+  if (times.length === 0) return undefined
+  return { times, windowMs }
+}
+
+function parseCooldownMs(value, errorPrefix) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(`${errorPrefix} an integer number of milliseconds`)
+    }
+  } else {
+    if (!/^[1-9][0-9]*$/.test(value)) {
+      throw new Error(`${errorPrefix} an integer number of milliseconds`)
+    }
+  }
+  const cooldownMs = Number(value)
   if (!Number.isSafeInteger(cooldownMs) || cooldownMs < minNotifyCooldownMs || cooldownMs > maxNotifyCooldownMs) {
-    throw new Error(`TOKENBOARD_NOTIFY_COOLDOWN_MS must be between ${minNotifyCooldownMs} and ${maxNotifyCooldownMs} milliseconds`)
+    throw new Error(`${errorPrefix} between ${minNotifyCooldownMs} and ${maxNotifyCooldownMs} milliseconds`)
   }
   return cooldownMs
 }
@@ -237,13 +379,49 @@ function trailingContinuationDelay(result, lockPath, runtime = trailingRuntime({
   return Number.isFinite(delayMs) && delayMs > 0 ? delayMs : null
 }
 
+// Expected diagnostics that a provider prints on every run (pricing fallbacks, bounded-scan
+// skips). They are noise around the real failure; the terminal line is the first stderr
+// line that does not start with one of these.
+// Broad `^Skipping ` would also swallow real warnings (the Codex subagent-usage correction
+// lines report usage that silently fell out of the sync), so only the known per-source
+// unavailability skips count as noise. The pricing prefix must cover both of the collector's
+// spellings: the fallback paths print `TokenBoard model pricing: ...` (colon) and the
+// unpriced-model summary prints `TokenBoard model pricing unavailable ...` (space).
+const expectedDiagnosticPrefixes = [
+  /^TokenBoard model pricing[: ]/,
+  /^Skipped \d+ /,
+  /^Skipping (unavailable )?\S+ source: /
+]
+
+function splitChildOutput(result) {
+  const raw = Array.isArray(result.stderr) ? result.stderr.join('') : String(result.stderr || '')
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
 function formatSyncFailure(result) {
   const exitCode = result.status ?? 1
-  const stderr = normalizeChildOutput(result.stderr)
-  if (!stderr) {
-    return `TokenBoard hook sync failed with exit code ${exitCode}`
+  // The child's stderr is echoed into the terminal (and may be pasted into a chat or a log),
+  // so it must go through the same redaction every other output path uses. A provider or
+  // `ccusage` error can echo `tb_upload_…` or `https://user:token@host/…`; without this the
+  // secret lands in the scrollback intact.
+  const lines = splitChildOutput(result).map((line) => redactUrlCredentials(line))
+  const isNoise = (line) => expectedDiagnosticPrefixes.some((prefix) => prefix.test(line))
+  const terminal = lines.find((line) => !isNoise(line))
+  // Everything that is not the terminal line still belongs in the run log — including
+  // substantive non-noise warnings that merely lost the first-line slot.
+  const diagnostics = lines
+    .filter((line) => line !== terminal)
+    .join('\n')
+    .slice(0, 8192)
+  return {
+    message: terminal
+      ? `TokenBoard hook sync failed with exit code ${exitCode}: ${terminal}`
+      : `TokenBoard hook sync failed with exit code ${exitCode}`,
+    diagnostics
   }
-  return `TokenBoard hook sync failed with exit code ${exitCode}: ${stderr}`
 }
 
 function normalizeChildOutput(value) {
@@ -254,7 +432,9 @@ function normalizeChildOutput(value) {
 function trailingRuntime(options = {}) {
   const env = options.env || process.env
   const stateDir = options.stateDir || env.TOKENBOARD_STATE_DIR || configDir()
-  const hasCustomFileOps = Boolean(options.readFile || options.writeFile || options.unlink || options.rename || options.link)
+  const hasCustomFileOps = Boolean(
+    options.readFile || options.writeFile || options.unlink || options.rename || options.link
+  )
   const processValue = options.process || process
   return {
     env,
@@ -287,11 +467,15 @@ function acquireTrailingLock(lockPath, runtime) {
     runtime.ownerToken = ownerToken
     const startedAt = new Date(runtime.now()).toISOString()
     try {
-      runtime.writeFile(lockPath, JSON.stringify({
-        pid: runtime.process.pid,
-        startedAt,
-        token: ownerToken
-      }), { flag: 'wx' })
+      runtime.writeFile(
+        lockPath,
+        JSON.stringify({
+          pid: runtime.process.pid,
+          startedAt,
+          token: ownerToken
+        }),
+        { flag: 'wx' }
+      )
     } catch (error) {
       if (error.code !== 'EEXIST') throw error
       const record = readTrailingLockRecord(lockPath, runtime)
@@ -308,16 +492,19 @@ function acquireTrailingLock(lockPath, runtime) {
       continue
     }
 
-    const processStartIdentity = typeof runtime.rename === 'function'
-      ? currentProcessStartIdentityForRuntime(runtime)
-      : undefined
+    const processStartIdentity =
+      typeof runtime.rename === 'function' ? currentProcessStartIdentityForRuntime(runtime) : undefined
     if (processStartIdentity) {
-      publishTrailingLock(lockPath, {
-        pid: runtime.process.pid,
-        startedAt,
-        token: ownerToken,
-        processStartIdentity: { status: 'known', value: processStartIdentity }
-      }, runtime)
+      publishTrailingLock(
+        lockPath,
+        {
+          pid: runtime.process.pid,
+          startedAt,
+          token: ownerToken,
+          processStartIdentity: { status: 'known', value: processStartIdentity }
+        },
+        runtime
+      )
     }
     return { acquired: true, ownerToken }
   }
@@ -332,14 +519,19 @@ function publishTrailingLock(lockPath, record, runtime) {
 
   const tempPath = trailingPublishPath(lockPath, runtime)
   try {
-    runtime.writeFile(tempPath, JSON.stringify({
-      pid: record.pid,
-      startedAt: record.startedAt,
-      ...(record.token ? { token: record.token } : {}),
-      ...(record.processStartIdentity?.status === 'known'
-        ? { processStartIdentity: record.processStartIdentity.value }
-        : {})
-    }), { flag: 'wx', mode: 0o600 })
+    runtime.writeFile(
+      tempPath,
+      JSON.stringify({
+        pid: record.pid,
+        startedAt: record.startedAt,
+        ...(record.token ? { token: record.token } : {}),
+        ...(record.identityProbeStartedAt ? { identityProbeStartedAt: record.identityProbeStartedAt } : {}),
+        ...(record.processStartIdentity?.status === 'known'
+          ? { processStartIdentity: record.processStartIdentity.value }
+          : {})
+      }),
+      { flag: 'wx', mode: 0o600 }
+    )
     runtime.rename(tempPath, lockPath)
   } catch (error) {
     try {
@@ -354,9 +546,8 @@ function publishTrailingLock(lockPath, record, runtime) {
 }
 
 function isTrailingLockOwnedByCurrentProcess(lockPathOrRecord, runtime) {
-  const record = typeof lockPathOrRecord === 'string'
-    ? readTrailingLockRecord(lockPathOrRecord, runtime)
-    : lockPathOrRecord
+  const record =
+    typeof lockPathOrRecord === 'string' ? readTrailingLockRecord(lockPathOrRecord, runtime) : lockPathOrRecord
   if (!record || record.pid !== runtime.process.pid) return false
   if (record.token) {
     return typeof runtime.ownerToken === 'string' && runtime.ownerToken === record.token
@@ -391,12 +582,14 @@ function isTrailingLockStale(record, runtime) {
     return false
   }
   if (pid === runtime.process.pid) return false
-  return probeProcessLiveness(pid, {
-    platform: runtime.platform,
-    nodeVersion: runtime.nodeVersion,
-    kill: runtime.process.kill?.bind(runtime.process),
-    runTasklist: runtime.runTasklist
-  }) === 'dead'
+  return (
+    probeProcessLiveness(pid, {
+      platform: runtime.platform,
+      nodeVersion: runtime.nodeVersion,
+      kill: runtime.process.kill?.bind(runtime.process),
+      runTasklist: runtime.runTasklist
+    }) === 'dead'
+  )
 }
 
 function currentProcessStartIdentityForRuntime(runtime) {
@@ -421,8 +614,12 @@ function processStartIdentityForPid(pid, runtime) {
   if (pid === runtime.process.pid && typeof runtime.processStartIdentity === 'string' && runtime.processStartIdentity) {
     return { status: 'known', value: runtime.processStartIdentity }
   }
-  if (!runtime.isRealProcess && pid !== runtime.process.pid &&
-    !runtime.readProcessStartIdentity && !runtime.runProcessIdentity) {
+  if (
+    !runtime.isRealProcess &&
+    pid !== runtime.process.pid &&
+    !runtime.readProcessStartIdentity &&
+    !runtime.runProcessIdentity
+  ) {
     return { status: 'unknown' }
   }
   return probeProcessStartIdentity(pid, {
@@ -495,16 +692,23 @@ function readTrailingLockRecord(lockPath, runtime) {
 function parseTrailingLockRecord(raw) {
   try {
     const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object') return { pid: null, token: null, processStartIdentity: null }
+    if (!parsed || typeof parsed !== 'object')
+      return { pid: null, token: null, identityProbeStartedAt: null, processStartIdentity: null }
     return {
       pid: Number.isSafeInteger(parsed.pid) && parsed.pid > 0 ? parsed.pid : null,
       token: typeof parsed.token === 'string' && parsed.token ? parsed.token : null,
-      processStartIdentity: typeof parsed.processStartIdentity === 'string' && parsed.processStartIdentity
-        ? parsed.processStartIdentity
-        : null
+      identityProbeStartedAt:
+        typeof parsed.identityProbeStartedAt === 'string' && parsed.identityProbeStartedAt
+          ? parsed.identityProbeStartedAt
+          : null,
+      processStartIdentity:
+        typeof parsed.processStartIdentity === 'string' && parsed.processStartIdentity
+          ? parsed.processStartIdentity
+          : null
     }
   } catch (error) {
-    if (error instanceof SyntaxError) return { pid: null, token: null, processStartIdentity: null }
+    if (error instanceof SyntaxError)
+      return { pid: null, token: null, identityProbeStartedAt: null, processStartIdentity: null }
     throw error
   }
 }
@@ -527,20 +731,77 @@ export function claimDispatchLock(lockPath, token, options = {}) {
   const pid = options.pid || process.pid
   const now = options.now || Date.now
   const workerPath = dispatchWorkerPath(lockPath, options.workerPath)
+  let lockOwned = false
   try {
     if (!hasDispatchLockToken(lockPath, token, readFile)) return false
-    writeFile(workerPath, JSON.stringify({
+    lockOwned = true
+    const workerStartedAt = new Date(now()).toISOString()
+    const worker = {
       token,
       pid,
-      startedAt: new Date(now()).toISOString()
-    }), { encoding: 'utf8', mode: 0o600 })
+      startedAt: workerStartedAt,
+      identityProbeStartedAt: workerStartedAt,
+      ...(typeof options.processStartIdentity === 'string' && options.processStartIdentity
+        ? { processStartIdentity: options.processStartIdentity }
+        : {})
+    }
+    writeFile(workerPath, JSON.stringify(worker), { encoding: 'utf8', mode: 0o600 })
+    const processStartIdentity =
+      typeof options.processStartIdentity === 'string' && options.processStartIdentity
+        ? options.processStartIdentity
+        : pid === process.pid
+          ? currentProcessStartIdentity({
+              pid,
+              platform: options.platform,
+              nodeVersion: options.nodeVersion,
+              readProcessStartIdentity: options.readProcessStartIdentity,
+              runProcessIdentity: options.runProcessIdentity,
+              readFile,
+              kill: (options.kill || process.kill).bind(process)
+            })
+          : undefined
+    if (processStartIdentity) {
+      const currentWorker = JSON.parse(readFile(workerPath))
+      if (currentWorker && currentWorker.token === token && currentWorker.pid === pid) {
+        writeFile(workerPath, JSON.stringify({ ...currentWorker, processStartIdentity }), {
+          encoding: 'utf8',
+          mode: 0o600
+        })
+      }
+    }
     if (hasDispatchLockToken(lockPath, token, readFile)) return true
     removeDispatchWorker(workerPath, token, options)
     return false
   } catch (error) {
+    if (!lockOwned) {
+      if (error.code === 'ENOENT') return false
+      throw error
+    }
+    let cleanupError
+    try {
+      releaseDispatchLock(lockPath, token, options)
+    } catch (error) {
+      cleanupError = error
+    }
+    if (cleanupError) {
+      throw aggregateDispatchClaimErrors(error, cleanupError)
+    }
     if (error.code === 'ENOENT') return false
     throw error
   }
+}
+
+function aggregateDispatchClaimErrors(primaryError, cleanupError) {
+  const aggregate = new AggregateError(
+    [primaryError, cleanupError],
+    `${errorMessage(primaryError)}; dispatch lock cleanup failed: ${errorMessage(cleanupError)}`
+  )
+  if (primaryError?.code && primaryError.code !== 'ENOENT') {
+    aggregate.code = primaryError.code
+  } else if (cleanupError?.code && cleanupError.code !== 'ENOENT') {
+    aggregate.code = cleanupError.code
+  }
+  return aggregate
 }
 
 export function releaseDispatchLock(lockPath, token, options = {}) {
@@ -639,6 +900,10 @@ function dispatchQuarantinePath(path) {
   return `${path}.release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.exitCode = await runNotifyCli()
+if (isMainModule(import.meta.url)) {
+  if (printHelpIfRequested(process.argv.slice(2), 'Usage: notify.mjs --source codex|claude-code')) {
+    process.exitCode = 0
+  } else {
+    process.exitCode = await runNotifyCli()
+  }
 }

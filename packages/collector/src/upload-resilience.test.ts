@@ -134,12 +134,7 @@ describe('uploadSnapshots resilience', () => {
       await expect(uploadSnapshots(config, [unchangedSnapshot], fetcher)).rejects.toThrow(
         'TokenBoard request timed out after 1ms'
       )
-      expect(requests).toEqual([
-        `${config.endpoint}/check`,
-        config.endpoint,
-        config.endpoint,
-        config.endpoint
-      ])
+      expect(requests).toEqual([`${config.endpoint}/check`, config.endpoint, config.endpoint, config.endpoint])
     } finally {
       vi.unstubAllEnvs()
     }
@@ -166,9 +161,7 @@ describe('uploadSnapshots resilience', () => {
       return url.endsWith('/check') ? successResponse(url) : unauthorizedResponse()
     }
 
-    await expect(uploadSnapshots(config, [unchangedSnapshot], fetcher)).rejects.toThrow(
-      'Upload failed with status 401'
-    )
+    await expect(uploadSnapshots(config, [unchangedSnapshot], fetcher)).rejects.toThrow('Upload failed with status 401')
     expect(requests).toEqual([`${config.endpoint}/check`, config.endpoint])
   })
 
@@ -215,6 +208,95 @@ describe('uploadSnapshots resilience', () => {
       'Upload returned invalid response'
     )
   })
+
+  // The retry loop reads Retry-After in both of its formats and clamps to five seconds; the
+  // header is written by the TokenBoard server itself, so a malformed or hostile value must
+  // not turn into an unbounded sleep. These pin the clamp, the HTTP-date branch, and the
+  // exponential default backoff curve. Retry waits are fired synchronously so the tests
+  // observe the scheduled delay without sleeping it.
+  test('honours Retry-After seconds and clamps it to five seconds', async () => {
+    vi.stubEnv('TOKENBOARD_FETCH_RETRY_DELAY_MS', '')
+    const timeoutSpy = spyOnShortTimers()
+    const attempts = new Map<string, number>()
+    const fetcher = async (url: string) => {
+      const count = attempts.get(url) ?? 0
+      attempts.set(url, count + 1)
+      if (count === 0) return retryAfterResponse(url.endsWith('/check') ? 429 : 503, '30')
+      return successResponse(url)
+    }
+
+    try {
+      await uploadSnapshots(config, [unchangedSnapshot], fetcher)
+
+      expect(retryDelays(timeoutSpy)).toEqual([5_000, 5_000])
+    } finally {
+      timeoutSpy.mockRestore()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  test('honours an HTTP-date Retry-After in the past without waiting', async () => {
+    vi.stubEnv('TOKENBOARD_FETCH_RETRY_DELAY_MS', '')
+    const timeoutSpy = spyOnShortTimers()
+    const attempts = new Map<string, number>()
+    const fetcher = async (url: string) => {
+      const count = attempts.get(url) ?? 0
+      attempts.set(url, count + 1)
+      if (count === 0) {
+        return retryAfterResponse(url.endsWith('/check') ? 429 : 503, new Date(Date.now() - 60_000).toUTCString())
+      }
+      return successResponse(url)
+    }
+
+    try {
+      await uploadSnapshots(config, [unchangedSnapshot], fetcher)
+
+      expect(retryDelays(timeoutSpy)).toEqual([])
+    } finally {
+      timeoutSpy.mockRestore()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  test('backs off exponentially by default when Retry-After is absent', async () => {
+    vi.stubEnv('TOKENBOARD_FETCH_RETRY_DELAY_MS', '')
+    const timeoutSpy = spyOnShortTimers()
+    const attempts = new Map<string, number>()
+    const fetcher = async (url: string) => {
+      const count = attempts.get(url) ?? 0
+      attempts.set(url, count + 1)
+      if (url.endsWith('/check') && count < 2) return retryableResponseWithoutRetryAfter(503)
+      return successResponse(url)
+    }
+
+    try {
+      await uploadSnapshots(config, [unchangedSnapshot], fetcher)
+
+      expect(retryDelays(timeoutSpy)).toEqual([250, 500])
+    } finally {
+      timeoutSpy.mockRestore()
+      vi.unstubAllEnvs()
+    }
+  })
+
+  test.each([408, 429, 500, 502, 503, 504])('retries retryable status %s once before succeeding', async (status) => {
+    vi.stubEnv('TOKENBOARD_FETCH_RETRY_DELAY_MS', '0')
+    const requests: string[] = []
+    const fetcher = async (url: string) => {
+      requests.push(url)
+      if (requests.length === 1) return retryAfterResponse(status, '0')
+      return successResponse(url)
+    }
+
+    try {
+      const result = await uploadSnapshots(config, [unchangedSnapshot], fetcher)
+
+      expect(result).toEqual({ upserted: 1, skipped: 0 })
+      expect(requests).toEqual([`${config.endpoint}/check`, `${config.endpoint}/check`, config.endpoint])
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 function successResponse(url: string) {
@@ -230,6 +312,51 @@ function retryableResponse(status: number) {
       return {}
     }
   } as Response
+}
+
+function retryableResponseWithoutRetryAfter(status: number) {
+  return {
+    ok: false,
+    status,
+    headers: new Headers(),
+    async json() {
+      return {}
+    }
+  } as Response
+}
+
+function retryAfterResponse(status: number, retryAfter: string) {
+  return {
+    ok: false,
+    status,
+    headers: new Headers({ 'retry-after': retryAfter }),
+    async json() {
+      return {}
+    }
+  } as Response
+}
+
+// The request-deadline timer also goes through setTimeout (30s); only the short backoff
+// waits are retry scheduling.
+function retryDelays(timeoutSpy: { mock: { calls: unknown[][] } }) {
+  return timeoutSpy.mock.calls
+    .map((call) => call[1])
+    .filter((delay): delay is number => typeof delay === 'number' && delay > 0 && delay <= 5_000)
+}
+
+// Records every scheduled delay but fires short waits synchronously, so a retry test observes
+// what the backoff would sleep without spending the time. The request-deadline timer (30s)
+// is left un-fired so in-flight fetches are not aborted.
+function spyOnShortTimers() {
+  return vi.spyOn(globalThis, 'setTimeout').mockImplementation(((
+    handler: (...args: unknown[]) => void,
+    delay?: number
+  ) => {
+    if (typeof delay === 'number' && delay > 0 && delay <= 5_000 && typeof handler === 'function') {
+      handler()
+    }
+    return 0 as unknown as ReturnType<typeof setTimeout>
+  }) as typeof globalThis.setTimeout)
 }
 
 function unauthorizedResponse() {

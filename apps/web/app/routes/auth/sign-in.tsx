@@ -8,6 +8,10 @@ import { getOptionalUser } from '../../features/auth/middleware'
 import { forwardGithubSignIn } from '../../features/auth/service'
 
 export const GET = createRoute(async (c) => {
+  // Session-dependent like the home page: a signed-in visitor gets a redirect instead of the
+  // form, so a shared browser cache must not replay the cached form — or the cached redirect —
+  // to the next person. Set before the branch so the redirect carries it too.
+  c.header('Cache-Control', 'no-store')
   const user = await getOptionalUser(c)
   if (user) return c.redirect('/dashboard')
 
@@ -30,22 +34,17 @@ function AuthScreen(props: { hasError: boolean }) {
           <p class="mt-4 max-w-xl text-base leading-7 text-pretty text-[var(--app-muted)]">
             连接本机采集器，按日期、来源和模型查看聚合后的使用数据。
           </p>
-          <dl class="mt-8 max-w-xl divide-y divide-[var(--app-border)] border-y border-[var(--app-border)]" data-auth-benefits="true">
+          <dl
+            class="mt-8 max-w-xl divide-y divide-[var(--app-border)] border-y border-[var(--app-border)]"
+            data-auth-benefits="true"
+          >
             <AuthBenefit
               icon={ShieldCheck}
               title="使用数据默认私有"
               description="不上传对话正文；公开范围由你主动开启。"
             />
-            <AuthBenefit
-              icon={KeyRound}
-              title="GitHub 只用于登录"
-              description="采集器不会使用你的网页登录会话。"
-            />
-            <AuthBenefit
-              icon={Upload}
-              title="设备独立上传"
-              description="每台设备使用独立上传令牌，便于单独管理。"
-            />
+            <AuthBenefit icon={KeyRound} title="GitHub 只用于登录" description="采集器不会使用你的网页登录会话。" />
+            <AuthBenefit icon={Upload} title="设备独立上传" description="每台设备使用独立上传令牌，便于单独管理。" />
           </dl>
         </div>
 
@@ -56,7 +55,9 @@ function AuthScreen(props: { hasError: boolean }) {
                 <p class="app-accent-text text-sm font-semibold">安全登录</p>
                 <h2 class="mt-1 text-2xl font-black">登录 TokenBoard</h2>
               </div>
-              <LinkButton class="max-[359px]:self-start" variant="secondary" size="sm" href="/">返回首页</LinkButton>
+              <LinkButton class="max-[359px]:self-start" variant="secondary" size="sm" href="/">
+                返回首页
+              </LinkButton>
             </div>
             {props.hasError ? (
               <p class="app-flash-error mb-4 p-3 text-sm" role="alert">

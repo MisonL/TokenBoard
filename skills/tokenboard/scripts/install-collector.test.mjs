@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildInstallCollectorPlan } from './install-collector.mjs'
+import { buildBinaryInstallConfig, buildInstallCollectorPlan } from './install-collector.mjs'
+import { defaultReleaseRepo } from './client-binary.mjs'
 
 test('clones the configured collector repo before installing dependencies', () => {
   assert.deepEqual(
@@ -14,7 +15,13 @@ test('clones the configured collector repo before installing dependencies', () =
     [
       {
         command: 'git',
-        args: ['clone', '--depth', '1', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        args: [
+          'clone',
+          '--depth',
+          '1',
+          'https://github.com/example/TokenBoard.git',
+          '/home/user/.tokenboard/TokenBoard'
+        ],
         options: {}
       },
       {
@@ -105,7 +112,14 @@ test('clones the configured collector ref when provided', () => {
     [
       {
         command: 'git',
-        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        args: [
+          'clone',
+          '--depth',
+          '1',
+          '--no-checkout',
+          'https://github.com/example/TokenBoard.git',
+          '/home/user/.tokenboard/TokenBoard'
+        ],
         options: {}
       },
       {
@@ -135,7 +149,14 @@ test('treats all-hex collector refs as branch candidates when installing', () =>
     [
       {
         command: 'git',
-        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        args: [
+          'clone',
+          '--depth',
+          '1',
+          '--no-checkout',
+          'https://github.com/example/TokenBoard.git',
+          '/home/user/.tokenboard/TokenBoard'
+        ],
         options: {}
       },
       {
@@ -165,7 +186,14 @@ test('clones a configured full ref detached when provided', () => {
     [
       {
         command: 'git',
-        args: ['clone', '--depth', '1', '--no-checkout', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        args: [
+          'clone',
+          '--depth',
+          '1',
+          '--no-checkout',
+          'https://github.com/example/TokenBoard.git',
+          '/home/user/.tokenboard/TokenBoard'
+        ],
         options: {}
       },
       {
@@ -187,10 +215,17 @@ test('clones a configured full ref detached when provided', () => {
   )
 })
 
-test('removes an existing non-git collector directory before cloning', () => {
+// Replacing an existing checkout must not destroy it before the replacement exists. The
+// clone lands in a staging sibling first and is swapped in with a backup kept until the
+// swap succeeds — the same replace-with-rollback the upgrade path uses — so a failed clone
+// (offline, bad ref) leaves the original directory untouched instead of an empty one.
+test('replaces an existing non-git collector directory only after a staged clone succeeds', () => {
+  const dir = '/home/user/.tokenboard/TokenBoard'
+  const stagingDir = `${dir}.tokenboard-install-staging-${process.pid}`
+  const backupDir = `${dir}.tokenboard-upgrade-backup-${process.pid}`
   assert.deepEqual(
     buildInstallCollectorPlan({
-      dir: '/home/user/.tokenboard/TokenBoard',
+      dir,
       repoUrl: 'https://github.com/example/TokenBoard.git',
       packageManager: 'bun',
       exists: true,
@@ -200,18 +235,23 @@ test('removes an existing non-git collector directory before cloning', () => {
     [
       {
         command: 'remove',
-        args: ['/home/user/.tokenboard/TokenBoard'],
+        args: [stagingDir],
         options: { recursive: true, force: true }
       },
       {
         command: 'git',
-        args: ['clone', '--depth', '1', 'https://github.com/example/TokenBoard.git', '/home/user/.tokenboard/TokenBoard'],
+        args: ['clone', '--depth', '1', 'https://github.com/example/TokenBoard.git', stagingDir],
+        options: {}
+      },
+      {
+        command: 'replace',
+        args: [stagingDir, dir, backupDir],
         options: {}
       },
       {
         command: 'corepack',
         args: ['pnpm', 'install', '--frozen-lockfile'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+        options: { cwd: dir }
       }
     ]
   )
@@ -220,7 +260,7 @@ test('removes an existing non-git collector directory before cloning', () => {
 test('uses corepack pnpm for workspace dependency install on Windows', () => {
   assert.deepEqual(
     buildInstallCollectorPlan({
-      dir: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard',
+      dir: 'C:\\Users\\example\\.tokenboard\\TokenBoard',
       repoUrl: 'https://github.com/example/TokenBoard.git',
       packageManager: 'npm',
       exists: false,
@@ -229,36 +269,61 @@ test('uses corepack pnpm for workspace dependency install on Windows', () => {
     {
       command: 'corepack.cmd',
       args: ['pnpm', 'install', '--frozen-lockfile'],
-      options: { cwd: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard' }
+      options: { cwd: 'C:\\Users\\example\\.tokenboard\\TokenBoard' }
     }
   )
 })
 
 test('refuses to replace the config directory as a non-git collector', () => {
   assert.throws(
-    () => buildInstallCollectorPlan({
-      dir: '/home/user/.tokenboard',
-      configDir: '/home/user/.tokenboard',
-      repoUrl: 'https://github.com/example/TokenBoard.git',
-      packageManager: 'pnpm',
-      exists: true,
-      isGitRepo: false
-    }),
+    () =>
+      buildInstallCollectorPlan({
+        dir: '/home/user/.tokenboard',
+        configDir: '/home/user/.tokenboard',
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        packageManager: 'pnpm',
+        exists: true,
+        isGitRepo: false
+      }),
     /Refusing to replace TokenBoard config directory/
   )
 })
 
 test('refuses a case-variant Windows config directory as a non-git collector', () => {
   assert.throws(
-    () => buildInstallCollectorPlan({
-      dir: 'C:\\Users\\QDM\\.tokenboard',
-      configDir: 'c:\\users\\qdm\\.TOKENBOARD',
-      repoUrl: 'https://github.com/example/TokenBoard.git',
-      packageManager: 'pnpm',
-      exists: true,
-      isGitRepo: false,
-      platform: 'win32'
-    }),
+    () =>
+      buildInstallCollectorPlan({
+        dir: 'C:\\Users\\example\\.tokenboard',
+        configDir: 'c:\\users\\example\\.TOKENBOARD',
+        repoUrl: 'https://github.com/example/TokenBoard.git',
+        packageManager: 'pnpm',
+        exists: true,
+        isGitRepo: false,
+        platform: 'win32'
+      }),
     /Refusing to replace TokenBoard config directory/
   )
+})
+
+// The install-time release source must outlive the install: every later
+// automatic `self-update` resolves the feed on its own, and dropping it would
+// move the machine back to the default repository. The tag is not recorded —
+// it pins one install and would freeze the client on that version.
+test('a binary install records a non-default release source', () => {
+  assert.deepEqual(
+    buildBinaryInstallConfig({ repo: 'other/TokenBoard', baseUrl: 'https://github.example', updatedAt: 'now' }),
+    {
+      clientType: 'binary',
+      updatedAt: 'now',
+      releaseRepo: 'other/TokenBoard',
+      releaseBaseUrl: 'https://github.example'
+    }
+  )
+})
+
+test('a default-source binary install records only the switch', () => {
+  assert.deepEqual(buildBinaryInstallConfig({ repo: defaultReleaseRepo, updatedAt: 'now' }), {
+    clientType: 'binary',
+    updatedAt: 'now'
+  })
 })

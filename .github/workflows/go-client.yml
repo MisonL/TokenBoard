@@ -1,0 +1,393 @@
+name: Go client
+
+on:
+  # A release is cut from a version tag; that run is the only one that reaches
+  # the release job, and it waits on the same gates as a branch push. GitHub
+  # does not evaluate path filters for tag pushes, so the paths below gate
+  # branch and pull-request runs only.
+  #
+  # workflow_dispatch exists so the gates can be run against a branch that the
+  # push filter does not cover (a feature branch, or a change to this file
+  # itself, which otherwise only gets verified once it reaches master). The
+  # release job is tag-gated, so a dispatch never publishes.
+  workflow_dispatch:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths:
+      - 'clients/go/**'
+      # The shadow gate runs the TypeScript collector against this client, so
+      # a collector-source change is exactly what it must re-verify.
+      - 'packages/collector/src/**'
+      - 'packages/collector/package.json'
+      - 'packages/collector/ccusage.json'
+      - 'packages/usage-core/**'
+      - '.github/workflows/go-client.yml'
+  pull_request:
+    paths:
+      - 'clients/go/**'
+      - 'packages/collector/src/**'
+      - 'packages/collector/package.json'
+      - 'packages/collector/ccusage.json'
+      - 'packages/usage-core/**'
+      - '.github/workflows/go-client.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The build matrix is 3 OS x 2 arch; tests run on the native arch of
+        # each OS, and the cross-arch builds below cover the other half.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      # Reads the go directive in clients/go/go.mod.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/go/go.mod
+          cache-dependency-path: clients/go/go.sum
+
+      - name: gofmt
+        if: runner.os != 'Windows'
+        working-directory: clients/go
+        run: test -z "$(gofmt -l .)"
+
+      - name: go vet
+        working-directory: clients/go
+        run: go vet ./...
+
+      - name: go test
+        working-directory: clients/go
+        run: go test ./... -race
+
+      - name: cross build
+        if: runner.os == 'Linux'
+        working-directory: clients/go
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=windows GOARCH=arm64 go build ./...
+          GOOS=linux GOARCH=arm64 go build ./...
+          GOOS=darwin GOARCH=arm64 go build ./...
+
+      # `go build` never compiles _test.go, so a test file that only fails to
+      # build on another platform is invisible to the step above — and the
+      # native test matrix cannot see it either, because each runner only ever
+      # compiles for its own GOOS. `go vet` does typecheck test files, which is
+      # what makes this the cross-platform check for the test tree.
+      - name: cross vet (test files included)
+        if: runner.os == 'Linux'
+        working-directory: clients/go
+        run: |
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=arm64 go vet ./...
+          GOOS=darwin GOARCH=arm64 go vet ./...
+
+  # Spec §5: the ccusage JSON shape is the one contract with no upstream schema
+  # or changelog, so this gate is the only defence against a silent drift.
+  # The TS collector is the reference implementation the Go client is compared
+  # against, so its types must stay sound even though the tests run through
+  # vitest (which does not typecheck). A memo typed as the wrong promise broke
+  # the build while every runtime test stayed green; this step is what catches
+  # that class of mistake.
+  typecheck:
+    name: workspace typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -r typecheck
+
+  # The TS collector is the reference implementation the Go client is diffed
+  # against, and nothing else in CI runs its 1218 tests: typecheck only proves
+  # the types line up, and the shadow gate exercises a handful of fixtures. A
+  # change to collector behaviour that the Go side has not ported yet would
+  # otherwise land silently and move the shadow baseline underneath it.
+  #
+  # Scoped to the two packages this workflow triggers on. `apps/web` has no CI
+  # of its own either, but it is not part of this baseline and adding it here
+  # would make a job that claims more than its paths cover.
+  baseline-test:
+    name: collector and usage-core test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Heavy collector tests take seconds each and the runner is shared. Every
+      # one of them carries an explicit timeout, so a failure here is real
+      # rather than the 5s default being hit under load.
+      - run: pnpm --filter @tokenboard/usage-core --filter @tokenboard/collector test
+
+      - run: pnpm format:check
+
+  deps:
+    name: ccusage contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Before setup-node: `cache: pnpm` resolves the store with `pnpm store
+      # path`, so pnpm must already be on PATH. Version comes from package.json.
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: install collector dependencies
+        run: pnpm install --frozen-lockfile --filter @tokenboard/collector
+
+      - name: check the ccusage output contract
+        run: clients/go/scripts/check-deps.sh
+
+  # Spec §6.2: the shadow gate. Runs the TypeScript collector and this client
+  # over the same fixture homes and fails on any snapshot difference, so a
+  # semantic drift between the two implementations breaks CI instead of
+  # waiting for a production dual-run.
+  shadow:
+    name: shadow diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/go/go.mod
+          cache-dependency-path: clients/go/go.sum
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      # The TS side runs through tsx and imports usage-core, whose own
+      # dependencies (zod) are installed only when the workspace dependency is
+      # included — hence the trailing "..." on the filter.
+      - name: install collector dependencies
+        run: pnpm install --frozen-lockfile --filter @tokenboard/collector...
+
+      - name: build the client
+        working-directory: clients/go
+        run: go build -o "$RUNNER_TEMP/tokenboard" ./cmd/tokenboard
+
+      # Writes one fixture home per file-backed source and exports the env
+      # variables that point the providers at them. Nothing here reads the
+      # runner's real home.
+      - name: write fixtures
+        working-directory: clients/go
+        run: go run ./cmd/shadow-fixtures -root "$RUNNER_TEMP/fixtures" -format env >> "$GITHUB_ENV"
+
+      - name: shadow diff
+        env:
+          TOKENBOARD_COLLECTOR_DIR: ${{ github.workspace }}
+          TOKENBOARD_TIMEZONE: UTC
+          TOKENBOARD_SINCE: all
+          TOKENBOARD_STATE_DIR: ${{ runner.temp }}/shadow-state
+          # The claude-code and codex paths run ccusage; point both sides at
+          # the copy the collector dependency already installed, so neither
+          # downloads one and both run the same binary.
+          TOKENBOARD_CCUSAGE_BIN: ${{ github.workspace }}/packages/collector/node_modules/.bin/ccusage
+        run: |
+          set -euo pipefail
+          for source in grok-build pi deepseek-harness opencode claude-code codex; do
+            echo "::group::shadow $source"
+            "$RUNNER_TEMP/tokenboard" shadow --source "$source"
+            echo "::endgroup::"
+          done
+
+      # Production runs the incremental hook path for the two ccusage-backed
+      # sources, not the full preview above, so the hook path gets its own
+      # comparison. Each run needs its own fresh state directory: a hook run
+      # is driven by its cursor, and a reused one would only re-read what an
+      # earlier run already acknowledged.
+      - name: shadow diff (hook path)
+        env:
+          TOKENBOARD_COLLECTOR_DIR: ${{ github.workspace }}
+          TOKENBOARD_TIMEZONE: UTC
+          TOKENBOARD_SINCE: all
+          TOKENBOARD_CCUSAGE_BIN: ${{ github.workspace }}/packages/collector/node_modules/.bin/ccusage
+        run: |
+          set -euo pipefail
+          for source in claude-code codex; do
+            echo "::group::shadow --hook $source"
+            TOKENBOARD_STATE_DIR="$RUNNER_TEMP/shadow-hook-$source" \
+              "$RUNNER_TEMP/tokenboard" shadow --source "$source" --hook
+            echo "::endgroup::"
+          done
+
+      # antigravity-cli has no environment override for its conversations
+      # directory: both implementations resolve it under the home directory, so
+      # the fixture home is swapped in through HOME. The GUI sources are not
+      # covered here — they need a language server, which CI does not run.
+      - name: write antigravity fixture
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ag-home/.gemini/antigravity-cli"
+          node_modules/.bin/tsx clients/go/scripts/antigravity-fixture.mts \
+            "$RUNNER_TEMP/ag-home/.gemini/antigravity-cli"
+
+      - name: shadow diff (antigravity-cli)
+        env:
+          HOME: ${{ runner.temp }}/ag-home
+          TOKENBOARD_COLLECTOR_DIR: ${{ github.workspace }}
+          TOKENBOARD_TIMEZONE: UTC
+          TOKENBOARD_SINCE: all
+          TOKENBOARD_STATE_DIR: ${{ runner.temp }}/shadow-state-ag
+        run: '"$RUNNER_TEMP/tokenboard" shadow --source antigravity-cli'
+
+  # The release pipeline itself is otherwise untested until the first tag:
+  # a snapshot build exercises GoReleaser's config, the ldflags stamp, the
+  # ccusage bundling and the archive layout, and asserts the artifact names
+  # that internal/release constructs before anything is published.
+  release-dry-run:
+    name: Release dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/go/go.mod
+          cache-dependency-path: clients/go/go.sum
+
+      # setup-node enables package-manager caching from package.json's
+      # packageManager field, which makes it look for pnpm on PATH.
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+
+      - name: bundle ccusage
+        run: node clients/go/scripts/bundle-ccusage.mjs
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.12.7
+          args: check
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.12.7
+          args: release --snapshot --clean --skip=publish
+
+      - name: verify the release artifact contract
+        run: |
+          set -euo pipefail
+          cd dist
+          for name in \
+            tokenboard_darwin_amd64.tar.gz tokenboard_darwin_arm64.tar.gz \
+            tokenboard_linux_amd64.tar.gz tokenboard_linux_arm64.tar.gz \
+            tokenboard_windows_amd64.tar.gz tokenboard_windows_arm64.tar.gz \
+            checksums.txt; do
+            test -f "$name" || { echo "missing artifact: $name"; exit 1; }
+          done
+          test "$(ls -1 ./*.tar.gz | wc -l)" -eq 6
+          test "$(wc -l < checksums.txt)" -eq 6
+          for archive in ./*.tar.gz; do
+            entries=$(tar -tzf "$archive")
+            case "$archive" in
+              *windows*) binary=tokenboard.exe; ccusage=ccusage.exe ;;
+              *)         binary=tokenboard;     ccusage=ccusage ;;
+            esac
+            for entry in "$binary" "$ccusage" README.md LICENSE.ccusage; do
+              echo "$entries" | grep -qx "$entry" \
+                || { echo "$archive is missing $entry"; exit 1; }
+            done
+          done
+          # The stamped version is what self-update compares against; a build
+          # left at the "dev" default would never match a release. GoReleaser
+          # derives the snapshot version from the latest tag: 0.0.0-SNAPSHOT
+          # before any tag exists, <tag>-SNAPSHOT once one does, so assert the
+          # shape rather than one particular version.
+          mkdir -p ../verify
+          tar -xzf tokenboard_linux_amd64.tar.gz -C ../verify tokenboard
+          version=$(../verify/tokenboard version)
+          echo "built version: $version"
+          echo "$version" | grep -Eq '^tokenboard \(go\) [0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT-' \
+            || { echo "unexpected version line: $version"; exit 1; }
+
+      # The upgrade path end to end: serve a release the way GitHub does, run
+      # self-update against it, and assert the swap, the backup, the bundled
+      # ccusage and the no-op second run. Needs dist/ and dist-ccusage/ from
+      # the steps above.
+      - name: self-update end to end
+        run: node clients/go/scripts/e2e-self-update.mjs
+
+  # Spec §9 M6: a release is cut from a version tag. The configuration and the
+  # artifact names are pinned by internal/release, so `check` runs before
+  # anything is published.
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, typecheck, baseline-test, deps, shadow, release-dry-run]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # GoReleaser derives the changelog from history; a shallow clone
+          # either fails or produces an empty one.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: clients/go/go.mod
+          cache-dependency-path: clients/go/go.sum
+
+      # setup-node enables package-manager caching from package.json's
+      # packageManager field, which makes it look for pnpm on PATH.
+      - uses: pnpm/action-setup@v6
+
+      # Spec §4.1: the tarballs bundle the platform ccusage binaries so a fresh
+      # install works offline. The script pins the version from
+      # internal/ccusage and verifies each npm tarball's sha512.
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+
+      - name: bundle ccusage
+        run: node clients/go/scripts/bundle-ccusage.mjs
+
+      # Pinned rather than `~> v2`: the config's archive and checksum names are
+      # a contract with `internal/release`, and a template change across
+      # GoReleaser minors must be a deliberate, tested bump.
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: v2.12.7
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -17,26 +17,10 @@ export function buildWindowsTaskArgs({
   taskName = windowsTaskName(dailyScheduleTimes[0]),
   startTime = dailyScheduleTimes[0]
 }) {
-  const command = taskCommand || buildWindowsTaskCommand({
-    nodePath,
-    scriptPath,
-    packageManager,
-    pathEnv,
-    homeDir,
-    configDir
-  })
-  return [
-    '/Create',
-    '/F',
-    '/SC',
-    'DAILY',
-    '/TN',
-    taskName,
-    '/TR',
-    command,
-    '/ST',
-    startTime
-  ]
+  if (!taskCommand) {
+    throw new Error('A Windows task requires the wrapper .cmd path as taskCommand')
+  }
+  return ['/Create', '/F', '/SC', 'DAILY', '/TN', taskName, '/TR', taskCommand, '/ST', startTime]
 }
 
 export function buildWindowsTaskDefinitions({
@@ -49,27 +33,48 @@ export function buildWindowsTaskDefinitions({
   taskCommand,
   scheduleTimes = dailyScheduleTimes
 }) {
-  return scheduleTimes.map((startTime) => ({
-    name: windowsTaskName(startTime),
-    args: buildWindowsTaskArgs({
-      nodePath,
-      scriptPath,
-      packageManager,
-      pathEnv,
-      homeDir,
-      configDir,
-      taskCommand,
-      taskName: windowsTaskName(startTime),
-      startTime
-    })
-  }))
+  return scheduleTimes.map((startTime) => {
+    const taskName = windowsTaskName(startTime)
+    return {
+      name: taskName,
+      args: buildWindowsTaskArgs({
+        nodePath,
+        scriptPath,
+        packageManager,
+        pathEnv,
+        homeDir,
+        configDir,
+        taskCommand,
+        taskName,
+        startTime
+      }),
+      startWhenAvailableArgs: buildWindowsStartWhenAvailableArgs(taskName)
+    }
+  })
+}
+
+export function buildWindowsStartWhenAvailableArgs(taskName) {
+  // schtasks /Create cannot express StartWhenAvailable, so a run missed while asleep or
+  // powered off is silently skipped: the only one of the three schedulers without catch-up.
+  // The patch mutates the existing settings object in place instead of building a fresh one:
+  // New-ScheduledTaskSettingsSet alone would reset every other setting (battery policy,
+  // execution limits) schtasks just wrote.
+  const script = [
+    `$task = Get-ScheduledTask -TaskName '${taskName}'`,
+    '$task.Settings.StartWhenAvailable = $true',
+    `Set-ScheduledTask -TaskName '${taskName}' -Settings $task.Settings`
+  ].join('; ')
+  return ['-NoProfile', '-NonInteractive', '-Command', script]
 }
 
 export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, pathEnv, homeDir, configDir }) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter: ';' })
   const stateDir = configDir || tokenboardDirForDelimiter(homeDir, ';')
   const logDir = joinForDelimiter(stateDir, 'logs', '', ';').replace(/[\\/]$/, '')
-  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --source all --scheduled`
+  // No --source here: sync.mjs resolves it at run time from config.source (default
+  // 'all'), the same value status.mjs reads, so editing the config retargets the
+  // scheduled sync without regenerating the task.
+  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --scheduled`
   return [
     '@echo off',
     `set "TOKENBOARD_CONFIG_DIR=${escapeWindowsCmdValue(stateDir)}"`,
@@ -82,24 +87,16 @@ export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, p
   ].join('\r\n')
 }
 
-export function buildWindowsTaskCommand({ nodePath, scriptPath, packageManager, pathEnv, homeDir, configDir }) {
-  const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter: ';' })
-  const stateDir = configDir || tokenboardDirForDelimiter(homeDir, ';')
-  const logDir = joinForDelimiter(stateDir, 'logs', '', ';').replace(/[\\/]$/, '')
-  const syncCommand = `${quoteWindowsArg(nodePath)} ${quoteWindowsArg(scriptPath)} --mode sync --source all --scheduled`
-  const command = [
-    `set "TOKENBOARD_CONFIG_DIR=${escapeWindowsCmdValue(stateDir)}"`,
-    `set "TOKENBOARD_PACKAGE_MANAGER=${escapeWindowsCmdValue(packageManager)}"`,
-    'set "TOKENBOARD_SCHEDULED_SYNC=1"',
-    `set "TOKENBOARD_LOG_DIR=${escapeWindowsCmdValue(logDir)}"`,
-    `set "PATH=${escapeWindowsCmdValue(normalizedPath)}"`,
-    syncCommand
-  ].join(' && ')
-
-  return `cmd.exe /d /s /c ${quoteWindowsArg(command)}`
-}
-
-export function buildMacLaunchAgentPlist({ nodePath, scriptPath, packageManager, pathEnv, homeDir, configDir, logDir, scheduleTimes = dailyScheduleTimes }) {
+export function buildMacLaunchAgentPlist({
+  nodePath,
+  scriptPath,
+  packageManager,
+  pathEnv,
+  homeDir,
+  configDir,
+  logDir,
+  scheduleTimes = dailyScheduleTimes
+}) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath })
   const stateDir = configDir || `${homeDir.replace(/\/$/, '')}/.tokenboard`
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -112,6 +109,8 @@ ${buildMacEnvironment({ normalizedPath, stateDir, packageManager, logDir })}
 ${buildMacProgramArguments({ nodePath, scriptPath })}
 \t<key>RunAtLoad</key>
 \t<false/>
+\t<key>Umask</key>
+\t<integer>63</integer>
 \t<key>StandardErrorPath</key>
 \t<string>${escapeXml(`${logDir}/daily-sync.err.log`)}</string>
 \t<key>StandardOutPath</key>
@@ -148,40 +147,50 @@ function buildMacProgramArguments({ nodePath, scriptPath }) {
 \t\t<string>${escapeXml(scriptPath)}</string>
 \t\t<string>--mode</string>
 \t\t<string>sync</string>
-\t\t<string>--source</string>
-\t\t<string>all</string>
 \t\t<string>--scheduled</string>
 \t</array>`
 }
 
 function buildMacCalendarIntervals(scheduleTimes) {
-  return scheduleTimes.map((time) => {
-    const [hour, minute] = parseScheduleTime(time)
-    return `\t\t<dict>
+  return scheduleTimes
+    .map((time) => {
+      const [hour, minute] = parseScheduleTime(time)
+      return `\t\t<dict>
 \t\t\t<key>Hour</key>
 \t\t\t<integer>${hour}</integer>
 \t\t\t<key>Minute</key>
 \t\t\t<integer>${minute}</integer>
 \t\t</dict>`
-  }).join('\n')
+    })
+    .join('\n')
 }
 
-export function buildLinuxSystemdUnits({ nodePath, scriptPath, packageManager, pathEnv, homeDir, configDir, timezone, scheduleTimes = dailyScheduleTimes }) {
+export function buildLinuxSystemdUnits({
+  nodePath,
+  scriptPath,
+  packageManager,
+  pathEnv,
+  homeDir,
+  configDir,
+  timezone,
+  scheduleTimes = dailyScheduleTimes
+}) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath })
   const stateDir = configDir || `${homeDir.replace(/\/$/, '')}/.tokenboard`
-  const timezoneSuffix = typeof timezone === 'string' && timezone.length > 0 ? ` ${timezone}` : ''
+  const timezoneSuffix = systemdTimezoneSuffix(timezone)
   return {
     service: `[Unit]
 Description=TokenBoard daily sync
 
 [Service]
 Type=oneshot
+UMask=0077
 Environment=${quoteSystemdValue(`TOKENBOARD_CONFIG_DIR=${stateDir}`)}
 Environment=${quoteSystemdValue(`TOKENBOARD_PACKAGE_MANAGER=${packageManager}`)}
 Environment=${quoteSystemdValue('TOKENBOARD_SCHEDULED_SYNC=1')}
 Environment=${quoteSystemdValue(`TOKENBOARD_LOG_DIR=${stateDir}/logs`)}
 Environment=${quoteSystemdValue(`PATH=${normalizedPath}`)}
-ExecStart=${quoteSystemdArg(nodePath)} ${quoteSystemdArg(scriptPath)} --mode sync --source all --scheduled
+ExecStart=${quoteSystemdArg(nodePath)} ${quoteSystemdArg(scriptPath)} --mode sync --scheduled
 `,
     timer: `[Unit]
 Description=Run TokenBoard daily sync
@@ -217,6 +226,31 @@ export function windowsTaskName(startTime) {
   return `TokenBoardDailySync${startTime.replace(':', '')}`
 }
 
+// The schedule is expressed in the machine's local time — launchd, systemd and
+// the Windows task scheduler all fire on local wall-clock time — so the window
+// has to be evaluated the same way. A UTC comparison would put the window on
+// the wrong hours entirely for anyone east or west of Greenwich.
+export function isWithinScheduleWindow({ times, windowMs, now = Date.now() } = {}) {
+  if (!Array.isArray(times) || times.length === 0) return false
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return false
+
+  const windowMinutes = windowMs / 60_000
+  const local = new Date(now)
+  const currentMinutes = local.getHours() * 60 + local.getMinutes()
+
+  for (const time of times) {
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
+    if (!match) continue
+    const scheduledMinutes = Number.parseInt(match[1], 10) * 60 + Number.parseInt(match[2], 10)
+    // The distance wraps around midnight: a 23:50 trigger is ten minutes
+    // before a 00:00 schedule, not twenty-three hours and ten minutes after it.
+    const direct = Math.abs(currentMinutes - scheduledMinutes)
+    const distance = Math.min(direct, 24 * 60 - direct)
+    if (distance <= windowMinutes) return true
+  }
+  return false
+}
+
 function parseScheduleTime(time) {
   const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time)
   if (!match) {
@@ -234,8 +268,28 @@ function escapeXml(value) {
     .replaceAll("'", '&apos;')
 }
 
-function quoteSystemdValue(value) {
-  return `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')}"`
+// The timezone reaches this function from the pairing response (or --timezone) and is
+// interpolated into the timer's OnCalendar lines, which systemd parses as unit syntax. An
+// IANA name only ever contains letters, digits, `_`, `+`, `-` and `/`; anything else stops
+// the install instead of being dropped, because dropping the suffix would quietly move the
+// schedule to the system-local zone.
+function systemdTimezoneSuffix(timezone) {
+  if (timezone === undefined || timezone === null || timezone === '') return ''
+  if (typeof timezone !== 'string' || !/^[A-Za-z0-9_+/-]+$/.test(timezone)) {
+    throw new Error(`Invalid timezone: ${JSON.stringify(timezone)}. Expected an IANA timezone name like Asia/Shanghai.`)
+  }
+  return ` ${timezone}`
+}
+
+// Exported for the escaping tests: the values interpolated here include a user-supplied
+// timezone in `Environment=…=TOKENBOARD_…`, and a newline inside one would split the unit.
+export function quoteSystemdValue(value) {
+  return `"${String(value)
+    .replaceAll('\\', '\\\\')
+    .replaceAll('"', '\\"')
+    .replaceAll('%', '%%')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '\\r')}"`
 }
 
 function quoteSystemdArg(value) {

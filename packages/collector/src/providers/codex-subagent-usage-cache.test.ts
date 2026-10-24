@@ -21,16 +21,18 @@ const canCreateSymlinks = await (async () => {
 
 describe('Codex subagent usage cache', () => {
   test('bounds entries when one correction uses more than the cache capacity', () => {
-    const entries = Object.fromEntries(Array.from({ length: 2_001 }, (_, index) => [
-      `child-${index}`,
-      {
-        size: 1,
-        mtimeMs: 1,
-        tailSha256: 'a'.repeat(64),
-        updatedAt: '2026-07-18T00:00:00.000Z',
-        usages: []
-      }
-    ]))
+    const entries = Object.fromEntries(
+      Array.from({ length: 2_001 }, (_, index) => [
+        `child-${index}`,
+        {
+          size: 1,
+          mtimeMs: 1,
+          tailSha256: 'a'.repeat(64),
+          updatedAt: '2026-07-18T00:00:00.000Z',
+          usages: []
+        }
+      ])
+    )
     const usedKeys = new Set(Object.keys(entries))
 
     const retained = retainCacheEntries(entries, usedKeys, Date.parse('2026-07-18T00:00:00.000Z'))
@@ -38,7 +40,7 @@ describe('Codex subagent usage cache', () => {
     expect(Object.keys(retained)).toHaveLength(2_000)
   })
 
-  test('rejects an oversized cache before parsing it or invoking the correction callback', async () => {
+  test('discards an oversized cache and rebuilds instead of failing the sync', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-oversized-'))
     const cachePath = join(stateDir, 'codex-subagent-usage-cache.json')
     let callbackCalled = false
@@ -46,7 +48,7 @@ describe('Codex subagent usage cache', () => {
     try {
       await writeFile(cachePath, Buffer.alloc(8 * 1024 * 1024 + 1, 0x20))
 
-      await expect(withCodexSubagentUsageCache({
+      await withCodexSubagentUsageCache({
         stateDir,
         timezone: 'UTC',
         readChildUsageByDate: async () => [],
@@ -54,15 +56,17 @@ describe('Codex subagent usage cache', () => {
           callbackCalled = true
           return []
         }
-      })).rejects.toThrow('Codex subagent usage cache exceeds the 8388608-byte limit')
+      })
 
-      expect(callbackCalled).toBe(false)
+      expect(callbackCalled).toBe(true)
+      const rebuilt = await readFile(cachePath, 'utf8')
+      expect(rebuilt).toContain('"version"')
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
   })
 
-  test('rejects an oversized cache before persisting it', async () => {
+  test('evicts the oldest unused entries to 75% when a write would exceed the budget', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-write-oversized-'))
     const childPath = join(stateDir, 'child.jsonl')
     const cachePath = join(stateDir, 'codex-subagent-usage-cache.json')
@@ -79,7 +83,7 @@ describe('Codex subagent usage cache', () => {
         totalTokens: index * 4
       }))
 
-      await expect(withCodexSubagentUsageCache({
+      await withCodexSubagentUsageCache({
         stateDir,
         timezone: 'UTC',
         readChildUsageByDate: async () => oversizedUsages,
@@ -87,10 +91,14 @@ describe('Codex subagent usage cache', () => {
           callbackCalled = true
           await reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
         }
-      })).rejects.toThrow('Codex subagent usage cache exceeds the 8388608-byte limit')
+      })
 
       expect(callbackCalled).toBe(true)
-      await expect(stat(cachePath)).rejects.toMatchObject({ code: 'ENOENT' })
+      const persisted = JSON.parse(await readFile(cachePath, 'utf8'))
+      // The single oversized entry (80k usages in one session) cannot be kept under the
+      // budget, so the write persists an empty cache instead of failing the sync; the
+      // corrections recompute from the session file on a later run.
+      expect(Object.keys(persisted.entries).length).toBe(0)
 
       let recoveryCallbackCalled = false
       const recovered = await withCodexSubagentUsageCache({
@@ -108,7 +116,7 @@ describe('Codex subagent usage cache', () => {
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test('normalizes cache entries written before cache creation token tracking', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-legacy-'))
@@ -120,28 +128,33 @@ describe('Codex subagent usage cache', () => {
       const content = await readFile(childPath)
       const details = await stat(childPath)
       const key = createHash('sha256').update(childPath).digest('hex')
-      await writeFile(cachePath, `${JSON.stringify({
-        version: 1,
-        timezone: 'UTC',
-        entries: {
-          [key]: {
-            dev: details.dev,
-            ino: details.ino,
-            size: details.size,
-            mtimeMs: details.mtimeMs,
-            ctimeMs: details.ctimeMs,
-            tailSha256: createHash('sha256').update(content).digest('hex'),
-            updatedAt: '2026-05-25T01:20:00.000Z',
-            usages: [{
-              usageDate: '2026-05-25',
-              inputTokens: 50,
-              outputTokens: 20,
-              cacheReadTokens: 150,
-              totalTokens: 220
-            }]
+      await writeFile(
+        cachePath,
+        `${JSON.stringify({
+          version: 1,
+          timezone: 'UTC',
+          entries: {
+            [key]: {
+              dev: details.dev,
+              ino: details.ino,
+              size: details.size,
+              mtimeMs: details.mtimeMs,
+              ctimeMs: details.ctimeMs,
+              tailSha256: createHash('sha256').update(content).digest('hex'),
+              updatedAt: '2026-05-25T01:20:00.000Z',
+              usages: [
+                {
+                  usageDate: '2026-05-25',
+                  inputTokens: 50,
+                  outputTokens: 20,
+                  cacheReadTokens: 150,
+                  totalTokens: 220
+                }
+              ]
+            }
           }
-        }
-      })}\n`)
+        })}\n`
+      )
       let uncachedReads = 0
 
       const usages = await withCodexSubagentUsageCache({
@@ -155,14 +168,16 @@ describe('Codex subagent usage cache', () => {
       })
 
       expect(uncachedReads).toBe(0)
-      expect(usages).toEqual([{
-        usageDate: '2026-05-25',
-        inputTokens: 50,
-        outputTokens: 20,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 150,
-        totalTokens: 220
-      }])
+      expect(usages).toEqual([
+        {
+          usageDate: '2026-05-25',
+          inputTokens: 50,
+          outputTokens: 20,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 150,
+          totalTokens: 220
+        }
+      ])
       const persisted = JSON.parse(await readFile(cachePath, 'utf8')) as {
         entries: Record<string, { usages: Array<{ cacheCreationTokens?: number }> }>
       }
@@ -199,27 +214,31 @@ describe('Codex subagent usage cache', () => {
         timezone: 'UTC',
         readChildUsageByDate: async () => {
           uncachedReads += 1
-          return [{
-            usageDate: '2026-07-20',
-            inputTokens: 1,
-            outputTokens: 2,
-            cacheCreationTokens: 3,
-            cacheReadTokens: 4,
-            totalTokens: 10
-          }]
+          return [
+            {
+              usageDate: '2026-07-20',
+              inputTokens: 1,
+              outputTokens: 2,
+              cacheCreationTokens: 3,
+              cacheReadTokens: 4,
+              totalTokens: 10
+            }
+          ]
         },
         callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
       })
 
       expect(uncachedReads).toBe(1)
-      expect(usages).toEqual([{
-        usageDate: '2026-07-20',
-        inputTokens: 1,
-        outputTokens: 2,
-        cacheCreationTokens: 3,
-        cacheReadTokens: 4,
-        totalTokens: 10
-      }])
+      expect(usages).toEqual([
+        {
+          usageDate: '2026-07-20',
+          inputTokens: 1,
+          outputTokens: 2,
+          cacheCreationTokens: 3,
+          cacheReadTokens: 4,
+          totalTokens: 10
+        }
+      ])
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
@@ -240,14 +259,16 @@ describe('Codex subagent usage cache', () => {
           if (reads === 1) {
             await appendFile(childPath, '{"type":"event_msg"}\n')
           }
-          return [{
-            usageDate: '2026-07-20',
-            inputTokens: 1,
-            outputTokens: 2,
-            cacheCreationTokens: 3,
-            cacheReadTokens: 4,
-            totalTokens: 10
-          }]
+          return [
+            {
+              usageDate: '2026-07-20',
+              inputTokens: 1,
+              outputTokens: 2,
+              cacheCreationTokens: 3,
+              cacheReadTokens: 4,
+              totalTokens: 10
+            }
+          ]
         },
         callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
       })
@@ -277,16 +298,18 @@ describe('Codex subagent usage cache', () => {
 
     try {
       await writeFile(childPath, '{"type":"event_msg"}\n')
-      await expect(withCodexSubagentUsageCache({
-        stateDir,
-        timezone: 'UTC',
-        readChildUsageByDate: async () => {
-          reads += 1
-          await appendFile(childPath, '{"type":"event_msg"}\n')
-          return []
-        },
-        callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
-      })).rejects.toThrow('Codex child session changed while correcting; retry the sync')
+      await expect(
+        withCodexSubagentUsageCache({
+          stateDir,
+          timezone: 'UTC',
+          readChildUsageByDate: async () => {
+            reads += 1
+            await appendFile(childPath, '{"type":"event_msg"}\n')
+            return []
+          },
+          callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
+        })
+      ).rejects.toThrow('Codex child session changed while correcting; retry the sync')
 
       expect(reads).toBe(2)
       await expect(stat(cachePath)).rejects.toMatchObject({ code: 'ENOENT' })
@@ -295,32 +318,37 @@ describe('Codex subagent usage cache', () => {
     }
   })
 
-  test.skipIf(!canCreateSymlinks)('rejects a symbolic link even when it resolves to an unchanged cached child session', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-symlink-'))
-    const childPath = join(stateDir, 'child.jsonl')
-    const targetPath = join(stateDir, 'child-target.jsonl')
+  test.skipIf(!canCreateSymlinks)(
+    'rejects a symbolic link even when it resolves to an unchanged cached child session',
+    async () => {
+      const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-subagent-cache-symlink-'))
+      const childPath = join(stateDir, 'child.jsonl')
+      const targetPath = join(stateDir, 'child-target.jsonl')
 
-    try {
-      await writeFile(childPath, '{"type":"event_msg"}\n')
-      await withCodexSubagentUsageCache({
-        stateDir,
-        timezone: 'UTC',
-        readChildUsageByDate: async () => [],
-        callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
-      })
-      await rename(childPath, targetPath)
-      await symlink(targetPath, childPath)
+      try {
+        await writeFile(childPath, '{"type":"event_msg"}\n')
+        await withCodexSubagentUsageCache({
+          stateDir,
+          timezone: 'UTC',
+          readChildUsageByDate: async () => [],
+          callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
+        })
+        await rename(childPath, targetPath)
+        await symlink(targetPath, childPath)
 
-      await expect(withCodexSubagentUsageCache({
-        stateDir,
-        timezone: 'UTC',
-        readChildUsageByDate: async () => {
-          throw new Error('cache lookup must reject the symbolic link before reading it')
-        },
-        callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
-      })).rejects.toThrow('Unable to fingerprint Codex child session: symbolic links are not supported')
-    } finally {
-      await rm(stateDir, { recursive: true, force: true })
+        await expect(
+          withCodexSubagentUsageCache({
+            stateDir,
+            timezone: 'UTC',
+            readChildUsageByDate: async () => {
+              throw new Error('cache lookup must reject the symbolic link before reading it')
+            },
+            callback: (reader) => reader.read(childPath, '2026-07-20T00:00:00.000Z', 'UTC')
+          })
+        ).rejects.toThrow('Unable to fingerprint Codex child session: symbolic links are not supported')
+      } finally {
+        await rm(stateDir, { recursive: true, force: true })
+      }
     }
-  })
+  )
 })

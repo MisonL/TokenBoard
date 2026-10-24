@@ -14,7 +14,7 @@ import {
   type DueWebhookSubscription
 } from './queries'
 import { getDailyTokenReport } from './report-queries'
-import { dailyReportHistoryRetentionDays } from './report-history'
+import { dailyReportHistoryRetentionDays, pruneExpiredDailyReportHistoryForAllUsers } from './report-history'
 import {
   canSendDailyReportLink,
   cleanupNewDailyReportHistoryShare,
@@ -81,12 +81,32 @@ export async function runDueWebhookNotifications(input: {
   fetcher?: Fetcher
 }) {
   const now = input.now ?? new Date()
-  const due = await listDueWebhookSubscriptions(input.env.DB, now.toISOString(), input.limit ?? webhookCronBatchSize(input.env))
+  const due = await listDueWebhookSubscriptions(
+    input.env.DB,
+    now.toISOString(),
+    input.limit ?? webhookCronBatchSize(input.env)
+  )
   const counts = { checked: due.length, sent: 0, failed: 0, skipped: 0 }
   const fetcher = input.fetcher ?? defaultWebhookFetcher
 
   if (shouldPruneWebhookDeliveryLogs(now)) {
     await pruneDeliveryLogs(input.env, now)
+    // Report history is pruned here as well as after each delivery: a user who disables their
+    // webhook stops delivering, and the retention the settings card promises has to hold either
+    // way. The gate only runs at 00:00 UTC, when a user west of UTC is still on the previous local
+    // day and their per-delivery prune is anchored a day behind this cron's `now`. Passing the UTC
+    // day itself would advance the cutoff past that anchor and drop the oldest row one day before
+    // their window closes; the previous UTC day is a date no user is ahead of, so a row still
+    // inside the window in any timezone is never dropped.
+    try {
+      await pruneExpiredDailyReportHistoryForAllUsers({
+        db: input.env.DB,
+        referenceDate: previousUtcIsoDate(now),
+        retentionDays: dailyReportHistoryRetentionDays(input.env)
+      })
+    } catch (error) {
+      console.error(`TokenBoard daily report history prune failed: ${errorMessage(error)}`)
+    }
   }
 
   for (const subscription of due) {
@@ -105,6 +125,13 @@ export async function runDueWebhookNotifications(input: {
   }
 
   return counts
+}
+
+// The gate that calls this only fires at 00:00 UTC, so the day behind `now` is a date no
+// user is ahead of — west-of-UTC users are still on it, and their per-delivery prune is
+// anchored there.
+function previousUtcIsoDate(now: Date) {
+  return new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10)
 }
 
 async function pruneDeliveryLogs(env: WebhookEnv, now: Date) {
@@ -142,7 +169,9 @@ function logCronSubscriptionFailure(subscription: DueWebhookSubscription, error:
 }
 
 function logSuccessfulDeliveryPersistenceFailure(subscription: DueWebhookSubscription, error: unknown) {
-  console.error(`TokenBoard webhook success persistence failed for subscription ${subscription.id}: ${errorMessage(error)}`)
+  console.error(
+    `TokenBoard webhook success persistence failed for subscription ${subscription.id}: ${errorMessage(error)}`
+  )
 }
 
 async function deliverSubscription(input: DeliverSubscriptionInput) {
@@ -209,9 +238,7 @@ async function prepareReportHistoryForDelivery(
   report: DailyTokenReport
 ): Promise<ReportHistoryDeliveryState> {
   const scheduleSlot = reportHistoryScheduleSlot(input)
-  const retentionDays = scheduleSlot
-    ? dailyReportHistoryRetentionDays(input.env)
-    : 0
+  const retentionDays = scheduleSlot ? dailyReportHistoryRetentionDays(input.env) : 0
   const share = scheduleSlot
     ? await prepareDailyReportHistoryForDelivery({
         env: input.env,

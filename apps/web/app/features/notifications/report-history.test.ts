@@ -4,6 +4,7 @@ import {
   dailyReportHistoryRetentionDays,
   listDailyReportHistory,
   pruneExpiredDailyReportHistory,
+  pruneExpiredDailyReportHistoryForAllUsers,
   retentionCutoffDate
 } from './report-history'
 
@@ -16,15 +17,19 @@ describe('daily report history', () => {
     ['7', 7],
     ['31', 31]
   ])('reads a configured retention value', (value, expected) => {
-    expect(dailyReportHistoryRetentionDays({
-      TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: value
-    })).toBe(expected)
+    expect(
+      dailyReportHistoryRetentionDays({
+        TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: value
+      })
+    ).toBe(expected)
   })
 
   test.each(['', '0', '32', 'abc', '7.5'])('rejects invalid retention value %s', (value) => {
-    expect(() => dailyReportHistoryRetentionDays({
-      TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: value
-    })).toThrow('TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31')
+    expect(() =>
+      dailyReportHistoryRetentionDays({
+        TOKENBOARD_DAILY_REPORT_HISTORY_DAYS: value
+      })
+    ).toThrow('TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31')
   })
 
   test('calculates the retention cutoff date including the current day', () => {
@@ -131,6 +136,22 @@ describe('daily report history', () => {
     expect(bindings[0]).toEqual(['user_1', '2026-04-23'])
   })
 
+  // The per-delivery prune never runs for a user who turned their webhook off, so the scheduled
+  // sweep has to cover every user without a user filter.
+  test('sweeps expired rows for every user regardless of delivery', async () => {
+    const statements: string[] = []
+    const bindings: unknown[][] = []
+    const db = statementDb({ statements, bindings })
+
+    await pruneExpiredDailyReportHistoryForAllUsers({
+      db,
+      referenceDate: '2026-04-29',
+      retentionDays: 7
+    })
+
+    expect(statements[0]).toBe('DELETE FROM daily_report_history WHERE report_date < ?')
+    expect(bindings[0]).toEqual(['2026-04-23'])
+  })
 })
 
 function sampleReport(): DailyTokenReport {
@@ -186,11 +207,7 @@ function historyRow() {
   }
 }
 
-function statementDb(input: {
-  statements?: string[]
-  bindings?: unknown[][]
-  rows?: Array<Record<string, unknown>>
-}) {
+function statementDb(input: { statements?: string[]; bindings?: unknown[][]; rows?: Array<Record<string, unknown>> }) {
   return {
     prepare(sql: string) {
       input.statements?.push(sql)

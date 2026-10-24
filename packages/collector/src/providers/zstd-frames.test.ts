@@ -1,6 +1,7 @@
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import { describe, expect, test } from 'vitest'
-import { decompressZstdFrames, isZstdBuffer, scanZstdFrames } from './zstd-frames'
+
+import { decompressZstdFrame, isZstdBuffer, scanZstdFrames, setZstdDecompressOverride } from './zstd-frames'
 
 // DSH writes frames with a content checksum.
 const checksumOptions = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
@@ -9,42 +10,90 @@ function frame(text: string, options = {}) {
   return zstdCompressSync(Buffer.from(text), options)
 }
 
+// The primitives only. How the frames are combined — the running total against
+// the session budget, and the clamp when that budget is exhausted — lives in the
+// deepseek-harness reader and is exercised there through real session files;
+// re-deriving it here would test a copy that can drift from production.
 describe('zstd frames', () => {
-  test('decodes every frame of a concatenated stream', () => {
-    // Node's own zstdDecompressSync stops after the first frame, which is why
-    // frames are delimited here instead of decompressed in one call.
-    const stream = Buffer.concat([frame('one\n'), frame('two\n'), frame('three\n')])
+  test('a Node build without zstd support throws the actionable per-source error, not a module crash', () => {
+    const compressed = frame('hello')
+    const frames = scanZstdFrames(compressed)
+    setZstdDecompressOverride(undefined)
+    try {
+      expect(() => decompressZstdFrame(compressed, frames[0])).toThrow(/This Node.js build lacks zstd support/)
+    } finally {
+      setZstdDecompressOverride(null)
+    }
+  })
 
-    expect(zstdDecompressSync(stream).toString()).toBe('one\n')
+  test('decodes every frame of a concatenated stream', () => {
+    // Frames are delimited here rather than decompressed in one call. Node 24.19
+    // stopped after the first frame of a concatenated stream and 24.22 decodes
+    // them all, so the passing of a multi-frame buffer to zstdDecompressSync is
+    // not something this module may rely on. The assertion only pins the hazard
+    // the original single-call approach had: whatever the runtime does with the
+    // whole stream, each frame must still come back as its own byte range.
+    const stream = Buffer.concat([frame('one\n'), frame('two\n'), frame('three\n')])
+    const [first, second, third] = scanZstdFrames(stream)
+
     expect(scanZstdFrames(stream)).toHaveLength(3)
-    expect(decompressZstdFrames(stream).toString()).toBe('one\ntwo\nthree\n')
+    expect(decompressZstdFrame(stream, first).toString()).toBe('one\n')
+    expect(decompressZstdFrame(stream, second).toString()).toBe('two\n')
+    expect(decompressZstdFrame(stream, third).toString()).toBe('three\n')
+    expect(zstdDecompressSync(stream).toString()).not.toBe('')
   })
 
   test('decodes frames written with a content checksum', () => {
-    const stream = Buffer.concat([
-      frame('a\n', checksumOptions),
-      frame('b\n', checksumOptions)
-    ])
+    const stream = Buffer.concat([frame('a\n', checksumOptions), frame('b\n', checksumOptions)])
+    const [first, second] = scanZstdFrames(stream)
 
-    expect(scanZstdFrames(stream)).toHaveLength(2)
-    expect(decompressZstdFrames(stream).toString()).toBe('a\nb\n')
+    expect(decompressZstdFrame(stream, first).toString()).toBe('a\n')
+    expect(decompressZstdFrame(stream, second).toString()).toBe('b\n')
+  })
+
+  // The caller passes each frame the budget it has left. Node rejects an
+  // over-limit frame with ERR_BUFFER_TOO_LARGE, which is the signal the reader
+  // turns into "this session log exceeds the cap" instead of "0 bytes allowed".
+  test('enforces a per-frame decompressed output limit', () => {
+    const stream = frame('0123456789')
+    const [range] = scanZstdFrames(stream)
+
+    expect(() => decompressZstdFrame(stream, range, { maxOutputLength: 5 })).toThrow(/larger than 5 bytes/)
+    expect(decompressZstdFrame(stream, range, { maxOutputLength: 10 }).toString()).toBe('0123456789')
+  })
+
+  test('accepts the currently unused frame-header bit', () => {
+    const stream = frame('unused-bit\n')
+    stream[4] |= 0x10
+
+    expect(decompressZstdFrame(stream, scanZstdFrames(stream)[0]).toString()).toBe('unused-bit\n')
+  })
+
+  test('rejects the reserved frame-header bit', () => {
+    const stream = frame('reserved-bit\n')
+    stream[4] |= 0x08
+
+    expect(() => scanZstdFrames(stream)).toThrow('reserved frame-header bit')
   })
 
   test('keeps complete frames when the last one is torn mid-append', () => {
     const complete = Buffer.concat([frame('a\n'), frame('b\n')])
     const tail = frame('c\n')
     const torn = Buffer.concat([complete, tail.subarray(0, tail.length - 4)])
+    const ranges = scanZstdFrames(torn)
 
-    expect(scanZstdFrames(torn)).toHaveLength(2)
-    expect(decompressZstdFrames(torn).toString()).toBe('a\nb\n')
+    // The torn bytes carry no complete frame, so they are not ranges at all.
+    expect(ranges).toEqual(scanZstdFrames(complete))
+    expect(ranges.map((range) => decompressZstdFrame(torn, range).toString())).toEqual(['a\n', 'b\n'])
   })
 
   test('round-trips a payload large enough to span several blocks', () => {
     const text = `${Array.from({ length: 20_000 }, (_, index) => `{"n":${index}}`).join('\n')}\n`
     const stream = Buffer.concat([frame(text, checksumOptions), frame('tail\n')])
+    const [large, tail] = scanZstdFrames(stream)
 
-    expect(scanZstdFrames(stream)).toHaveLength(2)
-    expect(decompressZstdFrames(stream).toString()).toBe(`${text}tail\n`)
+    expect(decompressZstdFrame(stream, large).toString()).toBe(text)
+    expect(decompressZstdFrame(stream, tail).toString()).toBe('tail\n')
   })
 
   test('steps over a skippable frame', () => {
@@ -52,9 +101,13 @@ describe('zstd frames', () => {
     skippable.writeUInt32LE(0x184d2a50, 0)
     skippable.writeUInt32LE(4, 4)
     const stream = Buffer.concat([skippable, frame('after\n')])
+    const ranges = scanZstdFrames(stream)
 
-    expect(scanZstdFrames(stream)).toHaveLength(1)
-    expect(decompressZstdFrames(stream).toString()).toBe('after\n')
+    // The skippable frame is not reported, and the real frame's range starts
+    // after it rather than at the start of the stream.
+    expect(ranges).toHaveLength(1)
+    expect(ranges[0].start).toBe(skippable.length)
+    expect(decompressZstdFrame(stream, ranges[0]).toString()).toBe('after\n')
   })
 
   test('rejects a stream whose frame magic is wrong', () => {
@@ -66,7 +119,6 @@ describe('zstd frames', () => {
   test('treats an empty or truncated header as no frames', () => {
     expect(scanZstdFrames(Buffer.alloc(0))).toEqual([])
     expect(scanZstdFrames(frame('a\n').subarray(0, 3))).toEqual([])
-    expect(decompressZstdFrames(Buffer.alloc(0)).toString()).toBe('')
   })
 
   test('recognizes a Zstandard buffer', () => {

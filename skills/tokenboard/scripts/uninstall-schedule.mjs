@@ -3,26 +3,32 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, rmSync } from 'node:fs'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import { configDir, readConfig } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
 import { dailyScheduleTimes, launchAgentLabel, serviceName, timerName } from './schedule.mjs'
 
+const usage = 'Usage: uninstall-schedule.mjs'
+
 export function uninstallSchedule(options = {}) {
   const env = options.env || process.env
-  const config = options.config || readOptionalConfig(options.readConfig || readConfig)
-  const scheduleTimes = readScheduleTimes(config)
   const runtime = {
     platform: options.platform || env.TOKENBOARD_INSTALL_SCHEDULE_TEST_PLATFORM || platform(),
     homeDir: options.homeDir || homedir(),
     configDir: options.configDir || configDir(),
     env,
     spawn: options.spawn || spawnSync,
-    getUid: options.getUid || (() => Number.parseInt(env.TOKENBOARD_INSTALL_SCHEDULE_TEST_UID || process.getuid?.() || 0, 10)),
+    getUid:
+      options.getUid ||
+      (() => Number.parseInt(env.TOKENBOARD_INSTALL_SCHEDULE_TEST_UID || process.getuid?.() || 0, 10)),
     exists: options.exists || existsSync,
     rm: options.rm || rmSync,
-    log: options.log || console.log
+    log: options.log || console.log,
+    error: options.error || console.error
   }
+  const config = options.config || readOptionalConfig(options.readConfig || readConfig, runtime)
+  const scheduleTimes = readScheduleTimes(config)
 
   if (runtime.platform === 'win32') {
     return uninstallWindows(runtime, scheduleTimes)
@@ -38,7 +44,15 @@ export function uninstallSchedule(options = {}) {
 }
 
 function uninstallWindows(runtime, scheduleTimes) {
-  run(runtime, 'powershell.exe', buildWindowsScheduleCleanupArgs(), { allowFailure: true })
+  // `allowFailure` keeps a non-zero exit from aborting the uninstall, but it must not be
+  // silent: `uninstall` reports the schedule as removed either way, so a swallowed failure
+  // would leave the task registered with no trace. Report it explicitly instead.
+  const result = run(runtime, 'powershell.exe', buildWindowsScheduleCleanupArgs(), { allowFailure: true })
+  if (result.status !== 0) {
+    runtime.error(
+      `TokenBoard scheduled-task cleanup failed with exit code ${result.status ?? 1}; the task may still be registered.`
+    )
+  }
   runtime.log('TokenBoard scheduled tasks removed.')
   return { platform: 'win32', scheduleTimes }
 }
@@ -74,10 +88,13 @@ function uninstallLinux(runtime) {
   return { platform: 'linux', unitDir }
 }
 
-function readOptionalConfig(readConfig) {
+function readOptionalConfig(readConfig, runtime) {
   try {
     return readConfig()
-  } catch {
+  } catch (error) {
+    // Uninstall must still remove the schedule when the config is unreadable, but the
+    // failure must not be silent: the reported schedule times fall back to defaults.
+    runtime.error(`TokenBoard config could not be read (${errorMessage(error)}); using default schedule times.`)
     return {}
   }
 }
@@ -87,10 +104,15 @@ function readScheduleTimes(config) {
     return dailyScheduleTimes
   }
 
-  const scheduleTimes = config.scheduleTimes.filter((time) => typeof time === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(time))
+  const scheduleTimes = config.scheduleTimes.filter(
+    (time) => typeof time === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(time)
+  )
   return scheduleTimes.length > 0 ? scheduleTimes : dailyScheduleTimes
 }
 
+// A missing scheduler command is not a failure to uninstall: the macOS and Linux paths already
+// tolerate it, and a host without the platform's scheduler has no schedule to remove. Only a
+// command that ran and returned non-zero is worth reporting.
 function run(runtime, command, args, options = {}) {
   const result = runtime.spawn(command, args, {
     stdio: options.allowFailure ? 'ignore' : 'inherit',
@@ -102,9 +124,11 @@ function run(runtime, command, args, options = {}) {
   if (result.status !== 0 && !options.allowFailure) {
     throw new Error(`${command} failed with exit code ${result.status ?? 1}`)
   }
+  return result
 }
 
 function runCli() {
+  if (printHelpIfRequested(process.argv.slice(2), usage)) return
   try {
     uninstallSchedule()
   } catch (error) {
@@ -113,6 +137,6 @@ function runCli() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
 }

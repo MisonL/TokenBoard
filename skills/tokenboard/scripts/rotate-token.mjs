@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main.mjs'
 import {
   configDir,
   configPath,
@@ -13,6 +13,7 @@ import {
 import { withCredentialsLock } from './credentials-lock.mjs'
 import { writeDeviceLink } from './device-link.mjs'
 import { errorMessage } from './error-message.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 
 export function applyRotatedToken({
   currentConfig,
@@ -74,6 +75,14 @@ function readServerOrigin(flags) {
 }
 
 function runCli() {
+  if (
+    printHelpIfRequested(
+      process.argv.slice(2),
+      'Usage: rotate-token.mjs --upload-token TOKEN --device-id ID --installation-id ID [--endpoint URL | --server-origin ORIGIN] [--install-claim CLAIM]'
+    )
+  ) {
+    return
+  }
   try {
     if (!existsSync(configPath())) {
       throw new Error(`TokenBoard config not found: ${configPath()}`)
@@ -97,6 +106,6 @@ function runCli() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
 }

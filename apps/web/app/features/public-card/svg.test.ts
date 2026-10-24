@@ -27,10 +27,13 @@ describe('public card svg renderer', () => {
     expect(svg).toContain('总额度')
     expect(svg).toContain('本月 token')
     expect(svg).toContain('本月额度')
-    expect(svg).toContain('width="100%"')
-    expect(svg).toContain('height="auto"')
+    // The intrinsic size is fixed rather than expressed as a style attribute: the response
+    // carries `style-src 'self'`, which drops style attributes, and the `max-width` that
+    // kept the card from stretching was lost with it. A style attribute must not come back.
+    expect(svg).toContain('width="520" height="220"')
+    expect(svg).toContain('viewBox="0 0 520 220"')
     expect(svg).toContain('color-scheme="dark"')
-    expect(svg).toContain('style="display:block;width:100%;height:auto;max-width:520px;color-scheme:dark;-webkit-force-dark:none"')
+    expect(svg).not.toContain('style=')
     expect(svg).toContain('#161a13')
     expect(svg).toContain('url(#glow)')
   })
@@ -56,9 +59,9 @@ describe('public card svg renderer', () => {
     expect(svg).toContain('1,200')
     expect(svg).toContain('$0.20')
     expect(svg).toContain('color-scheme="only light"')
-    expect(svg).toContain('width="100%"')
-    expect(svg).toContain('height="auto"')
-    expect(svg).toContain('style="display:block;width:100%;height:auto;max-width:520px;color-scheme:only light;-webkit-force-dark:none"')
+    expect(svg).toContain('width="520" height="220"')
+    expect(svg).toContain('viewBox="0 0 520 220"')
+    expect(svg).not.toContain('style=')
     expect(svg).toContain('#fffef8')
     expect(svg).toContain('fill="#365314"')
     expect(svg).not.toContain('fill="url(#glow)"')
@@ -94,14 +97,17 @@ describe('public card svg renderer', () => {
   })
 
   test('marks cost metrics when a source reports no cost', () => {
-    const svg = renderUsageCardSvg({
-      ...input,
-      totalCostAvailable: false,
-      monthCostAvailable: false,
-      todayCostAvailable: true
-    }, {
-      metrics: ['totalCost', 'monthCost', 'todayCost']
-    })
+    const svg = renderUsageCardSvg(
+      {
+        ...input,
+        totalCostAvailable: false,
+        monthCostAvailable: false,
+        todayCostAvailable: true
+      },
+      {
+        metrics: ['totalCost', 'monthCost', 'todayCost']
+      }
+    )
 
     expect(svg).toContain('总额度*')
     expect(svg).toContain('本月额度*')
@@ -110,27 +116,134 @@ describe('public card svg renderer', () => {
   })
 
   test('does not add unavailable-cost notes when no cost metric is visible', () => {
-    const svg = renderUsageCardSvg({
-      ...input,
-      totalCostAvailable: false
-    }, {
-      metrics: ['totalTokens', 'monthTokens']
-    })
+    const svg = renderUsageCardSvg(
+      {
+        ...input,
+        totalCostAvailable: false
+      },
+      {
+        metrics: ['totalTokens', 'monthTokens']
+      }
+    )
 
     expect(svg).not.toContain('部分来源费用不可用')
     expect(svg).not.toContain('总 token*')
   })
 
   test('does not add unavailable-cost notes for metrics truncated by the layout', () => {
-    const svg = renderUsageCardSvg({
-      ...input,
-      todayCostAvailable: false
-    }, {
-      layout: 'wide',
-      metrics: ['totalTokens', 'monthTokens', 'todayTokens', 'todayCost']
-    })
+    const svg = renderUsageCardSvg(
+      {
+        ...input,
+        todayCostAvailable: false
+      },
+      {
+        layout: 'wide',
+        metrics: ['totalTokens', 'monthTokens', 'todayTokens', 'todayCost']
+      }
+    )
 
     expect(svg).not.toContain('今日额度')
     expect(svg).not.toContain('部分来源费用不可用')
+  })
+})
+
+// The card is the surface a reader encounters without any other context: it is embedded in a
+// README and read from anywhere. "今日" on it is the *owner's* local day, and a viewer several
+// zones away has no way to know that from the numbers — the same instant is two different dates
+// either side of the boundary. Naming the zone and its offset is what makes the figure legible
+// to a reader who is not in it.
+describe('public card timezone caption', () => {
+  test('states the owner zone beside the today metrics', () => {
+    const svg = renderUsageCardSvg({ ...input, timezoneLabel: 'UTC+8' }, { metrics: ['todayTokens', 'totalTokens'] })
+
+    expect(svg).toContain('data-card-timezone="true"')
+    expect(svg).toContain('UTC+8')
+  })
+
+  test('labels the caption in English for an English card', () => {
+    const svg = renderUsageCardSvg(
+      { ...input, timezoneLabel: 'UTC-7' },
+      { language: 'en', metrics: ['todayTokens', 'totalTokens'] }
+    )
+
+    expect(svg).toContain('Today:')
+    expect(svg).toContain('UTC-7')
+  })
+
+  // The note shares the bottom line with the cost-unavailable note, and the longest IANA zone
+  // name made an English card's two notes overlap. The offset answers "which day" on its own —
+  // two zones at the same offset turn the day over at the same instant — so the name is left off
+  // rather than allowed to collide. This pins the note to a length that always fits.
+  test('keeps the note short enough not to collide with the cost note', () => {
+    const svg = renderUsageCardSvg(
+      {
+        ...input,
+        totalCostAvailable: false,
+        timezoneLabel: 'UTC-3'
+      },
+      { language: 'en', metrics: ['todayTokens', 'totalCost'] }
+    )
+
+    expect(svg).toContain('Today: UTC-3')
+    expect(svg).not.toContain('ComodRivadavia')
+  })
+
+  // The caption only has meaning for a metric whose value depends on the boundary. A card
+  // showing totals alone would carry a note about a day it does not display.
+  test('omits the caption when no today metric is shown', () => {
+    const svg = renderUsageCardSvg({ ...input, timezoneLabel: 'UTC+8' }, { metrics: ['totalTokens', 'monthTokens'] })
+
+    expect(svg).not.toContain('data-card-timezone="true"')
+  })
+
+  // Cards configured before this existed, and the JSON/SVG fixtures, carry no zone. The note
+  // would be a guess, so it is left off rather than filled in with UTC.
+  test('omits the caption when the input carries no zone', () => {
+    const svg = renderUsageCardSvg(input, { metrics: ['todayTokens', 'totalTokens'] })
+
+    expect(svg).not.toContain('data-card-timezone="true"')
+  })
+
+  // It shares the bottom line with the cost-unavailable note, so it has to sit on the other
+  // side rather than on top of it.
+  test('does not collide with the cost-unavailable note', () => {
+    const svg = renderUsageCardSvg(
+      { ...input, totalCostAvailable: false, timezoneLabel: 'UTC+8' },
+      { metrics: ['todayTokens', 'totalCost'] }
+    )
+
+    expect(svg).toContain('部分来源费用不可用')
+    expect(svg).toContain('data-card-timezone="true"')
+    expect(svg).toContain('text-anchor="end"')
+  })
+
+  // Every user-controlled string reaches the card as XML text, so it must be entity-encoded or
+  // a display name can close a tag and inject markup into the document. The implementation has
+  // always escaped; this pins it so a refactor cannot drop it silently.
+  test('escapes user-controlled fields out of the XML document', () => {
+    const svg = renderUsageCardSvg(
+      {
+        ...input,
+        displayName: '<script>alert(1)</script>',
+        timezoneLabel: 'A & B'
+      },
+      {
+        // `title` and `subtitle` are the operator's own config strings, but they still ride into
+        // XML text nodes, so they are covered here too. `displayName` reaches the subtitle when
+        // the config does not override it, which is the user-controlled path that matters.
+        title: 'Eve &amp; Co',
+        showPublicUrl: false,
+        metrics: ['todayTokens', 'totalTokens']
+      }
+    )
+
+    // The raw payload must never appear verbatim …
+    expect(svg).not.toContain('<script>')
+    // … and the entity-encoded form must, in both the visible text and the aria-label/title.
+    expect(svg).toContain('&lt;script&gt;')
+    expect(svg).toContain('Eve &amp;amp; Co')
+    // A bare `&` becomes `&amp;`; the double-encoding above is the correct result of encoding an
+    // already-encoded title, and confirms `&` itself is encoded rather than passed through.
+    expect(svg).toContain('A &amp; B')
   })
 })

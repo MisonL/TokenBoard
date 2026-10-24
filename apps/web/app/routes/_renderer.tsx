@@ -1,69 +1,10 @@
 import { jsxRenderer } from 'hono/jsx-renderer'
 import { Link } from 'honox/server'
-import {
-  getThemeToggleTargetLabel,
-  initialColorScheme,
-  mobileNightModeOptOutMeta,
-  themeChromeColors,
-  themeColorSchemes,
-  themeKey
-} from '../lib/theme'
+import { initialColorScheme, mobileNightModeOptOutMeta, themeChromeColors } from '../lib/theme'
+import { themeScript } from '../lib/theme-script'
 
 type Manifest = Record<string, { file?: string }>
 type ManifestModule = { default?: Manifest }
-
-const themeScript = `
-(function () {
-  var themeKey = ${JSON.stringify(themeKey)}
-  var themeChromeColors = ${JSON.stringify(themeChromeColors)}
-  var themeColorSchemes = ${JSON.stringify(themeColorSchemes)}
-
-  function getTheme() {
-    try {
-      var storedTheme = localStorage.getItem(themeKey)
-      if (storedTheme === 'light' || storedTheme === 'dark') return storedTheme
-    } catch (_) {}
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
-  }
-
-  function syncThemeMeta(theme) {
-    var colorScheme = themeColorSchemes[theme] || themeColorSchemes.dark
-    document.documentElement.style.colorScheme = colorScheme
-    var themeColorMeta = document.querySelector('meta[name="theme-color"]')
-    if (themeColorMeta) {
-      themeColorMeta.setAttribute('content', themeChromeColors[theme] || themeChromeColors.dark)
-    }
-    var colorSchemeMeta = document.querySelector('meta[name="color-scheme"]')
-    if (colorSchemeMeta) {
-      colorSchemeMeta.setAttribute('content', colorScheme)
-    }
-  }
-
-  function applyTheme(theme) {
-    document.documentElement.classList.toggle('theme-light', theme === 'light')
-    document.documentElement.dataset.theme = theme
-    syncThemeMeta(theme)
-    document.querySelectorAll('[data-theme-toggle]').forEach(function (button) {
-      var targetThemeLabel = theme === 'light' ? ${JSON.stringify(getThemeToggleTargetLabel('light'))} : ${JSON.stringify(getThemeToggleTargetLabel('dark'))}
-      button.setAttribute('aria-label', '切换到' + targetThemeLabel + '主题')
-      button.setAttribute('title', '切换到' + targetThemeLabel + '主题')
-    })
-  }
-
-  applyTheme(getTheme())
-
-  document.addEventListener('click', function (event) {
-    var target = event.target && event.target.closest ? event.target.closest('[data-theme-toggle]') : null
-    if (!target) return
-
-    var nextTheme = document.documentElement.classList.contains('theme-light') ? 'dark' : 'light'
-    try {
-      localStorage.setItem(themeKey, nextTheme)
-    } catch (_) {}
-    applyTheme(nextTheme)
-  })
-})()
-`
 
 export default jsxRenderer(({ children }) => {
   const clientScriptSrc = getClientScriptSrc()
@@ -82,7 +23,12 @@ export default jsxRenderer(({ children }) => {
         <Link href="/app/style.css" rel="stylesheet" />
         <script type="module" src={clientScriptSrc} async />
       </head>
-      <body>{children}</body>
+      <body>
+        <a class="app-skip-link" href="#app-content">
+          跳到主要内容
+        </a>
+        {children}
+      </body>
     </html>
   )
 })

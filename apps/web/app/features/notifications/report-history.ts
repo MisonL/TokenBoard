@@ -2,11 +2,7 @@ import { randomId } from '../../lib/crypto'
 import type { Bindings } from '../../lib/db'
 import { toIsoDate } from '../../lib/time'
 import type { DailyTokenReport } from './adapters'
-import {
-  dailyReportUrl,
-  toDailyReportHistoryItem,
-  type DailyReportHistoryRow
-} from './report-history-item'
+import { dailyReportUrl, toDailyReportHistoryItem, type DailyReportHistoryRow } from './report-history-item'
 
 export const defaultDailyReportHistoryDays = 30
 export const maxDailyReportHistoryDays = 31
@@ -51,7 +47,7 @@ export async function saveDailyReportHistory(input: {
   const generatedAt = input.generatedAt.toISOString()
 
   const row = await insertDailyReportHistory(input, id, generatedAt)
-  const saved = row ?? await updateDailyReportHistory(input, generatedAt)
+  const saved = row ?? (await updateDailyReportHistory(input, generatedAt))
 
   if (!saved) {
     throw new Error('Daily report history was not persisted')
@@ -77,7 +73,7 @@ export async function prepareDailyReportHistoryShare(input: {
   const id = input.id ?? randomId('drr')
   const generatedAt = input.generatedAt.toISOString()
   const row = await insertDailyReportHistory(input, id, generatedAt)
-  const share = row ?? await getDailyReportHistoryShare(input)
+  const share = row ?? (await getDailyReportHistoryShare(input))
 
   if (!share) {
     throw new Error('Daily report history share was not prepared')
@@ -235,11 +231,7 @@ async function getDailyReportHistoryShare(input: {
     .first<DailyReportHistoryShareRow>()
 }
 
-export async function listDailyReportHistory(input: {
-  db: D1Database
-  userId: string
-  limit?: number
-}) {
+export async function listDailyReportHistory(input: { db: D1Database; userId: string; limit?: number }) {
   const rows = await input.db
     .prepare(
       `
@@ -283,6 +275,23 @@ export async function pruneExpiredDailyReportHistory(input: {
     .prepare('DELETE FROM daily_report_history WHERE user_id = ? AND report_date < ?')
     .bind(input.userId, cutoffDate)
     .run()
+}
+
+/**
+ * Sweeps expired report history for every user, independent of delivery.
+ *
+ * The per-delivery prune only runs when a webhook is enabled and a delivery succeeds, so a user
+ * who turns their webhook off (or deletes it) would keep rows past the retention the settings card
+ * promises. `referenceDate` is the caller's "today"; callers pass a date no user is ahead of, so a
+ * row still inside the window in any timezone is never dropped.
+ */
+export async function pruneExpiredDailyReportHistoryForAllUsers(input: {
+  db: D1Database
+  referenceDate: string
+  retentionDays: number
+}) {
+  const cutoffDate = retentionCutoffDate(input.referenceDate, input.retentionDays)
+  await input.db.prepare('DELETE FROM daily_report_history WHERE report_date < ?').bind(cutoffDate).run()
 }
 
 export function retentionCutoffDate(reportDate: string, retentionDays: number) {

@@ -42,7 +42,14 @@ describe('UsageDetailsPanel', () => {
               cacheReadRate: 3456 / 123456,
               costUsd: 42.31,
               sessionCount: 12,
-              sourceSplit: [{ source: 'codex', totalTokens: 123456, totalTokensWithoutCacheRead: 120000, cacheReadRate: 3456 / 123456 }],
+              sourceSplit: [
+                {
+                  source: 'codex',
+                  totalTokens: 123456,
+                  totalTokensWithoutCacheRead: 120000,
+                  cacheReadRate: 3456 / 123456
+                }
+              ],
               modelRows: []
             }
           ],
@@ -110,15 +117,59 @@ describe('UsageDetailsPanel', () => {
     )
 
     expect(html).toContain('12.01P')
-    expect(html).toContain('(1.2京)')
     expect(html).toContain('$133.33B')
-    expect(html).toContain('(1333.33亿 USD)')
     expect(html).toContain('2.22B')
-    expect(html).toContain('(22.22亿)')
     expect(html).toContain('title="12,007,199,254,740,992"')
-    expect(html).toContain('<span class="sr-only">范围 tokens: 12,007,199,254,740,992 (12.01P, 1.2京)</span>')
+    expect(html).toContain('<span class="sr-only">范围 tokens: 12,007,199,254,740,992 (12.01P)</span>')
     expect(html).toContain('aria-hidden="true"')
-    expect(html).toContain('data-usage-metric-detail="true"')
+    expect(html).toContain('当前筛选范围内没有用量。')
+    expect(html).not.toContain('DailySummaryHeader')
+  })
+
+  // The real page always has one seeded row per calendar day, so "no usage" shows up as a range
+  // of zero rows, not an empty array. The empty state has to key off the zero totals.
+  test('shows the empty state for a range seeded with zero-total days', async () => {
+    const html = await renderToString(
+      <UsageDetailsPanel
+        devices={[]}
+        filters={{ source: 'all', startDate: '2026-05-25', endDate: '2026-05-26', deviceId: 'all', modelQuery: '' }}
+        details={{
+          summary: {
+            totalTokens: 0,
+            totalTokensWithoutCacheRead: 0,
+            cacheReadRate: 0,
+            costUsd: 0,
+            sessionCount: 0,
+            activeDays: 0
+          },
+          dailyRows: [
+            {
+              usageDate: '2026-05-26',
+              totalTokens: 0,
+              totalTokensWithoutCacheRead: 0,
+              cacheReadRate: 0,
+              costUsd: 0,
+              sessionCount: 0,
+              sourceSplit: [],
+              modelRows: []
+            },
+            {
+              usageDate: '2026-05-25',
+              totalTokens: 0,
+              totalTokensWithoutCacheRead: 0,
+              cacheReadRate: 0,
+              costUsd: 0,
+              sessionCount: 0,
+              sourceSplit: [],
+              modelRows: []
+            }
+          ],
+          modelRows: []
+        }}
+      />
+    )
+
+    expect(html).toContain('当前筛选范围内没有用量。')
   })
 
   test('renders empty source split text with readable muted contrast', async () => {
@@ -134,15 +185,34 @@ describe('UsageDetailsPanel', () => {
         }}
         details={{
           summary: {
-            totalTokens: 0,
-            totalTokensWithoutCacheRead: 0,
-            cacheReadRate: 0,
-            costUsd: 0,
-            sessionCount: 0,
-            activeDays: 0
+            totalTokens: 1000,
+            totalTokensWithoutCacheRead: 900,
+            cacheReadRate: 0.1,
+            costUsd: 1.5,
+            sessionCount: 2,
+            activeDays: 2
           },
           dailyRows: [
             {
+              usageDate: '2026-05-26',
+              totalTokens: 1000,
+              totalTokensWithoutCacheRead: 900,
+              cacheReadRate: 0.1,
+              costUsd: 1.5,
+              sessionCount: 2,
+              sourceSplit: [
+                {
+                  source: 'codex',
+                  totalTokens: 1000,
+                  totalTokensWithoutCacheRead: 900,
+                  cacheReadRate: 0.1
+                }
+              ],
+              modelRows: []
+            },
+            {
+              // A day with no usage of its own still renders beside its neighbours, and that
+              // is where the muted-but-readable 无用量 placeholder shows up.
               usageDate: '2026-05-25',
               totalTokens: 0,
               totalTokensWithoutCacheRead: 0,
@@ -190,37 +260,43 @@ describe('UsageDetailsPanel', () => {
               cacheReadRate: 0.1,
               costUsd: 0,
               sessionCount: 2,
-              sourceSplit: [{ source: 'antigravity-ide', totalTokens: 1000, totalTokensWithoutCacheRead: 900, cacheReadRate: 0.1 }],
-              modelRows: [{
-                usageDate: '2026-06-10',
-                source: 'antigravity-ide',
-                model: 'Gemini 3.5 Flash',
-                inputTokens: 500,
-                outputTokens: 400,
-                cacheCreationTokens: 0,
-                cacheReadTokens: 100,
-                totalTokens: 1000,
-                totalTokensWithoutCacheRead: 900,
-                cacheReadRate: 0.1,
-                costUsd: 0,
-                sessionCount: 2
-              }]
+              sourceSplit: [
+                { source: 'antigravity-ide', totalTokens: 1000, totalTokensWithoutCacheRead: 900, cacheReadRate: 0.1 }
+              ],
+              modelRows: [
+                {
+                  usageDate: '2026-06-10',
+                  source: 'antigravity-ide',
+                  model: 'Gemini 3.5 Flash',
+                  inputTokens: 500,
+                  outputTokens: 400,
+                  cacheCreationTokens: 0,
+                  cacheReadTokens: 100,
+                  totalTokens: 1000,
+                  totalTokensWithoutCacheRead: 900,
+                  cacheReadRate: 0.1,
+                  costUsd: 0,
+                  sessionCount: 2
+                }
+              ]
             }
           ],
-          modelRows: [{
-            usageDate: '2026-06-10',
-            source: 'antigravity-ide',
-            model: 'Gemini 3.5 Flash',
-            inputTokens: 500,
-            outputTokens: 400,
-            cacheCreationTokens: 0,
-            cacheReadTokens: 100,
-            totalTokens: 1000,
-            totalTokensWithoutCacheRead: 900,
-            cacheReadRate: 0.1,
-            costUsd: 0,
-            sessionCount: 2
-          }]
+          modelRows: [
+            {
+              usageDate: '2026-06-10',
+              source: 'antigravity-ide',
+              model: 'Gemini 3.5 Flash',
+              inputTokens: 500,
+              outputTokens: 400,
+              cacheCreationTokens: 0,
+              cacheReadTokens: 100,
+              totalTokens: 1000,
+              totalTokensWithoutCacheRead: 900,
+              cacheReadRate: 0.1,
+              costUsd: 0,
+              sessionCount: 2
+            }
+          ]
         }}
       />
     )
@@ -231,3 +307,45 @@ describe('UsageDetailsPanel', () => {
     expect(html).not.toContain('不含 agy')
   })
 })
+
+// The date column here is the owner's local calendar day, exactly as on the dashboard and the
+// card. The subtitle named the window but not the zone it was measured in, so a user comparing
+// this page against a report from another tool had no way to see why the days differed.
+describe('UsageDetailsPanel timezone caption', () => {
+  test('names the zone the date window is measured in', async () => {
+    const html = await renderToString(
+      <UsageDetailsPanel
+        devices={[]}
+        filters={{
+          source: 'all',
+          startDate: '2026-04-26',
+          endDate: '2026-05-25',
+          deviceId: 'all',
+          modelQuery: ''
+        }}
+        details={emptyDetails()}
+        timezone="Asia/Shanghai"
+        timezoneLabel="UTC+8"
+      />
+    )
+
+    expect(html).toContain('data-usage-details-timezone="true"')
+    expect(html).toContain('Asia/Shanghai')
+    expect(html).toContain('UTC+8')
+  })
+})
+
+function emptyDetails() {
+  return {
+    summary: {
+      totalTokens: 0,
+      totalTokensWithoutCacheRead: 0,
+      cacheReadRate: 0,
+      costUsd: 0,
+      sessionCount: 0,
+      activeDays: 0
+    },
+    dailyRows: [],
+    modelRows: []
+  }
+}

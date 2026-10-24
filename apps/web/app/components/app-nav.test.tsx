@@ -15,7 +15,6 @@ describe('AppNav', () => {
   test('wraps authenticated navigation without clipping narrow viewports', async () => {
     const html = await renderToString(<AppNav active="dashboard" email="user@example.com" />)
 
-    expect(html).toContain('data-app-nav-scroll="true"')
     expect(html).toContain('flex min-w-0 flex-wrap')
     expect(html).not.toContain('overflow-x-auto')
     expect(html).not.toContain('min-w-max')
@@ -38,5 +37,25 @@ describe('AppNav', () => {
     expect(html).toContain('h-9 w-9')
     expect(html).toContain('px-3 py-2')
     expect(html).not.toContain('xl:px-3 xl:py-2')
+  })
+
+  // Every page has exactly one `<nav>` and one `<main>`, so the nav has to be labelled — an
+  // unlabelled nav is a landmark a screen-reader user cannot identify or jump between.
+  test('labels the navigation landmark', async () => {
+    const html = await renderToString(<AppNav isAuthenticated={false} />)
+
+    expect(html).toContain('aria-label="主导航"')
+  })
+
+  // The shell's "skip to content" link targets `#app-content`. On nav-bearing pages the anchor
+  // is rendered after the nav (not on `<main>`, which this app wraps around the nav, so an
+  // anchor there would land the user before the very navigation they meant to skip). Pages
+  // without a nav (404/error) render their own copy — see `skip-link-target.tsx`.
+  test('renders the skip-link target just after the nav landmark', async () => {
+    const html = await renderToString(<AppNav isAuthenticated={false} />)
+
+    expect(html).toContain('id="app-content"')
+    expect(html).toContain('tabindex="-1"')
+    expect(html.indexOf('</nav>')).toBeLessThan(html.indexOf('id="app-content"'))
   })
 })

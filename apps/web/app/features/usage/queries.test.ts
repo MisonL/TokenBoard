@@ -70,11 +70,17 @@ describe('getUsageSummary', () => {
     expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
     expect(sqlStatements[0]).toContain('month_usage AS')
     expect(sqlStatements[0]).toContain('daily_usage.usage_date >= (SELECT month_start FROM params)')
+    expect(sqlStatements[0]).toContain(
+      "effective_daily_usage_summary.usage_date < date(params.month_start, '+1 month')"
+    )
     expect(sqlStatements[0]).not.toContain('CASE WHEN daily_usage_summary.usage_date')
     expect(sqlStatements[0]).toContain('total_tokens_without_cache_read')
     expect(sqlStatements[0]).toContain('deduped_daily_usage')
     expect(sqlStatements[0]).toContain('ORDER BY total_tokens_without_cache_read DESC, total_tokens DESC')
-    expect(sqlStatements[0]).toContain('LEFT JOIN device_stats')
+    // Device stats are an aggregate scoped to the signed-in user, so they always produce exactly
+    // one row and join unconditionally rather than by user id.
+    expect(sqlStatements[0]).toContain('FROM devices\n          WHERE user_id = (SELECT user_id FROM params)')
+    expect(sqlStatements[0]).toContain('CROSS JOIN device_stats')
   })
 
   test('can read dashboard totals in summary strict mode without raw usage fallback', async () => {
@@ -139,8 +145,20 @@ describe('getDailyUsageTrend', () => {
               async all() {
                 return {
                   results: [
-                    { usageDate: '2026-04-27', totalTokens: 120, totalTokensWithoutCacheRead: 100, costUsd: 0.12 },
-                    { usageDate: '2026-04-29', totalTokens: 340, totalTokensWithoutCacheRead: 240, costUsd: 0.34 }
+                    {
+                      usageDate: '2026-04-27',
+                      totalTokens: 120,
+                      totalTokensWithoutCacheRead: 100,
+                      costUsd: 0.12,
+                      costAvailable: 1
+                    },
+                    {
+                      usageDate: '2026-04-29',
+                      totalTokens: 340,
+                      totalTokensWithoutCacheRead: 240,
+                      costUsd: 0.34,
+                      costAvailable: 0
+                    }
                   ]
                 }
               }
@@ -157,18 +175,32 @@ describe('getDailyUsageTrend', () => {
     })
 
     expect(trend).toEqual([
-      { usageDate: '2026-04-27', totalTokens: 120, totalTokensWithoutCacheRead: 100, cacheReadRate: 20 / 120, costUsd: 0.12 },
-      { usageDate: '2026-04-28', totalTokens: 0, totalTokensWithoutCacheRead: 0, cacheReadRate: 0, costUsd: 0 },
-      { usageDate: '2026-04-29', totalTokens: 340, totalTokensWithoutCacheRead: 240, cacheReadRate: 100 / 340, costUsd: 0.34 }
+      {
+        usageDate: '2026-04-27',
+        totalTokens: 120,
+        totalTokensWithoutCacheRead: 100,
+        cacheReadRate: 20 / 120,
+        costUsd: 0.12,
+        costAvailable: true
+      },
+      {
+        usageDate: '2026-04-28',
+        totalTokens: 0,
+        totalTokensWithoutCacheRead: 0,
+        cacheReadRate: 0,
+        costUsd: 0,
+        costAvailable: true
+      },
+      {
+        usageDate: '2026-04-29',
+        totalTokens: 340,
+        totalTokensWithoutCacheRead: 240,
+        cacheReadRate: 100 / 340,
+        costUsd: 0.34,
+        costAvailable: false
+      }
     ])
-    expect(bindings[0]).toEqual([
-      'user_1',
-      '2026-04-27',
-      '2026-04-29',
-      'user_1',
-      '2026-04-27',
-      '2026-04-29'
-    ])
+    expect(bindings[0]).toEqual(['user_1', '2026-04-27', '2026-04-29', 'user_1', '2026-04-27', '2026-04-29'])
     expect(sqlStatements[0]).toContain('effective_daily_usage_summary')
     expect(sqlStatements[0]).toContain('fallback_daily_usage_summary')
     expect(sqlStatements[0]).toContain('SUM(total_tokens_without_cache_read)')
@@ -262,7 +294,9 @@ describe('getUsageDetails', () => {
         cacheReadRate: 20 / 120,
         costUsd: 0.12,
         sessionCount: 2,
-        sourceSplit: [{ source: 'claude-code', totalTokens: 120, totalTokensWithoutCacheRead: 100, cacheReadRate: 20 / 120 }],
+        sourceSplit: [
+          { source: 'claude-code', totalTokens: 120, totalTokensWithoutCacheRead: 100, cacheReadRate: 20 / 120 }
+        ],
         modelRows: []
       },
       {
@@ -282,7 +316,9 @@ describe('getUsageDetails', () => {
         cacheReadRate: 100 / 340,
         costUsd: 0.34,
         sessionCount: 3,
-        sourceSplit: [{ source: 'claude-code', totalTokens: 340, totalTokensWithoutCacheRead: 240, cacheReadRate: 100 / 340 }],
+        sourceSplit: [
+          { source: 'claude-code', totalTokens: 340, totalTokensWithoutCacheRead: 240, cacheReadRate: 100 / 340 }
+        ],
         modelRows: [
           {
             usageDate: '2026-04-29',
@@ -318,28 +354,8 @@ describe('getUsageDetails', () => {
       }
     ])
     expect(bindings).toEqual([
-      [
-        'user_1',
-        '2026-04-27',
-        '2026-04-29',
-        'claude-code',
-        'claude-code',
-        'dev_123',
-        'dev_123',
-        'sonnet',
-        'sonnet'
-      ],
-      [
-        'user_1',
-        '2026-04-27',
-        '2026-04-29',
-        'claude-code',
-        'claude-code',
-        'dev_123',
-        'dev_123',
-        'sonnet',
-        'sonnet'
-      ]
+      ['user_1', '2026-04-27', '2026-04-29', 'claude-code', 'claude-code', 'dev_123', 'dev_123', 'sonnet', 'sonnet'],
+      ['user_1', '2026-04-27', '2026-04-29', 'claude-code', 'claude-code', 'dev_123', 'dev_123', 'sonnet', 'sonnet']
     ])
     expect(sqlStatements[0]).toContain('GROUP BY usage_date, source')
     expect(sqlStatements[0]).toContain('SUM(total_tokens - cache_read_tokens)')
@@ -506,15 +522,7 @@ describe('getUsageDetails', () => {
     expect(sqlStatements[0]).toContain('daily_usage.usage_date <= ?')
     expect(sqlStatements[0]).toContain("(? = 'all' OR daily_usage.source = ?)")
     expect(sqlStatements[0]).toContain("(? = '' OR lower(daily_usage.model) LIKE '%' || lower(?) || '%')")
-    expect(bindings[0]?.slice(0, 7)).toEqual([
-      'user_1',
-      '2026-04-27',
-      '2026-04-29',
-      'codex',
-      'codex',
-      'gpt',
-      'gpt'
-    ])
+    expect(bindings[0]?.slice(0, 7)).toEqual(['user_1', '2026-04-27', '2026-04-29', 'codex', 'codex', 'gpt', 'gpt'])
     expect(bindings[1]?.slice(0, 7)).toEqual(bindings[0]?.slice(0, 7))
   })
 

@@ -8,6 +8,9 @@ import {
   mergeConfig,
   normalizeActiveServerConfig,
   packageManagerCommand,
+  readClientType,
+  readPerSource,
+  resolveClientForSource,
   readConfig,
   serverOriginFromEndpoint,
   stripUtf8Bom,
@@ -15,6 +18,32 @@ import {
   writeConfig
 } from './config.mjs'
 import { credentialsLockPath, withCredentialsLock } from './credentials-lock.mjs'
+
+test('readClientType defaults to git so an existing install is untouched', () => {
+  assert.equal(readClientType({ flags: {}, env: {}, config: {} }), 'git')
+  assert.equal(readClientType({ flags: {}, env: {}, config: { clientType: 'binary' } }), 'binary')
+  assert.equal(readClientType({ flags: { client: 'binary' }, env: {}, config: {} }), 'binary')
+  assert.equal(readClientType({ flags: {}, env: { TOKENBOARD_CLIENT: 'binary' }, config: {} }), 'binary')
+})
+
+test('readClientType prefers the flag over the environment and the config', () => {
+  assert.equal(
+    readClientType({
+      flags: { client: 'git' },
+      env: { TOKENBOARD_CLIENT: 'binary' },
+      config: { clientType: 'binary' }
+    }),
+    'git'
+  )
+})
+
+test('readClientType refuses an unknown value instead of silently running git', () => {
+  assert.throws(
+    () => readClientType({ flags: {}, env: {}, config: { clientType: 'cargo' } }),
+    /Unsupported client type/
+  )
+  assert.throws(() => readClientType({ flags: { client: 'true' }, env: {}, config: {} }), /Unsupported client type/)
+})
 
 test('strips UTF-8 BOM before parsing config content', () => {
   const parsed = JSON.parse(stripUtf8Bom('\ufeff{"configured":true}'))
@@ -33,10 +62,14 @@ test('rejects config replacement after credentials lock ownership is lost', () =
   const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-lock-fence-'))
   process.env.TOKENBOARD_CONFIG_DIR = directory
   try {
-    assert.throws(() => withCredentialsLock(directory, () => {
-      writeFileSync(credentialsLockPath(directory), JSON.stringify({ pid: process.pid, token: 'replacement' }))
-      writeConfig({ activeServer: 'https://tokenboard.example', servers: {} })
-    }), /credentials lock ownership changed before write/)
+    assert.throws(
+      () =>
+        withCredentialsLock(directory, () => {
+          writeFileSync(credentialsLockPath(directory), JSON.stringify({ pid: process.pid, token: 'replacement' }))
+          writeConfig({ activeServer: 'https://tokenboard.example', servers: {} })
+        }),
+      /credentials lock ownership changed before write/
+    )
     assert.equal(statSync(join(directory, 'config.json'), { throwIfNoEntry: false }), undefined)
   } finally {
     if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
@@ -583,6 +616,29 @@ test('writeConfig re-tightens existing config file permissions', { skip: process
   }
 })
 
+// The directory holds the config file, and `mkdirSync`'s mode applies only when it creates the
+// directory — a pre-existing or later-loosened one keeps its own mode. writeConfig tightens it,
+// so the token is never left readable by other users on the machine.
+test('writeConfig re-tightens an existing config directory', { skip: process.platform === 'win32' }, () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-dir-mode-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+
+  try {
+    chmodSync(directory, 0o777)
+    writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
+
+    assert.equal(statSync(directory).mode & 0o777, 0o700)
+  } finally {
+    if (previousConfigDir === undefined) {
+      delete process.env.TOKENBOARD_CONFIG_DIR
+    } else {
+      process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    }
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('mergeConfig preserves concurrent server profile updates across processes', async () => {
   const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
   const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-concurrent-'))
@@ -601,26 +657,24 @@ test('mergeConfig preserves concurrent server profile updates across processes',
       "import { mergeConfig } from './config.mjs'",
       'mergeConfig(JSON.parse(process.env.TOKENBOARD_CONFIG_PATCH))'
     ].join('\n')
-    const writers = Array.from({ length: 12 }, (_, index) => spawn(process.execPath, [
-      '--input-type=module',
-      '-e',
-      script
-    ], {
-      cwd: new URL('.', import.meta.url),
-      env: {
-        ...process.env,
-        TOKENBOARD_CONFIG_DIR: directory,
-        TOKENBOARD_CONFIG_PATCH: JSON.stringify({
-          servers: {
-            [`https://server-${index}.example.com`]: {
-              endpoint: `https://server-${index}.example.com/api/v1/ingest`,
-              uploadToken: `token-${index}`
+    const writers = Array.from({ length: 12 }, (_, index) =>
+      spawn(process.execPath, ['--input-type=module', '-e', script], {
+        cwd: new URL('.', import.meta.url),
+        env: {
+          ...process.env,
+          TOKENBOARD_CONFIG_DIR: directory,
+          TOKENBOARD_CONFIG_PATCH: JSON.stringify({
+            servers: {
+              [`https://server-${index}.example.com`]: {
+                endpoint: `https://server-${index}.example.com/api/v1/ingest`,
+                uploadToken: `token-${index}`
+              }
             }
-          }
-        })
-      },
-      stdio: ['ignore', 'ignore', 'pipe']
-    }))
+          })
+        },
+        stdio: ['ignore', 'ignore', 'pipe']
+      })
+    )
     const errors = await Promise.all(writers.map(collectChildExit))
     assert.deepEqual(errors, Array(12).fill(''))
 
@@ -651,8 +705,57 @@ test('mergeConfig creates a missing config directory before locking', () => {
 function collectChildExit(child) {
   return new Promise((resolve, reject) => {
     let stderr = ''
-    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
     child.on('error', reject)
     child.on('close', (status) => resolve(status === 0 ? '' : stderr || `exit ${status}`))
   })
 }
+
+test('readPerSource maps go/ts spellings onto the client types', () => {
+  assert.deepEqual(readPerSource({}), {})
+  assert.deepEqual(readPerSource({ perSource: { pi: 'go', codex: 'ts' } }), {
+    pi: 'binary',
+    codex: 'git'
+  })
+  assert.deepEqual(readPerSource({ perSource: { pi: 'binary', codex: 'git' } }), {
+    pi: 'binary',
+    codex: 'git'
+  })
+})
+
+test('readPerSource fails closed on a malformed map', () => {
+  assert.throws(() => readPerSource({ perSource: [] }), /perSource/)
+  assert.throws(() => readPerSource({ perSource: { pi: 1 } }), /pi/)
+  assert.throws(() => readPerSource({ perSource: { pi: 'python' } }), /pi/)
+})
+
+test('resolveClientForSource lets a named source follow its map entry', () => {
+  assert.equal(
+    resolveClientForSource({ flags: {}, env: {}, config: { perSource: { pi: 'go' } }, source: 'pi' }),
+    'binary'
+  )
+  // An unmapped source keeps the machine-wide client.
+  assert.equal(
+    resolveClientForSource({ flags: {}, env: {}, config: { perSource: { pi: 'go' } }, source: 'codex' }),
+    'git'
+  )
+})
+
+test('resolveClientForSource refuses an all-source run that would split clients', () => {
+  assert.throws(
+    () => resolveClientForSource({ flags: {}, env: {}, config: { perSource: { pi: 'go' } }, source: 'all' }),
+    /perSource/
+  )
+  // A map that agrees with the machine client is fine.
+  assert.equal(
+    resolveClientForSource({
+      flags: {},
+      env: {},
+      config: { clientType: 'binary', perSource: { pi: 'go', codex: 'binary' } },
+      source: 'all'
+    }),
+    'binary'
+  )
+})

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { existsSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { relative, resolve, win32 as windowsPath } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join, relative, resolve, win32 as windowsPath } from 'node:path'
+import { isMainModule } from './is-main.mjs'
 import { collectorDir, configDir, configPath, parseArgs } from './config.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
 import { deviceLinkPath } from './device-link.mjs'
 import { errorMessage } from './error-message.mjs'
 import { uninstallHooks } from './hooks.mjs'
@@ -14,9 +15,28 @@ export function uninstallClient(options = {}) {
   const plan = createUninstallPlan(flags)
   const runtime = createUninstallRuntime(options)
 
-  const hookResult = plan.removeHooks
-    ? runtime.uninstallHooks(options.hookOptions || {})
-    : null
+  // Every removal target is validated before anything is removed — the hooks and schedule
+  // included — so a refused path cannot leave a half-uninstalled machine: the collector
+  // used to be deleted before the config-directory guard had a chance to refuse, and the
+  // guards themselves used to run only after the hooks and schedule were already gone.
+  const removeCollector =
+    plan.removeCollector &&
+    runtime.exists(runtime.collectorDir) &&
+    !samePath(runtime.collectorDir, runtime.configDir, runtime.platform)
+  if (removeCollector) assertRemovableCollectorDir(runtime)
+
+  const removeConfigDir = plan.removeConfigDir && runtime.exists(runtime.configDir)
+  if (removeConfigDir) assertRemovableConfigDir(runtime)
+
+  // `--remove-config` deletes the single config file inside the config directory, so the
+  // same directory guard applies: that file only ever lives in the tool's own directory.
+  const removeConfigFile = plan.removeConfig && !plan.removeConfigDir && runtime.exists(runtime.configPath)
+  if (removeConfigFile) assertRemovableConfigDir(runtime)
+
+  const hookResult = plan.removeHooks ? runtime.uninstallHooks(options.hookOptions || {}) : null
+  // The schedule is still removed when the Antigravity restore is incomplete: the abort
+  // below preserves the recovery data (the collector and config directories), not the whole
+  // install, and stopping the scheduled uploads is part of what the user asked for.
   runtime.uninstallSchedule(options.scheduleOptions || {})
   if (hasIncompleteHookRemoval(hookResult)) {
     throw new Error('Antigravity statusline restoration is incomplete; local recovery state was preserved')
@@ -31,19 +51,17 @@ export function uninstallClient(options = {}) {
     deviceLink: false
   }
 
-  if (plan.removeCollector && runtime.exists(runtime.collectorDir)) {
-    if (!samePath(runtime.collectorDir, runtime.configDir, runtime.platform)) {
-      removePath(runtime, runtime.collectorDir)
-      removed.collector = true
-    }
+  if (removeCollector) {
+    removePath(runtime, runtime.collectorDir)
+    removed.collector = true
   }
 
-  if (plan.removeConfig && !plan.removeConfigDir && runtime.exists(runtime.configPath)) {
+  if (removeConfigFile) {
     removePath(runtime, runtime.configPath, { force: true })
     removed.config = true
   }
 
-  if (plan.removeConfigDir && runtime.exists(runtime.configDir)) {
+  if (removeConfigDir) {
     const deviceLinkWasPresent = runtime.exists(runtime.deviceLinkPath)
     removePath(runtime, runtime.configDir)
     removed.configDir = true
@@ -87,6 +105,7 @@ function createUninstallRuntime(options) {
     cwd: options.cwd || process.cwd,
     chdir: options.chdir || process.chdir,
     fallbackCwd: options.fallbackCwd || homedir(),
+    homeDir: options.homeDir || homedir(),
     platform: options.platform || process.platform,
     log: options.log || console.log,
     uninstallHooks: options.uninstallHooks || uninstallHooks,
@@ -113,10 +132,9 @@ function isInsidePath(candidatePath, targetPath, platform = process.platform) {
     return false
   }
   const relativePath = pathApi.relative(resolvedTarget, resolvedCandidate)
-  return relativePath === '' || (
-    !relativePath.startsWith('..') &&
-    !relativePath.startsWith(pathApi.sep) &&
-    relativePath !== '..'
+  return (
+    relativePath === '' ||
+    (!relativePath.startsWith(`..${pathApi.sep}`) && !relativePath.startsWith(pathApi.sep) && relativePath !== '..')
   )
 }
 
@@ -134,6 +152,14 @@ function samePath(leftPath, rightPath, platform = process.platform) {
 }
 
 function runCli() {
+  if (
+    printHelpIfRequested(
+      process.argv.slice(2),
+      'Usage: uninstall.mjs [--all] [--remove-collector] [--remove-config] [--remove-config-dir] [--remove-hook|--remove-hooks]'
+    )
+  ) {
+    return
+  }
   try {
     uninstallClient()
   } catch (error) {
@@ -142,6 +168,59 @@ function runCli() {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   runCli()
+}
+
+// `TOKENBOARD_CONFIG_DIR` is a plain environment variable and the config directory is
+// removed recursively, so pointing it at `$HOME` or `/` made `--remove-config-dir` — and
+// `--all`, which the skill documents — delete that whole tree, `~/.ssh` and all, silently,
+// with no dry run and no prompt.
+//
+// A TokenBoard config directory is always `~/.tokenboard`, or a `.tokenboard-*` variant for a
+// second install. Matching that namespaced prefix — rather than merely "a dot-directory" — is
+// what keeps the recursive delete from following a stray `TOKENBOARD_CONFIG_DIR` into `~/.ssh`,
+// `~/.aws`, `~/.claude`, `~/.config`, or any other dot-directory the user owns but this tool
+// never created. Requiring at least three path segments additionally rejects a filesystem root,
+// a bare relative name, and a top-level directory. The other installers do not validate this
+// themselves, so the guard belongs here, where the deletion happens.
+function assertRemovableConfigDir(runtime) {
+  const target = String(runtime.configDir)
+  const trimmed = target.replace(/[\\/]+$/, '')
+  const segments = trimmed.split(/[\\/]+/).filter(Boolean)
+  const basename = (segments.at(-1) ?? '').toLowerCase()
+  const isTokenboardDir = basename === '.tokenboard' || basename.startsWith('.tokenboard-')
+  if (!isTokenboardDir || segments.length < 3) {
+    throw new Error(
+      `Refusing to remove ${target}: the TokenBoard config directory must be the tool's own ~/.tokenboard (or a ~/.tokenboard-* variant), not a home directory, filesystem root, or another dot-directory. Remove it by hand if that is really what you want.`
+    )
+  }
+}
+
+// `TOKENBOARD_COLLECTOR_DIR` is a plain environment variable and the collector checkout is
+// removed recursively, so pointing it at `$HOME` or `/` made `--remove-collector` — and
+// `--all` — delete that whole tree, `~/.ssh` and all, silently, with no dry run and no
+// prompt. The config-directory guard above cannot cover this deletion: it validates a
+// different path, and the collector used to be removed before that guard ever ran.
+//
+// Unlike the config directory, the checkout has no fixed name — an override may point at
+// any clone, and the archive fallback install has no `.git` — so identity is checked by
+// content: every install path leaves `package.json` beside `skills/tokenboard`, and a
+// directory without both markers is refused rather than deleted. The home-directory and
+// root checks close the case where a stray variable points at a directory that carries the
+// markers only because the repo really was cloned into the user's home.
+function assertRemovableCollectorDir(runtime) {
+  const target = String(runtime.collectorDir)
+  const pathApi = runtime.platform === 'win32' ? windowsPath : { join, resolve }
+  const resolvedTarget = pathApi.resolve(target)
+  const segments = resolvedTarget.split(/[\\/]+/).filter(Boolean)
+  const isHome = samePath(resolvedTarget, runtime.homeDir, runtime.platform)
+  const hasCheckoutMarkers =
+    runtime.exists(pathApi.join(resolvedTarget, 'package.json')) &&
+    runtime.exists(pathApi.join(resolvedTarget, 'skills', 'tokenboard'))
+  if (isHome || segments.length < 2 || !hasCheckoutMarkers) {
+    throw new Error(
+      `Refusing to remove ${target}: the TokenBoard collector checkout must contain package.json and skills/tokenboard, and must not be a home directory or a filesystem root. Remove it by hand if that is really what you want.`
+    )
+  }
 }

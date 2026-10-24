@@ -1,9 +1,19 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
+import { runSqliteScript } from './app/test/sqlite-script'
 
 const packageDir = dirname(fileURLToPath(import.meta.url))
 
@@ -32,6 +42,9 @@ describe('Wrangler deploy config', () => {
     expect(config).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
     expect(config).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
     expect(config).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "5"')
+    expect(config).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_ENABLED": "true"')
+    expect(config).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS": "24"')
+    expect(config).toContain('"TOKENBOARD_MODEL_PRICING_SOURCE_URL": "https://models.dev/api.json"')
     expect(config).toContain('"database_id": "4af5cf99-10d9-4114-b707-f82e75f89746"')
     expect(config).toContain('"binding": "ASSETS"')
     expect(config).toContain('"run_worker_first"')
@@ -45,7 +58,7 @@ describe('Wrangler deploy config', () => {
     expect(deploymentScript).toContain("process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'")
     expect(deploymentScript).toContain("'d1', 'migrations', 'apply', 'DB'")
     expect(deploymentScript).toContain("'deploy', '--config'")
-    expect(productionCheckScript).toContain("|| 'wrangler.production.jsonc'")
+    expect(productionCheckScript).toContain("new URL('../wrangler.production.jsonc', import.meta.url)")
     expect(productionCheckScript).not.toContain("|| 'wrangler.jsonc'")
   })
 
@@ -67,33 +80,87 @@ describe('Wrangler deploy config', () => {
     expect(example).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>"')
     expect(example).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"')
     expect(example).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "<tokenboard-webhook-cron-batch-size>"')
+    expect(example).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_ENABLED": "true"')
+    expect(example).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS": "24"')
+    const sourceUrl = /"TOKENBOARD_MODEL_PRICING_SOURCE_URL"\s*:\s*"([^"]+)"/.exec(example)?.[1]
+    expect(sourceUrl).toBe('https://models.dev/api.json')
     expect(example).toContain('"database_id": "<your-d1-database-id>"')
-    expect(example).not.toMatch(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/i)
     expect(example).not.toMatch(/"pattern":\s*"[a-z0-9.-]+\.[a-z]{2,}"/i)
     expect(example).not.toMatch(/"database_id":\s*"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/i)
   })
 
+  // The example is the template the deploy generator fills in, and the tracked config is what
+  // ships. Nothing compared them structurally, so a var added to one and not the other (or
+  // renamed in one) drifted silently until a deploy failed or a default shipped. Compare the
+  // flattened key sets and the non-placeholder values, so the two cannot diverge unnoticed.
+  test('the tracked config and the production example carry the same keys and defaults', () => {
+    const tracked = flattenJsonc(readPackageFile('wrangler.jsonc'))
+    const example = flattenJsonc(readPackageFile('wrangler.production.example.jsonc'))
+
+    const trackedKeys = Object.keys(tracked).sort()
+    const exampleKeys = Object.keys(example).sort()
+    expect(trackedKeys).toEqual(exampleKeys)
+
+    // Every value the example leaves as a placeholder must be filled in the tracked config;
+    // every value it states outright must match it exactly.
+    for (const key of exampleKeys) {
+      const exampleValue = example[key]
+      if (isPlaceholder(exampleValue)) continue
+      expect(tracked[key], `${key} must match the example's stated value`).toBe(exampleValue)
+    }
+  })
+
+  test('static assets are published by allow-list, not by deny-list enumeration', () => {
+    // `assets.directory` is the whole build output root (it also holds `main`), so an
+    // ignore list that enumerates what to hide publishes every future root-level build
+    // artifact by default. The list must invert: ignore everything, re-include only the
+    // files that are meant to be public (favicon, logo, hashed client assets).
+    const assetsIgnore = readPackageFile('public/.assetsignore')
+    const lines = assetsIgnore
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'))
+
+    expect(lines[0]).toBe('/*')
+    expect(lines).toContain('!/logo.svg')
+    expect(lines).toContain('!/favicon.ico')
+    expect(lines).toContain('!/static')
+    expect(lines).not.toContain('index.js')
+    expect(lines).not.toContain('.vite/')
+  })
+
   test('manual production deploy helper verifies migrated schema before Worker deploy', () => {
     const deployScript = readPackageFile('scripts/deploy.mjs')
-    const schemaCheckCommand = "'d1', 'execute', 'DB', '--remote', '--file', 'db/verify-critical-schema.sql', '--config', configPath"
+    const routeCheckScript = readPackageFile('scripts/check-production-route.mjs')
+    const schemaCheckCommand = /runPnpm\(\[\s*'exec',\s*'wrangler',\s*'d1',\s*'execute'/
+    const schemaCheckIndex = deployScript.search(schemaCheckCommand)
 
     expect(deployScript).toContain('wrangler.production.ci.jsonc')
     expect(deployScript).toContain('scripts/write-production-config.mjs')
     expect(deployScript).toContain('scripts/check-production-config.mjs')
+    expect(deployScript).toContain('scripts/check-production-route.mjs')
+    expect(deployScript).toContain("'deploy', '--dry-run', '--config', configPath")
     expect(deployScript).toContain("runPnpm(['run', 'build'])")
     expect(deployScript).toContain("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
-    expect(deployScript).toContain(schemaCheckCommand)
+    expect(schemaCheckIndex).toBeGreaterThan(-1)
     expect(deployScript).toContain("'deploy', '--config', configPath")
     expect(deployScript.indexOf("runPnpm(['run', 'build'])")).toBeLessThan(
+      deployScript.indexOf("'deploy', '--dry-run', '--config', configPath")
+    )
+    expect(deployScript.indexOf("'deploy', '--dry-run', '--config', configPath")).toBeLessThan(
+      deployScript.indexOf('scripts/check-production-route.mjs')
+    )
+    expect(deployScript.indexOf('scripts/check-production-route.mjs')).toBeLessThan(
       deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")
     )
     expect(deployScript.indexOf("'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath")).toBeLessThan(
-      deployScript.indexOf(schemaCheckCommand)
+      schemaCheckIndex
     )
-    expect(deployScript.indexOf(schemaCheckCommand)).toBeLessThan(
-      deployScript.indexOf("'deploy', '--config', configPath")
-    )
+    expect(schemaCheckIndex).toBeLessThan(deployScript.indexOf("'deploy', '--config', configPath"))
     expect(deployScript).not.toContain('--config wrangler.jsonc')
+    expect(routeCheckScript).toContain('Cloudflare zone preflight')
+    expect(routeCheckScript).toContain('oauth_token')
+    expect(routeCheckScript).toContain('CLOUDFLARE_API_TOKEN')
   })
 
   test('critical production schema check covers device identity and legacy upload tokens', () => {
@@ -143,6 +210,77 @@ describe('Wrangler deploy config', () => {
     }
   }, 30_000)
 
+  // The migration chain is hand-maintained (AGENTS.md bans `drizzle-kit generate`, and the
+  // applied history is immutable). Wrangler applies migrations in filename order and only
+  // dedupes by name, so a skipped or duplicated number would not fail the deploy — it would
+  // silently apply out of the intended order, or never. Pin the numbering as a contiguous
+  // 0000..N sequence with no gaps so a hand-added file cannot drift the chain.
+  test('the migration chain is a contiguous numbered sequence', () => {
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const names = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+    const numbers = names.map((name) => {
+      const match = /^(\d{4})_/.exec(name)
+      expect(match, `migration ${name} must start with a four-digit sequence number`).not.toBeNull()
+      return Number(match?.[1])
+    })
+
+    expect(numbers).toEqual(numbers.map((_value, index) => index))
+  })
+
+  test('model pricing migrations add the staged catalogue schema before the critical gate', () => {
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const baseMigration = readFileSync(join(migrationsDir, '0030_model_pricing.sql'), 'utf8')
+    const stagingMigration = readFileSync(join(migrationsDir, '0031_model_pricing_staging.sql'), 'utf8')
+    const reservedSlugMigrationName = '0032_reserved_model_pricing_slug.sql'
+    const migrationNames = readdirSync(migrationsDir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+    expect(migrationNames.indexOf('0031_model_pricing_staging.sql')).toBeGreaterThanOrEqual(0)
+    expect(migrationNames.indexOf(reservedSlugMigrationName)).toBe(
+      migrationNames.indexOf('0031_model_pricing_staging.sql') + 1
+    )
+    const reservedSlugMigration = readFileSync(join(migrationsDir, reservedSlugMigrationName), 'utf8')
+    const schemaCheck = readPackageFile('db/verify-critical-schema.sql')
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-model-pricing-migration-gate-'))
+    const dbPath = join(tempDir, 'pricing.db')
+
+    try {
+      for (const migration of readdirSync(migrationsDir)
+        .filter((name) => name.endsWith('.sql') && name < '0030_model_pricing.sql')
+        .sort()) {
+        runSqlite(dbPath, readFileSync(join(migrationsDir, migration), 'utf8'))
+      }
+      runSqlite(dbPath, baseMigration)
+      const preStagingCheck = runSqlite(dbPath, schemaCheck, false)
+      expect(preStagingCheck.status).not.toBe(0)
+      expect(preStagingCheck.stderr).toMatch(/model_pricing_staging/)
+
+      runSqlite(dbPath, stagingMigration)
+      const currentCheck = runSqlite(dbPath, schemaCheck, false)
+      expect(currentCheck.status).toBe(0)
+      expect(currentCheck.stderr).toBe('')
+
+      // The staging migration contains only CREATE IF NOT EXISTS statements,
+      // so a retry after an interrupted deployment must remain safe.
+      expect(() => runSqlite(dbPath, stagingMigration)).not.toThrow()
+
+      runSqlite(dbPath, reservedSlugMigration)
+      expect(() => runSqlite(dbPath, reservedSlugMigration)).not.toThrow()
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  test('model pricing migration indexes stay aligned with the Drizzle schema', () => {
+    const baseMigration = readPackageFile('db/migrations/0030_model_pricing.sql')
+    const schema = readDrizzleSchema()
+
+    expect(baseMigration).toContain('model_pricing_active_generation_idx')
+    expect(schema).toContain("index('model_pricing_active_generation_idx')")
+  })
+
   test('Drizzle schema declares webhook migration indexes', () => {
     const schema = readDrizzleSchema()
 
@@ -189,8 +327,10 @@ describe('Wrangler deploy config', () => {
     expect(migration).toContain("ADD COLUMN schedule_times_local TEXT NOT NULL DEFAULT '18:00'")
     expect(migration).toContain("ADD COLUMN schedule_weekdays TEXT NOT NULL DEFAULT '0,1,2,3,4,5,6'")
     expect(migration).toContain('ADD COLUMN schedule_slot TEXT')
-    expect(migration).toContain("SET schedule_times_local = schedule_time_local")
-    expect(migration).toContain("SET pending_schedule_slot = pending_report_date || 'T' || COALESCE(schedule_time_local, '18:00')")
+    expect(migration).toContain('SET schedule_times_local = schedule_time_local')
+    expect(migration).toContain(
+      "SET pending_schedule_slot = pending_report_date || 'T' || COALESCE(schedule_time_local, '18:00')"
+    )
     expect(migration).toContain('WHERE pending_report_date IS NOT NULL')
     expect(migration).toContain('CREATE INDEX IF NOT EXISTS webhook_delivery_logs_subscription_idx')
     expect(migration).toContain("SET schedule_slot = report_date || 'T' || COALESCE((")
@@ -205,7 +345,9 @@ describe('Wrangler deploy config', () => {
       migration.indexOf("SET schedule_slot = report_date || 'T' || COALESCE((")
     )
     expect(migration.indexOf('ADD COLUMN pending_schedule_slot TEXT')).toBeLessThan(
-      migration.indexOf("SET pending_schedule_slot = pending_report_date || 'T' || COALESCE(schedule_time_local, '18:00')")
+      migration.indexOf(
+        "SET pending_schedule_slot = pending_report_date || 'T' || COALESCE(schedule_time_local, '18:00')"
+      )
     )
     expect(migration.indexOf("SET schedule_slot = report_date || 'T' || COALESCE((")).toBeLessThan(
       migration.indexOf('CREATE UNIQUE INDEX IF NOT EXISTS webhook_delivery_logs_daily_success_idx')
@@ -252,6 +394,178 @@ describe('Wrangler deploy config', () => {
     expect(migration).toContain('updated_at TEXT NOT NULL')
     expect(migration).toContain('CREATE INDEX api_rate_limits_reset_idx')
   })
+
+  test('rate limit maintenance migrations replace the legacy reset index', () => {
+    const expressionIndexMigration = readPackageFile('db/migrations/0033_rate_limit_reset_julianday_index.sql')
+    const dropLegacyIndexMigration = readPackageFile('db/migrations/0034_drop_api_rate_limits_reset_index.sql')
+    const schema = readDrizzleSchema()
+
+    expect(expressionIndexMigration).toContain('CREATE INDEX IF NOT EXISTS api_rate_limits_reset_julianday_idx')
+    expect(expressionIndexMigration).toContain('ON api_rate_limits(julianday(reset_at))')
+    expect(dropLegacyIndexMigration).toContain('DROP INDEX IF EXISTS api_rate_limits_reset_idx')
+    expect(schema).toContain("index('api_rate_limits_reset_julianday_idx').on(sql`julianday(")
+  })
+
+  // The migration files are read as text elsewhere, which cannot tell whether the index
+  // that ends up in the database actually covers the expression the prune query needs.
+  // This runs the real migrations and then asserts against sqlite_master.
+  test('the rate limit expression index survives the migration pair', () => {
+    const schemaCheck = readPackageFile('db/verify-rate-limit-index.sql')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-rate-limit-index-gate-'))
+    const dbPath = join(tempDir, 'index.db')
+
+    try {
+      for (const migration of readdirSync(migrationsDir)
+        .filter((name) => name.endsWith('.sql'))
+        .sort()) {
+        runSqlite(dbPath, readFileSync(join(migrationsDir, migration), 'utf8'))
+      }
+
+      const check = runSqlite(dbPath, schemaCheck, false)
+      expect(check.status).toBe(0)
+      expect(check.stderr).toBe('')
+
+      // Dropping it has to make the check fail, or the assertion proves nothing.
+      runSqlite(dbPath, 'DROP INDEX api_rate_limits_reset_julianday_idx;')
+      const afterDrop = runSqlite(dbPath, schemaCheck, false)
+      expect(afterDrop.status).not.toBe(0)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  // AGENTS.md says the model-pricing deploy runs a foreign-key check after applying the
+  // migrations. This asserts the deploy script actually schedules it, so the documented
+  // contract cannot silently drift away from what deploy.mjs executes.
+  test('deploy runs the foreign-key check after migrations and before the live deploy', () => {
+    const deployScript = readPackageFile('scripts/deploy.mjs')
+    const migrationsApply = deployScript.indexOf(
+      "'d1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath"
+    )
+    const foreignKeyCheck = deployScript.indexOf('db/verify-foreign-keys.sql')
+    const liveDeploy = deployScript.indexOf("'deploy', '--config', configPath")
+
+    expect(foreignKeyCheck).toBeGreaterThan(-1)
+    expect(migrationsApply).toBeLessThan(foreignKeyCheck)
+    expect(foreignKeyCheck).toBeLessThan(liveDeploy)
+  })
+
+  // The ordering test above anchors the foreign-key check relative to migrations and the live
+  // deploy, but all the gates share one array literal: reordering inside it, or dropping
+  // `verify-critical-schema.sql` / `verify-rate-limit-index.sql` / `verify-retention-index.sql`
+  // from it, moves no anchor and would leave that test green. Pin the array itself, in order, so
+  // the deploy loop cannot drift from the gate set the rest of this file asserts the contents of.
+  test('deploy runs every schema gate in the documented order', () => {
+    const deployScript = readPackageFile('scripts/deploy.mjs')
+    const gates = [
+      'db/verify-critical-schema.sql',
+      'db/verify-rate-limit-index.sql',
+      'db/verify-retention-index.sql',
+      'db/verify-foreign-keys.sql'
+    ]
+    const positions = gates.map((gate) => deployScript.indexOf(`'${gate}'`))
+
+    // Every gate must be scheduled, in the array's order, so neither a dropped gate nor a
+    // reordering can pass unnoticed.
+    for (const position of positions) expect(position).toBeGreaterThan(-1)
+    expect(positions).toEqual([...positions].sort((left, right) => left - right))
+
+    // `wrangler d1 execute --file --remote` only prompts when interactive, and declining
+    // returns null (exit 0), so a gate without `--yes` can be skipped while deploy.mjs reads a
+    // zero status and publishes. Pin the flag so the gate command cannot lose it.
+    const gateCall = deployScript.slice(
+      deployScript.indexOf('for (const file of ['),
+      deployScript.indexOf("runPnpm(['exec', 'wrangler', 'deploy', '--config', configPath])")
+    )
+    expect(gateCall).toContain("'--yes'")
+  })
+
+  // The retention indexes from 0036 were built the same way the rate-limit index was, and
+  // suffered the same gap: nothing in the deploy gate knew they existed, so `DROP INDEX` on
+  // either left every gate green. This runs the real migrations and then asserts the check
+  // notices a missing index — the negative half is what makes the positive half mean anything.
+  test('the retention index check accepts migrated data and rejects a dropped index', () => {
+    const schemaCheck = readPackageFile('db/verify-retention-index.sql')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-retention-index-gate-'))
+    const dbPath = join(tempDir, 'retention.db')
+
+    try {
+      for (const migration of readdirSync(migrationsDir)
+        .filter((name) => name.endsWith('.sql'))
+        .sort()) {
+        runSqlite(dbPath, readFileSync(join(migrationsDir, migration), 'utf8'))
+      }
+
+      const check = runSqlite(dbPath, schemaCheck, false)
+      expect(check.status).toBe(0)
+      expect(check.stderr).toBe('')
+
+      runSqlite(dbPath, 'DROP INDEX pairing_codes_retention_julianday_idx;')
+      const afterPairingDrop = runSqlite(dbPath, schemaCheck, false)
+      expect(afterPairingDrop.status).not.toBe(0)
+
+      runSqlite(
+        dbPath,
+        'CREATE INDEX pairing_codes_retention_julianday_idx ON pairing_codes(julianday(COALESCE(consumed_at, expires_at)));'
+      )
+      runSqlite(dbPath, 'DROP INDEX audit_logs_created_julianday_idx;')
+      const afterAuditDrop = runSqlite(dbPath, schemaCheck, false)
+      expect(afterAuditDrop.status).not.toBe(0)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  // The retention indexes from 0036 were built the same way the rate-limit index was, and
+  // suffered the same gap: nothing in the deploy gate knew they existed, so `DROP INDEX` on
+  // either left every gate green. The runtime check above proves the migration produces them;
+  // this pins the Drizzle declarations so the hand-maintained schema keeps the index even if
+  // someone edits `schema-identity.ts` and forgets the migration (the AGENTS.md ban on
+  // `drizzle-kit generate` means the SQL and the declaration can drift).
+  test('the schema declares the retention expression indexes from 0036', () => {
+    const schema = readDrizzleSchema()
+
+    expect(schema).toContain("index('pairing_codes_retention_julianday_idx')")
+    expect(schema).toContain("index('audit_logs_created_julianday_idx')")
+  })
+
+  // The verifier only proves something if a clean database passes and an orphaned row fails.
+  // `PRAGMA foreign_key_check` returns rows on violation but still exits zero, so the check has
+  // to convert a non-empty result into an error the way verify-rate-limit-index.sql does.
+  test('the foreign-key check accepts migrated data and rejects an orphaned row', () => {
+    const foreignKeyCheck = readPackageFile('db/verify-foreign-keys.sql')
+    const migrationsDir = resolve(packageDir, 'db/migrations')
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-foreign-key-gate-'))
+    const dbPath = join(tempDir, 'foreign-key.db')
+
+    try {
+      for (const migration of readdirSync(migrationsDir)
+        .filter((name) => name.endsWith('.sql'))
+        .sort()) {
+        runSqlite(dbPath, readFileSync(join(migrationsDir, migration), 'utf8'))
+      }
+
+      const clean = runSqlite(dbPath, foreignKeyCheck, false)
+      expect(clean.status).toBe(0)
+      expect(clean.stderr).toBe('')
+
+      // `profiles.user_id` references `users(id)`, so a profile for a user that does not
+      // exist is exactly the corruption the check exists to catch.
+      runSqlite(
+        dbPath,
+        `PRAGMA foreign_keys = OFF;
+         INSERT INTO profiles (user_id, slug, display_name, timezone, timezone_source, is_public, participates_in_leaderboards, created_at, updated_at)
+         VALUES ('ghost-user', 'ghost', 'Ghost', 'UTC', 'default', 0, 0, '2026-01-01', '2026-01-01');`
+      )
+
+      const orphaned = runSqlite(dbPath, foreignKeyCheck, false)
+      expect(orphaned.status).not.toBe(0)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 30_000)
 
   test('device token rotation migration prevents duplicate active successors', () => {
     const schema = readDrizzleSchema()
@@ -398,14 +712,42 @@ describe('Wrangler deploy config', () => {
 
     try {
       for (const [name, value, message] of [
-        ['TOKENBOARD_DAILY_REPORT_HISTORY_DAYS', '0', 'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31'],
-        ['TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT', '501', 'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'],
+        [
+          'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS',
+          '0',
+          'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31'
+        ],
+        [
+          'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT',
+          '501',
+          'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'
+        ],
         ['TOKENBOARD_USAGE_SUMMARY_STRICT', 'yes', 'TOKENBOARD_USAGE_SUMMARY_STRICT must be true, false, 1, or 0'],
-        ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
-        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
-        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
-        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://secret@github.com/MisonL/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
-        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://github.com:8443/MisonL/TokenBoard.git', 'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        [
+          'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS',
+          '366',
+          'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'
+        ],
+        [
+          'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE',
+          '51',
+          'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 50'
+        ],
+        [
+          'TOKENBOARD_COLLECTOR_REPO_URL',
+          'https://example.com/TokenBoard.git',
+          'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'
+        ],
+        [
+          'TOKENBOARD_COLLECTOR_REPO_URL',
+          'https://secret@github.com/MisonL/TokenBoard.git',
+          'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'
+        ],
+        [
+          'TOKENBOARD_COLLECTOR_REPO_URL',
+          'https://github.com:8443/MisonL/TokenBoard.git',
+          'TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'
+        ],
         ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
@@ -447,8 +789,14 @@ describe('Wrangler deploy config', () => {
     try {
       const content = readPackageFile('wrangler.production.example.jsonc')
         .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
-        .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
-        .replace('"TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>"', '"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"')
+        .replace(
+          '"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"',
+          '"BETTER_AUTH_URL": "https://tokenboard.example.com"'
+        )
+        .replace(
+          '"TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>"',
+          '"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"'
+        )
         .replace('"TOKENBOARD_COLLECTOR_REF": "<tokenboard-collector-ref>"', '"TOKENBOARD_COLLECTOR_REF": "master"')
         .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
       writeFileSync(outputFile, content)
@@ -474,19 +822,74 @@ describe('Wrangler deploy config', () => {
 
     try {
       for (const [name, value, message] of [
-        ['TOKENBOARD_DAILY_REPORT_HISTORY_DAYS', 'abc', 'vars.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31'],
-        ['TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT', '501', 'vars.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'],
+        [
+          'TOKENBOARD_DAILY_REPORT_HISTORY_DAYS',
+          'abc',
+          'vars.TOKENBOARD_DAILY_REPORT_HISTORY_DAYS must be an integer from 1 to 31'
+        ],
+        [
+          'TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT',
+          '501',
+          'vars.TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT must be an integer from 1 to 500'
+        ],
         ['TOKENBOARD_USAGE_SUMMARY_STRICT', 'yes', 'vars.TOKENBOARD_USAGE_SUMMARY_STRICT must be true, false, 1, or 0'],
-        ['TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS', '366', 'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'],
-        ['TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE', '6', 'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 5'],
-        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://example.com/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
-        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://secret@github.com/MisonL/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
-        ['TOKENBOARD_COLLECTOR_REPO_URL', 'https://github.com:8443/MisonL/TokenBoard.git', 'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'],
+        [
+          'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS',
+          '366',
+          'vars.TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS must be an integer from 1 to 365'
+        ],
+        [
+          'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE',
+          '51',
+          'vars.TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE must be an integer from 1 to 50'
+        ],
+        [
+          'TOKENBOARD_MODEL_PRICING_SOURCE_URL',
+          'https://example.com/api.json',
+          'vars.TOKENBOARD_MODEL_PRICING_SOURCE_URL must be https://models.dev/api.json'
+        ],
+        [
+          'TOKENBOARD_MODEL_PRICING_SOURCE_URL',
+          'https://user:pass@models.dev/api.json',
+          'vars.TOKENBOARD_MODEL_PRICING_SOURCE_URL must be https://models.dev/api.json'
+        ],
+        [
+          'TOKENBOARD_MODEL_PRICING_SOURCE_URL',
+          'https://models.dev:8443/api.json',
+          'vars.TOKENBOARD_MODEL_PRICING_SOURCE_URL must be https://models.dev/api.json'
+        ],
+        [
+          'TOKENBOARD_MODEL_PRICING_SOURCE_URL',
+          'https://models.dev:443/api.json',
+          'vars.TOKENBOARD_MODEL_PRICING_SOURCE_URL must be https://models.dev/api.json'
+        ],
+        [
+          'TOKENBOARD_MODEL_PRICING_SOURCE_URL',
+          'https://models.dev:0443/api.json',
+          'vars.TOKENBOARD_MODEL_PRICING_SOURCE_URL must be https://models.dev/api.json'
+        ],
+        [
+          'TOKENBOARD_COLLECTOR_REPO_URL',
+          'https://example.com/TokenBoard.git',
+          'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'
+        ],
+        [
+          'TOKENBOARD_COLLECTOR_REPO_URL',
+          'https://secret@github.com/MisonL/TokenBoard.git',
+          'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'
+        ],
+        [
+          'TOKENBOARD_COLLECTOR_REPO_URL',
+          'https://github.com:8443/MisonL/TokenBoard.git',
+          'vars.TOKENBOARD_COLLECTOR_REPO_URL must be a valid https GitHub repository URL'
+        ],
         ['TOKENBOARD_COLLECTOR_REF', 'bad ref', 'vars.TOKENBOARD_COLLECTOR_REF must be a non-empty branch or ref name']
       ]) {
         const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
-        const content = filledProductionExample()
-          .replace(`"${name}": "${resourceControlDefault(name)}"`, `"${name}": "${value}"`)
+        const content = filledProductionExample().replace(
+          `"${name}": "${resourceControlDefault(name)}"`,
+          `"${name}": "${value}"`
+        )
         writeFileSync(outputFile, content)
 
         const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
@@ -506,6 +909,39 @@ describe('Wrangler deploy config', () => {
     }
   }, 15000)
 
+  test('production config checker rejects secrets placed in vars', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-inline-secret-config-'))
+
+    try {
+      for (const [name, message] of [
+        ['BETTER_AUTH_SECRET', 'vars.BETTER_AUTH_SECRET'],
+        ['WEBHOOK_ENCRYPTION_KEY', 'vars.WEBHOOK_ENCRYPTION_KEY']
+      ]) {
+        const outputFile = join(tempDir, `wrangler.production.${name}.jsonc`)
+        const content = filledProductionExample().replace(
+          '"BETTER_AUTH_URL": "https://tokenboard.example.com",',
+          `"BETTER_AUTH_URL": "https://tokenboard.example.com",\n    "${name}": "inline-secret-value",`
+        )
+        writeFileSync(outputFile, content)
+
+        const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+          cwd: packageDir,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            TOKENBOARD_WRANGLER_CONFIG: outputFile
+          }
+        })
+
+        expect(result.status).not.toBe(0)
+        expect(result.stderr).toContain(message)
+        expect(result.stderr).toContain('Worker secret')
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
   test('deploy helper generates production config for clean Cloudflare builds', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-clean-deploy-'))
     const scriptDir = join(tempDir, 'scripts')
@@ -514,9 +950,19 @@ describe('Wrangler deploy config', () => {
     try {
       mkdirSync(scriptDir)
       copyFileSync(resolve(packageDir, 'scripts/deploy.mjs'), join(scriptDir, 'deploy.mjs'))
-      copyFileSync(resolve(packageDir, 'scripts/check-production-config.mjs'), join(scriptDir, 'check-production-config.mjs'))
-      copyFileSync(resolve(packageDir, 'scripts/write-production-config.mjs'), join(scriptDir, 'write-production-config.mjs'))
-      copyFileSync(resolve(packageDir, 'wrangler.production.example.jsonc'), join(tempDir, 'wrangler.production.example.jsonc'))
+      copyFileSync(
+        resolve(packageDir, 'scripts/check-production-config.mjs'),
+        join(scriptDir, 'check-production-config.mjs')
+      )
+      copyFileSync(
+        resolve(packageDir, 'scripts/write-production-config.mjs'),
+        join(scriptDir, 'write-production-config.mjs')
+      )
+      writeFileSync(join(scriptDir, 'check-production-route.mjs'), 'process.exit(0)\n')
+      copyFileSync(
+        resolve(packageDir, 'wrangler.production.example.jsonc'),
+        join(tempDir, 'wrangler.production.example.jsonc')
+      )
       writeFileSync(pnpmStub, 'process.exit(0)\n')
 
       const result = spawnSync(process.execPath, ['scripts/deploy.mjs'], {
@@ -534,6 +980,8 @@ describe('Wrangler deploy config', () => {
           TOKENBOARD_USAGE_SUMMARY_STRICT: '1',
           TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS: '45',
           TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE: '3',
+          TOKENBOARD_MODEL_PRICING_SYNC_ENABLED: '0',
+          TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS: '12',
           D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
         }
       })
@@ -550,17 +998,28 @@ describe('Wrangler deploy config', () => {
       expect(generated).toContain('"TOKENBOARD_USAGE_SUMMARY_STRICT": "true"')
       expect(generated).toContain('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "45"')
       expect(generated).toContain('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "3"')
+      // The model-pricing sync vars are real values in the example, not placeholders, so the
+      // generator must still replace them by key; assert the env values reached the output.
+      // The source URL is deliberately left alone: the deploy checker pins it to
+      // `https://models.dev/api.json`, which is the only value that passes.
+      expect(generated).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_ENABLED": "false"')
+      expect(generated).toContain('"TOKENBOARD_MODEL_PRICING_SYNC_INTERVAL_HOURS": "12"')
       expect(generated).toContain('"database_id": "11111111-1111-4111-8111-111111111111"')
       expect(result.stderr).toBe('')
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, 15_000)
 
-  test('production config checker defaults to the private production config path', () => {
+  test('production config checker resolves its default config next to the script, not the cwd', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-empty-config-'))
 
     try {
+      // A decoy in the working directory: it still contains a placeholder, so if the
+      // checker resolved its default against `process.cwd()` the failure would name the
+      // decoy's path. The script-relative default must never read it.
+      writeFileSync(join(tempDir, 'wrangler.production.jsonc'), '{ "pattern": "<decoy-marker>" }')
+
       const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
         cwd: tempDir,
         encoding: 'utf8',
@@ -570,9 +1029,13 @@ describe('Wrangler deploy config', () => {
         }
       })
 
-      expect(result.status).not.toBe(0)
-      expect(result.stderr).toContain('wrangler.production.jsonc')
+      expect(result.stderr).not.toContain(tempDir)
       expect(result.stderr).not.toContain('wrangler.jsonc')
+      // With the private config present next to the script (developer machines) the check
+      // passes; in a bare checkout it fails with the package-relative filename.
+      if (result.status !== 0) {
+        expect(result.stderr).toContain('wrangler.production.jsonc')
+      }
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
@@ -583,7 +1046,9 @@ describe('Wrangler deploy config', () => {
     const localConfig = join(tempDir, 'wrangler.local.jsonc')
 
     try {
-      writeFileSync(localConfig, `
+      writeFileSync(
+        localConfig,
+        `
         {
           "name": "tokenboard",
           "main": "./dist/index.js",
@@ -598,7 +1063,8 @@ describe('Wrangler deploy config', () => {
             }
           ]
         }
-      `)
+      `
+      )
 
       const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
         cwd: packageDir,
@@ -621,8 +1087,10 @@ describe('Wrangler deploy config', () => {
     const outputFile = join(tempDir, 'wrangler.production.no-cron.jsonc')
 
     try {
-      const content = filledProductionExample()
-        .replace(/\s+"triggers":\s*\{\s*"crons":\s*\[\s*"\*\/15 \* \* \* \*"\s*\]\s*\},/, '')
+      const content = filledProductionExample().replace(
+        /\s+"triggers":\s*\{\s*"crons":\s*\[\s*"\*\/15 \* \* \* \*"\s*\]\s*\},/,
+        ''
+      )
       writeFileSync(outputFile, content)
 
       const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
@@ -636,6 +1104,30 @@ describe('Wrangler deploy config', () => {
 
       expect(result.status).not.toBe(0)
       expect(result.stderr).toContain('triggers.crons')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('production config checker accepts a missing model pricing source URL because the runtime has a safe default', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-default-model-pricing-source-'))
+    const outputFile = join(tempDir, 'wrangler.production.default-model-pricing-source.jsonc')
+
+    try {
+      const content = filledProductionExample().replace(/\s+"TOKENBOARD_MODEL_PRICING_SOURCE_URL":\s*"[^"]+",?\n/, '')
+      writeFileSync(outputFile, content)
+
+      const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WRANGLER_CONFIG: outputFile
+        }
+      })
+
+      expect(result.status).toBe(0)
+      expect(result.stderr).toBe('')
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
@@ -671,7 +1163,12 @@ describe('Wrangler deploy config', () => {
     for (const badRoute of [
       'tokenboard.example.com/path',
       'tokenboard.example.com?bad=1',
-      'tokenboard.example.com#hash'
+      'tokenboard.example.com#hash',
+      '127.1',
+      '192.168.1',
+      '169.254.1',
+      '0x7f.0.0.1',
+      '0177.0.0.1'
     ]) {
       const generatorResult = spawnSync(
         process.execPath,
@@ -695,6 +1192,83 @@ describe('Wrangler deploy config', () => {
     }
   })
 
+  test('production config generator rejects private, credentialed, and port-bearing auth URLs', () => {
+    for (const betterAuthUrl of [
+      'https://10.0.0.1',
+      'https://127.0.0.1.',
+      'https://example',
+      'https://user:pass@example.com',
+      'https://tokenboard.example.com:8443',
+      'https://tokenboard.example.com:443',
+      'https://tokenboard.example.com:0443'
+    ]) {
+      const result = spawnSync(
+        process.execPath,
+        [resolve(packageDir, 'scripts/write-production-config.mjs'), 'wrangler.production.example.jsonc'],
+        {
+          cwd: packageDir,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
+            BETTER_AUTH_URL: betterAuthUrl,
+            TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+            TOKENBOARD_COLLECTOR_REF: 'master',
+            D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
+          }
+        }
+      )
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('public hostname without credentials or an explicit port')
+    }
+  })
+
+  test('production config checker rejects private and port-bearing auth URLs and routes', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-unsafe-production-config-'))
+
+    try {
+      for (const [field, value] of [
+        ['BETTER_AUTH_URL', 'https://10.0.0.1'],
+        ['BETTER_AUTH_URL', 'https://example'],
+        ['BETTER_AUTH_URL', 'https://user:pass@example.com'],
+        ['BETTER_AUTH_URL', 'https://tokenboard.example.com:8443'],
+        ['BETTER_AUTH_URL', 'https://tokenboard.example.com:443'],
+        ['BETTER_AUTH_URL', 'https://tokenboard.example.com:0443'],
+        ['route', '10.0.0.1'],
+        ['route', '127.0.0.1.'],
+        ['route', '127.1'],
+        ['route', '192.168.1'],
+        ['route', '169.254.1'],
+        ['route', '0x7f.0.0.1'],
+        ['route', '0177.0.0.1']
+      ]) {
+        const outputFile = join(
+          tempDir,
+          `wrangler.production.unsafe-${field}-${value.replace(/[^a-z0-9]/gi, '-')}.jsonc`
+        )
+        const content = filledProductionExample().replace(
+          field === 'route'
+            ? '"pattern": "tokenboard.example.com"'
+            : '"BETTER_AUTH_URL": "https://tokenboard.example.com"',
+          field === 'route' ? `"pattern": "${value}"` : `"BETTER_AUTH_URL": "${value}"`
+        )
+        writeFileSync(outputFile, content)
+
+        const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+          cwd: packageDir,
+          encoding: 'utf8',
+          env: { ...process.env, TOKENBOARD_WRANGLER_CONFIG: outputFile }
+        })
+
+        expect(result.status).toBe(1)
+        expect(result.stderr).toMatch(/public hostname without credentials|production custom domain host/)
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  }, 15_000)
+
   test('production config checker rejects configured route values that are not bare hosts', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-bad-route-config-'))
 
@@ -705,8 +1279,10 @@ describe('Wrangler deploy config', () => {
         'tokenboard.example.com#hash'
       ]) {
         const outputFile = join(tempDir, `wrangler.${badRoute.replace(/[^a-z0-9]/gi, '-')}.jsonc`)
-        const content = filledProductionExample()
-          .replace('"pattern": "tokenboard.example.com"', `"pattern": "${badRoute}"`)
+        const content = filledProductionExample().replace(
+          '"pattern": "tokenboard.example.com"',
+          `"pattern": "${badRoute}"`
+        )
         writeFileSync(outputFile, content)
 
         const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
@@ -726,13 +1302,115 @@ describe('Wrangler deploy config', () => {
     }
   })
 
+  test('production config checker rejects an auth URL host that differs from the route host', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-mismatched-auth-url-'))
+    const outputFile = join(tempDir, 'wrangler.production.mismatched.jsonc')
+
+    try {
+      const content = filledProductionExample().replace(
+        '"BETTER_AUTH_URL": "https://tokenboard.example.com"',
+        '"BETTER_AUTH_URL": "https://accounts.example.com"'
+      )
+      writeFileSync(outputFile, content)
+
+      const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WRANGLER_CONFIG: outputFile
+        }
+      })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('BETTER_AUTH_URL')
+      expect(result.stderr).toContain('routes[0].pattern')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('production config checker rejects wildcard routes that wrangler custom domains do not accept', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-wildcard-route-'))
+    const outputFile = join(tempDir, 'wrangler.production.wildcard.jsonc')
+
+    try {
+      const content = filledProductionExample().replace(
+        '"pattern": "tokenboard.example.com"',
+        '"pattern": "*.example.com"'
+      )
+      writeFileSync(outputFile, content)
+
+      const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WRANGLER_CONFIG: outputFile
+        }
+      })
+
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('wildcard')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test('production config generator rejects a route and auth URL on different hosts', () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(packageDir, 'scripts/write-production-config.mjs'), 'wrangler.production.example.jsonc'],
+      {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WORKER_ROUTE: 'tokenboard.example.com',
+          BETTER_AUTH_URL: 'https://accounts.example.com',
+          TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+          TOKENBOARD_COLLECTOR_REF: 'master',
+          D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
+        }
+      }
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('BETTER_AUTH_URL')
+    expect(result.stderr).toContain('TOKENBOARD_WORKER_ROUTE')
+  })
+
+  test('production config generator rejects wildcard routes that wrangler custom domains do not accept', () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(packageDir, 'scripts/write-production-config.mjs'), 'wrangler.production.example.jsonc'],
+      {
+        cwd: packageDir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          TOKENBOARD_WORKER_ROUTE: '*.example.com',
+          BETTER_AUTH_URL: 'https://tokenboard.example.com',
+          TOKENBOARD_COLLECTOR_REPO_URL: 'https://github.com/MisonL/TokenBoard.git',
+          TOKENBOARD_COLLECTOR_REF: 'master',
+          D1_DATABASE_ID: '11111111-1111-4111-8111-111111111111'
+        }
+      }
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('wildcard')
+  })
+
   test('production config checker ignores misleading JSONC comments', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'tokenboard-commented-config-'))
     const outputFile = join(tempDir, 'wrangler.production.commented.jsonc')
 
     try {
-      const content = filledProductionExample()
-        .replace('{', '{\n  // "workers_dev": true,\n  // "pattern": "localhost",\n  // "database_id": "00000000-0000-0000-0000-000000000000",')
+      const content = filledProductionExample().replace(
+        '{',
+        '{\n  // "workers_dev": true,\n  // "pattern": "localhost",\n  // "database_id": "00000000-0000-0000-0000-000000000000",'
+      )
       writeFileSync(outputFile, content)
 
       const result = spawnSync(process.execPath, [resolve(packageDir, 'scripts/check-production-config.mjs')], {
@@ -755,24 +1433,71 @@ function readPackageFile(relativePath: string): string {
   return readFileSync(resolve(packageDir, relativePath), 'utf8')
 }
 
+// The two configs are JSONC (comments allowed), so parse them by stripping line comments and
+// flattening nested objects into dotted keys. Only the key *structure* and the non-placeholder
+// values are compared, so a comment or key reorder is not a divergence.
+function flattenJsonc(source: string) {
+  const withoutComments = source
+    .split('\n')
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join('\n')
+  const parsed = JSON.parse(withoutComments)
+  const flat: Record<string, string> = {}
+  const walk = (value: unknown, prefix: string) => {
+    if (value === null || typeof value !== 'object') {
+      flat[prefix] = String(value)
+      return
+    }
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      walk(child, prefix ? `${prefix}.${key}` : key)
+    }
+  }
+  walk(parsed, '')
+  return flat
+}
+
+function isPlaceholder(value: string) {
+  // A placeholder may be the whole value (`<your-d1-database-id>`) or embedded in one
+  // (`https://<your-tokenboard-domain>`); either way the tracked config is free to differ.
+  return value.includes('<') && value.includes('>')
+}
+
 function readDrizzleSchema() {
-  return [
-    readPackageFile('app/db/schema.ts'),
-    readPackageFile('app/db/schema-identity.ts')
-  ].join('\n')
+  return [readPackageFile('app/db/schema.ts'), readPackageFile('app/db/schema-identity.ts')].join('\n')
 }
 
 function filledProductionExample() {
   return readPackageFile('wrangler.production.example.jsonc')
     .replace('"pattern": "<your-tokenboard-domain>"', '"pattern": "tokenboard.example.com"')
-    .replace('"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"', '"BETTER_AUTH_URL": "https://tokenboard.example.com"')
-    .replace('"TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>"', '"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"')
+    .replace(
+      '"BETTER_AUTH_URL": "https://<your-tokenboard-domain>"',
+      '"BETTER_AUTH_URL": "https://tokenboard.example.com"'
+    )
+    .replace(
+      '"TOKENBOARD_COLLECTOR_REPO_URL": "<tokenboard-collector-repo-url>"',
+      '"TOKENBOARD_COLLECTOR_REPO_URL": "https://github.com/MisonL/TokenBoard.git"'
+    )
     .replace('"TOKENBOARD_COLLECTOR_REF": "<tokenboard-collector-ref>"', '"TOKENBOARD_COLLECTOR_REF": "master"')
-    .replace('"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"', '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"')
-    .replace('"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "<tokenboard-usage-summary-backfill-limit>"', '"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"')
-    .replace('"TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>"', '"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"')
-    .replace('"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"', '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"')
-    .replace('"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "<tokenboard-webhook-cron-batch-size>"', '"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "5"')
+    .replace(
+      '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "<tokenboard-daily-report-history-days>"',
+      '"TOKENBOARD_DAILY_REPORT_HISTORY_DAYS": "30"'
+    )
+    .replace(
+      '"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "<tokenboard-usage-summary-backfill-limit>"',
+      '"TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT": "50"'
+    )
+    .replace(
+      '"TOKENBOARD_USAGE_SUMMARY_STRICT": "<tokenboard-usage-summary-strict>"',
+      '"TOKENBOARD_USAGE_SUMMARY_STRICT": "false"'
+    )
+    .replace(
+      '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "<tokenboard-webhook-log-retention-days>"',
+      '"TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS": "90"'
+    )
+    .replace(
+      '"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "<tokenboard-webhook-cron-batch-size>"',
+      '"TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE": "5"'
+    )
     .replace('"database_id": "<your-d1-database-id>"', '"database_id": "11111111-1111-4111-8111-111111111111"')
 }
 
@@ -782,18 +1507,16 @@ function resourceControlDefault(name: string) {
   if (name === 'TOKENBOARD_USAGE_SUMMARY_STRICT') return 'false'
   if (name === 'TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS') return '90'
   if (name === 'TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE') return '5'
+  if (name === 'TOKENBOARD_MODEL_PRICING_SOURCE_URL') return 'https://models.dev/api.json'
   if (name === 'TOKENBOARD_COLLECTOR_REPO_URL') return 'https://github.com/MisonL/TokenBoard.git'
   if (name === 'TOKENBOARD_COLLECTOR_REF') return 'master'
   throw new Error(`Unknown resource control variable ${name}`)
 }
 
 function runSqlite(dbPath: string, sql: string, requireSuccess = true) {
-  const result = spawnSync('sqlite3', [dbPath], {
-    encoding: 'utf8',
-    input: sql
-  })
+  const result = runSqliteScript(dbPath, sql)
   if (requireSuccess && result.status !== 0) {
-    throw new Error(result.stderr || `sqlite3 exited with status ${result.status}`)
+    throw new Error(result.stderr || `sqlite exited with status ${result.status}`)
   }
   return result
 }

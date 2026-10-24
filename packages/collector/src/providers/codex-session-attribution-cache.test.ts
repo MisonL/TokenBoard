@@ -3,17 +3,35 @@ import { mkdtemp, readFile, rename, rm, stat, symlink, unlink, writeFile } from 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test, vi } from 'vitest'
+import assert from 'node:assert/strict'
 
 const fingerprintRace = vi.hoisted(() => ({
   enabled: false,
   filePath: '',
-  lstatCalls: 0
+  lstatCalls: 0,
+  shortReadPath: '',
+  shortReadLimit: 0,
+  shortReadCalls: 0
 }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs/promises')>()
   return {
     ...fs,
+    open: async (...args: Parameters<typeof fs.open>) => {
+      const handle = await fs.open(...args)
+      if (args[0] !== fingerprintRace.shortReadPath) return handle
+      const originalRead = handle.read.bind(handle)
+      return new Proxy(handle, {
+        get(target, property, receiver) {
+          if (property !== 'read') return Reflect.get(target, property, receiver)
+          return async (buffer: Buffer, offset: number, length: number, position: number) => {
+            fingerprintRace.shortReadCalls += 1
+            return originalRead(buffer, offset, Math.min(length, fingerprintRace.shortReadLimit), position)
+          }
+        }
+      })
+    },
     lstat: async (...args: Parameters<typeof fs.lstat>) => {
       const details = await fs.lstat(...args)
       if (fingerprintRace.enabled && args[0] === fingerprintRace.filePath) {
@@ -28,6 +46,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 })
 import {
   fingerprintCodexSessionFile,
+  retainCacheEntries,
   withCodexSessionAttributionCache
 } from './codex-session-attribution-cache'
 
@@ -46,6 +65,26 @@ const canCreateSymlinks = await (async () => {
 })()
 
 describe('Codex session attribution cache', () => {
+  // The cache files are written 0600, but they sit inside a state directory the cache creates
+  // itself: on a shared machine a directory left at the umask default (0755) makes the
+  // directory listable and lets its lock/temp files be replaced by whoever can write the dir.
+  test.skipIf(process.platform === 'win32')('creates a missing state directory private', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
+    const stateDir = join(root, 'state')
+
+    try {
+      await withCodexSessionAttributionCache({
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        callback: async () => undefined
+      })
+
+      expect((await stat(stateDir)).mode & 0o777).toBe(0o700)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test('rejects a cache hit when its source session changes before the transaction finishes', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
     const sourceDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-source-'))
@@ -67,15 +106,17 @@ describe('Codex session attribution cache', () => {
         }
       })
 
-      await expect(withCodexSessionAttributionCache({
-        stateDir,
-        timezone: 'Asia/Shanghai',
-        callback: async (cache) => {
-          const cached = await cache.lookup(sessionFile)
-          expect(cached.attribution).toEqual({ usageDate: '2026-05-21', model: 'gpt-5.6' })
-          await writeFile(sessionFile, '{"type":"event_msg","updated":true}\n')
-        }
-      })).rejects.toThrow('Codex session changed while resolving canonical attribution; retry the sync')
+      await expect(
+        withCodexSessionAttributionCache({
+          stateDir,
+          timezone: 'Asia/Shanghai',
+          callback: async (cache) => {
+            const cached = await cache.lookup(sessionFile)
+            expect(cached.attribution).toEqual({ usageDate: '2026-05-21', model: 'gpt-5.6' })
+            await writeFile(sessionFile, '{"type":"event_msg","updated":true}\n')
+          }
+        })
+      ).rejects.toThrow('Codex session changed while resolving canonical attribution; retry the sync')
     } finally {
       await rm(stateDir, { recursive: true, force: true })
       await rm(sourceDir, { recursive: true, force: true })
@@ -90,16 +131,43 @@ describe('Codex session attribution cache', () => {
     try {
       await writeFile(sessionFile, '{"type":"event_msg"}\n')
 
-      await expect(withCodexSessionAttributionCache({
-        stateDir,
-        timezone: 'Asia/Shanghai',
-        callback: async (cache) => {
-          await cache.lookup(sessionFile)
-          await unlink(sessionFile)
-        }
-      })).rejects.toThrow('Codex session changed while resolving canonical attribution; retry the sync')
+      await expect(
+        withCodexSessionAttributionCache({
+          stateDir,
+          timezone: 'Asia/Shanghai',
+          callback: async (cache) => {
+            await cache.lookup(sessionFile)
+            await unlink(sessionFile)
+          }
+        })
+      ).rejects.toThrow('Codex session changed while resolving canonical attribution; retry the sync')
     } finally {
       await rm(stateDir, { recursive: true, force: true })
+      await rm(sourceDir, { recursive: true, force: true })
+    }
+  })
+
+  test('fills a session tail across short reads before hashing it', async () => {
+    const sourceDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-source-'))
+    const sessionFile = join(sourceDir, 'session.jsonl')
+    try {
+      await writeFile(sessionFile, 'x'.repeat(128 * 1024))
+      fingerprintRace.shortReadPath = sessionFile
+      fingerprintRace.shortReadLimit = 97
+      fingerprintRace.shortReadCalls = 0
+
+      const fingerprint = await fingerprintCodexSessionFile(sessionFile)
+
+      expect(fingerprint.tailSha256).toBe(
+        createHash('sha256')
+          .update('x'.repeat(64 * 1024))
+          .digest('hex')
+      )
+      expect(fingerprintRace.shortReadCalls).toBeGreaterThan(1)
+    } finally {
+      fingerprintRace.shortReadPath = ''
+      fingerprintRace.shortReadLimit = 0
+      fingerprintRace.shortReadCalls = 0
       await rm(sourceDir, { recursive: true, force: true })
     }
   })
@@ -118,11 +186,13 @@ describe('Codex session attribution cache', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         callback: async (cache) => {
-          await expect(cache.storeIfUnchanged({
-            filePath: sessionFile,
-            fingerprint: frozenFingerprint,
-            attribution: { usageDate: '2026-05-21', model: 'gpt-5.6' }
-          })).resolves.toBe(false)
+          await expect(
+            cache.storeIfUnchanged({
+              filePath: sessionFile,
+              fingerprint: frozenFingerprint,
+              attribution: { usageDate: '2026-05-21', model: 'gpt-5.6' }
+            })
+          ).resolves.toBe(false)
         }
       })
     } finally {
@@ -145,11 +215,13 @@ describe('Codex session attribution cache', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         callback: async (cache) => {
-          await expect(cache.storeIfUnchanged({
-            filePath: sessionFile,
-            fingerprint: frozenFingerprint,
-            attribution: { usageDate: '2026-05-21', model: 'gpt-5.6' }
-          })).resolves.toBe(false)
+          await expect(
+            cache.storeIfUnchanged({
+              filePath: sessionFile,
+              fingerprint: frozenFingerprint,
+              attribution: { usageDate: '2026-05-21', model: 'gpt-5.6' }
+            })
+          ).resolves.toBe(false)
         }
       })
     } finally {
@@ -174,11 +246,13 @@ describe('Codex session attribution cache', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         callback: async (cache) => {
-          await expect(cache.storeIfUnchanged({
-            filePath: sessionFile,
-            fingerprint: frozenFingerprint,
-            attribution: { usageDate: '2026-05-21', model: 'gpt-5.6' }
-          })).resolves.toBe(false)
+          await expect(
+            cache.storeIfUnchanged({
+              filePath: sessionFile,
+              fingerprint: frozenFingerprint,
+              attribution: { usageDate: '2026-05-21', model: 'gpt-5.6' }
+            })
+          ).resolves.toBe(false)
         }
       })
     } finally {
@@ -215,8 +289,10 @@ describe('Codex session attribution cache', () => {
         stateDir,
         timezone: 'Asia/Shanghai',
         callback: async (cache) => {
-          expect(cache.lookupByFingerprint({ filePath: sessionFile, fingerprint: frozenFingerprint }))
-            .toEqual({ usageDate: '2026-05-21', model: 'gpt-5.6' })
+          expect(cache.lookupByFingerprint({ filePath: sessionFile, fingerprint: frozenFingerprint })).toEqual({
+            usageDate: '2026-05-21',
+            model: 'gpt-5.6'
+          })
         }
       })
     } finally {
@@ -236,21 +312,24 @@ describe('Codex session attribution cache', () => {
       const details = await stat(sessionFile)
       const content = await readFile(sessionFile)
       const key = createHash('sha256').update(sessionFile).digest('hex')
-      await writeFile(cachePath, `${JSON.stringify({
-        version: 1,
-        timezone: 'Asia/Shanghai',
-        entries: {
-          [key]: {
-            size: details.size,
-            mtimeMs: details.mtimeMs,
-            ctimeMs: details.ctimeMs,
-            tailSha256: createHash('sha256').update(content).digest('hex'),
-            updatedAt: '2026-07-20T00:00:00.000Z',
-            usageDate: '2026-07-20',
-            model: 'gpt-5.6'
+      await writeFile(
+        cachePath,
+        `${JSON.stringify({
+          version: 1,
+          timezone: 'Asia/Shanghai',
+          entries: {
+            [key]: {
+              size: details.size,
+              mtimeMs: details.mtimeMs,
+              ctimeMs: details.ctimeMs,
+              tailSha256: createHash('sha256').update(content).digest('hex'),
+              updatedAt: '2026-07-20T00:00:00.000Z',
+              usageDate: '2026-07-20',
+              model: 'gpt-5.6'
+            }
           }
-        }
-      })}\n`)
+        })}\n`
+      )
 
       await withCodexSessionAttributionCache({
         stateDir,
@@ -289,11 +368,13 @@ describe('Codex session attribution cache', () => {
       await rename(sessionFile, targetFile)
       await symlink(targetFile, sessionFile)
 
-      await expect(withCodexSessionAttributionCache({
-        stateDir,
-        timezone: 'Asia/Shanghai',
-        callback: (cache) => cache.lookup(sessionFile)
-      })).rejects.toThrow('Unable to inspect Codex session file: symbolic links are not supported')
+      await expect(
+        withCodexSessionAttributionCache({
+          stateDir,
+          timezone: 'Asia/Shanghai',
+          callback: (cache) => cache.lookup(sessionFile)
+        })
+      ).rejects.toThrow('Unable to inspect Codex session file: symbolic links are not supported')
     } finally {
       await rm(stateDir, { recursive: true, force: true })
       await rm(sourceDir, { recursive: true, force: true })
@@ -305,28 +386,71 @@ describe('Codex session attribution cache', () => {
 
     try {
       await writeFile(join(stateDir, 'codex-session-attribution-cache.json'), '{invalid')
-      await expect(withCodexSessionAttributionCache({
-        stateDir,
-        timezone: 'Asia/Shanghai',
-        callback: async () => undefined
-      })).rejects.toThrow('Invalid Codex session attribution cache JSON')
+      await expect(
+        withCodexSessionAttributionCache({
+          stateDir,
+          timezone: 'Asia/Shanghai',
+          callback: async () => undefined
+        })
+      ).rejects.toThrow('Invalid Codex session attribution cache JSON')
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
   })
 
-  test('rejects an oversized cache before parsing it', async () => {
+  test('discards an oversized cache and rebuilds it instead of failing the sync', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-codex-attribution-state-'))
 
     try {
       await writeFile(join(stateDir, 'codex-session-attribution-cache.json'), 'x'.repeat(9 * 1024 * 1024))
-      await expect(withCodexSessionAttributionCache({
+      let ran = false
+      await withCodexSessionAttributionCache({
         stateDir,
         timezone: 'Asia/Shanghai',
-        callback: async () => undefined
-      })).rejects.toThrow('Codex session attribution cache exceeds the 8388608-byte limit')
+        callback: async () => {
+          ran = true
+          return 'rebuilt'
+        }
+      })
+      assert.equal(ran, true)
+      // The rebuilt cache replaces the oversized file.
+      const rebuilt = await readFile(join(stateDir, 'codex-session-attribution-cache.json'), 'utf8')
+      assert.match(rebuilt, /"version"/)
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
   })
+
+  test('bounds retained entries by serialized size as well as entry count', () => {
+    const nowMs = Date.parse('2026-09-02T00:00:00.000Z')
+    const entries = Object.fromEntries(
+      Array.from({ length: 20_000 }, (_, index) => {
+        const key = index.toString(16).padStart(64, '0')
+        return [
+          key,
+          {
+            dev: 1,
+            ino: index + 1,
+            size: 1,
+            mtimeMs: 1,
+            ctimeMs: 1,
+            tailSha256: 'a'.repeat(64),
+            updatedAt: new Date(nowMs - 20_000 + index).toISOString(),
+            usageDate: '2026-09-01',
+            model: 'model-' + 'x'.repeat(500)
+          }
+        ]
+      })
+    )
+    const usedKeys = new Set(Object.keys(entries))
+
+    const retained = retainCacheEntries(entries, usedKeys, nowMs, 'UTC')
+    const serialized = JSON.stringify({ version: 1, timezone: 'UTC', entries: retained }) + '\n'
+
+    expect(Object.keys(retained).length).toBeLessThanOrEqual(20_000)
+    expect(Object.keys(retained).length).toBeLessThan(20_000)
+    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(8 * 1024 * 1024)
+    expect(retained['0'.repeat(64)]).toBeUndefined()
+    expect(retained[(19_999).toString(16).padStart(64, '0')]).toBeDefined()
+  }, 30_000)
 })

@@ -3,6 +3,12 @@ import { AppNav } from '../components/app-nav'
 import { getOptionalUser } from '../features/auth/middleware'
 
 export default createRoute(async (c) => {
+  // The page is anonymous-only (signed-in visitors are redirected below), so nothing in it
+  // leaks between viewers — but the redirect is part of the response, and a shared browser
+  // cache must not serve the cached marketing page to a signed-in visitor instead of the
+  // redirect to their dashboard. Same reasoning as the `requireUser` boundary, applied to the
+  // one decision this route makes from the session.
+  c.header('Cache-Control', 'no-store')
   const user = await getOptionalUser(c)
   if (user) return c.redirect('/dashboard')
 
@@ -21,8 +27,18 @@ export default createRoute(async (c) => {
             连接本机 Claude Code、Codex 与 Antigravity 采集器，只上传聚合后的 token 指标，并由你决定哪些视图可以公开。
           </p>
           <div class="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-            <a class="inline-flex min-h-11 items-center justify-center rounded-xl bg-lime-300 px-5 py-3 text-sm font-black text-stone-950 transition hover:bg-lime-200" href="/auth/sign-in">使用 GitHub 登录</a>
-            <a class="inline-flex min-h-11 items-center justify-center rounded-xl border border-[var(--app-border)] px-5 py-3 text-sm font-bold text-[var(--app-text)] transition hover:border-lime-300" href="/leaderboards">查看排行榜</a>
+            <a
+              class="inline-flex min-h-11 items-center justify-center rounded-xl bg-lime-300 px-5 py-3 text-sm font-black text-stone-950 transition hover:bg-lime-200"
+              href="/auth/sign-in"
+            >
+              使用 GitHub 登录
+            </a>
+            <a
+              class="inline-flex min-h-11 items-center justify-center rounded-xl border border-[var(--app-border)] px-5 py-3 text-sm font-bold text-[var(--app-text)] transition hover:border-lime-300"
+              href="/leaderboards"
+            >
+              查看排行榜
+            </a>
           </div>
         </div>
         <div class="app-surface-floating relative z-10 min-w-0 max-w-full overflow-hidden rounded-2xl border border-[var(--app-border)] bg-[var(--app-panel-strong)] p-5 text-[var(--app-text)]">
@@ -38,9 +54,9 @@ export default createRoute(async (c) => {
               <span class="text-[var(--app-muted)]">最近 30 天</span>
             </div>
             <div class="flex h-4 overflow-hidden rounded-full bg-[var(--app-border)]">
-              <div class="h-full bg-lime-300" style="width:55%" />
-              <div class="h-full bg-lime-200" style="width:28%" />
-              <div class="h-full bg-lime-500" style="width:17%" />
+              <div class="h-full w-[55%] bg-lime-300" />
+              <div class="h-full w-[28%] bg-lime-200" />
+              <div class="h-full w-[17%] bg-lime-500" />
             </div>
             <div class="mt-3 flex flex-wrap justify-between gap-2 text-xs text-[var(--app-muted)]">
               <span>Claude Code 55%</span>

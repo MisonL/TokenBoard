@@ -15,7 +15,7 @@ describe('collector CLI timezone validation', () => {
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     try {
       await expect(runCollectorCli(args, env)).resolves.toBe(1)
-      expect(stderr).toHaveBeenCalledWith('Invalid timezone')
+      expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/^Invalid timezone:/))
     } finally {
       stderr.mockRestore()
     }

@@ -2,10 +2,9 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
-  appendBoundedStatuslineError,
-  appendBoundedStatuslineEvent
-} from './antigravity-statusline-log.mjs'
+import { appendBoundedStatuslineError, appendBoundedStatuslineEvent } from './antigravity-statusline-log.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
+import { isMainModule } from './is-main.mjs'
 import { startOriginalStatuslineCommand } from './antigravity-statusline-original.mjs'
 import { errorMessage } from './error-message.mjs'
 
@@ -17,6 +16,8 @@ const schemaVersion = 'antigravity-statusline/v1'
 const defaultMaxLogBytes = 8 * 1024 * 1024
 const minMaxLogBytes = 1024
 const maxMaxLogBytes = 64 * 1024 * 1024
+const statuslineUsage =
+  'Usage: antigravity-statusline.mjs [--state-dir DIR] [--log-path FILE] [--error-path FILE] [--original-command-file FILE] [--max-input-bytes N] [--max-log-bytes N]'
 const upstreamEventIdentifierFields = [
   'event_id',
   'eventId',
@@ -31,7 +32,25 @@ const upstreamEventIdentifierFields = [
 ]
 
 export async function runStatuslineCli(argv = process.argv.slice(2), env = process.env) {
-  const options = readOptions(argv, env)
+  if (printHelpIfRequested(argv, statuslineUsage)) return 0
+  let options
+  try {
+    options = readOptions(argv, env)
+  } catch (error) {
+    // A bad option is a caller mistake, not a capture failure: record it in the same bounded
+    // diagnostics log the other option errors use, and exit non-zero without touching stdin or
+    // the original command. The state directory is only known once `readOptions` has parsed the
+    // flags, so the error path is resolved from the same flags and environment here; when
+    // neither names a location there is nowhere safe to write and the one-line message — which
+    // never contains payload data or local paths — goes to stderr instead.
+    const errorPath = bestEffortErrorPath(argv, env)
+    if (errorPath) {
+      recordStatuslineError(errorPath, 'options', error, defaultMaxLogBytes)
+    } else {
+      console.error(errorMessage(error))
+    }
+    return 1
+  }
   let original = null
   try {
     original = startOriginalStatuslineCommand({
@@ -47,11 +66,7 @@ export async function runStatuslineCli(argv = process.argv.slice(2), env = proce
     input = await readStdin(options.maxInputBytes, original)
     if (input.captureError) throw input.captureError
     if (input.tooLarge) throw new Error('Antigravity statusline payload too large')
-    const event = extractStatuslineEvent(
-      input.raw,
-      new Date().toISOString(),
-      randomBytes(16).toString('hex')
-    )
+    const event = extractStatuslineEvent(input.raw, new Date().toISOString(), randomBytes(16).toString('hex'))
     if (event) {
       appendBoundedStatuslineEvent(options.logPath, event, options.maxLogBytes)
     }
@@ -71,6 +86,22 @@ export async function runStatuslineCli(argv = process.argv.slice(2), env = proce
       process.stdout.write(result.output)
     }
   }
+  return 0
+}
+
+// An option error is a caller mistake, not a capture failure: record it in the same bounded
+// diagnostics log the other option errors use, and exit non-zero without touching stdin or the
+// original command. The state directory is only known once `readOptions` has parsed the flags,
+// so the error path is resolved from the same flags and environment here; when neither names a
+// location there is nowhere safe to write and the one-line message — which never contains
+// payload data or local paths — goes to stderr instead.
+function bestEffortErrorPath(argv, env) {
+  const flags = readFlags(argv)
+  const errorPath = flags['error-path']
+  if (typeof errorPath === 'string' && errorPath.trim()) return errorPath
+  const stateDir = flags['state-dir'] || env.TOKENBOARD_STATE_DIR || env.TOKENBOARD_CONFIG_DIR
+  if (typeof stateDir !== 'string' || !stateDir.trim()) return null
+  return `${stateDir}/antigravity-statusline-errors.log`
 }
 
 export function extractStatuslineEvent(raw, capturedAt, captureId) {
@@ -96,9 +127,8 @@ export function extractStatuslineEvent(raw, capturedAt, captureId) {
     capturedAt,
     ...(captureId ? { captureId } : {}),
     conversationHash,
-    conversationHashAliases: conversationHashAliases && conversationHashAliases !== conversationHash
-      ? [conversationHashAliases]
-      : undefined,
+    conversationHashAliases:
+      conversationHashAliases && conversationHashAliases !== conversationHash ? [conversationHashAliases] : undefined,
     ...(statuslineEventHash ? { statuslineEventHash } : {}),
     model,
     usage: {
@@ -116,7 +146,8 @@ export function readOptions(argv, env = process.env) {
   if (!stateDir) {
     throw new Error('Missing --state-dir for Antigravity statusline handler')
   }
-  const logPath = flags['log-path'] || env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_LOG || `${stateDir}/antigravity-cli-statusline.jsonl`
+  const logPath =
+    flags['log-path'] || env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_LOG || `${stateDir}/antigravity-cli-statusline.jsonl`
   const errorPath = flags['error-path'] || `${stateDir}/antigravity-statusline-errors.log`
   const originalCommandFile = flags['original-command-file'] || `${stateDir}/antigravity_statusline_original.json`
   return {
@@ -124,9 +155,7 @@ export function readOptions(argv, env = process.env) {
     logPath,
     errorPath,
     originalCommandFile,
-    maxInputBytes: Number(Object.hasOwn(flags, 'max-input-bytes')
-      ? flags['max-input-bytes']
-      : defaultMaxInputBytes),
+    maxInputBytes: Number(Object.hasOwn(flags, 'max-input-bytes') ? flags['max-input-bytes'] : defaultMaxInputBytes),
     maxLogBytes: readMaxLogBytes(flags['max-log-bytes'] || env.TOKENBOARD_ANTIGRAVITY_STATUSLINE_MAX_BYTES),
     selfPath: resolve(fileURLToPath(import.meta.url))
   }
@@ -146,9 +175,10 @@ function parsePayload(raw) {
 }
 
 async function readStdin(maxBytes, original) {
-  const captureError = !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > defaultMaxInputBytes
-    ? new Error('Invalid Antigravity statusline input limit')
-    : undefined
+  const captureError =
+    !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > defaultMaxInputBytes
+      ? new Error('Invalid Antigravity statusline input limit')
+      : undefined
   const captured = captureError ? null : Buffer.alloc(maxBytes)
   let total = 0
   let tooLarge = false
@@ -183,8 +213,10 @@ async function readStdin(maxBytes, original) {
 function readModel(value) {
   if (typeof value === 'string') return readBoundedString(value, maxModelLength, 'model')
   const model = readObject(value)
-  return readBoundedString(model.display_name, maxModelLength, 'model.display_name') ||
+  return (
+    readBoundedString(model.display_name, maxModelLength, 'model.display_name') ||
     readBoundedString(model.id, maxModelLength, 'model.id')
+  )
 }
 
 function readStatuslineEventHash(payload) {
@@ -225,17 +257,12 @@ function readObject(value) {
 
 function hashIdentifier(value) {
   if (!value) return null
-  return createHash('sha256')
-    .update(value)
-    .digest('hex')
+  return createHash('sha256').update(value).digest('hex')
 }
 
 function hashLegacyIdentifier(value) {
   if (!value) return null
-  return createHash('sha256')
-    .update('tokenboard-antigravity-cli\0')
-    .update(value)
-    .digest('hex')
+  return createHash('sha256').update('tokenboard-antigravity-cli\0').update(value).digest('hex')
 }
 
 function hashStatuslineEventIdentifier(field, value) {
@@ -257,12 +284,17 @@ function readMaxLogBytes(value) {
 }
 
 function recordStatuslineError(filePath, stage, error, maxBytes) {
+  if (typeof filePath !== 'string' || !filePath) return
   try {
-    appendBoundedStatuslineError(filePath, {
-      stage,
-      message: errorMessage(error),
-      capturedAt: new Date().toISOString()
-    }, maxBytes)
+    appendBoundedStatuslineError(
+      filePath,
+      {
+        stage,
+        message: errorMessage(error),
+        capturedAt: new Date().toISOString()
+      },
+      maxBytes
+    )
   } catch (_) {}
 }
 
@@ -287,6 +319,6 @@ function readFlags(args) {
   return flags
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
-  await runStatuslineCli()
+if (isMainModule(import.meta.url)) {
+  process.exitCode = await runStatuslineCli()
 }

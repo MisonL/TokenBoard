@@ -161,11 +161,14 @@ Hooks coalesce pending work by source in `~/.tokenboard/notify.signal.d`, start 
 Scheduled, manual, preview, and hook collection share `sync.lock`; a hook child reuses the lock held
 by its coordinator. Signals received during a running collection are retained and coalesced into one
 trailing run after the default 15-minute cooldown instead of immediately repeating a full reconciliation.
-Set `TOKENBOARD_NOTIFY_COOLDOWN_MS` to an integer from `60000` through `3600000` to tune this
+Set `TOKENBOARD_NOTIFY_COOLDOWN_MS` to an integer from `60000` through `7200000` to tune this
 hook-only window. The hook handler persists its signal before the background notifier validates this
 setting; without shared-lock contention, the configured window is the maximum delay after the most
 recent successful TokenBoard reconciliation. Lock timeouts
 continue to retry after one minute.
+A hook trigger landing within 30 minutes of a scheduled sync time (the config file's `scheduleTimes`)
+is skipped: the scheduled run collects the same usage minutes later, and the queued signal is left
+for the next hook run to acknowledge.
 If a scheduled sync reaches the lock timeout, it records a private deferred state and performs a
 bounded in-process retry: at most five attempts with a one-minute delay after each continued lock
 contention. The retry never runs checkout upgrade and stops immediately for a real collector failure.
@@ -194,7 +197,7 @@ Rotated logs are capped at 1 MiB and kept for 7 days.
 
 ## Development
 
-Node.js 22.12 or newer is required.
+Node.js 22.23.4+ or 24.22.1+ is required (the range is `^22.23.4 || ^24.22.1 || >=26.12.1`; older releases are missing security fixes for CVE-2026-111497 and the Node TLS hostname bypasses). `.npmrc` sets `engine-strict=true`, so an unsupported Node fails the install instead of warning.
 
 ```bash
 pnpm install

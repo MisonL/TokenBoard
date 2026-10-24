@@ -1,8 +1,15 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import { collectPiUsage } from './pi'
+
+// Temp agent directories created below are removed after each test so repeated runs
+// do not accumulate directories in the OS temp folder.
+const tempDirs: string[] = []
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
 
 // Entry types, the `message.usage` shape and the cost breakdown below follow
 // Pi's session JSONL: entries form an id/parentId tree, and usage rides on
@@ -43,6 +50,7 @@ function assistantEntry(overrides: Record<string, unknown> = {}) {
 
 async function piAgentDir(files: Record<string, string[]>) {
   const agentDir = await mkdtemp(join(tmpdir(), 'tokenboard-pi-'))
+  tempDirs.push(agentDir)
   for (const [relative, lines] of Object.entries(files)) {
     const filePath = join(agentDir, 'sessions', ...relative.split('/'))
     await mkdir(join(filePath, '..'), { recursive: true })
@@ -67,20 +75,22 @@ describe('collectPiUsage', () => {
 
     const snapshots = await collect(agentDir)
 
-    expect(snapshots).toEqual([{
-      source: 'pi',
-      usageDate: '2026-06-15',
-      timezone: 'Asia/Shanghai',
-      model: 'deepseek-v4-pro',
-      inputTokens: 3272,
-      outputTokens: 383,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 52_480,
-      totalTokens: 56_135,
-      costUsd: 0.0024,
-      sessionCount: 1,
-      collectedAt: '2026-06-15T12:00:00.000Z'
-    }])
+    expect(snapshots).toEqual([
+      {
+        source: 'pi',
+        usageDate: '2026-06-15',
+        timezone: 'Asia/Shanghai',
+        model: 'deepseek-v4-pro',
+        inputTokens: 3272,
+        outputTokens: 383,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 52_480,
+        totalTokens: 56_135,
+        costUsd: 0.0024,
+        sessionCount: 1,
+        collectedAt: '2026-06-15T12:00:00.000Z'
+      }
+    ])
   })
 
   test('counts tool-result, compaction and branch-summary usage', async () => {
@@ -90,10 +100,24 @@ describe('collectPiUsage', () => {
           type: 'message',
           id: 'tool-1',
           timestamp,
-          message: { role: 'toolResult', model: 'deepseek-v4-pro', usage: usage({ input: 100, output: 10, cacheRead: 0, cost: { total: 0.001 } }) }
+          message: {
+            role: 'toolResult',
+            model: 'deepseek-v4-pro',
+            usage: usage({ input: 100, output: 10, cacheRead: 0, cost: { total: 0.001 } })
+          }
         }),
-        JSON.stringify({ type: 'compaction', id: 'compact-1', timestamp, usage: usage({ input: 200, output: 20, cacheRead: 0, cost: { total: 0.002 } }) }),
-        JSON.stringify({ type: 'branch_summary', id: 'branch-1', timestamp, usage: usage({ input: 300, output: 30, cacheRead: 0, cost: { total: 0.003 } }) })
+        JSON.stringify({
+          type: 'compaction',
+          id: 'compact-1',
+          timestamp,
+          usage: usage({ input: 200, output: 20, cacheRead: 0, cost: { total: 0.002 } })
+        }),
+        JSON.stringify({
+          type: 'branch_summary',
+          id: 'branch-1',
+          timestamp,
+          usage: usage({ input: 300, output: 30, cacheRead: 0, cost: { total: 0.003 } })
+        })
       ]
     })
 
@@ -102,11 +126,14 @@ describe('collectPiUsage', () => {
     // The tool result names its model; compaction and branch-summary entries
     // carry no message, so their usage lands under the unknown-model row.
     expect(snapshots.map((item) => item.model)).toEqual(['deepseek-v4-pro', 'unknown'])
-    const totals = snapshots.reduce((sum, item) => ({
-      input: sum.input + item.inputTokens,
-      output: sum.output + item.outputTokens,
-      cost: sum.cost + item.costUsd
-    }), { input: 0, output: 0, cost: 0 })
+    const totals = snapshots.reduce(
+      (sum, item) => ({
+        input: sum.input + item.inputTokens,
+        output: sum.output + item.outputTokens,
+        cost: sum.cost + item.costUsd
+      }),
+      { input: 0, output: 0, cost: 0 }
+    )
 
     expect(totals.input).toBe(600)
     expect(totals.output).toBe(60)
@@ -133,7 +160,8 @@ describe('collectPiUsage', () => {
   test('counts a forked entry id only once', async () => {
     // A fork copies shared history, so the same entry id can appear twice.
     const agentDir = await piAgentDir({
-      'project/session-a.jsonl': [assistantEntry(), assistantEntry()]
+      'project/session-a.jsonl': [assistantEntry()],
+      'project/session-b.jsonl': [assistantEntry()]
     })
 
     const [snapshot] = await collect(agentDir)
@@ -193,12 +221,47 @@ describe('collectPiUsage', () => {
     expect(snapshot.costUsd).toBeCloseTo(0.0035, 10)
   })
 
+  test('includes the extended cache-write tier in bucket cost fallback', async () => {
+    const agentDir = await piAgentDir({
+      'project/session-a.jsonl': [
+        assistantEntry({
+          messageOverrides: {
+            usage: {
+              input: 100,
+              output: 10,
+              cacheRead: 0,
+              cacheWrite: 200,
+              cacheWrite1h: 300,
+              cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0.004, cacheWrite1h: 0.005 }
+            }
+          }
+        })
+      ]
+    })
+
+    const [snapshot] = await collect(agentDir)
+
+    expect(snapshot.costUsd).toBeCloseTo(0.012, 10)
+  })
+
+  test('trims served model identifiers before aggregation', async () => {
+    const agentDir = await piAgentDir({
+      'project/session-a.jsonl': [
+        assistantEntry({
+          messageOverrides: { model: '  requested-model  ', responseModel: '  served-model  ' }
+        })
+      ]
+    })
+
+    const [snapshot] = await collect(agentDir)
+
+    expect(snapshot.model).toBe('served-model')
+  })
+
   test('aggregates across sessions and dates, counting distinct sessions', async () => {
     const agentDir = await piAgentDir({
       'project-a/session-a.jsonl': [assistantEntry()],
-      'project-b/session-b.jsonl': [
-        assistantEntry({ timestamp: '2026-06-16T02:00:00.000Z' })
-      ]
+      'project-b/session-b.jsonl': [assistantEntry({ id: 'entry-2', timestamp: '2026-06-16T02:00:00.000Z' })]
     })
 
     const snapshots = await collect(agentDir)
@@ -223,6 +286,7 @@ describe('collectPiUsage', () => {
 
   test('reports no sessions instead of empty usage when nothing is scanned', async () => {
     const agentDir = await mkdtemp(join(tmpdir(), 'tokenboard-pi-empty-'))
+    tempDirs.push(agentDir)
 
     await expect(collect(agentDir)).rejects.toThrow('No Pi sessions found')
   })
@@ -286,22 +350,24 @@ describe('collectPiUsage', () => {
 
     const snapshots = await collect(home)
 
-    expect(snapshots).toEqual([{
-      source: 'pi',
-      usageDate: '2026-06-15',
-      timezone: 'Asia/Shanghai',
-      model: 'grok-4.5',
-      inputTokens: 47_570,
-      outputTokens: 31_341,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 1_118_976,
-      totalTokens: 1_197_887,
-      // Subscription-tier models report a zero cost breakdown, which is a real
-      // zero rather than an absent figure.
-      costUsd: 0,
-      sessionCount: 1,
-      collectedAt: '2026-06-15T12:00:00.000Z'
-    }])
+    expect(snapshots).toEqual([
+      {
+        source: 'pi',
+        usageDate: '2026-06-15',
+        timezone: 'Asia/Shanghai',
+        model: 'grok-4.5',
+        inputTokens: 47_570,
+        outputTokens: 31_341,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 1_118_976,
+        totalTokens: 1_197_887,
+        // Subscription-tier models report a zero cost breakdown, which is a real
+        // zero rather than an absent figure.
+        costUsd: 0,
+        sessionCount: 1,
+        collectedAt: '2026-06-15T12:00:00.000Z'
+      }
+    ])
   })
 
   test('counts both cache-write tiers as cache creation', async () => {
@@ -327,7 +393,12 @@ describe('collectPiUsage', () => {
     const home = await piAgentDir({
       'project/session-a.jsonl': [
         JSON.stringify({ type: 'session', id: 's', timestamp, cwd: secrets[2] }),
-        JSON.stringify({ type: 'message', id: 'u', timestamp, message: { role: 'user', content: [{ type: 'text', text: secrets[0] }] } }),
+        JSON.stringify({
+          type: 'message',
+          id: 'u',
+          timestamp,
+          message: { role: 'user', content: [{ type: 'text', text: secrets[0] }] }
+        }),
         JSON.stringify({
           type: 'message',
           id: 'a',

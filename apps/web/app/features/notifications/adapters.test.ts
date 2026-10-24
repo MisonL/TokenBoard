@@ -3,6 +3,7 @@ import {
   buildWebhookPayload,
   formatDailyReport,
   formatDingTalkDailyReport,
+  formatFeishuDailyReport,
   formatWeComDailyReport,
   type DailyTokenReport
 } from './adapters'
@@ -21,9 +22,7 @@ const report: DailyTokenReport = {
     { source: 'codex', totalTokens: 800, totalTokensWithoutCacheRead: 620 },
     { source: 'claude-code', totalTokens: 400, totalTokensWithoutCacheRead: 280 }
   ],
-  topModels: [
-    { model: 'gpt-5', totalTokens: 800, totalTokensWithoutCacheRead: 620, costUsd: 0.8 }
-  ]
+  topModels: [{ model: 'gpt-5', totalTokens: 800, totalTokensWithoutCacheRead: 620, costUsd: 0.8 }]
 }
 
 describe('notification adapters', () => {
@@ -53,8 +52,10 @@ describe('notification adapters', () => {
       topModels: [
         ...report.topModels,
         {
-          model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300,
-          totalTokensWithoutCacheRead: 260, costUsd: 0,
+          model: 'Gemini 3.5 Flash (Medium)',
+          totalTokens: 300,
+          totalTokensWithoutCacheRead: 260,
+          costUsd: 0,
           sourceSplit: [{ source: 'antigravity-cli' }]
         }
       ]
@@ -70,13 +71,13 @@ describe('notification adapters', () => {
     const antigravityReport = {
       ...report,
       costUsd: 0.8,
-      sourceSplit: [
-        { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
-      ],
+      sourceSplit: [{ source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }],
       topModels: [
         {
-          model: 'Gemini 3.5 Flash (Medium)', totalTokens: 300,
-          totalTokensWithoutCacheRead: 260, costUsd: 0,
+          model: 'Gemini 3.5 Flash (Medium)',
+          totalTokens: 300,
+          totalTokensWithoutCacheRead: 260,
+          costUsd: 0,
           sourceSplit: [{ source: 'antigravity-cli' }]
         }
       ]
@@ -89,9 +90,11 @@ describe('notification adapters', () => {
       report: antigravityReport,
       now: new Date('2026-04-29T01:00:00.000Z')
     })
-    const feishuText = (feishuPayload.body as {
-      card: { body: { elements: Array<{ tag: string, content?: string }> } }
-    }).card.body.elements[0].content
+    const feishuText = (
+      feishuPayload.body as {
+        card: { body: { elements: Array<{ tag: string; content?: string }> } }
+      }
+    ).card.body.elements[0].content
 
     expect(wecomText).toContain('$0.00 (Antigravity CLI 费用不可用)')
     expect(dingtalkText).toContain('$0.00 (Antigravity CLI 费用不可用)')
@@ -126,6 +129,46 @@ describe('notification adapters', () => {
     expect(text).toContain('Gemini 3.5 Flash (Medium)：260 token，缓存率 13%，$0.00 (Antigravity CLI 费用不可用)')
     expect(wecomText).toContain('**gpt-5**：620 token / <font color="warning">$0.80</font>')
     expect(dingtalkText).toContain('**gpt\\-5**：620 token / $0.80')
+  })
+
+  test('marks a model shared by billable and Antigravity sources as unavailable', async () => {
+    const mixedModelReport: DailyTokenReport = {
+      ...report,
+      sourceSplit: [
+        { source: 'codex', totalTokens: 800, totalTokensWithoutCacheRead: 620 },
+        { source: 'antigravity-cli', totalTokens: 300, totalTokensWithoutCacheRead: 260 }
+      ],
+      topModels: [
+        {
+          model: 'gpt-5',
+          totalTokens: 1100,
+          totalTokensWithoutCacheRead: 880,
+          costUsd: 0.8,
+          sourceSplit: [{ source: 'codex' }, { source: 'antigravity-cli' }]
+        }
+      ]
+    }
+
+    const text = formatDailyReport(mixedModelReport)
+    const wecomText = formatWeComDailyReport(mixedModelReport)
+    const dingtalkText = formatDingTalkDailyReport(mixedModelReport)
+    const feishuPayload = await buildWebhookPayload({
+      provider: 'feishu',
+      webhookUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/test',
+      report: mixedModelReport,
+      now: new Date('2026-04-29T01:00:00.000Z')
+    })
+    const feishuText =
+      (
+        feishuPayload.body as {
+          card: { body: { elements: Array<{ content?: string }> } }
+        }
+      ).card.body.elements[0]?.content ?? ''
+
+    expect(text).toContain('$0.80 (Antigravity CLI 费用不可用)')
+    expect(wecomText).toContain('$0.80 (Antigravity CLI 费用不可用)')
+    expect(dingtalkText).toContain('$0.80 (Antigravity CLI 费用不可用)')
+    expect(feishuText).toContain('$0.80 (Antigravity CLI 费用不可用)')
   })
 
   test('marks legacy model cost availability as unknown instead of using report-wide sources', () => {
@@ -185,7 +228,9 @@ describe('notification adapters', () => {
     expect(content).toContain('<font color="warning">$1.23</font>')
     expect(content).toContain('**主要来源**')
     expect(content).toContain('**Codex**：620 token')
-    expect(content).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(content).toContain(
+      '[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)'
+    )
     expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(4096)
     expect(content).not.toContain('Example 在 2026-04-29 共消耗')
   })
@@ -194,12 +239,14 @@ describe('notification adapters', () => {
     const text = formatWeComDailyReport({
       ...report,
       displayName: '<Example>'.repeat(200),
-      topModels: [{
-        model: 'gpt-5'.repeat(1000),
-        totalTokens: 1000,
-        totalTokensWithoutCacheRead: 900,
-        costUsd: 1
-      }]
+      topModels: [
+        {
+          model: 'gpt-5'.repeat(1000),
+          totalTokens: 1000,
+          totalTokensWithoutCacheRead: 900,
+          costUsd: 1
+        }
+      ]
     })
 
     expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(4096)
@@ -211,12 +258,14 @@ describe('notification adapters', () => {
     const text = formatDingTalkDailyReport({
       ...report,
       displayName: '<Example>',
-      topModels: [{
-        model: 'gpt-5[preview]',
-        totalTokens: 800,
-        totalTokensWithoutCacheRead: 620,
-        costUsd: 0.8
-      }]
+      topModels: [
+        {
+          model: 'gpt-5[preview]',
+          totalTokens: 800,
+          totalTokensWithoutCacheRead: 620,
+          costUsd: 0.8
+        }
+      ]
     })
 
     expect(text).toContain('## TokenBoard：&lt;Example&gt; token 日报')
@@ -229,7 +278,9 @@ describe('notification adapters', () => {
     expect(text).toContain('  - 含缓存读 800 token / 缓存率 23%')
     expect(text).toContain('**gpt\\-5\\[preview\\]**：620 token / $0.80')
     expect(text).not.toContain('<font')
-    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(text).toContain(
+      '[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)'
+    )
     expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
   })
 
@@ -279,7 +330,9 @@ describe('notification adapters', () => {
       }
     })
     const text = (payload.body as { actionCard: { text: string } }).actionCard.text
-    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    expect(text).toContain(
+      '[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)'
+    )
     expect(text).not.toContain('<font')
   })
 
@@ -327,20 +380,26 @@ describe('notification adapters', () => {
     const text = formatDingTalkDailyReport({
       ...report,
       displayName: 'Example'.repeat(1000),
-      topModels: [{
-        model: 'gpt-5'.repeat(5000),
-        totalTokens: 1000,
-        totalTokensWithoutCacheRead: 900,
-        costUsd: 1
-      }]
+      topModels: [
+        {
+          model: 'gpt-5'.repeat(5000),
+          totalTokens: 1000,
+          totalTokensWithoutCacheRead: 900,
+          costUsd: 1
+        }
+      ]
     })
 
     expect(text).toContain('TokenBoard')
     expect(text).toContain('内容已截断')
-    expect(text).toContain('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
-    expect(text.trimEnd().endsWith(
+    expect(text).toContain(
       '[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)'
-    )).toBe(true)
+    )
+    expect(
+      text
+        .trimEnd()
+        .endsWith('[打开日报详情](https://tokenboard.example.com/reports/daily/drr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')
+    ).toBe(true)
     expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(20_000)
   })
 
@@ -390,9 +449,11 @@ describe('notification adapters', () => {
         }
       }
     })
-    const content = (payload.body as {
-      card: { body: { elements: Array<{ tag: string, content?: string }> } }
-    }).card.body.elements[0].content
+    const content = (
+      payload.body as {
+        card: { body: { elements: Array<{ tag: string; content?: string }> } }
+      }
+    ).card.body.elements[0].content
     expect(content).not.toContain('[打开日报详情]')
     expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
   })
@@ -438,9 +499,11 @@ describe('notification adapters', () => {
         }
       }
     })
-    const content = (payload.body as {
-      card: { body: { elements: Array<{ tag: string, content?: string }> } }
-    }).card.body.elements[0].content
+    const content = (
+      payload.body as {
+        card: { body: { elements: Array<{ tag: string; content?: string }> } }
+      }
+    ).card.body.elements[0].content
     expect(content).toContain('**主要来源**')
     expect(content).not.toContain('[查看排行榜]')
     expect((payload.body as { card: { elements?: unknown } }).card.elements).toBeUndefined()
@@ -453,25 +516,90 @@ describe('notification adapters', () => {
       report: {
         ...report,
         displayName: 'Example'.repeat(1000),
-        topModels: [{
-          model: 'gpt-5'.repeat(5000),
-          totalTokens: 1000,
-          totalTokensWithoutCacheRead: 900,
-          costUsd: 1
-        }]
+        topModels: [
+          {
+            model: 'gpt-5'.repeat(5000),
+            totalTokens: 1000,
+            totalTokensWithoutCacheRead: 900,
+            costUsd: 1
+          }
+        ]
       },
       now: new Date('2026-04-29T01:00:00.000Z')
     })
-    const content = (payload.body as {
-      card: { body: { elements: Array<{ content: string }> } }
-    }).card.body.elements[0].content
-    const title = (payload.body as {
-      card: { header: { title: { content: string } } }
-    }).card.header.title.content
+    const content = (
+      payload.body as {
+        card: { body: { elements: Array<{ content: string }> } }
+      }
+    ).card.body.elements[0].content
+    const title = (
+      payload.body as {
+        card: { header: { title: { content: string } } }
+      }
+    ).card.header.title.content
 
     expect(content).toContain('内容已截断')
     expect(title).toContain('...')
     expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(14 * 1024)
     expect(new TextEncoder().encode(JSON.stringify(payload.body)).byteLength).toBeLessThanOrEqual(20 * 1024)
+  })
+
+  // Feishu cards receive the same user-controlled strings the WeCom and DingTalk paths escape,
+  // so they must be escaped too — otherwise a display name or model id carrying markup lands in
+  // the card body verbatim. Both providers encode `&`/`<`/`>` and flatten newlines.
+  test('escapes user-controlled fields in the Feishu card body', () => {
+    const injectionReport: DailyTokenReport = {
+      ...report,
+      displayName: '<script>alert(1)</script>',
+      timezone: 'UTC+8 & <b>x</b>',
+      sourceSplit: [{ source: 'codex', totalTokens: 100, totalTokensWithoutCacheRead: 80 }],
+      topModels: [
+        {
+          model: 'gpt-<script>5</script>',
+          totalTokens: 100,
+          totalTokensWithoutCacheRead: 80,
+          costUsd: 0.5,
+          sourceSplit: [{ source: 'codex' }]
+        }
+      ]
+    }
+
+    const text = formatFeishuDailyReport(injectionReport)
+
+    expect(text).not.toContain('<script>')
+    expect(text).toContain('&lt;script&gt;')
+    expect(text).toContain('gpt-&lt;script&gt;5&lt;/script&gt;')
+    // The `&` and `<` in the timezone are entity-encoded, not passed through raw.
+    expect(text).toContain('UTC+8 &amp; &lt;b&gt;x&lt;/b&gt;')
+  })
+
+  // Lark markdown treats a backslash as an escape, so the characters that open emphasis, code
+  // spans or links would swallow the card's own markup when a value contains them literally.
+  // The timezone and model id both reach the card body; the display name goes to the card title
+  // as `plain_text`, which is not parsed as markdown.
+  test('escapes the markdown structural characters a Lark value could otherwise trigger', () => {
+    const injectionReport: DailyTokenReport = {
+      ...report,
+      timezone: '**x**',
+      sourceSplit: [{ source: 'codex', totalTokens: 100, totalTokensWithoutCacheRead: 80 }],
+      topModels: [
+        {
+          model: 'gpt_5 *flash* `code` [link](https://x) ~strike~',
+          totalTokens: 100,
+          totalTokensWithoutCacheRead: 80,
+          costUsd: 0.5,
+          sourceSplit: [{ source: 'codex' }]
+        }
+      ]
+    }
+
+    const text = formatFeishuDailyReport(injectionReport)
+
+    expect(text).toContain('\\*\\*x\\*\\*')
+    // Escaping the brackets is what breaks the link syntax; the parentheses alone do not.
+    expect(text).toContain('gpt\\_5 \\*flash\\* \\`code\\` \\[link\\](https://x) \\~strike\\~')
+    // The raw, unescaped form would let the card render its own emphasis.
+    expect(text).not.toContain('**x**')
+    expect(text).not.toContain('gpt_5 *flash*')
   })
 })

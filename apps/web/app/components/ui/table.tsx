@@ -6,7 +6,9 @@ export function Table(props: { class?: string; children?: Child }) {
 }
 
 export function TableHeader(props: { class?: string; children?: Child }) {
-  return <thead class={cn('text-xs uppercase tracking-wide text-[var(--app-muted)]', props.class)}>{props.children}</thead>
+  return (
+    <thead class={cn('text-xs uppercase tracking-wide text-[var(--app-muted)]', props.class)}>{props.children}</thead>
+  )
 }
 
 export function TableBody(props: { class?: string; children?: Child }) {
@@ -17,10 +19,20 @@ export function TableRow(props: { class?: string; children?: Child }) {
   return <tr class={cn('border-b border-[var(--app-border)] transition-colors', props.class)}>{props.children}</tr>
 }
 
-export function TableHead(props: { class?: string; children?: Child }) {
-  return <th class={cn('px-3 py-2 text-left align-middle font-bold', props.class)}>{props.children}</th>
+export function TableHead(props: { class?: string; scope?: 'col' | 'row'; children?: Child }) {
+  // Default to a column header: every current call site is a table's top row, and an explicit
+  // `scope` is what lets a screen reader announce "column 3 of 8" instead of guessing.
+  return (
+    <th scope={props.scope ?? 'col'} class={cn('px-3 py-2 text-left align-middle font-bold', props.class)}>
+      {props.children}
+    </th>
+  )
 }
 
 export function TableCell(props: { class?: string; colSpan?: number; children?: Child }) {
-  return <td class={cn('px-3 py-3 align-middle', props.class)} colSpan={props.colSpan}>{props.children}</td>
+  return (
+    <td class={cn('px-3 py-3 align-middle', props.class)} colSpan={props.colSpan}>
+      {props.children}
+    </td>
+  )
 }

@@ -1,9 +1,16 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, test, vi } from 'vitest'
 import { collectClaudeCodeUsage } from './claude-code'
+import { createPhaseTimings } from '../phase-timings'
 import { clearPendingUploadCursors } from './session-cursor'
+
+const bundledCcusageConfigArgs = [
+  '--config',
+  join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'ccusage.json')
+]
 
 describe('Claude hook sync collection', () => {
   test('uses changed Claude project files to run narrow ccusage reconciliation despite external since', async () => {
@@ -75,8 +82,35 @@ describe('Claude hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        [
+          'ccusage@20.0.33',
+          'claude',
+          'daily',
+          '--json',
+          '--breakdown',
+          '--single-thread',
+          '--since',
+          '20260522',
+          '--until',
+          '20260522',
+          '--timezone',
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
+        ],
+        [
+          'ccusage@20.0.33',
+          'claude',
+          'session',
+          '--json',
+          '--single-thread',
+          '--since',
+          '20260522',
+          '--until',
+          '20260522',
+          '--timezone',
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
+        ]
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -90,6 +124,78 @@ describe('Claude hook sync collection', () => {
           sessionCount: 1
         })
       ])
+      await clearPendingUploadCursors({ stateDir, source: 'claude-code' })
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // A hook run is the expensive path production uses, and its total says
+  // nothing about which of its three phases (cursor scan, daily scan, session
+  // scan) actually cost the time. The sink must see each phase separately.
+  test('records a timing for each phase of a hook collection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-claude-hook-'))
+    const claudeHome = join(root, 'claude')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(claudeHome, 'projects', 'project-a', 'session.jsonl')
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeHome)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(sessionFile, [
+        {
+          type: 'assistant',
+          timestamp: '2026-05-22T02:00:00.000Z',
+          message: { model: 'claude-sonnet-4-5', usage: { input_tokens: 8, output_tokens: 13 } },
+          costUSD: 0.12
+        }
+      ])
+      const timings = createPhaseTimings()
+
+      await collectClaudeCodeUsage({
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        since: 'all',
+        timings,
+        async runner(_command, args) {
+          await new Promise((resolve) => setTimeout(resolve, args.includes('session') ? 20 : 5))
+          if (args.includes('session')) {
+            return {
+              data: [
+                {
+                  sessionId: 's1',
+                  lastActivity: '2026-05-22T02:00:00.000Z',
+                  modelBreakdowns: { 'claude-sonnet-4-5': { inputTokens: 16, outputTokens: 26 } }
+                }
+              ]
+            }
+          }
+          return {
+            data: [
+              {
+                date: '2026-05-22',
+                breakdown: {
+                  'claude-sonnet-4-5': { inputTokens: 16, outputTokens: 26, totalTokens: 42, costUSD: 0.24 }
+                }
+              }
+            ]
+          }
+        }
+      })
+
+      const measured = timings.snapshot()
+      expect(Object.keys(measured).sort()).toEqual(['ccusageDaily', 'ccusageSession', 'cursorScan'])
+      // Each phase must carry its own measurement, not a shared or zeroed one.
+      // The two ccusage phases sleep for different spans, but comparing the two
+      // wall-clock readings against each other asserted an ordering the timer
+      // does not guarantee: on a loaded machine a 5ms sleep can be delayed past
+      // a 20ms one, which flipped this assertion without anything being wrong.
+      expect(measured.ccusageDaily).toBeGreaterThan(0)
+      expect(measured.ccusageSession).toBeGreaterThan(0)
       await clearPendingUploadCursors({ stateDir, source: 'claude-code' })
     } finally {
       vi.unstubAllEnvs()
@@ -169,8 +275,35 @@ describe('Claude hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        [
+          'ccusage@20.0.33',
+          'claude',
+          'daily',
+          '--json',
+          '--breakdown',
+          '--single-thread',
+          '--since',
+          '20260522',
+          '--until',
+          '20260522',
+          '--timezone',
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
+        ],
+        [
+          'ccusage@20.0.33',
+          'claude',
+          'session',
+          '--json',
+          '--single-thread',
+          '--since',
+          '20260522',
+          '--until',
+          '20260522',
+          '--timezone',
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
+        ]
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -256,8 +389,35 @@ describe('Claude hook sync collection', () => {
       })
 
       expect(calls).toEqual([
-        ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai'],
-        ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260522', '--until', '20260522', '--timezone', 'Asia/Shanghai']
+        [
+          'ccusage@20.0.33',
+          'claude',
+          'daily',
+          '--json',
+          '--breakdown',
+          '--single-thread',
+          '--since',
+          '20260522',
+          '--until',
+          '20260522',
+          '--timezone',
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
+        ],
+        [
+          'ccusage@20.0.33',
+          'claude',
+          'session',
+          '--json',
+          '--single-thread',
+          '--since',
+          '20260522',
+          '--until',
+          '20260522',
+          '--timezone',
+          'Asia/Shanghai',
+          ...bundledCcusageConfigArgs
+        ]
       ])
       expect(snapshots).toEqual([
         expect.objectContaining({
@@ -407,35 +567,42 @@ describe('Claude hook sync collection', () => {
       ])
       const syntheticStat = await stat(syntheticFile)
       await mkdir(stateDir, { recursive: true })
-      await writeFile(join(stateDir, 'claude-code-cursor.json'), `${JSON.stringify({
-        version: 1,
-        source: 'claude-code',
-        files: {
-          'project-a/failed.jsonl': {
-            size: syntheticStat.size,
-            mtimeMs: syntheticStat.mtimeMs,
-            sha256: 'previous-parser-hash',
-            snapshots: [
-              {
-                source: 'claude-code',
-                usageDate: '2026-05-22',
-                timezone: 'Asia/Shanghai',
-                model: '<synthetic>',
-                inputTokens: 0,
-                outputTokens: 0,
-                cacheCreationTokens: 0,
-                cacheReadTokens: 0,
-                totalTokens: 0,
-                costUsd: 0,
-                sessionCount: 1
+      await writeFile(
+        join(stateDir, 'claude-code-cursor.json'),
+        `${JSON.stringify(
+          {
+            version: 1,
+            source: 'claude-code',
+            files: {
+              'project-a/failed.jsonl': {
+                size: syntheticStat.size,
+                mtimeMs: syntheticStat.mtimeMs,
+                sha256: 'previous-parser-hash',
+                snapshots: [
+                  {
+                    source: 'claude-code',
+                    usageDate: '2026-05-22',
+                    timezone: 'Asia/Shanghai',
+                    model: '<synthetic>',
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    cacheCreationTokens: 0,
+                    cacheReadTokens: 0,
+                    totalTokens: 0,
+                    costUsd: 0,
+                    sessionCount: 1
+                  }
+                ],
+                missingCost: false,
+                pendingUpload: true,
+                updatedAt: '2026-05-22T10:00:00.000Z'
               }
-            ],
-            missingCost: false,
-            pendingUpload: true,
-            updatedAt: '2026-05-22T10:00:00.000Z'
-          }
-        }
-      }, null, 2)}\n`)
+            }
+          },
+          null,
+          2
+        )}\n`
+      )
       await writeJsonl(usageFile, [
         {
           type: 'assistant',
@@ -536,13 +703,15 @@ describe('Claude hook sync collection', () => {
         }
       ])
 
-      await expect(collectClaudeCodeUsage({
-        timezone: 'Asia/Shanghai',
-        collectedAt: '2026-05-22T10:00:00.000Z',
-        async runner() {
-          return { data: [] }
-        }
-      })).rejects.toThrow(/Claude hook reconciliation returned no snapshots/)
+      await expect(
+        collectClaudeCodeUsage({
+          timezone: 'Asia/Shanghai',
+          collectedAt: '2026-05-22T10:00:00.000Z',
+          async runner() {
+            return { data: [] }
+          }
+        })
+      ).rejects.toThrow(/Claude hook reconciliation returned no snapshots/)
 
       const cursor = JSON.parse(await readFile(join(stateDir, 'claude-code-cursor.json'), 'utf8'))
       expect(cursor.files['project-a/session.jsonl'].pendingUpload).toBe(true)

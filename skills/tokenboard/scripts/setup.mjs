@@ -16,6 +16,9 @@ import { withCredentialsLock } from './credentials-lock.mjs'
 import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
 import { errorMessage } from './error-message.mjs'
+import { assertSupportedNodeVersion } from './node-version.mjs'
+import { printHelpIfRequested } from './cli-help.mjs'
+import { redactUrlCredentials } from './redact-credentials.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
 import {
   buildInitialSyncArgs,
@@ -27,6 +30,23 @@ import {
   shouldUseDeviceLink,
   shouldWarmHookCursorsBeforeInstall
 } from './setup-options.mjs'
+
+const usage =
+  'Usage: setup.mjs [--pairing-code CODE] [--base-url URL] [--timezone TZ] [--device-name NAME] [--use-device-link] [--skip-collector] [--skip-schedule] [--skip-initial-sync] [--skip-hook] [--schedule-times HH:MM,...] [--package-manager pnpm|bun|npm] [--client git|binary] [--repo-url URL] [--repo-ref REF]'
+
+if (printHelpIfRequested(process.argv.slice(2), usage)) {
+  process.exit(0)
+}
+
+// The install this script triggers would be refused later by pnpm's
+// engine-strict check, but only after it has already cloned a checkout and
+// written the config. Refuse up front, before any local state exists.
+try {
+  assertSupportedNodeVersion(process.versions.node)
+} catch (error) {
+  console.error(errorMessage(error))
+  process.exit(1)
+}
 
 const flags = parseArgs(process.argv.slice(2))
 let pairingCode = flags['pairing-code'] || process.env.TOKENBOARD_PAIRING_CODE
@@ -47,6 +67,14 @@ if (!serverOrigin) {
 const savedProfile = reusableServerProfile(currentConfig, serverOrigin)
 const useDeviceLink = shouldUseDeviceLink(flags)
 let activeProfile
+// Resolved by whichever branch runs below and reused for the install step.
+// Deliberately kept out of the profile write: `clientType` names a client that
+// does not exist yet at that point. Writing it first meant a failed install
+// (`setup.mjs --client binary` on an offline machine) left the config
+// promising a binary that was never installed, and every later sync refused to
+// run until the user hand-edited the config back. `install-collector.mjs`
+// records the type itself once the install has actually succeeded.
+let resolvedInstallOptions
 
 if (!pairingCode && !useDeviceLink && savedProfile) {
   withSetupCredentialsLock(() => {
@@ -58,6 +86,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       profile: latestProfile,
       defaultScheduleTimes: dailyScheduleTimes
     })
+    resolvedInstallOptions = installOptions
     const profilePackageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
     const profileScheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
     const nextConfig = withServerProfile(latestConfig, serverOrigin, {
@@ -65,7 +94,12 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       repoUrl: installOptions.repoUrl,
       repoRef: installOptions.repoRef,
       packageManager: profilePackageManager,
-      scheduleTimes: profileScheduleTimes
+      scheduleTimes: profileScheduleTimes,
+      ...(installOptions.codexSymlinkRoots === undefined
+        ? {}
+        : {
+            codexSymlinkRoots: installOptions.codexSymlinkRoots
+          })
     })
     writeConfig(nextConfig)
     activeProfile = nextConfig.servers[serverOrigin]
@@ -101,7 +135,9 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
   })
 
   if (!response.ok) {
-    console.error(`Pairing failed with status ${response.status}: ${await response.text()}`)
+    // The server is the operator's own base URL, but its error body can echo the pairing code
+    // it was sent; redact it before it reaches the terminal scrollback.
+    console.error(`Pairing failed with status ${response.status}: ${redactUrlCredentials(await response.text())}`)
     process.exit(1)
   }
 
@@ -119,6 +155,7 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       profile: existingProfile,
       defaultScheduleTimes: dailyScheduleTimes
     })
+    resolvedInstallOptions = installOptions
     const pairedPackageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
     const pairedScheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
     const nextConfig = withServerProfile(latestConfig, pairedServerOrigin, {
@@ -133,27 +170,40 @@ if (!pairingCode && !useDeviceLink && savedProfile) {
       repoRef: installOptions.repoRef,
       packageManager: pairedPackageManager,
       scheduleTimes: pairedScheduleTimes,
+      ...(installOptions.codexSymlinkRoots === undefined
+        ? {}
+        : {
+            codexSymlinkRoots: installOptions.codexSymlinkRoots
+          }),
       createdAt: new Date().toISOString()
     })
     writeConfig(nextConfig)
     activeProfile = nextConfig.servers[pairedServerOrigin]
     if (paired.installClaim) {
-      writeDeviceLink({
-        serverOrigin: pairedServerOrigin,
-        deviceId: paired.deviceId,
-        installationId: paired.installationId,
-        installClaim: paired.installClaim
-      }, { lockHeld: true })
+      writeDeviceLink(
+        {
+          serverOrigin: pairedServerOrigin,
+          deviceId: paired.deviceId,
+          installationId: paired.installationId,
+          installClaim: paired.installClaim
+        },
+        { lockHeld: true }
+      )
     }
   })
   console.log('TokenBoard config written.')
 }
 
-const installOptions = resolveSetupInstallOptions({
-  flags,
-  profile: activeProfile,
-  defaultScheduleTimes: dailyScheduleTimes
-})
+// Reuse the options resolved before the profile write: the saved profile no
+// longer carries `clientType` (the installer records it), so re-resolving from
+// `activeProfile` would fall back to `git` and install the wrong client.
+const installOptions =
+  resolvedInstallOptions ||
+  resolveSetupInstallOptions({
+    flags,
+    profile: activeProfile,
+    defaultScheduleTimes: dailyScheduleTimes
+  })
 const packageManager = readPackageManager({ 'package-manager': installOptions.packageManager })
 const scheduleTimes = parseScheduleTimes(installOptions.scheduleTimesInput)
 const installFlags = {
@@ -188,6 +238,7 @@ if (!flags['skip-collector']) {
     process.execPath,
     buildInstallCollectorArgs({
       flags: installFlags,
+      clientType: installOptions.clientType,
       packageManager,
       installCollectorScript: scriptPath('./install-collector.mjs')
     }),
@@ -199,23 +250,20 @@ if (!flags['skip-collector']) {
 }
 
 if (!flags['skip-schedule']) {
-  const schedule = spawnSync(process.execPath, [
-    scriptPath('./install-schedule.mjs'),
-    '--schedule-times',
-    scheduleTimes.join(',')
-  ], {
-    stdio: 'inherit'
-  })
+  const schedule = spawnSync(
+    process.execPath,
+    [scriptPath('./install-schedule.mjs'), '--schedule-times', scheduleTimes.join(',')],
+    {
+      stdio: 'inherit'
+    }
+  )
   if (schedule.status !== 0) process.exit(schedule.status ?? 1)
 }
 
 if (!flags['skip-initial-sync']) {
   const sync = spawnSync(
     process.execPath,
-    [
-      scriptPath('./sync.mjs'),
-      ...buildInitialSyncArgs({ flags, packageManager })
-    ],
+    [scriptPath('./sync.mjs'), ...buildInitialSyncArgs({ flags, packageManager })],
     {
       stdio: 'inherit'
     }
@@ -224,23 +272,14 @@ if (!flags['skip-initial-sync']) {
 }
 
 if (shouldWarmHookCursorsBeforeInstall(flags)) {
-  const warm = spawnSync(
-    process.execPath,
-    [
-      scriptPath('./sync.mjs'),
-      ...buildWarmHookCursorArgs({ packageManager })
-    ],
-    {
-      stdio: 'inherit'
-    }
-  )
+  const warm = spawnSync(process.execPath, [scriptPath('./sync.mjs'), ...buildWarmHookCursorArgs({ packageManager })], {
+    stdio: 'inherit'
+  })
   if (warm.status !== 0) process.exit(warm.status ?? 1)
 }
 
 if (!flags['skip-hook']) {
-  const hook = spawnSync(process.execPath, [
-    scriptPath('./install-hook.mjs')
-  ], {
+  const hook = spawnSync(process.execPath, [scriptPath('./install-hook.mjs')], {
     stdio: 'inherit'
   })
   if (hook.status !== 0) process.exit(hook.status ?? 1)

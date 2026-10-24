@@ -1,9 +1,14 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, test, vi } from 'vitest'
-import type { UsageSnapshot } from '@tokenboard/usage-core'
-import { runCollectorCli } from './cli'
+import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
+import { runCollectorCli, transientSyncExitCode } from './cli'
+import { attachCodexHookAcknowledgement } from './providers/codex-hook-profiles'
+import { cursorSnapshotGroupKey } from './providers/session-cursor'
 
 const claudeSnapshot: UsageSnapshot = {
   source: 'claude-code',
@@ -46,6 +51,243 @@ describe('runCollectorCli', () => {
     expect(result).toBe(0)
     expect(JSON.parse(stdout[0])).toEqual([claudeSnapshot, codexSnapshot])
     expect(uploaded).toEqual([])
+  })
+
+  test('passes explicit date bounds to the Codex provider', async () => {
+    const received: Array<{ since?: string; until?: string }> = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex', '--since', '20260718', '--until', '20260719'],
+      {
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_SINCE: '20260101',
+        TOKENBOARD_UNTIL: '20260102'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          received.push({ since: options?.since, until: options?.until })
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(received).toEqual([{ since: '20260718', until: '20260719' }])
+  })
+
+  test('passes the configured until environment value to the Codex provider', async () => {
+    const received: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      {
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_UNTIL: '20260719'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          received.push(options?.until ?? '')
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(received).toEqual(['20260719'])
+  })
+
+  test('ignores an environment until bound for all-source collection without a CLI flag', async () => {
+    const received: Array<{ source: string; until?: string }> = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_UNTIL: '20260719'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async (options) => {
+          received.push({ source: 'claude-code', until: options?.until })
+          return [claudeSnapshot]
+        },
+        collectCodexUsage: async (options) => {
+          received.push({ source: 'codex', until: options?.until })
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(received).toEqual([
+      { source: 'claude-code', until: '' },
+      { source: 'codex', until: '' }
+    ])
+  })
+
+  test('accepts every source from the shared enum and rejects an unknown one', async () => {
+    // `concreteCliSources` is derived from `usageSources`, so each member must parse; the list is
+    // read from the package rather than restated here so a new source fails this test, not silently
+    // diverges from what the collector accepts.
+    for (const source of usageSources) {
+      const result = await runCollectorCli(
+        ['preview', '--source', source],
+        { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+        {
+          stdout: () => undefined,
+          stderr: () => undefined,
+          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectCodexUsage: async () => [codexSnapshot],
+          uploadSnapshots: async () => {
+            throw new Error('preview must not upload')
+          }
+        }
+      )
+      expect(result, source).toBe(0)
+    }
+
+    const stderr: string[] = []
+    const result = await runCollectorCli(
+      ['preview', '--source', 'not-a-source'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+    expect(result).not.toBe(0)
+    expect(stderr.join('\n')).toContain('Invalid source: not-a-source')
+  })
+
+  test('builds the usage line from the shared source list', async () => {
+    // The help text is the one place a hand-maintained source list used to drift; derive it and
+    // assert every shared member shows up, so a new source cannot be missing from the Usage.
+    const stderr: string[] = []
+    const result = await runCollectorCli(
+      ['not-a-command'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+    expect(result).not.toBe(0)
+    const usage = stderr.join('\n')
+    expect(usage).toContain('Usage: tokenboard <preview|sync|warm-hooks>')
+    for (const source of usageSources) expect(usage, source).toContain(source)
+    expect(usage).toContain('all')
+  })
+
+  test.each([
+    { source: 'all', label: 'all sources' },
+    { source: 'antigravity-cli', label: 'Antigravity' },
+    { source: 'pi', label: 'Pi' },
+    { source: 'opencode', label: 'OpenCode' },
+    { source: 'grok-build', label: 'Grok Build' },
+    { source: 'deepseek-harness', label: 'DeepSeek Harness' }
+  ])('rejects --until for $label because no upper-bound collector exists', async ({ source }) => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', source, '--until', '20260719'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => {
+          throw new Error('unsupported source must not collect Claude Code')
+        },
+        collectCodexUsage: async () => {
+          throw new Error('unsupported source must not collect Codex')
+        },
+        uploadSnapshots: async () => {
+          throw new Error('unsupported source must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual(['--until is only supported for Claude Code and Codex sources'])
+  })
+
+  test('rejects --until in hook mode instead of silently dropping it', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex', '--until', '20260719'],
+      { TOKENBOARD_HOOK_MODE: '1', TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => {
+          throw new Error('hook rejection must happen before collection')
+        },
+        collectCodexUsage: async () => {
+          throw new Error('hook rejection must happen before collection')
+        },
+        uploadSnapshots: async () => {
+          throw new Error('hook rejection must happen before upload')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual(['--until is not supported in hook mode; hook sync computes its own incremental window'])
+  })
+
+  test('rejects --until for warm-hooks instead of silently ignoring it', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['warm-hooks', '--source', 'codex', '--until', '20260719'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => {
+          throw new Error('warm-hooks must not collect Claude Code')
+        },
+        collectCodexUsage: async () => {
+          throw new Error('warm-hooks must not collect Codex')
+        },
+        uploadSnapshots: async () => {
+          throw new Error('warm-hooks must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+    expect(stderr).toEqual(['--until is not supported for warm-hooks; the command does not collect usage'])
   })
 
   test('passes the collector state directory to the Codex provider', async () => {
@@ -105,6 +347,89 @@ describe('runCollectorCli', () => {
     expect(receivedHomes).toEqual([configuredHomes.map((home) => resolve(home))])
   })
 
+  test('passes the configured Codex symlink roots to the provider', async () => {
+    const receivedRoots: Array<readonly string[]> = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      {
+        TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON: JSON.stringify(['/profiles/archive']),
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          receivedRoots.push(options?.codexSymlinkRoots ?? [])
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(receivedRoots).toEqual([[resolve('/profiles/archive')]])
+  })
+
+  test('leaves Codex symlink roots unset when no configuration is provided', async () => {
+    let receivedRoots: readonly string[] | undefined
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          receivedRoots = options?.codexSymlinkRoots
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(receivedRoots).toBeUndefined()
+  })
+
+  test('isolates an invalid Codex symlink configuration from other all-source collectors', async () => {
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'all'],
+      {
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON: '{broken-json'
+      },
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => {
+          throw new Error('Codex collector should not be entered with invalid roots')
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([claudeSnapshot])
+    expect(stderr.join('\n')).toContain('Invalid TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON')
+  })
+
   test.each([
     {
       label: 'environment endpoint',
@@ -128,6 +453,67 @@ describe('runCollectorCli', () => {
         throw new Error('preview must not upload')
       }
     })
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual([codexSnapshot])
+  })
+
+  // The sync result is the only machine-readable record of a run, and the
+  // upload response alone cannot say whether the run spent its time in ccusage
+  // or in the upload. Timings ride alongside the upload result, without
+  // replacing it.
+  test('reports per-phase timings next to the upload result on sync', async () => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          options?.timings?.record('ccusageDaily', 12.4)
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => ({ upserted: 1 })
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(JSON.parse(stdout[0])).toEqual({
+      upserted: 1,
+      timings: expect.objectContaining({ ccusageDaily: 12, upload: expect.any(Number) })
+    })
+  })
+
+  test('keeps the preview output a bare snapshot array', async () => {
+    const stdout: string[] = []
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async (options) => {
+          options?.timings?.record('ccusageDaily', 12.4)
+          return [codexSnapshot]
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
 
     expect(result).toBe(0)
     expect(JSON.parse(stdout[0])).toEqual([codexSnapshot])
@@ -193,7 +579,135 @@ describe('runCollectorCli', () => {
     )
 
     expect(result).toBe(1)
-    expect(stderr).toEqual(['Error'])
+    // The empty error message is not transient, so it counts toward the upload
+    // pause before the plain normalized line is printed.
+    expect(stderr).toEqual(['TokenBoard upload failed (1 consecutive non-transient failures)', 'Error'])
+  })
+
+  test('keeps the deferrable exit code in sync with the skill scripts', async () => {
+    // The skill scripts cannot import this TypeScript constant, so assert the
+    // literal they declare still matches. A drift here would silently disable
+    // the scheduled retry fallback for transient network failures.
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const scriptPath = join(__dirname, '..', '..', '..', 'skills', 'tokenboard', 'scripts', 'scheduled-retry.mjs')
+    const source = readFileSync(scriptPath, 'utf8')
+    const match = /export const transientSyncExitCode = (\d+)/.exec(source)
+
+    expect(match).not.toBeNull()
+    expect(Number(match?.[1])).toBe(transientSyncExitCode)
+  })
+
+  test('reports a transient upload failure as a deferrable sync exit code', async () => {
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('fetch failed')
+        }
+      }
+    )
+
+    expect(result).toBe(transientSyncExitCode)
+    expect(stderr).toEqual(['fetch failed'])
+  })
+
+  test('reports a retryable gateway status as a deferrable sync exit code', async () => {
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('Upload failed with status 503')
+        }
+      }
+    )
+
+    expect(result).toBe(transientSyncExitCode)
+  })
+
+  test('keeps a non-transient upload rejection a plain failure', async () => {
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('Upload failed with status 401')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+  })
+
+  test('hook sync never reports the deferrable exit code', async () => {
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_HOOK_MODE: '1'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => {
+          throw new Error('fetch failed')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
+  })
+
+  test('preview never reports the deferrable exit code for a transient failure', async () => {
+    const result = await runCollectorCli(
+      ['preview', '--source', 'codex'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [],
+        collectCodexUsage: async () => {
+          throw new Error('fetch failed')
+        },
+        uploadSnapshots: async () => {
+          throw new Error('preview must not upload')
+        }
+      }
+    )
+
+    expect(result).toBe(1)
   })
 
   test('warms hook cursor high-water after a non-hook sync succeeds', async () => {
@@ -297,6 +811,36 @@ describe('runCollectorCli', () => {
     expect(warmed).toEqual([])
   })
 
+  test('does not warm hook cursor high-water after a full sync bounded by until', async () => {
+    const warmed: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        CODEX_HOME: '/codex-home',
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_SINCE: 'all',
+        TOKENBOARD_UNTIL: '20260719',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => ({ upserted: 1 }),
+        warmHookCursorHighWater: async (input) => {
+          warmed.push(`${input.stateDir}:${input.source}`)
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(warmed).toEqual([])
+  })
+
   test('does not warm hook cursor high-water during hook sync', async () => {
     const warmed: string[] = []
 
@@ -329,6 +873,7 @@ describe('runCollectorCli', () => {
 
   test('warms hook cursors without collecting or uploading', async () => {
     const warmed: string[] = []
+    const output: string[] = []
     const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1234).mockReturnValue(9999)
 
     try {
@@ -340,7 +885,7 @@ describe('runCollectorCli', () => {
           TOKENBOARD_STATE_DIR: '/state'
         },
         {
-          stdout: () => undefined,
+          stdout: (line) => output.push(line),
           stderr: () => undefined,
           collectClaudeCodeUsage: async () => {
             throw new Error('should not collect claude')
@@ -362,6 +907,7 @@ describe('runCollectorCli', () => {
         `/state:claude-code:${join('/claude', 'projects')}:1234`,
         `/state:codex:${join(resolve('/codex'), 'sessions')}:1234`
       ])
+      expect(JSON.parse(output[0])).toEqual({ warmed: ['claude-code', 'codex'] })
     } finally {
       now.mockRestore()
     }
@@ -460,6 +1006,81 @@ describe('runCollectorCli', () => {
     expect(acks).toEqual(['/state:codex'])
   })
 
+  test('limits Codex hook acknowledgement to snapshot groups uploaded in the current run', async () => {
+    let acknowledged: string[] | undefined
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_HOOK_MODE: '1',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => ({ upserted: 1 }),
+        clearPendingUploadCursors: async (input) => {
+          acknowledged = input.acknowledgedSnapshotGroups
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(acknowledged).toEqual([cursorSnapshotGroupKey(codexSnapshot)])
+  })
+
+  test('forwards Codex file-level acknowledgement metadata without snapshot groups', async () => {
+    let acknowledgedFiles: ReadonlyArray<{ relativePath: string; sha256: string }> | undefined
+    let acknowledgedGroups: string[] | undefined
+    const taggedSnapshots = attachCodexHookAcknowledgement(
+      [{ ...codexSnapshot }],
+      [{ files: [{ relativePath: 'current.jsonl', sha256: 'b'.repeat(64) }] }]
+    )
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_HOOK_MODE: '1',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: () => undefined,
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async () => taggedSnapshots,
+        uploadSnapshots: async () => ({ upserted: 1 }),
+        clearPendingUploadCursors: async (input) => {
+          acknowledgedFiles = input.acknowledgedSnapshotFiles
+          acknowledgedGroups = input.acknowledgedSnapshotGroups
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(acknowledgedFiles).toEqual([{ relativePath: 'current.jsonl', sha256: 'b'.repeat(64) }])
+    expect(acknowledgedGroups).toBeUndefined()
+  })
+
+  test('keeps Codex hook acknowledgement attachment idempotent', async () => {
+    const snapshots = [{ ...codexSnapshot }]
+    const files = [{ files: [{ relativePath: 'current.jsonl', sha256: 'c'.repeat(64) }] }]
+
+    expect(() => attachCodexHookAcknowledgement(snapshots, files)).not.toThrow()
+    expect(() => attachCodexHookAcknowledgement(snapshots, files)).not.toThrow()
+  })
+
   test('acks legacy and every configured Codex profile cursor after a hook upload succeeds', async () => {
     const acks: string[] = []
 
@@ -503,11 +1124,14 @@ describe('runCollectorCli', () => {
 
     try {
       await mkdir(stateDir, { recursive: true })
-      await writeFile(join(stateDir, 'codex-cursor.json'), `${JSON.stringify({
-        version: 1,
-        source: 'codex',
-        files: {}
-      })}\n`)
+      await writeFile(
+        join(stateDir, 'codex-cursor.json'),
+        `${JSON.stringify({
+          version: 1,
+          source: 'codex',
+          files: {}
+        })}\n`
+      )
 
       const result = await runCollectorCli(
         ['sync', '--source', 'codex'],
@@ -575,13 +1199,7 @@ describe('runCollectorCli', () => {
     )
 
     expect(result).toBe(0)
-    expect(events).toEqual([
-      `lock:${join('/state', 'collector-run')}`,
-      'collect',
-      'upload',
-      'ack',
-      'unlock'
-    ])
+    expect(events).toEqual([`lock:${join('/state', 'collector-run')}`, 'collect', 'upload', 'ack', 'unlock'])
   })
 
   test('acks hook cursor in configured config dir when state dir is unset', async () => {
@@ -615,6 +1233,7 @@ describe('runCollectorCli', () => {
   test('does not ack hook cursor when upload fails', async () => {
     const stderr: string[] = []
     const acks: string[] = []
+    const stateDir = await mkdtemp(join(tmpdir(), 'cli-ack-fail-'))
 
     const result = await runCollectorCli(
       ['sync', '--source', 'codex'],
@@ -623,7 +1242,7 @@ describe('runCollectorCli', () => {
         TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
         TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
         TOKENBOARD_HOOK_MODE: '1',
-        TOKENBOARD_STATE_DIR: '/state'
+        TOKENBOARD_STATE_DIR: stateDir
       },
       {
         stdout: () => undefined,
@@ -640,8 +1259,13 @@ describe('runCollectorCli', () => {
     )
 
     expect(result).toBe(1)
-    expect(stderr).toEqual(['upload failed'])
+    // The non-transient failure records the backoff against the (writable) temp state
+    // directory before the normalized error is re-emitted.
+    expect(stderr.length).toBe(2)
+    expect(stderr[0]).toContain('1 consecutive non-transient failures')
+    expect(stderr[1]).toBe('upload failed')
     expect(acks).toEqual([])
+    await rm(stateDir, { recursive: true, force: true })
   })
 
   test('does not ack hook cursor when sync config is missing', async () => {
@@ -676,13 +1300,17 @@ describe('runCollectorCli', () => {
   test('returns an error when sync is missing endpoint or token', async () => {
     const stderr: string[] = []
 
-    const result = await runCollectorCli(['sync'], {}, {
-      stdout: () => undefined,
-      stderr: (line) => stderr.push(line),
-      collectClaudeCodeUsage: async () => [claudeSnapshot],
-      collectCodexUsage: async () => [codexSnapshot],
-      uploadSnapshots: async () => ({ upserted: 0 })
-    })
+    const result = await runCollectorCli(
+      ['sync'],
+      {},
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [claudeSnapshot],
+        collectCodexUsage: async () => [codexSnapshot],
+        uploadSnapshots: async () => ({ upserted: 0 })
+      }
+    )
 
     expect(result).toBe(1)
     expect(stderr[0]).toContain('TOKENBOARD_ENDPOINT')
@@ -715,9 +1343,7 @@ describe('runCollectorCli', () => {
     )
 
     expect(result).toBe(0)
-    expect(stderr).toEqual([
-      'Skipping claude-code source: No valid Claude data directories found'
-    ])
+    expect(stderr).toEqual(['Skipping claude-code source: No valid Claude data directories found'])
     expect(uploaded).toEqual([[codexSnapshot]])
   })
 
@@ -810,5 +1436,147 @@ describe('runCollectorCli', () => {
 
     expect(result).toBe(1)
     expect(stderr).toEqual(['No valid Claude data directories found'])
+  })
+
+  test('collapses repeated unpriced-model diagnostics into one summary per provider', async () => {
+    const stderr: string[] = []
+    const unpriced = (model: string) =>
+      `TokenBoard model pricing unavailable for Claude Code model ${model}; preserving ccusage result`
+
+    const collectClaudeCodeUsage = async (options?: { stderr?: (line: string) => void }) => {
+      options?.stderr?.(unpriced('a'))
+      options?.stderr?.(unpriced('a'))
+      options?.stderr?.(unpriced('b'))
+      return []
+    }
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'claude-code'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage,
+        collectCodexUsage: async () => [],
+        uploadSnapshots: async () => ({ upserted: 0 })
+      }
+    )
+
+    expect(result).toBe(0)
+    const summaries = stderr.filter((line) => line.includes('model pricing unavailable'))
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0]).toContain('2 Claude Code models')
+    expect(summaries[0]).toContain('a, b')
+  })
+
+  test('a single unpriced-model diagnostic keeps its original single-model wording', async () => {
+    const stderr: string[] = []
+    const unpriced = (model: string) =>
+      `TokenBoard model pricing unavailable for Claude Code model ${model}; preserving ccusage result`
+
+    const collectClaudeCodeUsage = async (options?: { stderr?: (line: string) => void }) => {
+      options?.stderr?.(unpriced('only-model'))
+      return []
+    }
+
+    const result = await runCollectorCli(
+      ['preview', '--source', 'claude-code'],
+      { TOKENBOARD_TIMEZONE: 'Asia/Shanghai' },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage,
+        collectCodexUsage: async () => [],
+        uploadSnapshots: async () => ({ upserted: 0 })
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(stderr.filter((line) => line.includes('model pricing unavailable'))).toEqual([
+      'TokenBoard model pricing unavailable for Claude Code model only-model; preserving ccusage result'
+    ])
+  })
+})
+
+// The entry guard must canonicalize both paths. Node resolves `import.meta.url` through symlinks
+// while `argv[1]` is the typed path, and `resolve()` follows neither — so a symlinked invocation
+// made the CLI exit 0 with no output, doing nothing. `sync.mjs` reaches this file through a
+// relative path under a `cwd` (which arrives canonicalized), so only a direct symlinked call
+// exposes it; that is what this runs.
+test('runs when reached through a symlinked path', { timeout: 90_000 }, () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-cli-symlink-'))
+  try {
+    const link = join(root, 'cli-linked.ts')
+    symlinkSync(fileURLToPath(new URL('./cli.ts', import.meta.url)), link)
+
+    const result = spawnSync(process.execPath, ['--import', 'tsx', link], { encoding: 'utf8', timeout: 90_000 })
+
+    // No command argument, so the CLI reports usage and exits non-zero — the point is that it
+    // ran at all, rather than the silent exit 0 a broken guard produces.
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toContain('Usage: tokenboard')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+describe('upload backoff integration', () => {
+  test('a paused upload skips uploading, keeps the cursor, and says so', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'cli-backoff-'))
+    const stderr: string[] = []
+    try {
+      // Five consecutive prior failures recorded through the real helper.
+      const { recordUploadFailure } = await import('./upload-backoff')
+      for (let index = 0; index < 5; index += 1) {
+        await recordUploadFailure(stateDir, new Error('status 400 from server'))
+      }
+      const result = await runCollectorCli(
+        ['sync', '--source', 'claude-code', '--endpoint', 'https://collector.example/api/v1/ingest'],
+        { TOKENBOARD_TIMEZONE: 'Asia/Shanghai', TOKENBOARD_UPLOAD_TOKEN: 'tb_test', TOKENBOARD_STATE_DIR: stateDir },
+        {
+          stdout: () => undefined,
+          stderr: (line) => stderr.push(line),
+          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectCodexUsage: async () => [],
+          uploadSnapshots: async () => {
+            throw new Error('upload must be skipped while paused')
+          },
+          clearPendingUploadCursors: async () => undefined
+        }
+      )
+      expect(result).toBe(0)
+      expect(stderr.some((line) => line.includes('upload paused until'))).toBe(true)
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  test('a non-transient upload failure counts toward the pause; success clears', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'cli-backoff-count-'))
+    const stderr: string[] = []
+    try {
+      const uploadSnapshots = async () => {
+        throw new Error('status 400 from server')
+      }
+      const result = await runCollectorCli(
+        ['sync', '--source', 'claude-code', '--endpoint', 'https://collector.example/api/v1/ingest'],
+        { TOKENBOARD_TIMEZONE: 'Asia/Shanghai', TOKENBOARD_UPLOAD_TOKEN: 'tb_test', TOKENBOARD_STATE_DIR: stateDir },
+        {
+          stdout: () => undefined,
+          stderr: (line) => stderr.push(line),
+          collectClaudeCodeUsage: async () => [claudeSnapshot],
+          collectCodexUsage: async () => [],
+          uploadSnapshots
+        }
+      )
+      expect(result).toBe(1)
+      expect(stderr.some((line) => line.includes('1 consecutive non-transient failures'))).toBe(true)
+      const { loadUploadBackoff, recordUploadSuccess } = await import('./upload-backoff')
+      expect((await loadUploadBackoff(stateDir))?.consecutiveFailures).toBe(1)
+      await recordUploadSuccess(stateDir)
+      expect(await loadUploadBackoff(stateDir)).toBeNull()
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
   })
 })

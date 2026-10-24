@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -15,26 +15,20 @@ export async function createEmptyCodexHome() {
   return codexHome
 }
 
-export async function fileContainsTokenCount(file: string) {
-  return readFile(file, 'utf8')
-    .then((content) => content.includes('token_count'))
-    .catch(() => false)
-}
-
 export async function fileExists(file: string) {
   return stat(file)
     .then(() => true)
     .catch(() => false)
 }
 
-export function tokenCountEvent(timestamp: string, totalTokens: number) {
+export function tokenCountEvent(timestamp: string, totalTokens: number, model = 'gpt-5') {
   return {
     type: 'event_msg',
     timestamp,
     payload: {
       type: 'token_count',
       info: {
-        model: 'gpt-5',
+        model,
         last_token_usage: {
           input_tokens: totalTokens,
           output_tokens: 0,

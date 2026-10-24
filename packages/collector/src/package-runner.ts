@@ -7,37 +7,42 @@ export type PackageRunner = {
   runPackageArgs(packageName: string, binaryName: string, packageArgs: string[]): string[]
 }
 
-export const ccusagePackageSpecifier = 'ccusage@20.0.19'
+export const ccusagePackageSpecifier = 'ccusage@20.0.33'
 
 export function resolvePackageRunner(
-  packageManager = process.env.TOKENBOARD_PACKAGE_MANAGER,
+  packageManager: string | undefined = undefined,
   platform = process.platform,
-  fileExists: (path: string) => boolean = existsSync
+  fileExists: (path: string) => boolean = existsSync,
+  env: NodeJS.ProcessEnv = process.env
 ): PackageRunner {
-  const forcePackageRunner = Boolean(process.env.TOKENBOARD_FORCE_PACKAGE_RUNNER)
-  const forcedCcusage = process.env.TOKENBOARD_CCUSAGE_BIN
+  packageManager ??= env.TOKENBOARD_PACKAGE_MANAGER
+  const forcePackageRunner = Boolean(env.TOKENBOARD_FORCE_PACKAGE_RUNNER)
+  const forcedCcusage = env.TOKENBOARD_CCUSAGE_BIN
   if (!forcePackageRunner && forcedCcusage) {
     if (!fileExists(forcedCcusage)) {
       throw new Error(`TOKENBOARD_CCUSAGE_BIN does not exist: ${forcedCcusage}`)
     }
-    return createLocalCcusageRunner(forcedCcusage)
+    return createLocalCcusageRunner(forcedCcusage, fileExists, env)
   }
 
   const localCcusage = resolveLocalCcusageBin(platform)
   if (!forcePackageRunner && fileExists(localCcusage)) {
-    return createLocalCcusageRunner(localCcusage)
+    return createLocalCcusageRunner(localCcusage, fileExists, env)
   }
 
   if (packageManager === 'bun') {
     return {
-      command: process.env.TOKENBOARD_BUNX_BIN || 'bunx',
-      runPackageArgs: (packageName, _binaryName, packageArgs) => [packageName, ...packageArgs]
+      command: env.TOKENBOARD_BUNX_BIN || 'bunx',
+      runPackageArgs: (packageName, _binaryName, packageArgs) => [
+        packageName,
+        ...appendCcusageConfig(packageName, packageArgs, fileExists, env)
+      ]
     }
   }
 
   if (packageManager === 'npm') {
     return {
-      command: process.env.TOKENBOARD_NPM_BIN || packageCommand('npm', platform),
+      command: env.TOKENBOARD_NPM_BIN || packageCommand('npm', platform),
       runPackageArgs: (packageName, binaryName, packageArgs) => [
         'exec',
         '--yes',
@@ -45,29 +50,59 @@ export function resolvePackageRunner(
         packageName,
         '--',
         binaryName,
-        ...packageArgs
+        ...appendCcusageConfig(packageName, packageArgs, fileExists, env)
       ]
     }
   }
 
   if (packageManager === 'pnpm') {
     return {
-      command: process.env.TOKENBOARD_PNPM_BIN || packageCommand('pnpm', platform),
-      runPackageArgs: (packageName, _binaryName, packageArgs) => ['dlx', packageName, ...packageArgs]
+      command: env.TOKENBOARD_PNPM_BIN || packageCommand('pnpm', platform),
+      runPackageArgs: (packageName, _binaryName, packageArgs) => [
+        'dlx',
+        packageName,
+        ...appendCcusageConfig(packageName, packageArgs, fileExists, env)
+      ]
     }
   }
 
   return {
-    command: process.env.TOKENBOARD_NPX_BIN || packageCommand('npx', platform),
-    runPackageArgs: (packageName, _binaryName, packageArgs) => [packageName, ...packageArgs]
+    command: env.TOKENBOARD_NPX_BIN || packageCommand('npx', platform),
+    runPackageArgs: (packageName, _binaryName, packageArgs) => [
+      packageName,
+      ...appendCcusageConfig(packageName, packageArgs, fileExists, env)
+    ]
   }
 }
 
-function createLocalCcusageRunner(command: string): PackageRunner {
+function createLocalCcusageRunner(
+  command: string,
+  fileExists: (path: string) => boolean,
+  env: NodeJS.ProcessEnv
+): PackageRunner {
   return {
     command,
-    runPackageArgs: (_packageName, _binaryName, packageArgs) => packageArgs
+    runPackageArgs: (packageName, _binaryName, packageArgs) =>
+      appendCcusageConfig(packageName, packageArgs, fileExists, env)
   }
+}
+
+function appendCcusageConfig(
+  packageName: string,
+  packageArgs: string[],
+  fileExists: (path: string) => boolean,
+  env: NodeJS.ProcessEnv
+) {
+  if (packageName !== ccusagePackageSpecifier) return packageArgs
+  const dynamicConfigPath = env.TOKENBOARD_DYNAMIC_CCUSAGE_CONFIG?.trim()
+  const explicitConfigPath = env.TOKENBOARD_CCUSAGE_CONFIG?.trim()
+  const configPath = dynamicConfigPath || explicitConfigPath
+  if (!configPath) return packageArgs
+  if (!fileExists(configPath)) {
+    const variableName = dynamicConfigPath ? 'TOKENBOARD_DYNAMIC_CCUSAGE_CONFIG' : 'TOKENBOARD_CCUSAGE_CONFIG'
+    throw new Error(`${variableName} does not exist: ${configPath}`)
+  }
+  return [...packageArgs, '--config', configPath]
 }
 
 function packageCommand(command: string, platform: string) {

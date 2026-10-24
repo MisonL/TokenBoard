@@ -4,7 +4,15 @@ type MetadataScope =
   | 'root'
   | 'root-message'
   | 'root-payload'
+  | 'root-payload-metadata'
   | 'root-payload-info'
+  | 'root-payload-source'
+  // The `attachment` subtree. Claude Code nests a subagent task summary here as
+  // `attachment.usage = {totalTokens, toolUses, durationMs}`, whose `totalTokens` collides with
+  // the token-metric key names. That summary is not an uploadable usage object — the parser reads
+  // usage only from `record.message.usage` or `record.usage` — so a key found in this subtree
+  // must not be taken as evidence that an oversized row is a metric row.
+  | 'root-attachment'
   | 'claude-usage'
   | 'codex-usage'
   | 'other'
@@ -35,13 +43,23 @@ export type SessionJsonlMetadataScanner = {
   additionalRelevantKey: boolean
   additionalRelevantKeys: ReadonlySet<string>
   claudeUsageObject: boolean
+  codexUsageOnly: boolean
   codexTokenMetricKey: boolean
   codexUsageObject: boolean
   invalid: boolean
   rootFinished: boolean
   rootType?: string
+  turnContextModel?: string
+  turnContextModelIsPrimary: boolean
   stack: JsonContainer[]
   string?: JsonString
+}
+
+export type SessionJsonlMetadataRecord = {
+  type: 'turn_context'
+  payload: {
+    model: string
+  }
 }
 
 const maxCapturedJsonStringBytes = 256
@@ -63,17 +81,22 @@ const tokenMetricKeys = new Set([
   'totalTokens'
 ])
 
-export function createSessionJsonlMetadataScanner(input: {
-  additionalRelevantKeys?: readonly string[]
-} = {}): SessionJsonlMetadataScanner {
+export function createSessionJsonlMetadataScanner(
+  input: {
+    additionalRelevantKeys?: readonly string[]
+    codexUsageOnly?: boolean
+  } = {}
+): SessionJsonlMetadataScanner {
   return {
     additionalRelevantKey: false,
     additionalRelevantKeys: new Set(input.additionalRelevantKeys ?? []),
     claudeUsageObject: false,
+    codexUsageOnly: input.codexUsageOnly === true,
     codexTokenMetricKey: false,
     codexUsageObject: false,
     invalid: false,
     rootFinished: false,
+    turnContextModelIsPrimary: false,
     stack: []
   }
 }
@@ -81,20 +104,18 @@ export function createSessionJsonlMetadataScanner(input: {
 export function scanSessionJsonlMetadata(
   segments: readonly Buffer[],
   scanner: SessionJsonlMetadataScanner,
-  source?: UsageSource
+  source?: UsageSource,
+  stopOnRelevant = true
 ) {
   for (const segment of segments) {
     for (const byte of segment) {
       scanJsonByte(byte, scanner)
-      if (scanner.invalid || hasRelevantSessionJsonlMetadata(scanner, source)) return
+      if (scanner.invalid || (stopOnRelevant && hasRelevantSessionJsonlMetadata(scanner, source))) return
     }
   }
 }
 
-export function hasRelevantSessionJsonlMetadata(
-  scanner: SessionJsonlMetadataScanner,
-  source?: UsageSource
-) {
+export function hasRelevantSessionJsonlMetadata(scanner: SessionJsonlMetadataScanner, source?: UsageSource) {
   if (scanner.additionalRelevantKey) return true
   const claudeRelevant = scanner.claudeUsageObject
   const codexRelevant = scanner.codexUsageObject || scanner.codexTokenMetricKey
@@ -105,6 +126,19 @@ export function hasRelevantSessionJsonlMetadata(
 
 export function readSessionJsonlRecordType(scanner: SessionJsonlMetadataScanner) {
   return scanner.rootType
+}
+
+// Oversized turn_context rows are never buffered or parsed as a whole. This
+// bounded projection retains only the model needed by following token rows.
+export function readSessionJsonlMetadataRecord(
+  scanner: SessionJsonlMetadataScanner
+): SessionJsonlMetadataRecord | null {
+  if (scanner.invalid || !scanner.rootFinished || scanner.rootType !== 'turn_context' || !scanner.turnContextModel)
+    return null
+  return {
+    type: 'turn_context',
+    payload: { model: scanner.turnContextModel }
+  }
 }
 
 function scanJsonByte(byte: number, scanner: SessionJsonlMetadataScanner) {
@@ -265,9 +299,11 @@ function scanJsonStringByte(byte: number, scanner: SessionJsonlMetadataScanner) 
   const string = scanner.string
   if (!string) return
   if (string.utf8ContinuationCount > 0) {
-    if (!isUtf8ContinuationByte(byte) ||
-        (string.utf8FirstContinuationMin !== undefined && byte < string.utf8FirstContinuationMin) ||
-        (string.utf8FirstContinuationMax !== undefined && byte > string.utf8FirstContinuationMax)) {
+    if (
+      !isUtf8ContinuationByte(byte) ||
+      (string.utf8FirstContinuationMin !== undefined && byte < string.utf8FirstContinuationMin) ||
+      (string.utf8FirstContinuationMax !== undefined && byte > string.utf8FirstContinuationMax)
+    ) {
       scanner.invalid = true
       return
     }
@@ -336,8 +372,20 @@ function scanJsonStringByte(byte: number, scanner: SessionJsonlMetadataScanner) 
     string.container.currentKey = value
     string.container.phase = 'colon'
     if (string.container.scope === 'root' && value === 'type') scanner.rootType = undefined
-    if (tokenMetricKeys.has(value)) scanner.codexTokenMetricKey = true
-    if (scanner.additionalRelevantKeys.has(value)) scanner.additionalRelevantKey = true
+    if (
+      tokenMetricKeys.has(value) &&
+      string.container.scope !== 'root-attachment' &&
+      (!scanner.codexUsageOnly || string.container.scope === 'codex-usage')
+    ) {
+      scanner.codexTokenMetricKey = true
+    }
+    if (
+      scanner.additionalRelevantKeys.has(value) &&
+      string.container.scope !== 'root-attachment' &&
+      (!scanner.codexUsageOnly || isStrictCodexRelevantKey(string.container.scope, value))
+    ) {
+      scanner.additionalRelevantKey = true
+    }
     return
   }
   if (string.container) {
@@ -415,22 +463,42 @@ function newJsonString(role: JsonString['role'], container?: JsonContainer): Jso
 }
 
 function shouldCaptureValue(scope: MetadataScope | undefined, key: string | undefined) {
-  return key === 'type' && scope === 'root'
+  return (
+    (key === 'type' && scope === 'root') ||
+    (scope !== undefined && isTurnContextModelScope(scope) && isTurnContextModelKey(key))
+  )
 }
 
 function childScope(container: JsonContainer, kind: JsonContainer['kind']): MetadataScope {
   if (container.scope === 'claude-usage' || container.scope === 'codex-usage') {
     return container.scope
   }
+  if (container.scope === 'root-attachment') return 'root-attachment'
   if (kind !== 'object') return 'other'
   if (container.scope === 'root' && container.currentKey === 'message') return 'root-message'
   if (container.scope === 'root' && container.currentKey === 'payload') return 'root-payload'
+  if (container.scope === 'root' && container.currentKey === 'attachment') return 'root-attachment'
   if (container.scope === 'root' && container.currentKey === 'usage') return 'claude-usage'
   if (container.scope === 'root-message' && container.currentKey === 'usage') return 'claude-usage'
   if (container.scope === 'root-payload' && container.currentKey === 'info') return 'root-payload-info'
+  if (container.scope === 'root-payload' && container.currentKey === 'source') return 'root-payload-source'
+  if (container.scope === 'root-payload' && container.currentKey === 'metadata') return 'root-payload-metadata'
   if (container.scope === 'root-payload' && container.currentKey === 'usage') return 'codex-usage'
-  if (container.scope === 'root-payload-info' && container.currentKey === 'last_token_usage') return 'codex-usage'
+  if (
+    container.scope === 'root-payload-info' &&
+    (container.currentKey === 'total_token_usage' || container.currentKey === 'last_token_usage')
+  ) {
+    return 'codex-usage'
+  }
   return 'other'
+}
+
+function isStrictCodexRelevantKey(scope: MetadataScope, key: string) {
+  if (key === 'subagent') return scope === 'root-payload-source'
+  return (
+    (key === 'total_token_usage' || key === 'last_token_usage') &&
+    (scope === 'root-payload' || scope === 'root-payload-info')
+  )
 }
 
 function recordUsageObject(scanner: SessionJsonlMetadataScanner, scope: MetadataScope) {
@@ -444,8 +512,26 @@ function recordJsonStringValue(
   key: string | undefined,
   value: string | undefined
 ) {
-  if (key !== 'type' || value === undefined) return
-  if (scope === 'root') scanner.rootType = value
+  if (value === undefined) return
+  if (key === 'type' && scope === 'root') {
+    scanner.rootType = value
+    return
+  }
+  if (isTurnContextModelScope(scope) && isTurnContextModelKey(key)) {
+    const isPrimary = scope === 'root-payload' && key === 'model'
+    if (isPrimary || (!scanner.turnContextModelIsPrimary && scanner.turnContextModel === undefined)) {
+      scanner.turnContextModel = value
+      scanner.turnContextModelIsPrimary = isPrimary
+    }
+  }
+}
+
+function isTurnContextModelScope(scope: MetadataScope) {
+  return scope === 'root-payload' || scope === 'root-payload-info' || scope === 'root-payload-metadata'
+}
+
+function isTurnContextModelKey(key: string | undefined) {
+  return key === 'model' || key === 'model_name' || key === 'modelName'
 }
 
 function captureJsonStringByte(byte: number, string: JsonString) {
@@ -478,14 +564,20 @@ function isValidJsonScalar(value: string) {
 }
 
 function isSimpleJsonEscape(byte: number) {
-  return byte === 0x22 || byte === 0x2f || byte === 0x5c || byte === 0x62 ||
-    byte === 0x66 || byte === 0x6e || byte === 0x72 || byte === 0x74
+  return (
+    byte === 0x22 ||
+    byte === 0x2f ||
+    byte === 0x5c ||
+    byte === 0x62 ||
+    byte === 0x66 ||
+    byte === 0x6e ||
+    byte === 0x72 ||
+    byte === 0x74
+  )
 }
 
 function isHexDigit(byte: number) {
-  return (byte >= 0x30 && byte <= 0x39) ||
-    (byte >= 0x41 && byte <= 0x46) ||
-    (byte >= 0x61 && byte <= 0x66)
+  return (byte >= 0x30 && byte <= 0x39) || (byte >= 0x41 && byte <= 0x46) || (byte >= 0x61 && byte <= 0x66)
 }
 
 function startUtf8Sequence(byte: number, string: JsonString) {

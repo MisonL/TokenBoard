@@ -2,9 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSy
 import { dirname } from 'node:path'
 
 export const notifyHandlerMarker = 'TOKENBOARD_NOTIFY_HANDLER'
-export {
-  antigravitySource, claudeSource, codexSource, readSources, readUninstallSources
-} from './hook-sources.mjs'
+export { antigravitySource, claudeSource, codexSource, readSources, readUninstallSources } from './hook-sources.mjs'
 
 export function removeNotifyHandler({ paths, fs }) {
   const text = readOptional(paths.notifyPath, fs)
@@ -17,11 +15,6 @@ export function isTokenBoardNotifyHandler(text) {
   return typeof text === 'string' && text.includes(notifyHandlerMarker)
 }
 
-export function extractTomlStringArray(text, key) {
-  const result = inspectTomlStringArray(text, key)
-  return result.status === 'ok' ? result.value : null
-}
-
 export function inspectTomlStringArray(text, key) {
   const lines = text.split(/\r?\n/)
   const keyPattern = tomlKeyPattern(key)
@@ -31,9 +24,7 @@ export function inspectTomlStringArray(text, key) {
     const literal = readTomlArrayLiteral(lines, index, match[1].trim())
     if (!literal) return { status: 'invalid', value: null }
     const value = parseTomlStringArray(literal)
-    return value === null
-      ? { status: 'invalid', value: null }
-      : { status: 'ok', value }
+    return value === null ? { status: 'invalid', value: null } : { status: 'ok', value }
   }
   return { status: 'missing', value: null }
 }
@@ -98,10 +89,19 @@ export function writeJsonWithBackup(filePath, value, previousRaw, fs) {
   let backupPath
   if (previousRaw !== null) {
     backupPath = `${filePath}.bak.${timestamp()}`
-    fs.writeFile(backupPath, previousRaw)
+    writePrivateFile(backupPath, previousRaw, fs)
   }
   fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`)
   return backupPath
+}
+
+// Hook backups hold the previous settings verbatim — the original notify argv or statusLine
+// command, which can carry a webhook URL or a command-line token. `~/.codex`, `~/.claude` and
+// `~/.gemini` are commonly 0755, so a backup left at the default umask (0644) would be
+// world-readable. Same intent as `antigravity-hook`'s private original-statusline write.
+export function writePrivateFile(filePath, value, fs) {
+  fs.writeFile(filePath, value, { mode: 0o600 })
+  fs.chmod?.(filePath, 0o600)
 }
 
 export function normalizeObject(value) {
@@ -134,11 +134,6 @@ export function nodeFs() {
 
 export function quoteShellArg(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`
-}
-
-export function arraysEqual(left, right) {
-  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
-  return left.every((value, index) => value === right[index])
 }
 
 export function timestamp() {

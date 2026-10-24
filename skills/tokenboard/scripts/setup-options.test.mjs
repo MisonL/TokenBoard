@@ -20,7 +20,8 @@ test('setup install options inherit saved server profile values', () => {
         repoUrl: 'https://github.com/example/private.git',
         repoRef: 'release-branch',
         packageManager: 'bun',
-        scheduleTimes: ['07:15', '19:45']
+        scheduleTimes: ['07:15', '19:45'],
+        codexSymlinkRoots: ['/Volumes/Work/CodexArchive/archived_sessions']
       },
       defaultScheduleTimes: ['00:00']
     }),
@@ -28,7 +29,9 @@ test('setup install options inherit saved server profile values', () => {
       repoUrl: 'https://github.com/example/private.git',
       repoRef: 'release-branch',
       packageManager: 'bun',
-      scheduleTimesInput: '07:15,19:45'
+      clientType: 'git',
+      scheduleTimesInput: '07:15,19:45',
+      codexSymlinkRoots: ['/Volumes/Work/CodexArchive/archived_sessions']
     }
   )
 })
@@ -40,7 +43,8 @@ test('explicit setup flags override saved server profile values', () => {
         'repo-url': 'https://github.com/example/override.git',
         'repo-ref': 'override-branch',
         'package-manager': 'npm',
-        'schedule-times': '08:30,20:30'
+        'schedule-times': '08:30,20:30',
+        'codex-symlink-roots-json': '["/srv/codex-archive"]'
       },
       env: {},
       profile: {
@@ -55,23 +59,92 @@ test('explicit setup flags override saved server profile values', () => {
       repoUrl: 'https://github.com/example/override.git',
       repoRef: 'override-branch',
       packageManager: 'npm',
-      scheduleTimesInput: '08:30,20:30'
+      clientType: 'git',
+      scheduleTimesInput: '08:30,20:30',
+      codexSymlinkRoots: ['/srv/codex-archive']
     }
   )
 })
 
-test('initial setup sync uses a full history scan by default', () => {
-  assert.deepEqual(
-    buildInitialSyncArgs({ flags: {} }),
-    ['--mode', 'sync', '--source', 'all', '--since', 'all']
+test('setup carries the binary client choice from flag, env or profile', () => {
+  const fromFlag = resolveSetupInstallOptions({ flags: { client: 'binary' }, env: {}, profile: {} })
+  assert.equal(fromFlag.clientType, 'binary')
+  const fromEnv = resolveSetupInstallOptions({ flags: {}, env: { TOKENBOARD_CLIENT: 'binary' }, profile: {} })
+  assert.equal(fromEnv.clientType, 'binary')
+  const fromProfile = resolveSetupInstallOptions({ flags: {}, env: {}, profile: { clientType: 'binary' } })
+  assert.equal(fromProfile.clientType, 'binary')
+  // The flag wins, so a machine already on the binary can be switched back.
+  const back = resolveSetupInstallOptions({
+    flags: { client: 'git' },
+    env: { TOKENBOARD_CLIENT: 'binary' },
+    profile: { clientType: 'binary' }
+  })
+  assert.equal(back.clientType, 'git')
+})
+
+test('setup rejects malformed or empty Codex symlink root configuration', () => {
+  assert.throws(
+    () =>
+      resolveSetupInstallOptions({
+        flags: { 'codex-symlink-roots-json': '{"path":"/srv/archive"}' },
+        env: {},
+        profile: {}
+      }),
+    /Invalid --codex-symlink-roots-json: expected a non-empty JSON array of paths/
+  )
+  assert.throws(
+    () =>
+      resolveSetupInstallOptions({
+        flags: { 'codex-symlink-roots-json': '[]' },
+        env: {},
+        profile: {}
+      }),
+    /Invalid --codex-symlink-roots-json: expected a non-empty JSON array of paths/
+  )
+  assert.throws(
+    () =>
+      resolveSetupInstallOptions({
+        flags: { 'codex-symlink-roots-json': '' },
+        env: {},
+        profile: { codexSymlinkRoots: ['/old/archive'] }
+      }),
+    /Invalid --codex-symlink-roots-json: expected a JSON array of paths/
+  )
+
+  assert.throws(
+    () =>
+      resolveSetupInstallOptions({
+        flags: {},
+        env: { TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON: '' },
+        profile: {}
+      }),
+    /Invalid TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON: expected a JSON array of paths/
+  )
+
+  assert.throws(
+    () =>
+      resolveSetupInstallOptions({
+        flags: {},
+        env: {},
+        profile: { codexSymlinkRoots: '' }
+      }),
+    /Invalid profile codexSymlinkRoots: expected a JSON array of paths/
   )
 })
 
+test('initial setup sync uses a full history scan by default', () => {
+  assert.deepEqual(buildInitialSyncArgs({ flags: {} }), ['--mode', 'sync', '--source', 'all', '--since', 'all'])
+})
+
 test('initial setup sync forwards an explicit since value', () => {
-  assert.deepEqual(
-    buildInitialSyncArgs({ flags: { since: '20260501' } }),
-    ['--mode', 'sync', '--source', 'all', '--since', '20260501']
-  )
+  assert.deepEqual(buildInitialSyncArgs({ flags: { since: '20260501' } }), [
+    '--mode',
+    'sync',
+    '--source',
+    'all',
+    '--since',
+    '20260501'
+  ])
 })
 
 test('setup warms hook cursors before installing hooks when initial sync is skipped', () => {
@@ -88,10 +161,15 @@ test('setup does not warm hook cursors after a full initial sync', () => {
 })
 
 test('setup hook cursor warm command uses all sources', () => {
-  assert.deepEqual(
-    buildWarmHookCursorArgs({ packageManager: 'pnpm' }),
-    ['--mode', 'warm-hooks', '--source', 'all', '--skip-upgrade', '--package-manager', 'pnpm']
-  )
+  assert.deepEqual(buildWarmHookCursorArgs({ packageManager: 'pnpm' }), [
+    '--mode',
+    'warm-hooks',
+    '--source',
+    'all',
+    '--skip-upgrade',
+    '--package-manager',
+    'pnpm'
+  ])
 })
 
 test('setup base url must come from flags or environment', () => {
@@ -160,19 +238,22 @@ test('device-link reconnect supports legacy rotated claim responses before pairi
       installClaim: 'claim-secret'
     }),
     writeDeviceLink: (link) => writes.push(link),
-    fetcher: async () => Response.json({
-      pairingCode: 'pairing-code',
-      installClaim: 'claim-rotated'
-    })
+    fetcher: async () =>
+      Response.json({
+        pairingCode: 'pairing-code',
+        installClaim: 'claim-rotated'
+      })
   })
 
   assert.equal(pairingCode, 'pairing-code')
-  assert.deepEqual(writes, [{
-    serverOrigin: 'https://tokenboard.example.com',
-    deviceId: 'dev_1',
-    installationId: 'inst_1',
-    installClaim: 'claim-rotated'
-  }])
+  assert.deepEqual(writes, [
+    {
+      serverOrigin: 'https://tokenboard.example.com',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'claim-rotated'
+    }
+  ])
 })
 
 test('device-link reconnect fails when a legacy rotated claim cannot be written', async () => {
@@ -188,10 +269,11 @@ test('device-link reconnect fails when a legacy rotated claim cannot be written'
       writeDeviceLink: () => {
         throw new Error('permission denied')
       },
-      fetcher: async () => Response.json({
-        pairingCode: 'pairing-code',
-        installClaim: 'claim-rotated'
-      })
+      fetcher: async () =>
+        Response.json({
+          pairingCode: 'pairing-code',
+          installClaim: 'claim-rotated'
+        })
     }),
     (error) => {
       assert(error instanceof Error)
@@ -213,10 +295,11 @@ test('device-link reconnect fails when a legacy rotated claim has no writer', as
         installationId: 'inst_1',
         installClaim: 'claim-secret'
       }),
-      fetcher: async () => Response.json({
-        pairingCode: 'pairing-code',
-        installClaim: 'claim-rotated'
-      })
+      fetcher: async () =>
+        Response.json({
+          pairingCode: 'pairing-code',
+          installClaim: 'claim-rotated'
+        })
     }),
     (error) => {
       assert(error instanceof Error)
@@ -241,10 +324,11 @@ test('device-link reconnect fails when an async legacy rotated claim write rejec
       writeDeviceLink: async () => {
         throw new Error('permission denied')
       },
-      fetcher: async () => Response.json({
-        pairingCode: 'pairing-code',
-        installClaim: 'claim-rotated'
-      })
+      fetcher: async () =>
+        Response.json({
+          pairingCode: 'pairing-code',
+          installClaim: 'claim-rotated'
+        })
     }),
     (error) => {
       assert(error instanceof Error)
@@ -268,18 +352,21 @@ test('device-link reconnect writes a legacy rotated claim before rejecting a mis
         installClaim: 'claim-secret'
       }),
       writeDeviceLink: (link) => writes.push(link),
-      fetcher: async () => Response.json({
-        installClaim: 'claim-rotated'
-      })
+      fetcher: async () =>
+        Response.json({
+          installClaim: 'claim-rotated'
+        })
     }),
     /Device-link reconnect response did not include a pairing code/
   )
-  assert.deepEqual(writes, [{
-    serverOrigin: 'https://tokenboard.example.com',
-    deviceId: 'dev_1',
-    installationId: 'inst_1',
-    installClaim: 'claim-rotated'
-  }])
+  assert.deepEqual(writes, [
+    {
+      serverOrigin: 'https://tokenboard.example.com',
+      deviceId: 'dev_1',
+      installationId: 'inst_1',
+      installClaim: 'claim-rotated'
+    }
+  ])
 })
 
 test('device-link reconnect fails when a rotated claim without a pairing code has no writer', async () => {
@@ -292,9 +379,10 @@ test('device-link reconnect fails when a rotated claim without a pairing code ha
         installationId: 'inst_1',
         installClaim: 'claim-secret'
       }),
-      fetcher: async () => Response.json({
-        installClaim: 'claim-rotated'
-      })
+      fetcher: async () =>
+        Response.json({
+          installClaim: 'claim-rotated'
+        })
     }),
     (error) => {
       assert(error instanceof Error)
@@ -319,9 +407,10 @@ test('device-link reconnect fails when a rotated claim without a pairing code th
       writeDeviceLink: () => {
         throw new Error('permission denied')
       },
-      fetcher: async () => Response.json({
-        installClaim: 'claim-rotated'
-      })
+      fetcher: async () =>
+        Response.json({
+          installClaim: 'claim-rotated'
+        })
     }),
     (error) => {
       assert(error instanceof Error)
@@ -346,9 +435,10 @@ test('device-link reconnect fails when a rotated claim without a pairing code re
       writeDeviceLink: async () => {
         throw new Error('permission denied')
       },
-      fetcher: async () => Response.json({
-        installClaim: 'claim-rotated'
-      })
+      fetcher: async () =>
+        Response.json({
+          installClaim: 'claim-rotated'
+        })
     }),
     (error) => {
       assert(error instanceof Error)
@@ -436,6 +526,50 @@ test('setup passes repo-url override to install collector', () => {
       'https://github.com/example/TokenBoard.git',
       '--repo-ref',
       'research/agy-token-support-plan'
+    ]
+  )
+})
+
+test('setup forwards the binary client choice to the collector installer', () => {
+  assert.deepEqual(
+    buildInstallCollectorArgs({ flags: {}, clientType: 'binary', installCollectorScript: '/repo/i.mjs' }),
+    ['/repo/i.mjs', '--client', 'binary']
+  )
+  assert.deepEqual(buildInstallCollectorArgs({ flags: {}, clientType: 'git', installCollectorScript: '/repo/i.mjs' }), [
+    '/repo/i.mjs',
+    '--client',
+    'git'
+  ])
+  // Omitted clientType leaves the flag off, so install-collector falls back to
+  // its own default (git) rather than receiving an empty value.
+  assert.deepEqual(buildInstallCollectorArgs({ flags: {}, installCollectorScript: '/repo/i.mjs' }), ['/repo/i.mjs'])
+})
+
+// `setup.mjs --release-repo` is how a machine installs from a mirror. The flag
+// was never forwarded to the installer, so the install silently used the
+// default feed and the recorded source was the default one.
+test('setup forwards the release source flags to the collector installer', () => {
+  assert.deepEqual(
+    buildInstallCollectorArgs({
+      flags: {
+        client: 'binary',
+        'release-repo': 'other/TokenBoard',
+        'release-tag': 'v9.9.9',
+        'release-base-url': 'https://github.example'
+      },
+      clientType: 'binary',
+      installCollectorScript: '/repo/i.mjs'
+    }),
+    [
+      '/repo/i.mjs',
+      '--client',
+      'binary',
+      '--release-repo',
+      'other/TokenBoard',
+      '--release-tag',
+      'v9.9.9',
+      '--release-base-url',
+      'https://github.example'
     ]
   )
 })

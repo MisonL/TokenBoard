@@ -1,5 +1,14 @@
 @import 'tailwindcss' source('../app');
 
+/* The dashboard's trend and source-split bars size themselves from the data, so their
+   `h-[N%]` / `w-[N%]` classes are built at render time and the scanner cannot see them
+   in the source text. They are enumerated here instead. This matters beyond styling:
+   the bars used to carry the same values as inline `style` attributes, which the
+   `style-src 'self'` policy drops — a hash or 'unsafe-inline' cannot allow a style
+   attribute, so the only fix is for these to be real classes. */
+@source inline('h-[{0..100}%]');
+@source inline('w-[{0..100}%]');
+
 :root {
   color-scheme: dark;
   --app-bg: #10130f;
@@ -9,7 +18,10 @@
   --app-border: rgba(120, 113, 108, 0.34);
   --app-text: #fafaf9;
   --app-muted: #a8a29e;
-  --app-subtle: #78716c;
+  /* Small body text (12px) needs 4.5:1 against the panel it sits on. The previous #78716c
+     measured 3.9:1 on the dark background and 4.2:1 on the light one, both below AA. Each theme
+     gets a value that clears 4.5:1 on its own background while staying visually subdued. */
+  --app-subtle: #8a857f;
   --app-hover: rgba(255, 255, 255, 0.06);
   --app-input: rgba(28, 25, 23, 0.72);
   --app-shadow-raised: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 26px 70px rgba(0, 0, 0, 0.62), 0 16px 42px -18px rgba(190, 242, 100, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -33,7 +45,9 @@
   --app-border: rgba(87, 83, 78, 0.22);
   --app-text: #1c1917;
   --app-muted: #57534e;
-  --app-subtle: #78716c;
+  /* See the dark theme's `--app-subtle`: the light background needs a darker value to clear the
+     same 4.5:1 contrast floor. */
+  --app-subtle: #6b6560;
   --app-hover: rgba(41, 37, 36, 0.07);
   --app-input: rgba(255, 255, 255, 0.86);
   --app-shadow-raised: 0 0 0 1px rgba(41, 37, 36, 0.08), 0 22px 50px rgba(68, 64, 60, 0.12), 0 2px 8px rgba(68, 64, 60, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.72);
@@ -61,15 +75,6 @@ body {
 
 body {
   color: var(--app-text);
-}
-
-.app-scrollbar-none {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.app-scrollbar-none::-webkit-scrollbar {
-  display: none;
 }
 
 .app-accent-text {
@@ -675,4 +680,40 @@ button[data-copy-target][aria-disabled='true'] {
   .app-toast {
     transition: none;
   }
+}
+
+/* The skip link and its `#app-content` target. The link is the first focusable element in
+   `<body>` and stays off-screen until focused, so keyboard and screen-reader users can jump
+   past the navigation on every page. This has to be a class rather than an inline `style`
+   attribute: the `style-src 'self'` CSP drops style attributes (see the `@source inline`
+   note at the top of this file). `clip-path` hides it without the `display: none` that would
+   take it out of the tab order. */
+.app-skip-link {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  padding: 12px 16px;
+  border: 1px solid rgba(190, 242, 100, 0.6);
+  border-radius: 12px;
+  background: #bef264;
+  color: #1c1917;
+  font-size: 14px;
+  font-weight: 900;
+  text-decoration: none;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.app-skip-link:focus,
+.app-skip-link:focus-visible {
+  clip-path: none;
+  outline: 2px solid var(--app-text);
+  outline-offset: 2px;
+}
+
+#app-content:focus,
+#app-content:focus-visible {
+  outline: none;
 }

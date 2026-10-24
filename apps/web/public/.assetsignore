@@ -1,2 +1,11 @@
-index.js
-.vite/
+# The assets directory is the whole build output root (`./dist`), which also holds the
+# Worker entry. An ignore list enumerating what to hide publishes every future root-level
+# build artifact by default — a sourcemap or build-metadata file dropped there would ship
+# with no review point. This inverts the default: ignore everything, then re-include only
+# the files that are meant to be public. wrangler matches these with gitignore semantics
+# (verified against wrangler 4.148.0: root-level strays are ignored, the three re-included
+# paths are kept).
+/*
+!/logo.svg
+!/favicon.ico
+!/static

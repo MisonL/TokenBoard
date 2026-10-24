@@ -5,11 +5,7 @@ import {
   normalizeScheduleTimes,
   normalizeScheduleWeekdays
 } from '../time'
-import type {
-  WebhookSubscriptionRow,
-  WebhookSubscriptionSecretDbRow,
-  WebhookSubscriptionSecretRow
-} from './types'
+import type { WebhookSubscriptionRow, WebhookSubscriptionSecretDbRow, WebhookSubscriptionSecretRow } from './types'
 
 export function normalizeSecretRow(row: WebhookSubscriptionSecretDbRow): WebhookSubscriptionSecretRow {
   return {
@@ -24,7 +20,11 @@ export function normalizeSecretRow(row: WebhookSubscriptionSecretDbRow): Webhook
 }
 
 export function normalizeSubscriptionSummary(row: WebhookSubscriptionRow): WebhookSubscriptionSummary {
-  const scheduleTimesLocal = normalizeScheduleTimes(row.scheduleTimesLocal ?? row.scheduleTimeLocal)
+  // Damaged stored values degrade to the defaults rather than raising. This normalizer is used
+  // by the cron path too, where a throw happens inside `listDueWebhookSubscriptions` — before
+  // the per-subscription try/catch — so one bad row would stop every user's daily report. The
+  // settings path already repaired such rows; the two must not disagree.
+  const scheduleTimesLocal = normalizeSettingsScheduleTimes(row).values
   return {
     ...row,
     provider: row.provider as WebhookProvider,
@@ -42,9 +42,7 @@ export function normalizeSubscriptionSummary(row: WebhookSubscriptionRow): Webho
   }
 }
 
-export function normalizeSettingsSubscriptionSummary(
-  row: WebhookSubscriptionRow
-): WebhookSubscriptionSummary {
+export function normalizeSettingsSubscriptionSummary(row: WebhookSubscriptionRow): WebhookSubscriptionSummary {
   const scheduleTimes = normalizeSettingsScheduleTimes(row)
   const scheduleWeekdays = normalizeSettingsScheduleWeekdays(row)
   return {
@@ -66,15 +64,11 @@ export function normalizeSettingsSubscriptionSummary(
 }
 
 function normalizeSettingsScheduleTimes(row: WebhookSubscriptionRow) {
-  const storedValue = isEmptyScheduleValue(row.scheduleTimesLocal)
-    ? row.scheduleTimeLocal
-    : row.scheduleTimesLocal
+  const storedValue = isEmptyScheduleValue(row.scheduleTimesLocal) ? row.scheduleTimeLocal : row.scheduleTimesLocal
   try {
     return {
       values: normalizeScheduleTimes(storedValue),
-      needsRepair:
-        isEmptyScheduleValue(row.scheduleTimesLocal) ||
-        isEmptyScheduleValue(storedValue)
+      needsRepair: isEmptyScheduleValue(row.scheduleTimesLocal) || isEmptyScheduleValue(storedValue)
     }
   } catch {
     return normalizeLegacyScheduleTime(row.scheduleTimeLocal)

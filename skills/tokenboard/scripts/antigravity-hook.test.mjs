@@ -36,7 +36,10 @@ test('installs and restores Antigravity statusLine command without notify handle
   assert.equal(settings.statusLine.enabled, true)
   assert.match(settings.statusLine.command, /antigravity-statusline\.mjs/)
   assert.match(settings.statusLine.command, /--state-dir/)
-  assert.deepEqual(JSON.parse(fs.files.get(paths.antigravityOriginalStatuslinePath)).statusLine, originalSettings.statusLine)
+  assert.deepEqual(
+    JSON.parse(fs.files.get(paths.antigravityOriginalStatuslinePath)).statusLine,
+    originalSettings.statusLine
+  )
   assert.equal(fs.modes.get(paths.antigravityOriginalStatuslinePath), 0o600)
   assert.equal(hookStatus({ paths, fs }).antigravityCli, 'installed')
 
@@ -104,7 +107,10 @@ test('all uninstall restores an opted-in Antigravity statusLine', () => {
 
   const removed = uninstallHooks({ paths, fs, flags: { source: 'all' } })
 
-  assert.equal(removed.hooks.some((hook) => hook.source === 'antigravity-cli' && hook.changed), true)
+  assert.equal(
+    removed.hooks.some((hook) => hook.source === 'antigravity-cli' && hook.changed),
+    true
+  )
   assert.deepEqual(JSON.parse(fs.files.get(paths.antigravitySettingsPath)), originalSettings)
   assert.equal(fs.files.has(paths.antigravityOriginalStatuslinePath), false)
 })
@@ -127,16 +133,17 @@ test('removes TokenBoard Antigravity statusLine when no original command existed
 test('detects Windows Antigravity statusLine commands with backslash paths', () => {
   const paths = {
     ...createPaths(),
-    stateDir: 'C:\\Users\\QDM\\.tokenboard',
-    statuslineScriptPath: 'C:\\Users\\QDM\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\antigravity-statusline.mjs',
-    antigravitySettingsPath: 'C:\\Users\\QDM\\.gemini\\antigravity-cli\\settings.json',
-    antigravityOriginalStatuslinePath: 'C:\\Users\\QDM\\.tokenboard\\antigravity_statusline_original.json'
+    stateDir: 'C:\\Users\\example\\.tokenboard',
+    statuslineScriptPath:
+      'C:\\Users\\example\\.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\antigravity-statusline.mjs',
+    antigravitySettingsPath: 'C:\\Users\\example\\.gemini\\antigravity-cli\\settings.json',
+    antigravityOriginalStatuslinePath: 'C:\\Users\\example\\.tokenboard\\antigravity_statusline_original.json'
   }
   const fs = memoryFs({
     [paths.antigravitySettingsPath]: JSON.stringify({
       statusLine: {
         enabled: true,
-        command: String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\QDM\.tokenboard\TokenBoard\skills\tokenboard\scripts\antigravity-statusline.mjs" "--state-dir" "C:\Users\QDM\.tokenboard"`
+        command: String.raw`"C:\Program Files\nodejs\node.exe" "C:\Users\example\.tokenboard\TokenBoard\skills\tokenboard\scripts\antigravity-statusline.mjs" "--state-dir" "C:\Users\example\.tokenboard"`
       }
     })
   })

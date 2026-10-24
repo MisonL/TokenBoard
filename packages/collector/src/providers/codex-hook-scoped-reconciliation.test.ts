@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectCodexUsage } from './codex'
+import { createPhaseTimings } from '../phase-timings'
 import { clearPendingUploadCursors } from './session-cursor'
 import { tokenCountEvent, writeJsonl } from './codex-test-helpers'
 
@@ -44,17 +45,13 @@ describe('Codex hook scoped reconciliation', () => {
         scopedHomes.push(scopedHome)
         commandArgs.push(args)
         if (!verifyFrozenScope) {
-          return args.includes('session')
-            ? initialSessionResult(activeTokens)
-            : initialDailyResult(activeTokens)
+          return args.includes('session') ? initialSessionResult(activeTokens) : initialDailyResult(activeTokens)
         }
         expect(scopedHome).not.toBe(codexHome)
         expect(await fileExists(join(scopedHome, 'sessions', '2026', '05', '22', 'stable.jsonl'))).toBe(true)
         expect(await fileExists(join(scopedHome, 'sessions', '2026', '04', '02', 'active-old.jsonl'))).toBe(true)
         expect(await fileExists(join(scopedHome, 'sessions', '2025', '01', '01', 'history.jsonl'))).toBe(false)
-        return args.includes('session')
-          ? changedDateSessionResult(activeTokens)
-          : changedDateDailyResult(activeTokens)
+        return args.includes('session') ? changedDateSessionResult(activeTokens) : changedDateDailyResult(activeTokens)
       }
 
       await collectCodexUsage({
@@ -68,9 +65,13 @@ describe('Codex hook scoped reconciliation', () => {
 
       verifyFrozenScope = true
       activeTokens = 20
-      await writeFile(activeOldSession, `${JSON.stringify(tokenCountEvent('2026-05-22T02:00:00.000Z', activeTokens))}\n`, {
-        flag: 'a'
-      })
+      await writeFile(
+        activeOldSession,
+        `${JSON.stringify(tokenCountEvent('2026-05-22T02:00:00.000Z', activeTokens))}\n`,
+        {
+          flag: 'a'
+        }
+      )
       await setFileMtime(activeOldSession, '2026-05-22T02:00:00.000Z')
       scopedHomes.length = 0
       commandArgs.length = 0
@@ -102,19 +103,58 @@ describe('Codex hook scoped reconciliation', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  }, 30_000)
+  // Codex reaches ccusage through four different call sites (scoped daily,
+  // scoped session, per-home session counts, unbounded scans). The sink has to
+  // cover whichever one ran, or a codex run reports no phase attribution at
+  // all and the numbers look like "nothing took time".
+  test('records cursor scan and ccusage phase timings for a hook collection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-codex-hook-timings-'))
+    const codexHome = join(root, 'codex')
+    const stateDir = join(root, 'state')
+    const sessionFile = join(codexHome, 'sessions', '2026', '05', '22', 'session.jsonl')
+
+    vi.stubEnv('TOKENBOARD_HOOK_MODE', '1')
+    vi.stubEnv('TOKENBOARD_STATE_DIR', stateDir)
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    try {
+      await writeJsonl(sessionFile, [tokenCountEvent('2026-05-22T01:00:00.000Z', 10)])
+      await setFileMtime(sessionFile, '2026-05-22T01:00:00.000Z')
+      const timings = createPhaseTimings()
+
+      await collectCodexUsage({
+        codexHome,
+        stateDir,
+        timezone: 'Asia/Shanghai',
+        collectedAt: '2026-05-22T10:00:00.000Z',
+        timings,
+        runner: async (_command: string, args: string[]) => {
+          await new Promise((resolve) => setTimeout(resolve, args.includes('session') ? 20 : 5))
+          return args.includes('session') ? changedDateSessionResult(10) : changedDateDailyResult(10)
+        }
+      })
+
+      expect(Object.keys(timings.snapshot()).sort()).toEqual(['ccusageDaily', 'ccusageSession', 'cursorScan'])
+      await clearPendingUploadCursors({ stateDir, source: 'codex' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
 
 function changedDateDailyResult(activeTokens: number) {
   return {
-    data: [{
-      date: '2026-05-22',
-      model: 'gpt-5',
-      inputTokens: 10 + activeTokens,
-      outputTokens: 0,
-      totalTokens: 10 + activeTokens,
-      costUSD: 0.01
-    }]
+    data: [
+      {
+        date: '2026-05-22',
+        model: 'gpt-5',
+        inputTokens: 10 + activeTokens,
+        outputTokens: 0,
+        totalTokens: 10 + activeTokens,
+        costUSD: 0.01
+      }
+    ]
   }
 }
 
@@ -174,5 +214,7 @@ async function setFileMtime(file: string, value: string) {
 }
 
 async function fileExists(file: string) {
-  return stat(file).then(() => true).catch(() => false)
+  return stat(file)
+    .then(() => true)
+    .catch(() => false)
 }

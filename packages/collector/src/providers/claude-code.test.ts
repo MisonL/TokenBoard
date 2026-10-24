@@ -1,5 +1,14 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 import { collectClaudeCodeUsage } from './claude-code'
+
+const bundledCcusageConfigArgs = [
+  '--config',
+  join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'ccusage.json')
+]
 
 describe('collectClaudeCodeUsage', () => {
   afterEach(() => {
@@ -52,11 +61,19 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown']
+        args: [
+          'ccusage@20.0.33',
+          'claude',
+          'daily',
+          '--json',
+          '--breakdown',
+          '--single-thread',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.19', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.33', 'claude', 'session', '--json', '--single-thread', ...bundledCcusageConfigArgs]
       }
     ])
     expect(snapshots[0]).toMatchObject({
@@ -87,15 +104,17 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.19',
+          'ccusage@20.0.33',
           '--',
           'ccusage',
           'claude',
           'daily',
           '--json',
           '--breakdown',
+          '--single-thread',
           '--since',
-          '20260509'
+          '20260509',
+          ...bundledCcusageConfigArgs
         ]
       },
       {
@@ -104,14 +123,16 @@ describe('collectClaudeCodeUsage', () => {
           'exec',
           '--yes',
           '--package',
-          'ccusage@20.0.19',
+          'ccusage@20.0.33',
           '--',
           'ccusage',
           'claude',
           'session',
           '--json',
+          '--single-thread',
           '--since',
-          '20260509'
+          '20260509',
+          ...bundledCcusageConfigArgs
         ]
       }
     ])
@@ -131,18 +152,39 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260501'],
-      ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260501']
+      [
+        'ccusage@20.0.33',
+        'claude',
+        'daily',
+        '--json',
+        '--breakdown',
+        '--single-thread',
+        '--since',
+        '20260501',
+        ...bundledCcusageConfigArgs
+      ],
+      [
+        'ccusage@20.0.33',
+        'claude',
+        'session',
+        '--json',
+        '--single-thread',
+        '--since',
+        '20260501',
+        ...bundledCcusageConfigArgs
+      ]
     ])
   })
 
-  test('prefers an explicit since window over process environment', async () => {
+  test('prefers explicit date windows over process environment', async () => {
     const calls: string[][] = []
     vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
     vi.stubEnv('TOKENBOARD_SINCE', '20260509')
+    vi.stubEnv('TOKENBOARD_UNTIL', '20260510')
 
     await collectClaudeCodeUsage({
       since: '20260708',
+      until: '20260709',
       async runner(_command, args) {
         calls.push(args)
         return { data: [] }
@@ -150,8 +192,31 @@ describe('collectClaudeCodeUsage', () => {
     })
 
     expect(calls).toEqual([
-      ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown', '--since', '20260708'],
-      ['ccusage@20.0.19', 'claude', 'session', '--json', '--since', '20260708']
+      [
+        'ccusage@20.0.33',
+        'claude',
+        'daily',
+        '--json',
+        '--breakdown',
+        '--single-thread',
+        '--since',
+        '20260708',
+        '--until',
+        '20260709',
+        ...bundledCcusageConfigArgs
+      ],
+      [
+        'ccusage@20.0.33',
+        'claude',
+        'session',
+        '--json',
+        '--single-thread',
+        '--since',
+        '20260708',
+        '--until',
+        '20260709',
+        ...bundledCcusageConfigArgs
+      ]
     ])
   })
 
@@ -161,9 +226,19 @@ describe('collectClaudeCodeUsage', () => {
       'Invalid Claude since date'
     )
     vi.stubEnv('TOKENBOARD_UNTIL', '20260708&echo injected')
-    await expect(collectClaudeCodeUsage({ since: '20260708' })).rejects.toThrow(
-      'Invalid Claude until date'
-    )
+    await expect(collectClaudeCodeUsage({ since: '20260708' })).rejects.toThrow('Invalid Claude until date')
+  })
+
+  test('rejects a reversed date window before running ccusage', async () => {
+    await expect(
+      collectClaudeCodeUsage({
+        since: '20260709',
+        until: '20260708',
+        runner: async () => {
+          throw new Error('runner should not be called')
+        }
+      })
+    ).rejects.toThrow('since date must not be after until date')
   })
 
   test('allows explicit full scan without passing all to ccusage', async () => {
@@ -184,13 +259,144 @@ describe('collectClaudeCodeUsage', () => {
     expect(calls).toEqual([
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.19', 'claude', 'daily', '--json', '--breakdown']
+        args: [
+          'ccusage@20.0.33',
+          'claude',
+          'daily',
+          '--json',
+          '--breakdown',
+          '--single-thread',
+          ...bundledCcusageConfigArgs
+        ]
       },
       {
         command: platformCommand('npx'),
-        args: ['ccusage@20.0.19', 'claude', 'session', '--json']
+        args: ['ccusage@20.0.33', 'claude', 'session', '--json', '--single-thread', ...bundledCcusageConfigArgs]
       }
     ])
+  })
+
+  // ccusage walks the whole session tree per report, so it gets the same 15-minute budget the
+  // Codex provider uses rather than the generic 2-minute command default — the difference
+  // between a loaded machine finishing a hook sync and a bare `Command failed` in the log.
+  test('budgets ccusage commands for a full session scan, not the shared command default', async () => {
+    const timeouts: Array<number | undefined> = []
+    vi.stubEnv('TOKENBOARD_FORCE_PACKAGE_RUNNER', '1')
+
+    await collectClaudeCodeUsage({
+      since: '20260708',
+      env: { TOKENBOARD_FORCE_PACKAGE_RUNNER: '1' },
+      async runner(_command, _args, options) {
+        timeouts.push(options?.timeoutMs)
+        return { data: [] }
+      }
+    })
+
+    expect(timeouts).toEqual([900_000, 900_000])
+  })
+
+  test('honours TOKENBOARD_CCUSAGE_TIMEOUT_MS for ccusage commands', async () => {
+    const timeouts: Array<number | undefined> = []
+
+    await collectClaudeCodeUsage({
+      since: '20260708',
+      env: { TOKENBOARD_FORCE_PACKAGE_RUNNER: '1', TOKENBOARD_CCUSAGE_TIMEOUT_MS: '1234' },
+      async runner(_command, _args, options) {
+        timeouts.push(options?.timeoutMs)
+        return { data: [] }
+      }
+    })
+
+    expect(timeouts).toEqual([1234, 1234])
+  })
+
+  // ccusage loads every session JSONL in parallel by default, which on a large
+  // history peaks at 4.6-7.6 GB of resident memory held by a background hook.
+  // The Codex provider already passes --single-thread everywhere; the Claude
+  // calls were the remaining source of that peak.
+  test('runs both ccusage calls single-threaded to bound memory', async () => {
+    const calls: string[][] = []
+
+    await collectClaudeCodeUsage({
+      since: '20260708',
+      env: { TOKENBOARD_FORCE_PACKAGE_RUNNER: '1' },
+      async runner(_command, args) {
+        calls.push(args)
+        return { data: [] }
+      }
+    })
+
+    expect(calls).toHaveLength(2)
+    for (const args of calls) {
+      expect(args).toContain('--single-thread')
+    }
+  })
+
+  test('passes the generated dynamic pricing config to every ccusage invocation', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'tokenboard-claude-pricing-'))
+    const calls: string[][] = []
+    try {
+      await collectClaudeCodeUsage({
+        env: {
+          TOKENBOARD_ENDPOINT: 'https://tokenboard.example/api/v1/ingest',
+          TOKENBOARD_STATE_DIR: stateDir,
+          TOKENBOARD_FORCE_PACKAGE_RUNNER: '1'
+        },
+        pricingFetcher: async () =>
+          new Response(
+            JSON.stringify({
+              models: [
+                {
+                  provider: 'anthropic',
+                  modelId: 'claude-fable-5-1',
+                  inputCostPerMillion: 10,
+                  outputCostPerMillion: 50,
+                  cacheReadCostPerMillion: 1,
+                  cacheWriteCostPerMillion: 12.5,
+                  contextWindow: 1_000_000,
+                  maxInputTokens: 1_000_000,
+                  pricing: {}
+                }
+              ],
+              nextCursor: null
+            })
+          ),
+        async runner(_command, args) {
+          calls.push(args)
+          return { data: [] }
+        }
+      })
+
+      expect(calls).toHaveLength(2)
+      for (const args of calls) {
+        expect(args).toContain('--config')
+        expect(args).toContain(join(stateDir, 'ccusage.dynamic.json'))
+      }
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  test('passes the bundled pricing config when called directly without an endpoint', async () => {
+    const calls: string[][] = []
+
+    await collectClaudeCodeUsage({
+      env: {
+        TOKENBOARD_ENDPOINT: '',
+        TOKENBOARD_FORCE_PACKAGE_RUNNER: '1'
+      },
+      async runner(_command, args) {
+        calls.push(args)
+        return { data: [] }
+      }
+    })
+
+    const bundledConfigPath = bundledCcusageConfigArgs[1]
+    expect(calls).toHaveLength(2)
+    for (const args of calls) {
+      expect(args).toContain('--config')
+      expect(args).toContain(bundledConfigPath)
+    }
   })
 })
 

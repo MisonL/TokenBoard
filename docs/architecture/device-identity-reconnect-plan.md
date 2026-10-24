@@ -148,11 +148,11 @@ upload token 仍然只展示一次，服务端仍然只保存 `token_hash`。
       "uploadToken": "tb_upload_prod",
       "timezone": "Asia/Shanghai"
     },
-    "https://tokenboard.431695.xyz": {
-      "endpoint": "https://tokenboard.431695.xyz/api/v1/ingest",
-      "deviceId": "dev_private",
-      "installationId": "inst_private",
-      "uploadToken": "tb_upload_private",
+    "https://tokenboard.example.com": {
+      "endpoint": "https://tokenboard.example.com/api/v1/ingest",
+      "deviceId": "dev_selfhosted",
+      "installationId": "inst_selfhosted",
+      "uploadToken": "tb_upload_selfhosted",
       "timezone": "Asia/Shanghai"
     }
   },

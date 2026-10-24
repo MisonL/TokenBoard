@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { buildWindowsScheduleCleanupArgs, uninstallSchedule } from './uninstall-schedule.mjs'
 
@@ -17,9 +17,7 @@ test('removes macOS LaunchAgent without deleting config', () => {
     assert.equal(result.plistPath, plistPath)
     assert.equal(existsSync(plistPath), false)
     assert.equal(readFileSync(harness.configPath, 'utf8'), '{}')
-    assert.deepEqual(harness.calls.map(commandLine), [
-      `launchctl bootout gui/501 ${plistPath}`
-    ])
+    assert.deepEqual(harness.calls.map(commandLine), [`launchctl bootout gui/501 ${plistPath}`])
   } finally {
     harness.cleanup()
   }
@@ -53,6 +51,7 @@ test('removes Windows scheduled tasks for configured times and legacy name', () 
     const result = uninstallSchedule(harness.options)
 
     assert.deepEqual(result.scheduleTimes, ['08:15', '21:45'])
+    assert.deepEqual(harness.errors, [])
     assert.deepEqual(harness.calls.map(commandLine), [
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command Get-ScheduledTask -TaskPath '\\' | Where-Object { ($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' }) } | Unregister-ScheduledTask -Confirm:$false"
     ])
@@ -70,9 +69,55 @@ test('removes default Windows scheduled tasks when config is missing', () => {
 
     uninstallSchedule(harness.options)
 
+    assert.equal(harness.errors.length, 1)
+    assert.match(harness.errors[0], /TokenBoard config could not be read \(missing config\)/)
     assert.deepEqual(harness.calls.map(commandLine), [
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command Get-ScheduledTask -TaskPath '\\' | Where-Object { ($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' }) } | Unregister-ScheduledTask -Confirm:$false"
     ])
+  } finally {
+    harness.cleanup()
+  }
+})
+
+// `allowFailure` keeps a non-zero exit from aborting the uninstall, but it must not be
+// silent: `uninstall` reports the schedule as removed either way, and a swallowed failure
+// would leave the task registered with no trace.
+test('reports a failed Windows scheduled-task cleanup instead of swallowing it', () => {
+  const harness = createHarness('win32')
+  try {
+    const spawned = []
+    harness.options.spawn = (command, args) => {
+      spawned.push([command, ...args].join(' '))
+      return { status: 1, error: undefined }
+    }
+
+    uninstallSchedule(harness.options)
+
+    assert.match(harness.errors[0], /TokenBoard scheduled-task cleanup failed/)
+    assert.match(harness.errors[0], /exit code 1/)
+    assert.deepEqual(spawned, [
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command Get-ScheduledTask -TaskPath '\\' | Where-Object { ($_.TaskName -like 'TokenBoardDailySync*') -or ($_.Actions | Where-Object { $_.Execute -like '*node*' -and $_.Arguments -like '*TokenBoard*skills*tokenboard*scripts*sync.mjs*' }) } | Unregister-ScheduledTask -Confirm:$false"
+    ])
+  } finally {
+    harness.cleanup()
+  }
+})
+
+// A host whose `launchctl` is missing still has a plist to delete, and aborting before the
+// `rm` would leave the schedule registered while the uninstall reported failure. The ENOENT
+// guard must therefore stay scoped to commands that were not allowed to fail.
+test('removes the macOS LaunchAgent even when launchctl is missing', () => {
+  const harness = createHarness('darwin')
+  try {
+    const plistPath = join(harness.homeDir, 'Library', 'LaunchAgents', 'com.tokenboard.daily-sync.plist')
+    mkdirSync(dirname(plistPath), { recursive: true })
+    writeFileSync(plistPath, '<plist/>')
+    harness.options.spawn = () => ({ status: null, error: { code: 'ENOENT' } })
+
+    uninstallSchedule(harness.options)
+
+    assert.equal(existsSync(plistPath), false)
+    assert.deepEqual(harness.errors, [])
   } finally {
     harness.cleanup()
   }
@@ -109,12 +154,14 @@ function createHarness(platform, config = {}) {
   const configDir = join(root, 'config')
   const configPath = join(configDir, 'config.json')
   const calls = []
+  const errors = []
   mkdirSync(configDir, { recursive: true })
   writeFileSync(configPath, '{}')
   return {
     homeDir,
     configPath,
     calls,
+    errors,
     options: {
       platform,
       homeDir,
@@ -125,6 +172,9 @@ function createHarness(platform, config = {}) {
       },
       readConfig: () => config,
       log: () => {},
+      error: (line) => {
+        errors.push(line)
+      },
       spawn: (command, args) => {
         calls.push({ command, args })
         return { status: 0 }

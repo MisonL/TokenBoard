@@ -1,9 +1,16 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { usageSources } from '@tokenboard/usage-core'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test } from 'vitest'
 import { cursorFileName, readCursor, writeCursor } from './session-cursor-store'
+
+// Temp roots created below are removed after each test so repeated runs do not
+// accumulate directories in the OS temp folder.
+const tempDirs: string[] = []
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true })
+})
 
 const snapshot = {
   usageDate: '2026-08-14',
@@ -41,17 +48,16 @@ describe('cursor state across usage sources', () => {
 
     expect(new Set(scoped).size).toBe(usageSources.length)
     // Codex scopes its cursor per CODEX_HOME profile; every other source scopes per server.
-    expect(usageSources.every((source, index) =>
-      scoped[index].includes(source === 'codex' ? '.profile-' : '.server-')
-    )).toBe(true)
-    expect(cursorFileName('opencode', 'https://a.test'))
-      .not.toBe(cursorFileName('opencode', 'https://b.test'))
-    expect(cursorFileName('codex', 'profile-a'))
-      .not.toBe(cursorFileName('codex', 'profile-b'))
+    expect(
+      usageSources.every((source, index) => scoped[index].includes(source === 'codex' ? '.profile-' : '.server-'))
+    ).toBe(true)
+    expect(cursorFileName('opencode', 'https://a.test')).not.toBe(cursorFileName('opencode', 'https://b.test'))
+    expect(cursorFileName('codex', 'profile-a')).not.toBe(cursorFileName('codex', 'profile-b'))
   })
 
   test('round-trips cursor state for every source', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-source-'))
+    tempDirs.push(root)
 
     for (const source of usageSources) {
       const cursorPath = join(root, cursorFileName(source))
@@ -79,6 +85,7 @@ describe('cursor state across usage sources', () => {
 
   test('rejects a cursor snapshot naming an unknown source', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tokenboard-cursor-unknown-'))
+    tempDirs.push(root)
     const cursorPath = join(root, 'opencode-cursor.json')
     await writeCursor(cursorPath, {
       version: 1,

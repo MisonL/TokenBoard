@@ -15,6 +15,11 @@ import { createInterface } from 'node:readline'
  */
 export const maxScanDepth = 8
 export const maxSessionFileBytes = 256 * 1024 * 1024
+// A directory listing that is too large to sort in one go is rejected rather than loaded
+// whole; the sibling walkers carry the same ceiling (`session-file-walk` matches it, the
+// Antigravity scanner uses 10k). A single abnormal directory must not be able to exhaust
+// memory just by existing.
+export const maxScanDirectoryEntries = 10_000
 
 export type ScannedSessionFile = {
   path: string
@@ -27,6 +32,7 @@ export type ScanOptions = {
   matches: (fileName: string) => boolean
   maxDepth?: number
   maxFileBytes?: number
+  maxDirectoryEntries?: number
   onSkipped?: (path: string, reason: string) => void
 }
 
@@ -35,10 +41,7 @@ export type ScanOptions = {
  *
  * A missing root yields nothing: the tool simply is not installed.
  */
-export async function* scanSessionFiles(
-  rootDir: string,
-  options: ScanOptions
-): AsyncGenerator<ScannedSessionFile> {
+export async function* scanSessionFiles(rootDir: string, options: ScanOptions): AsyncGenerator<ScannedSessionFile> {
   yield* scanDirectory(rootDir, options, 0)
 }
 
@@ -52,7 +55,11 @@ async function* scanDirectory(
     return
   }
 
-  const entries = await readDirectoryEntries(currentDir)
+  const entries = await readDirectoryEntries(
+    currentDir,
+    options.maxDirectoryEntries ?? maxScanDirectoryEntries,
+    options
+  )
   if (!entries) return
 
   for (const entry of entries) {
@@ -68,7 +75,7 @@ async function* scanDirectory(
     }
     if (!entry.isFile() || !options.matches(entry.name)) continue
 
-    const stats = await statFile(entryPath)
+    const stats = await statFile(entryPath, options)
     if (!stats) continue
     if (stats.size > (options.maxFileBytes ?? maxSessionFileBytes)) {
       options.onSkipped?.(entryPath, 'max-size')
@@ -78,34 +85,54 @@ async function* scanDirectory(
   }
 }
 
-async function readDirectoryEntries(currentDir: string) {
+async function readDirectoryEntries(currentDir: string, maxEntries: number, options: ScanOptions) {
+  let directory
   try {
-    const directory = await opendir(currentDir)
-    try {
-      const entries = []
-      while (true) {
-        const entry = await directory.read()
-        if (!entry) break
-        entries.push(entry)
+    // `opendir` succeeds on an unreadable directory on some platforms (the EACCES surfaces on
+    // the first `read()`), so the whole listing runs inside this try, not just the open.
+    directory = await opendir(currentDir)
+    const entries = []
+    while (true) {
+      const entry = await directory.read()
+      if (!entry) break
+      entries.push(entry)
+      // Bound the listing before sorting it, so a directory with an unbounded number of
+      // entries cannot be loaded whole. The cap is a hard ceiling, not a budget: exceeding
+      // it is reported and the directory is skipped, the same way an oversized file is.
+      if (entries.length > maxEntries) {
+        options.onSkipped?.(currentDir, 'max-entries')
+        return null
       }
-      // Stable order keeps repeated scans and their diagnostics reproducible.
-      return entries.sort((left, right) => left.name.localeCompare(right.name))
-    } finally {
-      await directory.close()
     }
+    // Stable order keeps repeated scans and their diagnostics reproducible.
+    return entries.sort((left, right) => left.name.localeCompare(right.name))
   } catch (error) {
-    if (isIgnorableScanError(error)) return null
+    if (isIgnorableScanError(error)) {
+      // A directory the scan cannot read (EACCES/EPERM) or that raced away (ENOENT/ENOTDIR)
+      // is skipped, but never silently: a whole root that is unreadable would otherwise look
+      // like an uninstalled tool and its usage would vanish without a trace.
+      const cause = error as NodeJS.ErrnoException
+      options.onSkipped?.(currentDir, cause.code === 'EACCES' || cause.code === 'EPERM' ? 'unreadable' : 'vanished')
+      return null
+    }
     const cause = error as NodeJS.ErrnoException
     throw new Error(`Unable to read session directory ${currentDir}: ${cause.message}`)
+  } finally {
+    await directory?.close().catch(() => {})
   }
 }
 
-async function statFile(filePath: string) {
+async function statFile(filePath: string, options: ScanOptions) {
   try {
     return await stat(filePath)
   } catch (error) {
-    // A session log can be rotated away mid-scan; that is not a failure.
-    if (isIgnorableScanError(error)) return null
+    // A session log can be rotated away mid-scan; that is not a failure. A file the scan is not
+    // allowed to read is reported rather than dropped, for the same reason as the directory case.
+    if (isIgnorableScanError(error)) {
+      const cause = error as NodeJS.ErrnoException
+      options.onSkipped?.(filePath, cause.code === 'EACCES' || cause.code === 'EPERM' ? 'unreadable' : 'vanished')
+      return null
+    }
     throw error
   }
 }
@@ -127,6 +154,5 @@ export async function* readSessionLines(filePath: string): AsyncGenerator<string
 function isIgnorableScanError(error: unknown) {
   if (!(error instanceof Error) || !('code' in error)) return false
   // ENOENT: removed mid-scan. EACCES/EPERM: not ours to read. ENOTDIR: raced.
-  return error.code === 'ENOENT' || error.code === 'EACCES' ||
-    error.code === 'EPERM' || error.code === 'ENOTDIR'
+  return error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM' || error.code === 'ENOTDIR'
 }

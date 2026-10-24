@@ -1,9 +1,14 @@
 #!/usr/bin/env node
+import { existsSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// Parentheses are valid in normal Windows paths. Keep rejecting operators,
+// expansion markers, quotes, and line breaks that change cmd.exe parsing.
+const windowsShellMetacharacters = /[&|<>^%!"\r\n]/
+
 if (isMain()) {
   const { command, args } = buildInvocation({
     packageManager: process.env.TOKENBOARD_PACKAGE_MANAGER || 'pnpm',
@@ -11,16 +16,15 @@ if (isMain()) {
     passthroughArgs: process.argv.slice(2)
   })
   const spawnInvocation = buildSpawnInvocation({ command, args, platform: process.platform })
+  const env = buildCollectorEnv()
 
-  const result = spawnSync(
-    spawnInvocation.command,
-    spawnInvocation.args,
-    {
-      cwd: packageDir,
-      stdio: 'inherit',
-      shell: spawnInvocation.shell
-    }
-  )
+  const result = spawnSync(spawnInvocation.command, spawnInvocation.args, {
+    cwd: packageDir,
+    env,
+    stdio: 'inherit',
+    shell: spawnInvocation.shell,
+    windowsVerbatimArguments: spawnInvocation.windowsVerbatimArguments
+  })
 
   if (result.error) {
     console.error(formatSpawnFailure(command, result.error))
@@ -29,11 +33,7 @@ if (isMain()) {
   process.exit(result.status ?? 1)
 }
 
-export function buildInvocation({
-  packageManager = 'pnpm',
-  platform = process.platform,
-  passthroughArgs = []
-} = {}) {
+export function buildInvocation({ packageManager = 'pnpm', platform = process.platform, passthroughArgs = [] } = {}) {
   const command = platform === 'win32' ? windowsCommand(packageManager) : packageManager
   const args =
     packageManager === 'npm'
@@ -51,20 +51,48 @@ export function shouldUseShell(command, platform = process.platform) {
 
 export function buildSpawnInvocation({ command, args, platform = process.platform } = {}) {
   if (!shouldUseShell(command, platform)) {
-    return { command, args, shell: false }
+    return { command, args, shell: false, windowsVerbatimArguments: false }
   }
 
   assertWindowsShellSafeInvocation(command, args, true)
   return {
-    command: buildWindowsCommandLine(command, args),
-    args: [],
-    shell: true
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', buildWindowsCommandLine(command, args)],
+    shell: false,
+    windowsVerbatimArguments: true
   }
+}
+
+export function buildCollectorEnv({
+  env = process.env,
+  configPath = resolve(packageDir, 'ccusage.json'),
+  fileExists = existsSync,
+  platform = process.platform
+} = {}) {
+  const result = normalizeCaseInsensitiveEnvKey(env, 'TOKENBOARD_CCUSAGE_CONFIG', platform)
+  if (!result.TOKENBOARD_CCUSAGE_CONFIG?.trim() && fileExists(configPath)) {
+    result.TOKENBOARD_CCUSAGE_CONFIG = configPath
+  }
+  return result
+}
+
+function normalizeCaseInsensitiveEnvKey(env, key, platform) {
+  if (platform !== 'win32') return { ...env }
+
+  const keyLower = key.toLowerCase()
+  const entries = Object.entries(env).filter(([name]) => name.toLowerCase() === keyLower)
+  const exact = entries.find(([name, value]) => name === key && typeof value === 'string' && value.trim())
+  const nonEmpty = exact ?? entries.find(([, value]) => typeof value === 'string' && value.trim())
+  const result = { ...env }
+  for (const [name] of entries) delete result[name]
+  if (nonEmpty) result[key] = nonEmpty[1]
+  return result
 }
 
 export function buildWindowsCommandLine(command, args) {
   assertWindowsShellSafeInvocation(command, args, true)
-  return [command, ...args].map(quoteWindowsCommandArgument).join(' ')
+  const line = [command, ...args].map(quoteWindowsCommandArgument).join(' ')
+  return line.startsWith('"') ? `"${line}"` : line
 }
 
 export function assertWindowsShellSafeInvocation(command, args, shell) {
@@ -80,21 +108,18 @@ export function assertWindowsShellSafeInvocation(command, args, shell) {
 
 export function formatSpawnFailure(command, error) {
   const commandLabel = safeCommandLabel(command)
-  const code = typeof error?.code === 'string' && /^[A-Za-z0-9_]+$/.test(error.code)
-    ? error.code
-    : 'unknown'
+  const code = typeof error?.code === 'string' && /^[A-Za-z0-9_]+$/.test(error.code) ? error.code : 'unknown'
   return `Failed to run TokenBoard collector command (${commandLabel}; error ${code})`
 }
 
-// Parentheses are valid in normal Windows paths. Keep rejecting operators,
-// expansion markers, quotes, and line breaks that change cmd.exe parsing.
-const windowsShellMetacharacters = /[&|<>^%!"\r\n]/
-
 function quoteWindowsCommandArgument(value) {
+  const text = String(value)
+  const needsQuotes = text.length === 0 || /[\s()]/.test(text) || /\\$/.test(text)
+  if (!needsQuotes) return text
+
   // Quotes and shell metacharacters are rejected before this function runs.
   // Double trailing backslashes so the closing quote remains a delimiter under
   // Windows argv parsing instead of being escaped by the final backslash.
-  const text = String(value)
   const trailingBackslashes = text.match(/\\+$/)?.[0].length ?? 0
   return `"${text}${'\\'.repeat(trailingBackslashes)}"`
 }
@@ -109,6 +134,14 @@ function windowsCommand(packageManager) {
   return packageManager === 'bun' ? 'bun.exe' : `${packageManager}.cmd`
 }
 
+// This file is the package's `bin` entry, so it is normally reached through a `node_modules/.bin`
+// symlink — exactly the case a bare `resolve()` comparison misses, leaving the command exiting 0
+// with no output. Canonicalize both sides.
 function isMain() {
-  return process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
 }

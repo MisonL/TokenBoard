@@ -211,6 +211,35 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('2026-05-29 01:30 UTC')
   })
 
+  // `platform` is stored from the pairing request and the schema accepts any 1-40 char string, so
+  // a device can carry `constructor` or `toString`. An owned lookup must render that raw value —
+  // not resolve `Object.prototype.constructor`, which would print the function source instead of
+  // the platform the collector actually reported.
+  test.each(['constructor', 'toString', '__proto__', 'plan9'])(
+    'renders an unknown platform %s literally instead of an inherited member',
+    async (platform) => {
+      const html = await renderToString(
+        <DeviceDetailsDialogContent
+          state={{ view: 'list', query: '' }}
+          device={{
+            id: 'device_1',
+            name: 'Odd Platform Box',
+            platform,
+            lastSyncedAt: '2026-05-29T01:27:47.279Z',
+            createdAt: '2026-04-29T10:03:36.232Z',
+            activeTokenCount: 0,
+            installations: [],
+            uploadTokens: []
+          }}
+          auditLogs={[]}
+        />
+      )
+
+      expect(html).toContain(`${platform} / 安装记录 0`)
+      expect(html).not.toContain('function Object')
+    }
+  )
+
   test('allows revoking a non-revoked installation after its last token is revoked', async () => {
     const html = await renderToString(
       <DeviceDetailsDialogContent
@@ -354,16 +383,55 @@ describe('DevicesPage layout', () => {
     expect(html).not.toContain('data-device-view-toggle="list" aria-current="page"')
   })
 
-  test('renders the empty state when no device matches the search', async () => {
+  // The `legacy` bucket is a derived grouping with no `devices` row behind it, so any
+  // device-scoped form that posts `deviceId=legacy` 404s. The cards view renders its own
+  // rename form, separate from the details panel, and needs guarding independently.
+  test('offers no device-scoped forms for the derived legacy group in the cards view', async () => {
     const html = await renderToString(
       <DevicesPage
         email="user@example.com"
         saved={false}
         revoked={null}
         view="cards"
-        query="missing"
-        devices={[]}
+        devices={[
+          {
+            id: 'legacy',
+            name: '未关联设备',
+            platform: 'legacy',
+            lastSyncedAt: null,
+            createdAt: '2026-04-29T10:03:36.232Z',
+            activeTokenCount: 1,
+            installations: [],
+            uploadTokens: [
+              {
+                id: 'token_1',
+                deviceId: 'legacy',
+                installationId: null,
+                name: 'unbound',
+                lastUsedAt: null,
+                createdAt: '2026-04-29T10:03:36.232Z',
+                revokedAt: null
+              }
+            ],
+            auditLogs: []
+          }
+        ]}
       />
+    )
+
+    // The rename form is the one the cards view renders on its own; guard it by id, not by
+    // value, since the action name is shared with every real device on the page.
+    expect(html).not.toContain('name="deviceId" value="legacy"')
+    expect(html).not.toContain('name="action" value="revoke"')
+    expect(html).not.toContain('name="targetDeviceId" value="legacy"')
+    // The explanation still has to reach the user, otherwise the group looks broken.
+    expect(html).toContain('未关联设备')
+    expect(html).toContain('无法改名、重连或按设备停用')
+  })
+
+  test('renders the empty state when no device matches the search', async () => {
+    const html = await renderToString(
+      <DevicesPage email="user@example.com" saved={false} revoked={null} view="cards" query="missing" devices={[]} />
     )
 
     expect(html).toContain('data-devices-empty-state="true"')
@@ -412,7 +480,9 @@ describe('DevicesPage layout', () => {
     expect(html).toContain('--server-origin &#39;https://tokenboard.example.com&#39;')
     expect(html).toContain('--upload-token &#39;tb_upload_new_secret&#39;')
     expect(html).toContain('--install-claim &#39;tb_install_new_secret&#39;')
-    expect(html).toContain('Join-Path $HOME &quot;.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\rotate-token.mjs&quot;')
+    expect(html).toContain(
+      'Join-Path $HOME &quot;.tokenboard\\TokenBoard\\skills\\tokenboard\\scripts\\rotate-token.mjs&quot;'
+    )
     expect(html).toContain('--server-origin &quot;https://tokenboard.example.com&quot;')
     expect(html).toContain('--upload-token &quot;tb_upload_new_secret&quot;')
     expect(html).toContain('--install-claim &quot;tb_install_new_secret&quot;')
