@@ -67,7 +67,11 @@ const HashBufferBytes = 4 * 1024 * 1024
 // `attachment` and `result` are the two that were missing once: Claude Code
 // writes `attachment` rows for hook output and queued prompts (a queued command
 // can embed base64 images), and `result` rows hold a subagent result key.
+// `api-request-blob` is the third: a request payload with a content hash whose
+// `message` holds only `role`/`content` — one such row stopped every
+// claude-code hook sync from 2026-10-23 until it was listed here.
 var discardableRecordTypes = map[string]bool{
+	"api-request-blob":      true,
 	"assistant":             true,
 	"attachment":            true,
 	"compacted":             true,

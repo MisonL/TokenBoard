@@ -430,6 +430,50 @@ func TestReadSessionJSONLDoesNotSilentlySkipOversizedRowWithUnknownRecordType(t 
 	requireReadError(t, err, "Session JSONL contains an oversized line with an unknown record type")
 }
 
+// Claude Code writes `api-request-blob` rows carrying a request payload and a
+// content hash, with no usage anywhere in the row (`message` holds only
+// `role`/`content`). Same shape of risk as `attachment` and `result`: one
+// 1.15 MiB row in a real session stopped every claude-code hook sync from
+// 2026-10-23 until the type was listed.
+func TestReadSessionJSONLSkipsOversizedAPIRequestBlobRowWithoutUsage(t *testing.T) {
+	oversized := `{"type":"api-request-blob","hash":"` + strings.Repeat("a", 64) +
+		`","sessionId":"e0f1a435-14af-4b66-959c-b5e754b8a33a","message":{"role":"user","content":[{"type":"text","text":"` +
+		strings.Repeat("x", 512) + `"}]}}`
+	path := writeSessionJSONL(t, "oversized-api-request-blob.jsonl", []byte(oversized+"\n"))
+
+	lines, err := collectLines(t, ReadInput{
+		FilePath:        path,
+		Source:          contract.SourceClaudeCode,
+		MaxLineBytes:    64,
+		MaxDiscardBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1: %#v", len(lines), lines)
+	}
+	requireSkippedLine(t, lines[0])
+}
+
+// Listing the type must not blanket-trust it: an oversized `api-request-blob`
+// whose `message.usage` the parser would read is still billable and must fail
+// loudly rather than vanish into the skip.
+func TestReadSessionJSONLFailsClosedOnOversizedAPIRequestBlobRowWithUsage(t *testing.T) {
+	oversized := `{"type":"api-request-blob","hash":"` + strings.Repeat("a", 64) +
+		`","message":{"role":"user","usage":{"input_tokens":10,"output_tokens":5},"content":"` +
+		strings.Repeat("x", 512) + `"}}`
+	path := writeSessionJSONL(t, "oversized-api-request-blob-usage.jsonl", []byte(oversized+"\n"))
+
+	_, err := collectLines(t, ReadInput{
+		FilePath:        path,
+		Source:          contract.SourceClaudeCode,
+		MaxLineBytes:    64,
+		MaxDiscardBytes: 1024,
+	})
+	requireReadError(t, err, "Session JSONL contains an oversized line with token or usage metadata")
+}
+
 // Ports hook-oversized-jsonl.test.ts cases 1 and 2 at the reader layer: the
 // hook suite's 1 MiB fixture rows span multiple 64 KiB reads, so the reader
 // must both keep a long buffered row intact and report the usage-bearing row

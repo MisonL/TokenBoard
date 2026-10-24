@@ -54,7 +54,9 @@ export const maxDiscardedSessionJsonlLineBytes = 64 * 1024 * 1024
 // for hook output, tool listings and queued prompts, and a queued command can embed base64 images:
 // one 1.1 MB `attachment` row stopped every claude-code hook sync for a week, while four larger
 // `user` rows in the same file passed untouched because `user` was listed. `result` rows hold a
-// subagent result key, also without usage.
+// subagent result key, also without usage. `api-request-blob` is the third: it records a request
+// payload with a content hash, and its `message` holds only `role`/`content` — one 1.15 MB row
+// stopped every claude-code hook sync from 2026-10-23 until it was listed here.
 //
 // Listing a type here is what fixes the production path: an oversized row whose type is absent
 // from this set is fatal in `finishLine`, whatever its content. The `root-attachment` scope added
@@ -64,6 +66,7 @@ export const maxDiscardedSessionJsonlLineBytes = 64 * 1024 * 1024
 // The parser never reads that subtree — usage comes only from `record.message.usage` or
 // `record.usage` — so the task summary inside it is safe to ignore in both paths.
 const discardableSessionRecordTypes = new Set([
+  'api-request-blob',
   'assistant',
   'attachment',
   'compacted',

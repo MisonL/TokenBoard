@@ -785,4 +785,73 @@ describe('readSessionJsonlLines', () => {
       await rm(root, { recursive: true, force: true })
     }
   })
+
+  // Claude Code writes `api-request-blob` rows that carry a request payload and a content
+  // hash, with no usage anywhere in the row (`message` holds only `role`/`content`). One
+  // 1.15 MiB row in a real session stopped every claude-code hook sync from 2026-10-23
+  // because the type was absent from the discard list, exactly as `attachment` and `result`
+  // were before it. Same shape of risk as those two: invisible until one grows past the
+  // limit, then fatal for the whole source.
+  test('skips an oversized api-request-blob row that carries no usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-session-jsonl-lines-'))
+    const filePath = join(root, 'sessions', 'oversized-api-request-blob.jsonl')
+    const oversized = JSON.stringify({
+      type: 'api-request-blob',
+      hash: 'a'.repeat(64),
+      sessionId: 'e0f1a435-14af-4b66-959c-b5e754b8a33a',
+      message: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(512) }] }
+    })
+
+    try {
+      await mkdir(dirname(filePath), { recursive: true })
+      await writeFile(filePath, `${oversized}\n`)
+
+      const lines = []
+      for await (const line of readSessionJsonlLines({
+        filePath,
+        startOffsetBytes: 0,
+        source: 'claude-code',
+        maxLineBytes: 64,
+        maxDiscardedLineBytes: 1024
+      })) {
+        lines.push(line)
+      }
+
+      expect(lines).toHaveLength(1)
+      expect(isSkippedOversizedSessionJsonlLine(lines[0])).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // The discard list says the *type* is not a metric row, but an oversized `api-request-blob`
+  // whose `message.usage` the parser would read is still billable and must fail loudly, not
+  // vanish into the skip.
+  test('fails closed on an oversized api-request-blob row with usage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tokenboard-session-jsonl-lines-'))
+    const filePath = join(root, 'sessions', 'oversized-api-request-blob-usage.jsonl')
+    const oversized = JSON.stringify({
+      type: 'api-request-blob',
+      hash: 'a'.repeat(64),
+      message: { role: 'user', usage: { input_tokens: 10, output_tokens: 5 }, content: 'x'.repeat(512) }
+    })
+
+    try {
+      await mkdir(dirname(filePath), { recursive: true })
+      await writeFile(filePath, `${oversized}\n`)
+
+      await expect(async () => {
+        for await (const _line of readSessionJsonlLines({
+          filePath,
+          startOffsetBytes: 0,
+          source: 'claude-code',
+          maxLineBytes: 64,
+          maxDiscardedLineBytes: 1024
+        })) {
+        }
+      }).rejects.toThrow('Session JSONL contains an oversized line with token or usage metadata')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })
