@@ -30,6 +30,7 @@ import (
 	"github.com/MisonL/TokenBoard/clients/go/internal/state"
 	"github.com/MisonL/TokenBoard/clients/go/internal/upload"
 	"github.com/MisonL/TokenBoard/clients/go/internal/urlorigin"
+	"github.com/MisonL/TokenBoard/clients/go/internal/watermark"
 )
 
 // Exit codes. 75 is the "retry later" contract: a transient failure the
@@ -139,6 +140,11 @@ func dispatch(ctx context.Context, options Options, env Env, stdout, stderr io.W
 		return ExitFailure
 	}
 	stateDir := state.ResolveDir(env, home)
+	// The skill sets TOKENBOARD_SINCE_AUTO=1 when the since came from its default
+	// path (no --since/env/config value). Only then may the persisted delivery
+	// watermark widen the window; an explicit since always wins. This runs after
+	// parseOptions because the AUTO flag must not override an injected date.
+	options = applyAutoSince(options, env, stateDir, startedAt)
 	// The collector takes collector-run.lock itself through withRunLock below;
 	// this flag is set by the *client's own recursion* (the skill's sync wrapper
 	// passes it through, and the TS CLI sets it the same way when it re-enters
@@ -327,6 +333,12 @@ func syncLocked(
 		return ExitFailure
 	}
 	timings["cursorAck"] = elapsedMillis(phaseStarted)
+	// Advance the delivery watermark after the acknowledgement: the snapshots it
+	// is derived from are the ones that reached the server. A failed write only
+	// costs the next run a wider window, so it is reported, not fatal.
+	if err := recordDeliveredWatermarks(stateDir, outcome, result, options, time.Now()); err != nil {
+		fmt.Fprintf(stderr, "TokenBoard delivery watermark could not be recorded: %v\n", err)
+	}
 	// The high-water mark claims a full scan covered everything up to the run's
 	// start; only the runs that actually did (unbounded, not hook mode) may
 	// advance it.
@@ -642,6 +654,97 @@ func isAntigravityMetadataLimitMessage(message string) bool {
 func isAntigravityInvalidMetadataMessage(message string) bool {
 	return strings.Contains(message, "Invalid Antigravity") ||
 		strings.Contains(message, "Antigravity metadata request returned invalid JSON for ")
+}
+
+// applyAutoSince replaces the default since with a watermark-derived one when
+// the skill asked for it. Hook and warm runs keep their existing windows: their
+// cursors already bound the scan, and widening them would rescan files a hook
+// event does not need. An unknown source keeps the injected value so the
+// existing "not implemented" path reports it, and an unresolvable timezone
+// keeps it too (parseOptions has already validated it for a real run).
+func applyAutoSince(options Options, env Env, stateDir string, now time.Time) Options {
+	if env("TOKENBOARD_SINCE_AUTO") != "1" || options.HookMode {
+		return options
+	}
+	if options.Source != "all" && !contract.IsValidSource(options.Source) {
+		return options
+	}
+	location, err := contract.LoadLocation(options.Timezone)
+	if err != nil {
+		return options
+	}
+	tokenHash := watermark.TokenFingerprint(options.UploadToken)
+	if tokenHash == "" {
+		return options
+	}
+	sources := expandSources(options.Source, false)
+	names := make([]string, 0, len(sources))
+	for _, source := range sources {
+		names = append(names, string(source))
+	}
+	since, ok := watermark.EffectiveSince(stateDir, names, options.Endpoint, tokenHash, now, location)
+	if !ok {
+		return options
+	}
+	options.Since = since
+	return options
+}
+
+// recordDeliveredWatermarks advances each collected source's watermark to the
+// latest usage date this run actually delivered or permanently rejected. A
+// source with a blocked row or a too-far-future drop is skipped entirely: one
+// of its dates is still pending, and advancing past it would lose that date for
+// good. The write happens only on the success path (after the cursor
+// acknowledgement), so a paused or failed upload never moves the watermark.
+func recordDeliveredWatermarks(
+	stateDir string, outcome collection, result upload.Result, options Options, now time.Time,
+) error {
+	tokenHash := watermark.TokenFingerprint(options.UploadToken)
+	if tokenHash == "" {
+		return nil
+	}
+	location, err := contract.LoadLocation(options.Timezone)
+	if err != nil {
+		return nil
+	}
+	blocked := map[contract.Source]bool{}
+	for _, row := range result.Blocked {
+		blocked[row.Snapshot.Source] = true
+	}
+	tooFarFuture := map[contract.Source]bool{}
+	for _, row := range result.Rejected {
+		if row.Issue == "too-far-future" {
+			tooFarFuture[row.Snapshot.Source] = true
+		}
+	}
+	advances := map[string]string{}
+	consider := func(snapshot contract.Snapshot) {
+		if blocked[snapshot.Source] || tooFarFuture[snapshot.Source] {
+			return
+		}
+		if snapshot.UsageDate > advances[string(snapshot.Source)] {
+			advances[string(snapshot.Source)] = snapshot.UsageDate
+		}
+	}
+	for _, snapshot := range result.Delivered {
+		consider(snapshot)
+	}
+	for _, row := range result.Rejected {
+		consider(row.Snapshot)
+	}
+	collected := map[contract.Source]bool{}
+	for _, source := range outcome.collectedSources {
+		collected[source] = true
+	}
+	for source := range advances {
+		if !collected[contract.Source(source)] {
+			delete(advances, source)
+		}
+	}
+	if len(advances) == 0 {
+		return nil
+	}
+	return watermark.Record(stateDir, options.Endpoint, tokenHash, advances, now, location)
 }
 
 func expandSources(source string, hookMode bool) []contract.Source {
