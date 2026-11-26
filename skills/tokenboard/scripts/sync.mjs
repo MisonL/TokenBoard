@@ -14,6 +14,7 @@ import {
   writeSync
 } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { isMainModule } from './is-main.mjs'
 import { readConfig, parseArgs, collectorDir, readPackageManager, resolveClientForSource } from './config.mjs'
@@ -37,6 +38,7 @@ import { runScheduledRetry, transientSyncExitCode } from './scheduled-retry.mjs'
 import { selfUpdateLockFileName, stateLockRuntime } from './state-lock-runtime.mjs'
 import { writeScheduledSyncState } from './scheduled-sync-state.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
+import { ensureLauncher } from './launcher.mjs'
 
 const defaultSyncLockTimeoutMs = 60_000
 
@@ -81,12 +83,35 @@ if (isMain()) {
       process.exit(1)
     }
   }
+  // A scheduled tick that still uses the legacy entry migrates the schedule onto
+  // the launcher for the *next* tick. Failures here must never block this sync:
+  // the migration is a convenience, and this run already works.
+  if (process.argv.slice(2).includes('--scheduled')) {
+    try {
+      ensureLauncherForScheduledEntry()
+    } catch (error) {
+      try {
+        process.stderr.write(`TokenBoard launcher migration skipped: ${redactUrlCredentials(errorMessage(error))}\n`)
+      } catch {
+        // stderr closed; the sync below still matters more.
+      }
+    }
+  }
   runCli()
     .then((code) => process.exit(code))
     .catch((error) => {
       console.error(`TokenBoard sync failed: ${redactUrlCredentials(errorMessage(error))}`)
       process.exit(1)
     })
+}
+
+// Installs the launcher (idempotent) so the schedule's next regeneration and the
+// handlers point at it. Reads the config dir the same way the rest of sync does.
+function ensureLauncherForScheduledEntry() {
+  const homeDir = homedir()
+  const stateDir = configDirFromInvocation({ env: process.env }, homeDir)
+  const sourceDir = dirname(fileURLToPath(import.meta.url))
+  return ensureLauncher({ configDir: stateDir, sourceDir, platform: process.platform })
 }
 
 async function runCli() {

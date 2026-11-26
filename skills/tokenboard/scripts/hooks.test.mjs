@@ -1250,3 +1250,21 @@ function memoryFs(initial = {}) {
     }
   }
 }
+
+test('uninstall removes the launcher and its vendored modules alongside the handler', () => {
+  const paths = createPaths()
+  const launcherPath = '/home/user/.tokenboard/bin/tokenboard-launcher.mjs'
+  const fs = memoryFs({
+    [paths.codexConfigPath]: 'model = "gpt-5"\n',
+    [launcherPath]: '#!/usr/bin/env node\n',
+    '/home/user/.tokenboard/bin/launcher-runtime.mjs': '// vendored\n',
+    '/home/user/.tokenboard/bin/skill-swap-lock.mjs': '// vendored\n'
+  })
+  installHooks({ paths, fs, nodePath: '/usr/bin/node', platform: 'linux', flags: { source: 'codex' } })
+  assert.ok(fs.files.has(paths.notifyPath))
+  uninstallHooks({ paths, fs, platform: 'linux', flags: { source: 'codex' } })
+  assert.equal(fs.files.has(paths.notifyPath), false, 'handler removed')
+  assert.equal(fs.files.has(launcherPath), false, 'launcher removed')
+  assert.equal(fs.files.has('/home/user/.tokenboard/bin/launcher-runtime.mjs'), false)
+  assert.equal(fs.files.has('/home/user/.tokenboard/bin/skill-swap-lock.mjs'), false)
+})

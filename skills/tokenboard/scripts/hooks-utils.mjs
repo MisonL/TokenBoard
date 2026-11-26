@@ -1,14 +1,28 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 
 export const notifyHandlerMarker = 'TOKENBOARD_NOTIFY_HANDLER'
 export { antigravitySource, claudeSource, codexSource, readSources, readUninstallSources } from './hook-sources.mjs'
 
 export function removeNotifyHandler({ paths, fs }) {
   const text = readOptional(paths.notifyPath, fs)
-  if (text === null || !isTokenBoardNotifyHandler(text)) return false
-  fs.unlink(paths.notifyPath)
-  return true
+  if (text === null) return false
+  const removed = isTokenBoardNotifyHandler(text)
+  if (removed) fs.unlink(paths.notifyPath)
+  // The launcher and its vendored modules only exist to host the handlers; once
+  // the handlers are gone the directory is dead weight. Ignore missing files so a
+  // pre-migration uninstall (no launcher installed) is a no-op.
+  for (const name of ['tokenboard-launcher.mjs', 'launcher-runtime.mjs', 'skill-swap-lock.mjs']) {
+    const file = join(dirname(paths.notifyPath), name)
+    // Best-effort: a missing file (pre-migration install) or a Windows-locked one
+    // must not fail an uninstall that already cleared the handlers and hook config.
+    try {
+      if (fs.exists ? fs.exists(file) : existsSync(file)) fs.unlink(file)
+    } catch {
+      // ignored on purpose
+    }
+  }
+  return removed
 }
 
 export function isTokenBoardNotifyHandler(text) {
