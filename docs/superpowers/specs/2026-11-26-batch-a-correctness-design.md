@@ -161,17 +161,18 @@
 **启动器行为**：
 
 1. 解析配置/状态目录（复用 `sync.mjs:978-980` 的三级回退）；读取参数：`<launcher> <skill-relative-script> [...args]`。
-2. 健康检查：`<skillDir>/<script>` 存在，且（有完成标记 `<skillDir>/.tokenboard-skill-complete` 或**旧安装无标记**）视为健康。
-3. 健康 → 直接 `spawnSync(process.execPath, [script, ...args], { stdio: 'inherit' })`，透传退出码与信号；不持有同步锁（保持现状）。
-4. 不健康 → 取 `sync.lock`（与升级同一把，`coordinator-lock.mjs`，等待预算 1500ms，超时按 transient 退出）：恢复优先取**最新**的 `<skillDir>.tokenboard-upgrade-backup-*`（backup 由完整目录 rename 产生，天然完整）rename 回 skillDir；没有 backup 时取带 `READY` 标记的 `<skillDir>.tokenboard-upgrade-staging-*` 提升；两者都无 → 打印可诊断错误并退出 transient（hook 与调度各自既有 transient 码）。
+2. 健康检查（实现裁决）：`<skillDir>/<script>` 存在即健康。完成标记**不参与**已安装目录的健康判定——所有早于本 launcher 的安装都没有标记，要求它等于宣布存量安装全部损坏；标记只用于判定**staging 是否可信**（见第 4 条）。
+3. 健康 → 直接 `spawnSync(process.execPath, [script, ...args], { stdio: 'inherit', env })`，透传退出码与信号；不持任何锁（保持现状）。spawn 的 env 固定注入解析出的 `TOKENBOARD_STATE_DIR` 与 `TOKENBOARD_SKILL_DIR`，防止子脚本再按自己的回退 fork 出第二个状态目录。
+4. 不健康 → 取**专用** `<stateDir>/skill-swap.lock`（实现裁决，替代原稿的 `sync.lock`，理由见下；等待预算 1500ms，超时按 transient 退出）：恢复优先取**最新**的 `<skillDir>.tokenboard-upgrade-backup-*`（backup 由完整目录 rename 产生，天然完整）rename 回 skillDir；没有 backup 时取带完成标记的 `<skillDir>.tokenboard-upgrade-staging-*` 提升；两者都无 → 打印可诊断错误并退出 transient（`transientSyncExitCode = 75`，`scheduled-retry.mjs:34`）。
+   **为什么改锁**（对原稿的偏离，实现时确认）：launcher 若争 `sync.lock`，「另一个进程正在长同步」会让恢复直接让路——但同步根本不动 skill 目录，真正与恢复互斥的只有升级交换。用 sync.lock 的代价是 hook 事件被拖到长同步之后（违反时效硬约束，见记忆 [[web-freshness-is-a-hard-requirement]]），收益为零。专用锁让 launcher 只与「另一台正在交换目录的进程」互斥。`coordinator-lock.mjs` 约 700 行（quarantine、cleanup guard、进程身份），无法 vendor 进 `bin/`；锁协议因此独立成 `skill-swap-lock.mjs`（约 120 行、零相对导入），安装时**逐字节 vendor** 到 `<configDir>/bin/`，破损 skillDir 下仍可用。
    **锁的生命周期（必须写死，否则会死锁）**：
-   - 持锁 → **重新检查** skillDir 健康（锁外观察到的不健康可能已被前一个 launcher 修复）→ 已健康则跳过恢复；仍不健康才做恢复 → 清理过期残留 → **释放锁** → 再执行第 3 步。
-   - **绝不持锁 spawn 子脚本**：子脚本是 sync/hook，它们自己会经 `runWithSyncLock` 争同一把锁（`sync.mjs:866-886`），持锁 spawn 会自锁到 60 秒默认超时（`sync.mjs:41` 的 `defaultSyncLockTimeoutMs`）。
-   - 恢复阶段的锁等待预算独立于 60 秒：`stateLockRuntime({ lockTimeoutMs: 1500 })`；与「另一进程正在长同步」并发时，恢复让路并 transient 退出，下一个事件/下一次 tick 重试——不留半恢复状态。
+   - 持锁 → **重新检查** skillDir 健康（锁外观察到的不健康可能已被前一个 launcher 修复）→ 已健康则跳过恢复；仍不健康才做恢复 → **释放锁** → 再执行第 3 步。恢复前若 skillDir 存在但缺脚本（半复制态），先 rename 到 `.tokenboard-launcher-broken-<pid>` 隔离，不删除，保留可检视性。
+   - **绝不持锁 spawn 子脚本**：子脚本是 sync/hook，它们自己会经 `runWithSyncLock` 争 `sync.lock`（`sync.mjs:866-886`），持锁 spawn 会自锁到 60 秒默认超时（`sync.mjs:41` 的 `defaultSyncLockTimeoutMs`）。
+   - 恢复阶段的锁等待预算独立于 60 秒：`skill-swap-lock.mjs` 的 `budgetMs: 1500`；与「另一次交换正在发生」并发时，恢复让路并 transient 退出，下一个事件/下一次 tick 重试——不留半恢复状态。锁带 10分钟租约与持有者存活探测（`isProcessAlive`），被 kill 的持有者不会永久堵死恢复。
    - 第二个 launcher 在锁内复查后会发现已健康，不会按旧观察去找已删除的 backup。
-5. 恢复完成后清理过期 staging/backup（仅当 skillDir 健康时），再执行第 3 步（此时不持锁）。
-6. 所有 rename 走忙重试（见 3.4）。
-7. **手动升级补锁**：`upgrade.mjs` 目前完全不加锁，与 launcher 恢复可能并发交换。第二步要求 `upgrade.mjs` 用 `runWithSyncLock` 包裹整个交换阶段；它本身在 coordinator 的子进程内运行时已继承锁所有权（`TOKENBOARD_COORDINATOR_LOCK_HELD`），`isCoordinatorLockHeld` 会直接放行，不会重入死锁。
+5.恢复后**不**清理其余过期 staging/backup（实现裁决，替代原稿的「launcher 顺手清理」）：launcher 无法可靠判定残留是否仍被一次进行中的升级引用，删除的代价（毁掉回滚材料）远大于留下的代价（磁盘占用）；清理统一放在第二步的升级路径（有版本与自身 pid 归属可查）与 `uninstall.mjs`。
+6. 所有 rename 走忙重试（EPERM/EACCES/EBUSY，指数退避 5 次；见 3.4 与 `launcher-runtime.mjs` 的 `renameWithRetry`）。
+7. **手动升级补锁**（改为同一把专用锁）：`upgrade.mjs` 目前完全不加锁，与 launcher 恢复可能并发交换。第二步要求升级的**目录交换阶段**用 `acquireSkillSwapLock`/`releaseSkillSwapLock` 包裹（不是整场升级——pnpm install 在锁外，1500ms 的等待预算装不下分钟级安装）。
 
 **入口迁移**：
 
@@ -189,7 +190,7 @@
 
 ### 3.4 交换加固（第二步内容）
 
-- **归档路径**：先 `copy(collectorSkillDir → <skillDir>.tokenboard-upgrade-staging-<pid>)`，写 `READY` 标记，再走 `replaceDirectory` 两跳；中断只会留下 staging（无标记则不被恢复提升）。
+- **归档路径**：先 `copy(collectorSkillDir → <skillDir>.tokenboard-upgrade-staging-<pid>)`，写完成标记（`.tokenboard-skill-complete`），再走 `replaceDirectory` 两跳；中断只会留下 staging（无标记则不被恢复提升）。
 - **git 路径**：`pnpm install` 移到 skill 交换**之前**，在 `collectorDir`（完整 workspace）里执行；安装失败时 skillDir 尚未被动过。
 - **忙重试**：`movePath` 在 `rename` 抛 `EPERM`/`EBUSY`/`EACCES`（Windows 占用）时按 50/150/400ms 重试 3 次，与 `client-binary.mjs:706-737` 一致；回滚的 rename 同样走重试。
 - **超时**：`spawnSync` 统一加 timeout——归档下载 300s（curl 加 `--max-time 300`）、解包 120s、`pnpm install` 600s、`git fetch/clone` 300s；超时按步骤失败处理，走既有回滚。
@@ -199,12 +200,12 @@
 
 - 单测/集成测试（`upgrade.test.mjs`、新增 `launcher.test.mjs`）：
   - **第一跳之后强制终止**（skillDir 已 rename 为 backup、staging 尚未提升），跑 launcher → skillDir 恢复、后续脚本正常执行。只注入第二跳 rename 抛错的用例保留，但不能替代本条。
-  - 归档复制中断（staging 无 READY）→ launcher 不提升残缺 staging，回退 backup。
+  - 归档复制中断（staging 无完成标记）→ launcher 不提升残缺 staging，回退 backup。
   - 目标缺失且无 backup → launcher 报可诊断错误并以 transient 退出。
-  - launcher 与升级并发：升级持 `sync.lock` 时 launcher 等待后让路，不并发交换。
+  - launcher 与升级并发：交换持 `skill-swap.lock` 时 launcher 等待后让路，不并发交换。
   - 忙重试：注入一次 EBUSY 后成功；持续 EBUSY 超预算后按失败处理。
 - 手工验证（本机）：`node <configDir>/bin/tokenboard-launcher.mjs scripts/sync.mjs --mode sync --dry-run` 等价物存在时必须与直接执行一致（stdout/退出码）。
-- 锁生命周期：launcher 恢复期间持锁、恢复后释放再 spawn——用一个「子脚本内尝试取 sync.lock」的桩断言它在 launcher 已释放后拿到锁；另一进程持锁时 launcher 在 1500ms 内 transient 退出且 skillDir 未被改动；两个 launcher 并发、skillDir 已损坏 → 恰好一次恢复，第二个在锁内复查后直接执行。
+- 锁生命周期：launcher 恢复期间持锁、恢复后释放再 spawn——用一个「spawn 时断言锁文件不存在」的桩钉住；另一进程持锁时 launcher 在预算内 transient 退出且 skillDir 未被改动；两个 launcher 并发、skillDir 已损坏 → 恰好一次恢复，第二个在锁内复查后直接执行。
 
 ### 3.6 评审记录（2026-11-26 Codex 只读评审）
 
