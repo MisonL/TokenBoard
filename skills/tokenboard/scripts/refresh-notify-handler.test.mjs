@@ -33,7 +33,12 @@ test('refresh handler CLI updates an already installed Codex hook without changi
 
     assert.equal(result.status, 0, result.stderr)
     assert.equal(await readFile(configPath, 'utf8'), codexConfig)
-    assert.match(await readFile(notifyPath, 'utf8'), /TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN/)
+    const handler = await readFile(notifyPath, 'utf8')
+    assert.match(handler, /TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN/)
+    // The refresh must leave a working launcher behind and point the handler at it.
+    await readFile(join(root, 'bin', 'tokenboard-launcher.mjs'), 'utf8')
+    await readFile(join(root, 'bin', 'launcher-runtime.mjs'), 'utf8')
+    assert.match(handler, /const NOTIFY_SCRIPT = .*tokenboard-launcher\.mjs/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
