@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
 import { configDir, mergeConfig, parseArgs, readConfig } from './config.mjs'
+import { launcherScriptPath } from './launcher.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { errorMessage } from './error-message.mjs'
 import {
@@ -22,8 +23,8 @@ import {
   windowsTaskName
 } from './schedule.mjs'
 
-const scriptPath = fileURLToPath(new URL('./sync.mjs', import.meta.url))
-const usage = 'Usage: install-schedule.mjs [--schedule-times 09:00,12:00,18:00,23:00]'
+const usage =
+  'Usage: install-schedule.mjs [--schedule-times 09:00,12:00,18:00,23:00] [--launcher-path <tokenboard-launcher.mjs>]'
 
 export function installSchedule(options = {}) {
   const env = options.env || process.env
@@ -31,12 +32,17 @@ export function installSchedule(options = {}) {
   const scheduleTimes = parseScheduleTimes(
     flags['schedule-times'] || env.TOKENBOARD_SCHEDULE_TIMES || dailyScheduleTimes.join(',')
   )
+  const resolvedConfigDir = options.configDir || configDir()
   const runtime = {
     platform: options.platform || env.TOKENBOARD_INSTALL_SCHEDULE_TEST_PLATFORM || platform(),
     nodePath: options.nodePath || process.execPath,
-    scriptPath: options.scriptPath || scriptPath,
+    // The scheduler invokes the stable launcher so a tick during a skill-directory
+    // swap self-heals. setup/sync pass the installed path explicitly
+    // (`--launcher-path`); when someone runs this file directly the launcher lives
+    // beside this skill's config dir, so derive it from there.
+    scriptPath: options.scriptPath || flags['launcher-path'] || launcherScriptPath(resolvedConfigDir),
     homeDir: options.homeDir || homedir(),
-    configDir: options.configDir || configDir(),
+    configDir: resolvedConfigDir,
     env,
     spawn: options.spawn || spawnSync,
     getUid:

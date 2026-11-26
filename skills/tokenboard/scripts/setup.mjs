@@ -20,6 +20,7 @@ import { assertSupportedNodeVersion } from './node-version.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { dailyScheduleTimes, parseScheduleTimes } from './schedule.mjs'
+import { ensureLauncher, launcherScriptPath } from './launcher.mjs'
 import {
   buildInitialSyncArgs,
   buildInstallCollectorArgs,
@@ -242,6 +243,12 @@ function scriptPath(name) {
   return fileURLToPath(new URL(name, import.meta.url))
 }
 
+// Where the vendored launcher modules are copied from: this skill's scripts
+// directory, the directory this file lives in.
+function scriptDir() {
+  return fileURLToPath(new URL('.', import.meta.url))
+}
+
 if (!flags['skip-collector']) {
   const installCollector = spawnSync(
     process.execPath,
@@ -259,9 +266,21 @@ if (!flags['skip-collector']) {
 }
 
 if (!flags['skip-schedule']) {
+  // The scheduler must invoke the stable launcher, not this skill tree's sync.mjs:
+  // a tick landing mid-upgrade would otherwise fail on a directory that is being
+  // swapped. ensureLauncher is idempotent and runs before install-schedule so the
+  // launcher file exists when the scheduler starts calling it.
+  const resolvedConfigDir = configDir()
+  ensureLauncher({ configDir: resolvedConfigDir, sourceDir: scriptDir() })
   const schedule = spawnSync(
     process.execPath,
-    [scriptPath('./install-schedule.mjs'), '--schedule-times', scheduleTimes.join(',')],
+    [
+      scriptPath('./install-schedule.mjs'),
+      '--schedule-times',
+      scheduleTimes.join(','),
+      '--launcher-path',
+      launcherScriptPath(resolvedConfigDir)
+    ],
     {
       stdio: 'inherit'
     }

@@ -216,6 +216,30 @@ test('a re-install records the schedule times it installed', () => {
   }
 })
 
+// The scheduler must call the stable launcher, not this skill tree's sync.mjs:
+// a tick during a skill-directory swap has to find an entry that outlives it.
+test('without an explicit scriptPath the scheduler invokes the installed launcher', () => {
+  const launcherPath = join(tmpdir(), 'unused', 'bin', 'tokenboard-launcher.mjs')
+  for (const platform of ['darwin', 'linux']) {
+    const harness = createHarness(platform)
+    try {
+      const { scriptPath: _ignored, ...options } = harness.options
+      installSchedule({
+        ...options,
+        argv: ['--schedule-times', '08:15', '--launcher-path', launcherPath]
+      })
+      const written =
+        platform === 'darwin'
+          ? readFileSync(join(harness.homeDir, 'Library', 'LaunchAgents', 'com.tokenboard.daily-sync.plist'), 'utf8')
+          : readFileSync(join(harness.homeDir, '.config', 'systemd', 'user', 'tokenboard-daily-sync.service'), 'utf8')
+      assert.ok(written.includes(launcherPath), `${platform} schedule did not call the launcher`)
+      assert.ok(written.includes('--mode'), `${platform} schedule lost the sync mode argument`)
+    } finally {
+      harness.cleanup()
+    }
+  }
+})
+
 function createHarness(platform) {
   const root = mkdtempSync(join(tmpdir(), 'tokenboard-schedule-test-'))
   const homeDir = join(root, 'home')
