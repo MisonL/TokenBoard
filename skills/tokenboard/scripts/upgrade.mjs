@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
 import {
@@ -29,6 +30,7 @@ import {
   samePath
 } from './upgrade-utils.mjs'
 import { acquireSkillSwapLock, releaseSkillSwapLock, skillSwapLockPath } from './skill-swap-lock.mjs'
+import { migrateInstalledSchedule } from './migrate-schedule.mjs'
 
 // Runs `fn` while holding the skill-swap lock, so a launcher's recovery and this
 // upgrade's two-hop rename never interleave. The launcher's own budget is short
@@ -306,6 +308,26 @@ export function runUpgrade({
       nodePath,
       spawn
     })
+  }
+
+  // Move an already-installed schedule onto the launcher. Only an existing entry
+  // is touched: a machine with no schedule (setup --skip-schedule) must not gain
+  // one from an upgrade. Best-effort — a scheduler hiccup must not fail an
+  // upgrade that already succeeded.
+  try {
+    migrateInstalledSchedule({
+      configDir: configDirectory,
+      skillDir,
+      launcherPath: joinForPlatform(joinForPlatform(configDirectory, 'bin'), 'tokenboard-launcher.mjs'),
+      platform,
+      homeDir: homedir(),
+      env,
+      spawn,
+      exists,
+      log
+    })
+  } catch (error) {
+    log(`TokenBoard upgraded, but migrating the installed schedule failed: ${errorMessage(error)}`)
   }
 
   const previousCommit = config.upgradedCommit ?? null
