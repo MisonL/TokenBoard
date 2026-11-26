@@ -183,8 +183,12 @@
 
 ### 3.3 发版顺序（两步）
 
-1. **第一步（本次 PR 上线即完成）**：launcher + 入口迁移 + 恢复逻辑（恢复只用 backup）。存量安装在第一次自动/手动升级后改为走 launcher；从这一刻起，两跳交换被中断可由 launcher 自愈。
-2. **第二步（随后一个改动）**：归档路径改 staging+rename、git 路径的 `pnpm install` 前置到交换之前、忙重试与超时启用。第二步不改变第一步的行为契约，可独立回滚。
+1. **第一步（本次 PR 上线即完成）**：launcher + 入口迁移 + 恢复逻辑（恢复只用 backup）。从这一刻起，两跳交换被中断可由 launcher 自愈。
+   **入口迁移的实际边界（实现时核实，订正原文「升级后自动改走 launcher」）**：只有 `setup.mjs` 会调用 `install-schedule`，升级流程**不重建调度**（`grep installSchedule` 仅命中 setup）。因此：
+   - 新装 / 重跑 `setup` 的机器：调度、Claude/Codex 的 `notify.cjs`、Antigravity statusline 全部经 launcher；
+   - 存量已装调的机器：`--scheduled` 的 `sync.mjs` 每次 tick 会幂等安装 launcher，但**调度条目仍指向旧的 `sync.mjs`**，要等下次 `setup` 重装调度或第二步在 upgrade 中补调度重写，调度才会真正经 launcher 执行。在迁移完成前，恢复仍会因 launcher 已安装、且旧入口在恢复窗口期失败而受益有限。
+   - 相应地，本步**不**要求在 upgrade 内重写调度；把「upgrade 重建调度」列为第二步的候选。
+2. **第二步（随后一个改动）**：归档路径改 staging+rename、git 路径的 `pnpm install` 前置到交换之前、忙重试与超时启用、（候选）upgrade 重建调度。第二步不改变第一步的行为契约，可独立回滚。
 
 > 设计取舍：为什么不把 launcher 做成「总是持锁、统一入口」——hook 每次事件都会经过，持 `sync.lock` 会与长同步互相阻塞，改变现有并发语义；只在恢复时持锁影响面最小。
 
