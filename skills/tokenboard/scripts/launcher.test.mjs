@@ -16,7 +16,13 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import test from 'node:test'
 import { runLauncherCli } from './launcher-runtime.mjs'
-import { ensureLauncher, launcherFileName } from './launcher.mjs'
+import {
+  ensureLauncher,
+  launcherFileName,
+  launcherScriptPath,
+  migrateScriptArgs,
+  launcherRelativeScript
+} from './launcher.mjs'
 
 // The launcher runs from <configDir>/bin and must recover a half-swapped skill
 // directory without ever depending on that directory being readable. Fixtures
@@ -318,4 +324,48 @@ test('the installed bin entry recovers a backup using only the vendored module',
   // recover → release lock → spawn child → inherit its (zero) exit code.
   assert.equal(result.status, 0, `launcher entry failed: ${result.stderr}`)
   assert.ok(!existsSync(join(configDir, 'skill-swap.lock')), 'the entry must not leak the swap lock')
+})
+
+// --- migrateScriptArgs: command rewriting ----------------------------------
+
+test("migrate rewrites this install's skill script, preserving position and quoting", () => {
+  const skillDir = '/home/u/.tokenboard/TokenBoard/skills/tokenboard'
+  const launcher = launcherScriptPath('/home/u/.tokenboard')
+  // launchd / systemd / schtasks: [node, sync.mjs, --mode, sync, --scheduled]
+  const plain = migrateScriptArgs({
+    args: [process.execPath, `${skillDir}/scripts/sync.mjs`, '--scheduled'],
+    skillDir,
+    launcherPath: launcher
+  })
+  assert.equal(plain.changed, true)
+  assert.deepEqual(plain.args, [process.execPath, launcher, '--scheduled'])
+  // Windows .cmd form keeps its double-quoting.
+  const quoted = migrateScriptArgs({
+    args: ['"C:\\node.exe"', `"${skillDir}/scripts/sync.mjs"`, '--mode', 'sync'],
+    skillDir,
+    launcherPath: launcher
+  })
+  assert.equal(quoted.changed, true)
+  assert.equal(quoted.args[1], `"${launcher}"`)
+})
+
+test("migrate leaves a user's unrelated hook command untouched", () => {
+  const skillDir = '/home/u/.tokenboard/TokenBoard/skills/tokenboard'
+  const launcher = launcherScriptPath('/home/u/.tokenboard')
+  const custom = migrateScriptArgs({
+    args: ['/usr/bin/env', 'node', '/home/u/my-hooks/notify.mjs', '--source', 'x'],
+    skillDir,
+    launcherPath: launcher
+  })
+  assert.equal(custom.changed, false)
+  assert.deepEqual(custom.args, ['/usr/bin/env', 'node', '/home/u/my-hooks/notify.mjs', '--source', 'x'])
+  // A sibling directory that merely shares a prefix is not this install.
+  const sibling = migrateScriptArgs({ args: [`${skillDir}-old/scripts/sync.mjs`], skillDir, launcherPath: launcher })
+  assert.equal(sibling.changed, false)
+})
+
+test('launcherRelativeScript produces the path the launcher expects', () => {
+  const skillDir = '/home/u/.tokenboard/TokenBoard/skills/tokenboard'
+  assert.equal(launcherRelativeScript(`${skillDir}/scripts/sync.mjs`, skillDir), 'scripts/sync.mjs')
+  assert.equal(launcherRelativeScript(`"${skillDir}/scripts/notify.mjs"`, skillDir), 'scripts/notify.mjs')
 })

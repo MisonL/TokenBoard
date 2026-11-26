@@ -9,10 +9,17 @@
 
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import * as nodePath from 'node:path'
 import { isMainModule } from './is-main.mjs'
 
 export const launcherFileName = 'tokenboard-launcher.mjs'
 export const vendoredFiles = ['launcher-runtime.mjs', 'skill-swap-lock.mjs']
+
+// The absolute path a scheduler or hook should invoke. A single source of truth
+// so install-schedule, hooks and the migration step agree byte-for-byte.
+export function launcherScriptPath(configDir) {
+  return join(configDir, 'bin', launcherFileName)
+}
 
 function entrySource() {
   return `#!/usr/bin/env node
@@ -67,6 +74,47 @@ export function runLauncherInstallCli(argv = process.argv.slice(2), options = {}
   })
   console.log(JSON.stringify(result, null, 2))
   return 0
+}
+
+// --- entry migration --------------------------------------------------------
+//
+// Every legacy entry invokes `<skillDir>/scripts/<name>.mjs`. Migration swaps
+// that script argument for the launcher while keeping the argument at the same
+// position, so the three schedulers, the Claude/Codex hooks and the Antigravity
+// statusline all become launcher clients through one rewrite. The launcher then
+// takes `<entry> args...` where `<entry>` is the script's path relative to the
+// skill directory. It is deliberately narrow: an argument is only replaced when
+// its resolved path IS one of THIS install's skill scripts, so a user's
+// unrelated custom command is left exactly as-is.
+export function migrateScriptArgs({ args, skillDir, launcherPath, path = nodePath }) {
+  const scriptsDir = path.resolve(skillDir, 'scripts')
+  let changed = false
+  const next = args.map((arg) => {
+    if (typeof arg !== 'string') return arg
+    const bare = stripQuotes(arg)
+    if (!path.isAbsolute(bare)) return arg
+    const resolved = path.resolve(bare)
+    if (path.dirname(resolved) !== scriptsDir || !resolved.endsWith('.mjs')) return arg
+    changed = true
+    return arg.startsWith('"') ? `"${launcherPath}"` : arg.startsWith("'") ? `'${launcherPath}'` : launcherPath
+  })
+  return { args: next, changed }
+}
+
+// The argument the launcher receives for a given legacy skill script. The
+// launcher spawns `<skillDir>/<this> args...`, so the script-relative path is
+// what the caller asked for: `scripts/sync.mjs`.
+export function launcherRelativeScript(scriptPath, skillDir, path = nodePath) {
+  const relative = path.relative(path.resolve(skillDir), path.resolve(stripQuotes(scriptPath)))
+  return relative.split(path.sep).join('/')
+}
+
+export function stripQuotes(value) {
+  const s = String(value)
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1)
+  }
+  return s
 }
 
 function launcherConfigDirFrom(env) {
