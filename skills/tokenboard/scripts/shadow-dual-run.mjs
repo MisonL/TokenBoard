@@ -57,7 +57,7 @@ export function validateDualRunFlags({ source, until, hook }) {
 // default. They differ: the collector only knows the --since flag and
 // TOKENBOARD_SINCE, and treats both absent as full history.
 export function defaultDualRunSince({ config = {}, env = {}, now = new Date() } = {}) {
-  return readSince({ env, config, now })
+  return readSince({ env, config, now }).since
 }
 
 // `--until` is accepted only for the two sources with a date window. The tool
@@ -138,6 +138,9 @@ export function buildShadowInvocation({ config, source, since, until, hook = fal
     TOKENBOARD_TIMEZONE: config.timezone
   }
   if (since) childEnv.TOKENBOARD_SINCE = since
+  // A dual run pins its own window for both sides; an inherited AUTO would let
+  // the Go side widen one of them and compare different datasets.
+  delete childEnv.TOKENBOARD_SINCE_AUTO
   if (passUntil) childEnv.TOKENBOARD_UNTIL = until
   if (config.codexSymlinkRoots?.length) {
     childEnv.TOKENBOARD_CODEX_SYMLINK_ROOTS_JSON = JSON.stringify(config.codexSymlinkRoots)

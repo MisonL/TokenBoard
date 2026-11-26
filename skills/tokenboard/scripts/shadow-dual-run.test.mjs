@@ -297,6 +297,20 @@ test('buildShadowInvocation strips an inherited hook mode', () => {
   assert.equal(invocation.env.TOKENBOARD_HOOK_MODE, undefined)
 })
 
+// A dual run pins its own window for both sides; an inherited AUTO would let
+// one client widen its side from a watermark and compare different datasets.
+test('buildShadowInvocation strips an inherited automatic since', () => {
+  const config = { binary: '/bin/tokenboard', collectorDir: '/repo', timezone: 'UTC' }
+  const invocation = buildShadowInvocation({
+    config,
+    source: 'codex',
+    since: '20261119',
+    env: { TOKENBOARD_SINCE_AUTO: '1' }
+  })
+  assert.equal(invocation.env.TOKENBOARD_SINCE, '20261119')
+  assert.equal(invocation.env.TOKENBOARD_SINCE_AUTO, undefined)
+})
+
 test('readDualRunConfig defaults to the installed binary', () => {
   const root = mkdtempSync(join(tmpdir(), 'dual-run-config-'))
   try {

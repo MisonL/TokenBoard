@@ -1,16 +1,19 @@
 const DEFAULT_LOOKBACK_DAYS = 7
 
+// Returns { since, auto }. `auto` is true only when `since` is the skill's own
+// rolling default (no --since, TOKENBOARD_SINCE or config.since), because that
+// is the only value the collector may widen from its delivered watermark.
 export function readSince({ flags = {}, env = process.env, config = {}, now = new Date() } = {}) {
-  return (
-    flags.since ||
-    env.TOKENBOARD_SINCE ||
-    config.since ||
-    buildDefaultSince({
+  const explicit = flags.since || env.TOKENBOARD_SINCE || config.since
+  if (explicit) return { since: explicit, auto: false }
+  return {
+    since: buildDefaultSince({
       now,
       timezone: config.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
       lookbackDays: Number(config.lookbackDays || DEFAULT_LOOKBACK_DAYS)
-    })
-  )
+    }),
+    auto: true
+  }
 }
 
 export function buildDefaultSince({ now, timezone, lookbackDays }) {

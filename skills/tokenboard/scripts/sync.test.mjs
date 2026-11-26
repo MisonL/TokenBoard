@@ -72,56 +72,58 @@ test('buildDefaultSince handles timezone calendar dates without locale string pa
 })
 
 test('readSince prefers CLI flag then environment then config then default', () => {
-  assert.equal(
+  assert.deepEqual(
     readSince({
       flags: { since: '20260509' },
       env: { TOKENBOARD_SINCE: '20260508' },
       config: { since: '20260507', timezone: 'Asia/Shanghai' },
       now: new Date('2026-05-09T08:00:00.000Z')
     }),
-    '20260509'
+    { since: '20260509', auto: false }
   )
 
-  assert.equal(
+  assert.deepEqual(
     readSince({
       flags: {},
       env: { TOKENBOARD_SINCE: '20260508' },
       config: { since: '20260507', timezone: 'Asia/Shanghai' },
       now: new Date('2026-05-09T08:00:00.000Z')
     }),
-    '20260508'
+    { since: '20260508', auto: false }
   )
 
-  assert.equal(
+  assert.deepEqual(
     readSince({
       flags: {},
       env: {},
       config: { since: '20260507', timezone: 'Asia/Shanghai' },
       now: new Date('2026-05-09T08:00:00.000Z')
     }),
-    '20260507'
+    { since: '20260507', auto: false }
   )
 
-  assert.equal(
+  // Only the rolling default is marked auto: it is the one value the collector
+  // may widen from the delivered watermark.
+  assert.deepEqual(
     readSince({
       flags: {},
       env: {},
       config: { timezone: 'Asia/Shanghai' },
       now: new Date('2026-05-09T08:00:00.000Z')
     }),
-    '20260502'
+    { since: '20260502', auto: true }
   )
 })
 
 test('readSince keeps explicit all sentinel', () => {
-  assert.equal(
+  assert.deepEqual(
     readSince({
       flags: { since: 'all' },
       env: {},
       config: { timezone: 'Asia/Shanghai' },
       now: new Date('2026-05-09T08:00:00.000Z')
     }),
-    'all'
+    { since: 'all', auto: false }
   )
 })
 
@@ -130,6 +132,9 @@ test('sync script forwards resolved since to all collectors', () => {
 
   assert.match(source, /TOKENBOARD_SINCE:\s*since/)
   assert.match(source, /TOKENBOARD_DEFAULT_SINCE:\s*since/)
+  // The AUTO flag is assembled in the same object: a coordinator child that
+  // loses it silently falls back to the seven-day window.
+  assert.match(source, /TOKENBOARD_SINCE_AUTO:\s*sinceAuto \? '1' : ''/)
   assert.match(source, /bundledCcusageConfig/)
 })
 

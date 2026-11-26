@@ -772,7 +772,7 @@ export function buildSyncInvocation({
   const repoDir = config.collectorDir || collectorDir()
   const clientType = resolveClientForSource({ flags, env, config, source })
   const packageManager = readPackageManager(flags, config)
-  const since = readSince({ flags, config, env })
+  const { since, auto: sinceAuto } = readSince({ flags, config, env })
   const delimiter = platform === 'win32' ? ';' : ':'
   // The coordinator-lock flag and token are this process's state, not the
   // collector's. The collector's own held-lock flag is the opposite: it must
@@ -813,6 +813,12 @@ export function buildSyncInvocation({
     ...(until !== undefined ? { TOKENBOARD_UNTIL: until } : {}),
     TOKENBOARD_SINCE: since,
     TOKENBOARD_DEFAULT_SINCE: since,
+    // Set only when `since` is this script's own rolling default: the collector
+    // may then widen it from the delivered watermark (up to thirty days). An
+    // explicit --since / TOKENBOARD_SINCE / config.since is honoured verbatim.
+    // The empty string actively clears an inherited value, so an AUTO exported
+    // by an outer call can never override an explicit window passed to this one.
+    TOKENBOARD_SINCE_AUTO: sinceAuto ? '1' : '',
     // The feed this client was installed from, recorded at install time. The
     // Go client's `self-update` reads both variables, so carrying them through
     // the shared env keeps an automatic update pointed at that feed instead of
