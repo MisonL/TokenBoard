@@ -369,3 +369,32 @@ test('launcherRelativeScript produces the path the launcher expects', () => {
   assert.equal(launcherRelativeScript(`${skillDir}/scripts/sync.mjs`, skillDir), 'scripts/sync.mjs')
   assert.equal(launcherRelativeScript(`"${skillDir}/scripts/notify.mjs"`, skillDir), 'scripts/notify.mjs')
 })
+
+// The exact upgrade window from the incident, on the real filesystem: the first
+// rename landed (skillDir → backup) and the process died before the second, so
+// skillDir is gone. A scheduled tick then runs the *installed* launcher entry
+// and must recover, then actually execute the script it was asked to run.
+test('an upgrade killed between its two renames is recovered by a scheduled tick', (t) => {
+  const { configDir, skillDir } = newSetup(t)
+  mkdirSync(join(skillDir, 'scripts'), { recursive: true })
+  // A real, runnable sync stand-in so the assertion is about behavior, not a mock.
+  writeFileSync(join(skillDir, 'scripts', 'sync.mjs'), 'process.stdout.write("SYNC_RAN")')
+  writeFileSync(join(skillDir, '.tokenboard-skill-complete'), 'v1')
+  const { launcherPath } = ensureLauncher({ configDir, sourceDir: import.meta.dirname, platform: process.platform })
+
+  // First hop only: skillDir -> backup. The second hop never happens.
+  const backup = `${skillDir}.tokenboard-upgrade-backup-${process.pid}`
+  renameSync(skillDir, backup)
+  assert.equal(existsSync(skillDir), false, 'the swap window: skillDir is gone')
+
+  const result = spawnSync(process.execPath, [launcherPath, 'scripts/sync.mjs'], {
+    encoding: 'utf8',
+    env: { ...process.env, TOKENBOARD_STATE_DIR: configDir, TOKENBOARD_SKILL_DIR: skillDir }
+  })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout, 'SYNC_RAN', 'the launcher had to run the recovered script')
+  assert.ok(existsSync(join(skillDir, 'scripts', 'sync.mjs')), 'skillDir restored from the backup')
+  assert.equal(existsSync(backup), false, 'the backup was consumed by the rename')
+  assert.equal(existsSync(join(configDir, 'skill-swap.lock')), false, 'no lock left behind')
+})
