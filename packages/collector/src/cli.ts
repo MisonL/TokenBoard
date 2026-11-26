@@ -300,7 +300,10 @@ export async function runCollectorCli(
       await recordDeliveredWatermarks({
         stateDir: uploadStateDir,
         collectedSources: collection.collectedSources,
-        delivered,
+        // Never the blank default: the watermark may only advance from an
+        // explicit delivery report, because "collected" says nothing about a
+        // row the server rejected without naming.
+        delivered: readUploadDelivered(result),
         rejected,
         blocked,
         endpoint: options.endpoint,
@@ -464,11 +467,12 @@ async function applyAutoSince(options: ReturnType<typeof parseArgs>, env: CliEnv
 // too-far-future drop is skipped entirely: one of its dates is still pending,
 // and advancing past it would lose that date for good. The write happens only
 // on the success path (after the cursor acknowledgement), so a paused or failed
-// upload never moves the watermark.
+// upload never moves the watermark, and only when the uploader named what it
+// delivered: without that report there is no honest date to advance to.
 async function recordDeliveredWatermarks(input: {
   stateDir: string
   collectedSources: CliSource[]
-  delivered: UsageSnapshot[]
+  delivered: UsageSnapshot[] | undefined
   rejected: RejectedUploadSnapshot[] | undefined
   blocked: BlockedUploadSnapshot[] | undefined
   endpoint: string
@@ -477,7 +481,7 @@ async function recordDeliveredWatermarks(input: {
   now?: Date
 }) {
   const tokenHash = tokenFingerprint(input.uploadToken)
-  if (!tokenHash) return
+  if (!tokenHash || input.delivered === undefined) return
   const blockedSources = new Set((input.blocked ?? []).map((entry) => entry.snapshot.source))
   const tooFarFutureSources = new Set(
     (input.rejected ?? []).filter((entry) => entry.issue === 'too-far-future').map((entry) => entry.snapshot.source)

@@ -274,6 +274,21 @@ describe('recording delivered watermarks', () => {
     expect(await loadDeliveredWatermark(stateDir)).toEqual({})
   })
 
+  test('an uploader that cannot name what it delivered does not advance the watermark', async () => {
+    const result = await runCollectorCli(
+      ['sync', '--source', 'claude-code'],
+      baseEnv(),
+      testDeps({
+        collectClaudeCodeUsage: async () => [snapshot('claude-code', '2026-11-24')],
+        // No delivery report attached: the rows may or may not have reached the
+        // server, so "collected" is not evidence the date can be retired.
+        uploadSnapshots: async () => ({ upserted: 1, skipped: 0 })
+      })
+    )
+    expect(result).toBe(0)
+    await expect(stat(join(stateDir, deliveredWatermarkFileName))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   test('a preview never writes the watermark', async () => {
     const result = await runCollectorCli(
       ['preview', '--source', 'claude-code'],
