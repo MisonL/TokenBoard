@@ -241,7 +241,7 @@ Codex 的三个重点回答：(a) 按严格白名单实现不会泄漏输入值�
 
 ### 4.2 状态文件
 
-新增 `<stateDir>/delivered-watermark.json`（Go `internal/state/watermark.go`，TS `packages/collector/src/delivered-watermark.ts`，两侧同格式）：
+新增 `<stateDir>/delivered-watermark.json`（Go `clients/go/internal/watermark/watermark.go`，TS `packages/collector/src/delivered-watermark.ts`，两侧同格式）：
 
 ```json
 {
@@ -250,7 +250,7 @@ Codex 的三个重点回答：(a) 按严格白名单实现不会泄漏输入值�
     "claude-code": {
       "usageDate": "2026-11-24",
       "endpoint": "https://tokenboard.chaosyn.com",
-      "deviceId": "dev_xxx",
+      "tokenHash": "b5645c485ebefb03",
       "updatedAt": "2026-11-25T03:17:00.000Z"
     }
   }
@@ -258,8 +258,9 @@ Codex 的三个重点回答：(a) 按严格白名单实现不会泄漏输入值�
 ```
 
 - 原子写（tmp + rename，0600），与 `upload-backoff` 同风格。
-- `endpoint`/`deviceId` 与当前配置不一致的条目视为「无水位」（换服务器或重配对后不继承旧水位）。
-- 损坏（JSON 解析失败 / 非法日期）→ 整体按无水位处理并打一次告警；**不删除文件**，下次成功写入时覆盖。
+- `endpoint`/`tokenHash` 与当前配置不一致的条目视为「无水位」（换服务器或重配对后不继承旧水位）。
+- 损坏（JSON 解析失败 / 非法日期）→ 整体按无水位处理，**不删除文件**；下次成功写入时用修复后的结构覆盖。
+- **实现裁决（2026-11-26）：用 `tokenHash` 取代原设计的 `deviceId`**。客户端本地都没有 device id（Go 的 device id 只存在于服务端账号体系；TS 没有这个概念），而 `tokenHash` 恰好满足设计里的语义：换服务器靠 `endpoint` 区分，重配对会换上传 token，正好是「不继承旧水位」的条件。取值为 sha256(token) 前 8 字节的 hex（16 字符），两侧各有一条测试钉住同一字面值（Go `TestTokenFingerprintMatchesTheTypeScriptCollector`，TS `fingerprint is the truncated sha256 the Go client writes`）。文件路径相对原设计也落到 Go 的 `internal/watermark` 包而非 `internal/state`，便于与 TS 模块一一对应。
 
 ### 4.3 写入（只在该来源真正投递后推进）
 
@@ -273,13 +274,13 @@ Codex 的三个重点回答：(a) 按严格白名单实现不会泄漏输入值�
 
 ### 4.4 读取（自动起点）
 
-- `sync-options.mjs`：`readSince`（`sync-options.mjs:3-14`）目前只有一个返回值，无法区分来源。改为返回 `{ since, auto }`（`auto = true` 当且仅当走的是 `buildDefaultSince` 分支），`sync.mjs` 据此在 `sharedEnv`（`sync.mjs:789-790` 附近）额外导出 `TOKENBOARD_SINCE_AUTO=1`，同时仍导出今天的 7 天默认值（旧 collector 行为不变）。**`TOKENBOARD_SINCE_AUTO` 必须与 `TOKENBOARD_SINCE` 走同一处 `sharedEnv` 组装**，否则 coordinator 派发的子进程收不到该标志。
+- `sync-options.mjs`：`readSince`（`sync-options.mjs:3-14`）目前只有一个返回值，无法区分来源。改为返回 `{ since, auto }`（`auto = true` 当且仅当走的是 `buildDefaultSince` 分支），`sync.mjs` 据此在 `sharedEnv`（`sync.mjs:789-790` 附近）额外导出 `TOKENBOARD_SINCE_AUTO=1`，同时仍导出今天的 7 天默认值（旧 collector 行为不变）。`auto=false` 时显式写 `TOKENBOARD_SINCE_AUTO: ''`：空串在两侧都表示「关闭」，用于清掉外层进程继承来的 AUTO，避免它覆盖显式的 `--since`。`shadow-dual-run.mjs` 构造对比子进程 env 时删除继承的 AUTO——双跑为两侧钉死同一个窗口，任一侧被水位放宽都会比出不同数据集。**`TOKENBOARD_SINCE_AUTO` 必须与 `TOKENBOARD_SINCE` 走同一处 `sharedEnv` 组装**，否则 coordinator 派发的子进程收不到该标志。
 - Go `cli.go:804-807` / TS `cli.ts:362`：当 `TOKENBOARD_SINCE_AUTO=1` 时，忽略注入的具体日期，按水位计算：
   `effective(source) = max(today-30, min(today-7, watermark(source)-1))`；
   本次要采集的来源集合取**最早**的 `effective` 作为进程级 since（`all` 运行时是所有来源的最小值）。
 - 显式 `--since`/`TOKENBOARD_SINCE`/`config.since` 仍优先，且不设置 AUTO。
 - **实现落点（顺序很关键）**：`options.Since` 在 `parseOptions` 里先于来源扩展解析（Go `cli.go:807`；`expandSources` 在 `:447` 才被调用）。因此不能把水位计算塞进 `flagOrEnvChain` 那个表达式。做法：保留现有表达式得到「注入值」，并在其后新增一步——仅当 `TOKENBOARD_SINCE_AUTO=1` 且来源解析成功时，把 `options.Since` 替换为按水位算出的进程级最小值；来源解析失败时（用法错误）保持原值让既有错误路径先报。TS 侧在 `cli.ts:362` 之后做同样的两步。
-- 损坏/未来/跨 endpoint/跨 device 的水位按缺失处理，退回「今天的 7 天默认」并打印一条可诊断告警。
+- 损坏/未来/跨 endpoint/跨 token 的水位按缺失处理，退回「今天的 7 天默认」。实现上不额外打告警：损坏文件与「新装机器」在行为上完全一致，下次成功上传会顺手把文件修复成合法结构（§4.2）。
 - `--until`、hook 模式、`warm-hooks` 语义完全不变（AUTO 只影响默认起点）。
 
 **设计取舍（需要评审确认）**：本次保持「一个进程一个 since」，用所有待采来源水位的**最小值**聚合，而不是逐来源 spawn 或给 provider 增加逐源 since。
@@ -293,7 +294,7 @@ Codex 的三个重点回答：(a) 按严格白名单实现不会泄漏输入值�
 - 单来源：水位改到 9 天前 → 默认运行重读 10 天前的快照；改为 40 天前 → 起点被夹在 30 天前；文件损坏/未来日期 → 回退 7 天并告警。
 - 双来源：来源 A 连续失败 9 天（水位不动），来源 B 正常推进；A 恢复后覆盖中断期，B 的水位不受影响。
 - 暂停语义：模拟上传暂停（`pausedUntil` 在未来）跑一次 → 水位不推进；hook 运行不产生暂停时的 transient 语义不变（`cli.go:285-286`）。
-- 跨端：Go 写入的文件能被 TS 读取并正确计算，反之亦然（固定 JSON 用例）。
+- 跨端：Go 写入的文件能被 TS 读取并正确计算，反之亦然。实现为两侧各自钉住固定 JSON：Go `TestReadsTheTypeScriptShape` 读 TS 形态、TS `reads the Go client shape` 读 Go 形态（含纳秒 `updatedAt`），配合同一组日期/时区的同值用例（9 天 → -10、40 天 → 夹 30 天、近期 → 夹 7 天）与同一 `tokenHash` 字面值，任一侧的格式或算法漂移都会报错。
 - 端到端：把水位文件与 `--since` 组合，断言 `since` 优先级（显式 > 环境 > 配置 > 水位自动 > 默认）。
 
 ---
