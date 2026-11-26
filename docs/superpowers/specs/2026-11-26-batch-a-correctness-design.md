@@ -188,7 +188,7 @@
    - 新装 / 重跑 `setup` 的机器：调度、Claude/Codex 的 `notify.cjs`、Antigravity statusline 全部经 launcher；
    - 存量已装调的机器：`--scheduled` 的 `sync.mjs` 每次 tick 会幂等安装 launcher，但**调度条目仍指向旧的 `sync.mjs`**，要等下次 `setup` 重装调度或第二步在 upgrade 中补调度重写，调度才会真正经 launcher 执行。在迁移完成前，恢复仍会因 launcher 已安装、且旧入口在恢复窗口期失败而受益有限。
    - 相应地，本步**不**要求在 upgrade 内重写调度；把「upgrade 重建调度」列为第二步的候选。
-2. **第二步（随后一个改动）**：归档路径改 staging+rename、git 路径的 `pnpm install` 前置到交换之前、忙重试与超时启用、（候选）upgrade 重建调度。第二步不改变第一步的行为契约，可独立回滚。
+2. **第二步（随后的分支 `feat/skill-swap-selfheal`，已于本次实现）**：归档路径改 staging+rename、git 路径的 `pnpm install` 前置到交换之前、忙重试启用、upgrade 在交换阶段持同一把 `skill-swap.lock`，并**新增 `migrate-schedule.mjs`**：升级时把已存在的调度条目改写到 launcher（详见 §3.4 的实现裁决）。第二步不改变第一步的行为契约，可独立回滚。
 
 > 设计取舍：为什么不把 launcher 做成「总是持锁、统一入口」——hook 每次事件都会经过，持 `sync.lock` 会与长同步互相阻塞，改变现有并发语义；只在恢复时持锁影响面最小。
 
@@ -198,6 +198,8 @@
 - **git 路径**：`pnpm install` 移到 skill 交换**之前**，在 `collectorDir`（完整 workspace）里执行；安装失败时 skillDir 尚未被动过。
 - **忙重试**：`movePath` 在 `rename` 抛 `EPERM`/`EBUSY`/`EACCES`（Windows 占用）时按 50/150/400ms 重试 3 次，与 `client-binary.mjs:706-737` 一致；回滚的 rename 同样走重试。
 - **超时**：`spawnSync` 统一加 timeout——归档下载 300s（curl 加 `--max-time 300`）、解包 120s、`pnpm install` 600s、`git fetch/clone` 300s；超时按步骤失败处理，走既有回滚。
+- **调度迁移（实现裁决，替代原稿「升级重建调度」）**：升级**不重装**调度（会静默给 `--skip-schedule` 的机器装上定时任务，也会覆盖用户自定义的时段）。改为只改写**已存在**且仍指向本安装 `<skillDir>/scripts/sync.mjs` 的条目：把脚本参数换成 launcher 路径 + `scripts/sync.mjs`，保留原调度时段、PATH、包管理器；launchd/systemd 重载为 best-effort；找不到条目或条目指向别的安装 → 原样不动。幂等（第二次运行返回 already-migrated）。
+- **第二步的实现边界**：真实验证覆盖「旧 plist → 升级迁移 → 第一跳中断 → 按迁移后 plist 的参数跑 launcher → 恢复并执行同步」的临时目录演练；`spawnSync` 超时项**未**在本步实施（原稿要求，实现时判断它改的是失败分类而非交换原子性，留下一步单独做并需评估对既有步骤重试语义的影响）。
 - **完成标记**：交换成功后写 `<skillDir>/.tokenboard-skill-complete`（内容：版本 + 时间戳）；`ensureLauncher` 也校验标记。
 
 ### 3.5 验收
