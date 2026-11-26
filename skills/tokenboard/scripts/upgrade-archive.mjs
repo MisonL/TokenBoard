@@ -26,6 +26,7 @@ export function runArchiveFallback({
   readDir,
   remove,
   rename = renameSync,
+  writeFile = writeFileSync,
   stat = statSync,
   // Provided by the upgrade driver: runs the skill-directory swap under the same
   // lock the launcher's recovery takes, so the two never interleave.
@@ -89,7 +90,9 @@ export function runArchiveFallback({
 
     const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
     if (!samePath(collectorSkillDir, skillDir, platform)) {
-      withSwapLock(() => installSkillFromCopy({ collectorSkillDir, skillDir, copy, remove, rename, log }))
+      withSwapLock(() =>
+        installSkillFromCopy({ collectorSkillDir, skillDir, copy, remove, rename, mkdir, writeFile, log })
+      )
     }
   } catch (error) {
     const rollbackErrors = []
@@ -300,12 +303,21 @@ export const skillCompleteMarkerName = '.tokenboard-skill-complete'
 //   half-copied staging, and
 // - the live skill directory is never a partially-copied tree, which is what the
 //   launcher's "script exists ⇒ healthy" check depends on.
-export function installSkillFromCopy({ collectorSkillDir, skillDir, copy, remove, rename, log = () => {} }) {
+export function installSkillFromCopy({
+  collectorSkillDir,
+  skillDir,
+  copy,
+  remove,
+  rename,
+  mkdir = mkdirSync,
+  writeFile = writeFileSync,
+  log = () => {}
+}) {
   const stagingDir = `${skillDir}.tokenboard-upgrade-staging-${process.pid}`
   const backupDir = `${skillDir}.tokenboard-upgrade-backup-${process.pid}`
   remove(stagingDir, { recursive: true, force: true })
   copy(collectorSkillDir, stagingDir, { recursive: true, force: true })
-  writeCompletionMarker({ stagingDir })
+  writeCompletionMarker({ stagingDir, mkdir, writeFile })
   replaceDirectory({
     replacementDir: stagingDir,
     collectorDir: skillDir,
@@ -317,8 +329,8 @@ export function installSkillFromCopy({ collectorSkillDir, skillDir, copy, remove
   })
 }
 
-function writeCompletionMarker({ stagingDir }) {
+function writeCompletionMarker({ stagingDir, mkdir, writeFile }) {
   const markerPath = joinForPlatform(stagingDir, skillCompleteMarkerName)
-  mkdirSync(stagingDir, { recursive: true })
-  writeFileSync(markerPath, `${new Date().toISOString()}\n`, { mode: 0o600 })
+  mkdir(stagingDir, { recursive: true })
+  writeFile(markerPath, `${new Date().toISOString()}\n`, { mode: 0o600 })
 }

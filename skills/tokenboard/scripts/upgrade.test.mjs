@@ -17,6 +17,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import {
   assertAutomaticUpgradeBranch,
   buildUpgradePlan,
@@ -929,6 +930,7 @@ test('does not archive-replace an existing git checkout after git upgrade fails'
         },
         copy: (...args) => calls.push({ command: 'copy', args }),
         mkdir: (...args) => calls.push({ command: 'mkdir', args }),
+        writeFile: (...args) => calls.push({ command: 'writeFile', args }),
         readDir: () => [],
         remove: (...args) => calls.push({ command: 'remove', args }),
         log: () => {}
@@ -1580,6 +1582,7 @@ test('archive fallback also refuses to install the skill into the config directo
         },
         copy: (...args) => calls.push({ command: 'copy', args }),
         mkdir: (...args) => calls.push({ command: 'mkdir', args }),
+        writeFile: (...args) => calls.push({ command: 'writeFile', args }),
         readDir: () => [{ name: 'TokenBoard-main', isDirectory: () => true }],
         remove: (...args) => calls.push({ command: 'remove', args }),
         log: () => {}
@@ -2159,6 +2162,7 @@ test('archive fallback also refuses to replace the config directory as collector
         },
         copy: (...args) => calls.push({ command: 'copy', args }),
         mkdir: (...args) => calls.push({ command: 'mkdir', args }),
+        writeFile: (...args) => calls.push({ command: 'writeFile', args }),
         readDir: () => [{ name: 'TokenBoard-main', isDirectory: () => true }],
         remove: (...args) => calls.push({ command: 'remove', args }),
         log: () => {}
@@ -2402,6 +2406,7 @@ test('archive fallback retries a short tag ref after branch archive download fai
     },
     copy: (...args) => calls.push({ command: 'copy', args }),
     mkdir: (...args) => calls.push({ command: 'mkdir', args }),
+    writeFile: (...args) => calls.push({ command: 'writeFile', args }),
     readDir: () => [{ name: 'TokenBoard-v1.2.3', isDirectory: () => true }],
     remove: (...args) => calls.push({ command: 'remove', args }),
     rename: (...args) => calls.push({ command: 'rename', args }),
@@ -2441,6 +2446,7 @@ test('archive fallback skips copying the installed skill onto itself', () => {
     },
     copy: (...args) => calls.push({ command: 'copy', args }),
     mkdir: (...args) => calls.push({ command: 'mkdir', args }),
+    writeFile: (...args) => calls.push({ command: 'writeFile', args }),
     readDir: () => [{ name: 'TokenBoard-main', isDirectory: () => true }],
     remove: (...args) => calls.push({ command: 'remove', args }),
     rename: (...args) => calls.push({ command: 'rename', args }),
@@ -2491,6 +2497,7 @@ test('windows archive fallback retries a short tag ref after branch archive down
     },
     copy: (...args) => calls.push({ command: 'copy', args }),
     mkdir: (...args) => calls.push({ command: 'mkdir', args }),
+    writeFile: (...args) => calls.push({ command: 'writeFile', args }),
     readDir: () => [{ name: 'TokenBoard-v1.2.3', isDirectory: () => true }],
     remove: (...args) => calls.push({ command: 'remove', args }),
     rename: (...args) => calls.push({ command: 'rename', args }),
@@ -2780,4 +2787,55 @@ test('the skill swap refuses to run while another holder owns the lock', () => {
   )
   assert.equal(ran, false)
   rmSync(root, { recursive: true, force: true })
+})
+
+// A stub that records calls but forgets one fs primitive lets a step write into
+// the real source tree (the staging directories this test was added after). Run
+// the full upgrade suite's sibling helpers and assert nothing appears beside the
+// repository's own skill directory.
+test('running the upgrade plan never writes beside the repository skill directory', () => {
+  const repoSkills = fileURLToPath(new URL('../..', import.meta.url))
+  const before = new Set(readdirSync(repoSkills))
+  const steps = buildUpgradePlan({
+    collectorDir: '/home/user/.tokenboard/TokenBoard',
+    skillDir: join(repoSkills, 'tokenboard'),
+    repoUrl: 'https://github.com/example/TokenBoard.git',
+    packageManager: 'pnpm',
+    collectorExists: true,
+    collectorIsGitRepo: true,
+    skillExists: true,
+    platform: 'linux'
+  })
+  const calls = []
+  const runtime = {
+    spawn: (...args) => (calls.push(['spawn', ...args]), { status: 0 }),
+    copy: (...args) => calls.push(['copy', ...args]),
+    remove: (...args) => calls.push(['remove', ...args]),
+    rename: (...args) => calls.push(['rename', ...args]),
+    mkdir: (...args) => calls.push(['mkdir', ...args]),
+    writeFile: (...args) => calls.push(['writeFile', ...args]),
+    log: () => {},
+    platform: 'linux',
+    withSwapLock: (fn) => fn()
+  }
+  // Steps may fail (the stubs do not model git); what matters is that a failure
+  // still leaves nothing beside the real skill directory.
+  for (const step of steps) {
+    try {
+      runStep(step, runtime)
+    } catch {
+      // expected: the spawn stub returns no git stdout
+    }
+  }
+  const after = new Set(readdirSync(repoSkills))
+  assert.deepEqual(
+    [...after].filter((name) => !before.has(name)),
+    [],
+    'no step may write beside the skill directory'
+  )
+  // And the marker step really did go through the injected writeFile.
+  assert.ok(
+    calls.some(([op]) => op === 'writeFile'),
+    'the completion marker was written through the injected fs'
+  )
 })

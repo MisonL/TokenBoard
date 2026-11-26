@@ -211,6 +211,7 @@ export function runUpgrade({
   readDir = readdirSync,
   remove = rmSync,
   rename = renameSync,
+  writeFile = writeFileSync,
   readConfigFile = readConfig,
   mergeConfigFile = mergeConfig,
   configDirectory = defaultConfigDir(),
@@ -254,6 +255,8 @@ export function runUpgrade({
       copy,
       remove,
       rename,
+      mkdir,
+      writeFile,
       log,
       platform,
       withSwapLock: (fn) => withSkillSwapLock({ stateDir: configDirectory, fn, exists, log })
@@ -290,6 +293,7 @@ export function runUpgrade({
       readDir,
       remove,
       rename,
+      writeFile,
       withSwapLock: (fn) => withSkillSwapLock({ stateDir: configDirectory, fn, exists, log }),
       log
     })

@@ -69,11 +69,17 @@ export function runStep(step, runtime) {
   if (step.command === 'mark-skill-complete') {
     // Written after the staging copy and before the swap: the presence of this
     // file is what lets the launcher trust a *leftover* staging directory after
-    // an interrupted swap. A staging without it is never promoted.
-    mkdirSync(step.args[0], { recursive: true })
-    writeFileSync(join(step.args[0], '.tokenboard-skill-complete'), `${new Date().toISOString()}\n`, {
-      mode: 0o600
-    })
+    // an interrupted swap. A staging without it is never promoted. Through the
+    // injected fs like every other step, so a caller stubbing the filesystem does
+    // not get a real directory written into the source tree.
+    ;(runtime.mkdir || mkdirSync)(step.args[0], { recursive: true })
+    ;(runtime.writeFile || writeFileSync)(
+      join(step.args[0], '.tokenboard-skill-complete'),
+      `${new Date().toISOString()}\n`,
+      {
+        mode: 0o600
+      }
+    )
     return
   }
 
