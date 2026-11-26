@@ -41,6 +41,10 @@ export function installSchedule(options = {}) {
     // (`--launcher-path`); when someone runs this file directly the launcher lives
     // beside this skill's config dir, so derive it from there.
     scriptPath: options.scriptPath || flags['launcher-path'] || launcherScriptPath(resolvedConfigDir),
+    // The launcher takes the skill-relative entry as its own first argument. Only
+    // add it when the target really is the launcher: a caller pinning scriptPath
+    // (tests, unusual installs) must keep the historical one-argument command.
+    entryScript: options.entryScript ?? (options.scriptPath ? undefined : 'scripts/sync.mjs'),
     homeDir: options.homeDir || homedir(),
     configDir: resolvedConfigDir,
     env,
@@ -84,6 +88,7 @@ function installWindows(runtime, scheduleTimes) {
     buildWindowsTaskScript({
       nodePath: runtime.nodePath,
       scriptPath: runtime.scriptPath,
+      entryScript: runtime.entryScript,
       packageManager: config.packageManager || runtime.env.TOKENBOARD_PACKAGE_MANAGER || 'pnpm',
       pathEnv: runtime.env.PATH || 'C:\\Windows\\System32;C:\\Program Files\\nodejs',
       homeDir: runtime.homeDir,
@@ -134,6 +139,7 @@ function installMac(runtime, scheduleTimes) {
     buildMacLaunchAgentPlist({
       nodePath: runtime.nodePath,
       scriptPath: runtime.scriptPath,
+      entryScript: runtime.entryScript,
       packageManager: config.packageManager || runtime.env.TOKENBOARD_PACKAGE_MANAGER || 'pnpm',
       pathEnv: runtime.env.PATH || '/usr/local/bin:/usr/bin:/bin',
       homeDir: runtime.homeDir,
@@ -160,6 +166,7 @@ function installLinux(runtime, scheduleTimes) {
   const units = buildLinuxSystemdUnits({
     nodePath: runtime.nodePath,
     scriptPath: runtime.scriptPath,
+    entryScript: runtime.entryScript,
     packageManager: config.packageManager || runtime.env.TOKENBOARD_PACKAGE_MANAGER || 'pnpm',
     pathEnv: runtime.env.PATH || '/usr/local/bin:/usr/bin:/bin',
     homeDir: runtime.homeDir,

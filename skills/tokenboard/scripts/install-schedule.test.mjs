@@ -233,6 +233,14 @@ test('without an explicit scriptPath the scheduler invokes the installed launche
           ? readFileSync(join(harness.homeDir, 'Library', 'LaunchAgents', 'com.tokenboard.daily-sync.plist'), 'utf8')
           : readFileSync(join(harness.homeDir, '.config', 'systemd', 'user', 'tokenboard-daily-sync.service'), 'utf8')
       assert.ok(written.includes(launcherPath), `${platform} schedule did not call the launcher`)
+      // The launcher resolves its first argument against the skill directory, so a
+      // bare launcher call without `scripts/sync.mjs` would run nothing.
+      const launcherIndex = written.indexOf(launcherPath)
+      const entryIndex = written.indexOf('scripts/sync.mjs')
+      assert.ok(
+        launcherIndex >= 0 && entryIndex > launcherIndex,
+        `${platform} schedule must pass the skill-relative entry after the launcher path`
+      )
       assert.ok(written.includes('--mode'), `${platform} schedule lost the sync mode argument`)
     } finally {
       harness.cleanup()

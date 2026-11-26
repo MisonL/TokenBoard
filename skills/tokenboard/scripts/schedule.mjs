@@ -67,7 +67,15 @@ export function buildWindowsStartWhenAvailableArgs(taskName) {
   return ['-NoProfile', '-NonInteractive', '-Command', script]
 }
 
-export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, pathEnv, homeDir, configDir }) {
+export function buildWindowsTaskScript({
+  nodePath,
+  scriptPath,
+  packageManager,
+  pathEnv,
+  homeDir,
+  configDir,
+  entryScript
+}) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath, delimiter: ';' })
   const stateDir = configDir || tokenboardDirForDelimiter(homeDir, ';')
   const logDir = joinForDelimiter(stateDir, 'logs', '', ';').replace(/[\\/]$/, '')
@@ -80,7 +88,10 @@ export function buildWindowsTaskScript({ nodePath, scriptPath, packageManager, p
   // `echo [C:\Tools\100%node\node.exe]` prints `[C:\Tools\100node\node.exe]` — the unmatched
   // `%` is swallowed — while `100%%node` prints `100%node`. A checkout under a `%` path would
   // otherwise point the task at a file that does not exist.
-  const syncCommand = `${quoteWindowsArg(escapeWindowsCmdValue(nodePath))} ${quoteWindowsArg(escapeWindowsCmdValue(scriptPath))} --mode sync --scheduled`
+  // When scriptPath is the stable launcher, it needs the skill-relative entry as
+  // its first argument; the launcher resolves it against the recovered skillDir.
+  const entryArg = entryScript ? ` ${quoteWindowsArg(escapeWindowsCmdValue(entryScript))}` : ''
+  const syncCommand = `${quoteWindowsArg(escapeWindowsCmdValue(nodePath))} ${quoteWindowsArg(escapeWindowsCmdValue(scriptPath))}${entryArg} --mode sync --scheduled`
   return [
     '@echo off',
     `set "TOKENBOARD_CONFIG_DIR=${escapeWindowsCmdValue(stateDir)}"`,
@@ -101,6 +112,7 @@ export function buildMacLaunchAgentPlist({
   homeDir,
   configDir,
   logDir,
+  entryScript,
   scheduleTimes = dailyScheduleTimes
 }) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath })
@@ -112,7 +124,7 @@ export function buildMacLaunchAgentPlist({
 ${buildMacEnvironment({ normalizedPath, stateDir, packageManager, logDir })}
 \t<key>Label</key>
 \t<string>${launchAgentLabel}</string>
-${buildMacProgramArguments({ nodePath, scriptPath })}
+${buildMacProgramArguments({ nodePath, scriptPath, entryScript })}
 \t<key>RunAtLoad</key>
 \t<false/>
 \t<key>Umask</key>
@@ -146,11 +158,12 @@ function buildMacEnvironment({ normalizedPath, stateDir, packageManager, logDir 
 \t</dict>`
 }
 
-function buildMacProgramArguments({ nodePath, scriptPath }) {
+function buildMacProgramArguments({ nodePath, scriptPath, entryScript }) {
+  const entry = entryScript ? `\n\t\t<string>${escapeXml(entryScript)}</string>` : ''
   return `\t<key>ProgramArguments</key>
 \t<array>
 \t\t<string>${escapeXml(nodePath)}</string>
-\t\t<string>${escapeXml(scriptPath)}</string>
+\t\t<string>${escapeXml(scriptPath)}</string>${entry}
 \t\t<string>--mode</string>
 \t\t<string>sync</string>
 \t\t<string>--scheduled</string>
@@ -179,6 +192,7 @@ export function buildLinuxSystemdUnits({
   homeDir,
   configDir,
   timezone,
+  entryScript,
   scheduleTimes = dailyScheduleTimes
 }) {
   const normalizedPath = normalizePathEnv({ pathEnv, homeDir, nodePath })
@@ -196,7 +210,7 @@ Environment=${quoteSystemdValue(`TOKENBOARD_PACKAGE_MANAGER=${packageManager}`)}
 Environment=${quoteSystemdValue('TOKENBOARD_SCHEDULED_SYNC=1')}
 Environment=${quoteSystemdValue(`TOKENBOARD_LOG_DIR=${stateDir}/logs`)}
 Environment=${quoteSystemdValue(`PATH=${normalizedPath}`)}
-ExecStart=${quoteSystemdArg(nodePath)} ${quoteSystemdArg(scriptPath)} --mode sync --scheduled
+ExecStart=${quoteSystemdArg(nodePath)} ${quoteSystemdArg(scriptPath)}${entryScript ? ` ${quoteSystemdArg(entryScript)}` : ''} --mode sync --scheduled
 `,
     timer: `[Unit]
 Description=Run TokenBoard daily sync
