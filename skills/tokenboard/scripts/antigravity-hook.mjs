@@ -16,7 +16,7 @@ export function installAntigravityHook({ paths, fs, nodePath = process.execPath,
   const currentCommand = readStatusLineCommand(statusLine)
   const command = buildAntigravityStatuslineCommand({ paths, nodePath, platform })
 
-  if (isAntigravityStatuslineCommand(currentCommand, paths.statuslineScriptPath)) {
+  if (isAntigravityStatuslineCommand(currentCommand, paths)) {
     if (isStatusLineEnabled(statusLine)) {
       return {
         source: antigravitySource,
@@ -69,7 +69,7 @@ export function uninstallAntigravityHook({ paths, fs }) {
 
   const settings = loaded.value
   const statusLine = readStatusLineForWrite(settings)
-  if (!isAntigravityStatuslineCommand(readStatusLineCommand(statusLine), paths.statuslineScriptPath)) {
+  if (!isAntigravityStatuslineCommand(readStatusLineCommand(statusLine), paths)) {
     return { source: antigravitySource, action: 'skip', changed: false, detail: 'Antigravity statusline not installed' }
   }
 
@@ -91,8 +91,7 @@ export function getAntigravityHookStatus({ paths, fs }) {
   if (loaded.status === 'invalid') return 'error'
   try {
     const statusLine = readStatusLineForWrite(loaded.value)
-    return isStatusLineEnabled(statusLine) &&
-      isAntigravityStatuslineCommand(readStatusLineCommand(statusLine), paths.statuslineScriptPath)
+    return isStatusLineEnabled(statusLine) && isAntigravityStatuslineCommand(readStatusLineCommand(statusLine), paths)
       ? 'installed'
       : 'not-installed'
   } catch {
@@ -131,25 +130,36 @@ function isStatusLineEnabled(statusLine) {
 }
 
 function buildAntigravityStatuslineCommand({ paths, nodePath, platform }) {
-  const args = [
-    paths.statuslineScriptPath,
+  // Route through the stable launcher when one is installed so a status line
+  // fired during a skill-directory swap self-heals instead of failing. The
+  // launcher takes `<script-relative> args...`, so the script is named relative
+  // to skillDir rather than by absolute path.
+  const head = paths.launcherPath
+    ? [paths.launcherPath, 'scripts/antigravity-statusline.mjs']
+    : [paths.statuslineScriptPath]
+  const fullArgs = [
+    ...head,
     '--state-dir',
     paths.stateDir,
     '--original-command-file',
     paths.antigravityOriginalStatuslinePath
   ]
   if (platform === 'win32') {
-    return [nodePath, ...args].map(quoteWindowsCommandArg).join(' ')
+    return [nodePath, ...fullArgs].map(quoteWindowsCommandArg).join(' ')
   }
-  return ['/usr/bin/env', 'node', ...args].map(quoteShellArg).join(' ')
+  return ['/usr/bin/env', 'node', ...fullArgs].map(quoteShellArg).join(' ')
 }
 
-function isAntigravityStatuslineCommand(command, statuslineScriptPath) {
+// Recognises both the pre-launcher command (pointing at the statusline script)
+// and the launcher form (pointing at the launcher), so install/uninstall stay
+// idempotent across the migration.
+function isAntigravityStatuslineCommand(command, paths) {
   if (!command) return false
   const argv = splitCommandArgs(command)
+  const markers = [paths.statuslineScriptPath, paths.launcherPath].filter(Boolean)
   return (
-    argv.some((arg) => samePathArg(arg, statuslineScriptPath)) ||
-    normalizePathArg(command).includes(normalizePathArg(statuslineScriptPath))
+    markers.some((marker) => argv.some((arg) => samePathArg(arg, marker))) ||
+    markers.some((marker) => normalizePathArg(command).includes(normalizePathArg(marker)))
   )
 }
 

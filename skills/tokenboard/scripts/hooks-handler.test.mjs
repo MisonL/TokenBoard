@@ -28,8 +28,11 @@ test('notify handler does not forward payload args to the TokenBoard background 
     nodePath: '/usr/bin/node'
   })
 
-  assert.match(source, /spawn\(NODE_PATH, \[NOTIFY_SCRIPT, "--source", source\]/)
-  assert.doesNotMatch(source, /spawn\(NODE_PATH, \[NOTIFY_SCRIPT, "--source", source, \.\.\.payloadArgs\]/)
+  assert.match(source, /spawn\(NODE_PATH, \[NOTIFY_SCRIPT, \.\.\.NOTIFY_SCRIPT_ARGS, "--source", source\]/)
+  assert.doesNotMatch(
+    source,
+    /spawn\(NODE_PATH, \[NOTIFY_SCRIPT, \.\.\.NOTIFY_SCRIPT_ARGS, "--source", source, \.\.\.payloadArgs\]/
+  )
   assert.match(source, /function acquireDispatchLock\(\)/)
   assert.match(source, /notify\.dispatch\.lock/)
   assert.match(source, /notify\.dispatch\.worker/)
@@ -707,7 +710,10 @@ test('notify handler records foreground failures for local diagnosis', () => {
 
   assert.match(source, /notify-handler-errors\.log/)
   assert.match(source, /recordHandlerError\("enqueue", error\)/)
-  assert.match(source, /recordHandlerError\("background", error, \[NODE_PATH, NOTIFY_SCRIPT\]\)/)
+  assert.match(
+    source,
+    /recordHandlerError\("background", error, \[NODE_PATH, NOTIFY_SCRIPT, \.\.\.NOTIFY_SCRIPT_ARGS\]\)/
+  )
   assert.match(source, /function errorMessage\(error\)/)
   assert.match(source, /function safeErrorString\(value\)/)
   assert.doesNotMatch(source, /: String\(error\)/)

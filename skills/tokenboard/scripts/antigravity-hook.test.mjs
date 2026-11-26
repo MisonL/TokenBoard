@@ -209,3 +209,16 @@ function memoryFs(initial = {}) {
     }
   }
 }
+
+test('routes the Antigravity statusline through the launcher when one is installed', () => {
+  const paths = { ...createPaths(), launcherPath: '/home/user/.tokenboard/bin/tokenboard-launcher.mjs' }
+  const fs = memoryFs({ [paths.antigravitySettingsPath]: JSON.stringify({ statusLine: { enabled: true } }) })
+  installHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'antigravity-cli' } })
+  const settings = JSON.parse(fs.files.get(paths.antigravitySettingsPath))
+  const command = settings.statusLine.command
+  assert.match(command, /tokenboard-launcher\.mjs/)
+  assert.match(command, /scripts\/antigravity-statusline\.mjs/)
+  // Re-installing must recognise the launcher form and stay idempotent.
+  const again = installHooks({ paths, fs, nodePath: '/usr/bin/node', flags: { source: 'antigravity-cli' } })
+  assert.equal(again.hooks[0].changed, false)
+})
