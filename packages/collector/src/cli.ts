@@ -38,6 +38,7 @@ import {
 } from './upload'
 import { assertValidTimeZone } from './timezone'
 import { isAllDateFilter } from './iso-calendar-date'
+import { effectiveSince, recordDeliveredWatermark, tokenFingerprint } from './delivered-watermark'
 
 // Derived from the shared enum so a new source cannot exist in usage-core without the collector
 // accepting it as a CLI source; a hand-maintained copy here drifted silently before.
@@ -130,13 +131,14 @@ export async function runCollectorCli(
   const pricingDiagnostics = createPricingDiagnosticSink(deps.stderr)
   const collectorDeps: CliDeps = { ...deps, stderr: pricingDiagnostics.stderr }
   try {
-    const options = parseArgs(args, env)
+    let options = parseArgs(args, env)
     command = options.command
     if (deps.withCursorLock && env.TOKENBOARD_COLLECTOR_LOCK_HELD !== '1') {
       return await deps.withCursorLock(join(resolveStateDir(env), 'collector-run'), () =>
         runCollectorCli(args, { ...env, TOKENBOARD_COLLECTOR_LOCK_HELD: '1' }, deps)
       )
     }
+    options = await applyAutoSince(options, env)
     const startedAtMs = Date.now()
 
     if (options.command === 'warm-hooks') {
@@ -292,6 +294,22 @@ export async function runCollectorCli(
         env
       })
     )
+    // A failure here only costs the wider recovery window, never the sync: the
+    // default seven-day window still applies on the next run.
+    try {
+      await recordDeliveredWatermarks({
+        stateDir: uploadStateDir,
+        collectedSources: collection.collectedSources,
+        delivered,
+        rejected,
+        blocked,
+        endpoint: options.endpoint,
+        uploadToken: options.uploadToken,
+        timezone: options.timezone
+      })
+    } catch (error) {
+      collectorDeps.stderr(`TokenBoard delivery watermark could not be recorded: ${summarize(error)}`)
+    }
     await warmHookCursors(collection.collectedSources, deps, env, collectionStartedAtMs, options.since, options.until)
     const timingsSnapshot = timings?.snapshot() ?? {}
     const uploadResult = result
@@ -419,6 +437,71 @@ function supportsUntil(input: { command: CliCommand; source: CliSource; hookMode
   return (
     input.command !== 'warm-hooks' && !input.hookMode && (input.source === 'claude-code' || input.source === 'codex')
   )
+}
+
+// Replaces the default since with a watermark-derived one when the skill asked
+// for it (TOKENBOARD_SINCE_AUTO). Hook runs keep their existing windows: their
+// cursors already bound the scan, and widening them would rescan files a hook
+// event does not need. A missing token or endpoint keeps the injected value.
+async function applyAutoSince(options: ReturnType<typeof parseArgs>, env: CliEnv) {
+  if (env.TOKENBOARD_SINCE_AUTO !== '1' || env.TOKENBOARD_HOOK_MODE === '1') return options
+  const tokenHash = tokenFingerprint(options.uploadToken)
+  if (!tokenHash) return options
+  const sources = options.source === 'all' ? [...usageSources] : [options.source]
+  const since = await effectiveSince({
+    stateDir: resolveStateDir(env),
+    sources,
+    endpoint: options.endpoint,
+    tokenHash,
+    now: new Date(),
+    timeZone: options.timezone
+  })
+  return since === undefined ? options : { ...options, since }
+}
+
+// Advances each collected source's watermark to the latest usage date this run
+// actually delivered or permanently rejected. A source with a blocked row or a
+// too-far-future drop is skipped entirely: one of its dates is still pending,
+// and advancing past it would lose that date for good. The write happens only
+// on the success path (after the cursor acknowledgement), so a paused or failed
+// upload never moves the watermark.
+async function recordDeliveredWatermarks(input: {
+  stateDir: string
+  collectedSources: CliSource[]
+  delivered: UsageSnapshot[]
+  rejected: RejectedUploadSnapshot[] | undefined
+  blocked: BlockedUploadSnapshot[] | undefined
+  endpoint: string
+  uploadToken: string
+  timezone: string
+  now?: Date
+}) {
+  const tokenHash = tokenFingerprint(input.uploadToken)
+  if (!tokenHash) return
+  const blockedSources = new Set((input.blocked ?? []).map((entry) => entry.snapshot.source))
+  const tooFarFutureSources = new Set(
+    (input.rejected ?? []).filter((entry) => entry.issue === 'too-far-future').map((entry) => entry.snapshot.source)
+  )
+  const advances: Record<string, string> = {}
+  const consider = (snapshot: UsageSnapshot) => {
+    if (blockedSources.has(snapshot.source) || tooFarFutureSources.has(snapshot.source)) return
+    const current = advances[snapshot.source]
+    if (current === undefined || snapshot.usageDate > current) advances[snapshot.source] = snapshot.usageDate
+  }
+  for (const snapshot of input.delivered) consider(snapshot)
+  for (const entry of input.rejected ?? []) consider(entry.snapshot)
+  const collected = new Set<string>(input.collectedSources.filter((source) => source !== 'all'))
+  for (const source of Object.keys(advances)) {
+    if (!collected.has(source)) delete advances[source]
+  }
+  await recordDeliveredWatermark({
+    stateDir: input.stateDir,
+    endpoint: input.endpoint,
+    tokenHash,
+    advances,
+    now: input.now ?? new Date(),
+    timeZone: input.timezone
+  })
 }
 
 async function collectSnapshots(source: CliSource, context: CollectionContext) {
