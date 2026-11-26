@@ -15,7 +15,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import test from 'node:test'
 import {
   assertAutomaticUpgradeBranch,
@@ -24,9 +24,10 @@ import {
   resolveArchiveUrls,
   resolveRepoUrl,
   migrateToBinaryClient,
-  runUpgrade
+  runUpgrade,
+  withSkillSwapLock
 } from './upgrade.mjs'
-import { runArchiveFallback } from './upgrade-archive.mjs'
+import { installSkillFromCopy, runArchiveFallback } from './upgrade-archive.mjs'
 import { errorMessage, movePath, runStep, samePath } from './upgrade-utils.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { defaultReleaseRepo } from './client-binary.mjs'
@@ -288,6 +289,11 @@ test('updates collector and installed skill from the collector checkout', () => 
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
         command: 'remove',
         args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
@@ -301,18 +307,18 @@ test('updates collector and installed skill from the collector checkout', () => 
         options: { recursive: true, force: true }
       },
       {
+        command: 'mark-skill-complete',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
+        options: {}
+      },
+      {
         command: 'replace',
         args: [
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
           '/home/user/.codex/skills/tokenboard',
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
         ],
-        options: {}
-      },
-      {
-        command: 'corepack',
-        args: ['pnpm', 'install', '--frozen-lockfile'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+        options: { swapLock: true }
       }
     ]
   )
@@ -786,6 +792,11 @@ test('clones collector before installing skill when collector is missing', () =>
         options: {}
       },
       {
+        command: 'corepack.cmd',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
         command: 'remove',
         args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
@@ -799,18 +810,18 @@ test('clones collector before installing skill when collector is missing', () =>
         options: { recursive: true, force: true }
       },
       {
+        command: 'mark-skill-complete',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
+        options: {}
+      },
+      {
         command: 'replace',
         args: [
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
           '/home/user/.codex/skills/tokenboard',
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
         ],
-        options: {}
-      },
-      {
-        command: 'corepack.cmd',
-        args: ['pnpm', 'install', '--frozen-lockfile'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+        options: { swapLock: true }
       }
     ]
   )
@@ -848,6 +859,11 @@ test('clones a configured collector ref before installing skill when collector i
         options: { cwd: '/home/user/.tokenboard/TokenBoard' }
       },
       {
+        command: 'corepack.cmd',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
         command: 'remove',
         args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
@@ -861,18 +877,18 @@ test('clones a configured collector ref before installing skill when collector i
         options: { recursive: true, force: true }
       },
       {
+        command: 'mark-skill-complete',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
+        options: {}
+      },
+      {
         command: 'replace',
         args: [
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
           '/home/user/.codex/skills/tokenboard',
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
         ],
-        options: {}
-      },
-      {
-        command: 'corepack.cmd',
-        args: ['pnpm', 'install', '--frozen-lockfile'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+        options: { swapLock: true }
       }
     ]
   )
@@ -1250,6 +1266,11 @@ test('prepares a replacement checkout before touching an existing non-git collec
         options: { recursive: true, force: true }
       },
       {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
         command: 'remove',
         args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
@@ -1263,18 +1284,18 @@ test('prepares a replacement checkout before touching an existing non-git collec
         options: { recursive: true, force: true }
       },
       {
+        command: 'mark-skill-complete',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
+        options: {}
+      },
+      {
         command: 'replace',
         args: [
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
           '/home/user/.codex/skills/tokenboard',
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
         ],
-        options: {}
-      },
-      {
-        command: 'corepack',
-        args: ['pnpm', 'install', '--frozen-lockfile'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+        options: { swapLock: true }
       }
     ]
   )
@@ -1331,6 +1352,11 @@ test('prepares a replacement checkout at the configured ref before touching an e
         options: { recursive: true, force: true }
       },
       {
+        command: 'corepack',
+        args: ['pnpm', 'install', '--frozen-lockfile'],
+        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+      },
+      {
         command: 'remove',
         args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
         options: { recursive: true, force: true }
@@ -1344,18 +1370,18 @@ test('prepares a replacement checkout at the configured ref before touching an e
         options: { recursive: true, force: true }
       },
       {
+        command: 'mark-skill-complete',
+        args: ['/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid],
+        options: {}
+      },
+      {
         command: 'replace',
         args: [
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-staging-' + process.pid,
           '/home/user/.codex/skills/tokenboard',
           '/home/user/.codex/skills/tokenboard.tokenboard-upgrade-backup-' + process.pid
         ],
-        options: {}
-      },
-      {
-        command: 'corepack',
-        args: ['pnpm', 'install', '--frozen-lockfile'],
-        options: { cwd: '/home/user/.tokenboard/TokenBoard' }
+        options: { swapLock: true }
       }
     ]
   )
@@ -1656,7 +1682,10 @@ test('archive fallback removes a partially installed skill after a first install
             return { status: 0 }
           },
           copy: (source, destination, options) => {
-            if (destination === skillDir) {
+            // The archive path now stages the skill beside the target; the copy
+            // that can fail midway is the staging copy, not a copy into the live
+            // directory.
+            if (destination.startsWith(`${skillDir}.tokenboard-upgrade-staging-`)) {
               mkdirSync(destination, { recursive: true })
               writeFileSync(join(destination, 'partial.txt'), 'partial skill')
               throw new Error('skill copy failed')
@@ -1673,6 +1702,16 @@ test('archive fallback removes a partially installed skill after a first install
 
     assert.equal(existsSync(skillDir), false)
     assert.equal(readFileSync(join(collectorDir, 'sentinel.txt'), 'utf8'), 'old collector')
+    // A leftover staging without the completion marker is exactly what the
+    // launcher refuses to promote, so failing here cannot install a partial skill.
+    const leftovers = readdirSync(root).filter((name) => name.includes('.tokenboard-upgrade-staging-'))
+    for (const name of leftovers) {
+      assert.equal(
+        existsSync(join(root, name, '.tokenboard-skill-complete')),
+        false,
+        'a failed staging copy must not be marked complete'
+      )
+    }
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -1714,20 +1753,20 @@ test('archive fallback restores an existing skill after a partial replacement fa
             }
             return { status: 0 }
           },
-          copy: (source, destination, options) => {
-            if (destination === skillDir) {
-              mkdirSync(destination, { recursive: true })
-              writeFileSync(join(destination, 'partial.txt'), 'partial skill')
-              throw new Error('skill copy failed')
-            }
-            return cpSync(source, destination, options)
-          },
+          copy: cpSync,
           mkdir: mkdirSync,
           readDir: readdirSync,
           remove: rmSync,
-          rename: renameSync
+          // Fail the second hop of the skill swap: the live tree has already been
+          // renamed to the backup, so this exercises replaceDirectory's rollback.
+          rename: (from, to) => {
+            if (from.includes('.tokenboard-upgrade-staging-') && to === skillDir) {
+              throw new Error('skill swap failed')
+            }
+            return renameSync(from, to)
+          }
         }),
-      /skill copy failed/
+      /skill swap failed/
     )
 
     assert.equal(readFileSync(join(skillDir, 'sentinel.txt'), 'utf8'), 'old skill')
@@ -2663,4 +2702,82 @@ test('migrateToBinaryClient leaves clientType alone when the install fails', asy
   // A failed install must not flip the config: the machine would then spawn a
   // binary that does not exist and every sync would fail.
   assert.deepEqual(merged, [])
+})
+
+test('installs the archive skill through a marked staging swap', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-skill-staging-'))
+  const collectorDir = join(root, 'TokenBoard')
+  const skillDir = join(root, 'skill')
+  try {
+    mkdirSync(join(collectorDir, 'skills', 'tokenboard'), { recursive: true })
+    writeFileSync(join(collectorDir, 'skills', 'tokenboard', 'sentinel.txt'), 'new skill')
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, 'sentinel.txt'), 'old skill')
+
+    const renames = []
+    installSkillFromCopy({
+      collectorSkillDir: join(collectorDir, 'skills', 'tokenboard'),
+      skillDir,
+      copy: cpSync,
+      remove: rmSync,
+      rename: (from, to) => {
+        renames.push([from, to])
+        renameSync(from, to)
+      }
+    })
+
+    assert.equal(readFileSync(join(skillDir, 'sentinel.txt'), 'utf8'), 'new skill')
+    assert.ok(existsSync(join(skillDir, '.tokenboard-skill-complete')), 'the installed tree is marked complete')
+    // Two hops, in this order: the live tree moves to the backup, then the
+    // staging tree becomes the live tree. Never a direct copy into the target.
+    const hops = renames.map(([from, to]) => [from.replace(/-\d+$/, ''), to.replace(/-\d+$/, '')])
+    assert.equal(hops.length, 2)
+    assert.equal(hops[0][0], skillDir.replace(/-\d+$/, ''))
+    assert.match(hops[0][1], /\.tokenboard-upgrade-backup$/)
+    assert.match(hops[1][0], /\.tokenboard-upgrade-staging$/)
+    assert.equal(hops[1][1], skillDir.replace(/-\d+$/, ''))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the skill swap holds the launcher lock and releases it afterwards', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-swaplock-'))
+  const stateDir = join(root, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  const lockPath = join(stateDir, 'skill-swap.lock')
+  let lockHeldDuringSwap = null
+  withSkillSwapLock({
+    stateDir,
+    fn: () => {
+      lockHeldDuringSwap = existsSync(lockPath)
+    }
+  })
+  assert.equal(lockHeldDuringSwap, true, 'the swap must run under the launcher lock')
+  assert.equal(existsSync(lockPath), false, 'the lock is released after the swap')
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('the skill swap refuses to run while another holder owns the lock', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-swaplock-busy-'))
+  const stateDir = join(root, 'state')
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(
+    join(stateDir, 'skill-swap.lock'),
+    JSON.stringify({ pid: process.pid, token: 'other', startedAt: new Date().toISOString() })
+  )
+  let ran = false
+  assert.throws(
+    () =>
+      withSkillSwapLock({
+        stateDir,
+        fn: () => {
+          ran = true
+        },
+        runtime: { budgetMs: 0 }
+      }),
+    /Another TokenBoard skill-directory swap/
+  )
+  assert.equal(ran, false)
+  rmSync(root, { recursive: true, force: true })
 })

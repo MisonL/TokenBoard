@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main.mjs'
@@ -28,6 +28,54 @@ import {
   runStep,
   samePath
 } from './upgrade-utils.mjs'
+import { acquireSkillSwapLock, releaseSkillSwapLock, skillSwapLockPath } from './skill-swap-lock.mjs'
+
+// Runs `fn` while holding the skill-swap lock, so a launcher's recovery and this
+// upgrade's two-hop rename never interleave. The launcher's own budget is short
+// (1.5s) because it must not delay hook events; the upgrade can afford to wait
+// for a recovery that is already in flight, but not forever.
+const upgradeSwapLockBudgetMs = 60_000
+
+export function withSkillSwapLock({ stateDir, fn, exists = existsSync, log = () => {}, runtime = {} }) {
+  // The lock exists to keep the launcher's recovery from interleaving with this
+  // swap. No state directory means no installed launcher either, so there is
+  // nothing to serialise against — say so rather than failing an upgrade on a
+  // directory that will be created moments later.
+  if (!exists(stateDir)) {
+    log(
+      `TokenBoard state directory ${stateDir} does not exist yet; swapping the skill directory without the launcher lock`
+    )
+    return fn()
+  }
+  const lockPath = skillSwapLockPath(stateDir)
+  const lockRuntime = {
+    pid: process.pid,
+    now: () => Date.now(),
+    writeFile: runtime.writeFile || writeFileSync,
+    readFile: runtime.readFile || readFileSync,
+    rename: runtime.rename || renameSync,
+    unlink: runtime.unlink || ((path) => rmSync(path, { force: true })),
+    sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+    isProcessAlive: (pid) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch (error) {
+        return error?.code !== 'ESRCH'
+      }
+    },
+    budgetMs: runtime.budgetMs ?? upgradeSwapLockBudgetMs
+  }
+  const owner = acquireSkillSwapLock(lockPath, lockRuntime)
+  if (!owner) {
+    throw new Error(`Another TokenBoard skill-directory swap holds ${lockPath}; retrying on the next upgrade`)
+  }
+  try {
+    return fn()
+  } finally {
+    releaseSkillSwapLock(lockPath, lockRuntime, owner)
+  }
+}
 
 export const defaultRepoUrl = 'https://github.com/evepupil/TokenBoard.git'
 
@@ -117,26 +165,33 @@ export function buildUpgradePlan({
         : [...buildCloneSteps({ repoUrl, repoRef, dir: collectorDir })]
 
   const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
-  if (!samePath(collectorSkillDir, skillDir, platform)) {
-    // A merge copy (`recursive + force`) leaves files the upstream deleted behind forever,
-    // and a failure mid-copy leaves a half-updated skill with no way back. Stage the new
-    // copy beside the target and swap it in with a backup kept until the swap succeeds —
-    // the same replace-with-rollback the archive path applies, so the installed skill
-    // always matches the upstream tree exactly.
-    const skillStagingDir = `${skillDir}.tokenboard-upgrade-staging-${process.pid}`
-    const skillBackupDir = `${skillDir}.tokenboard-upgrade-backup-${process.pid}`
-    steps.push(
-      { command: 'remove', args: [skillStagingDir], options: { recursive: true, force: true } },
-      { command: 'copy', args: [collectorSkillDir, skillStagingDir], options: { recursive: true, force: true } },
-      { command: 'replace', args: [skillStagingDir, skillDir, skillBackupDir], options: {} }
-    )
-  }
-
+  // Install dependencies before the swap, not after: a failed install must leave
+  // the live skill tree exactly as it was, and a swap that already happened would
+  // otherwise be followed by a broken node_modules state the next scheduled run
+  // has to trip over.
   steps.push({
     command: corepackCommand(platform),
     args: ['pnpm', 'install', '--frozen-lockfile'],
     options: { cwd: collectorDir }
   })
+
+  if (!samePath(collectorSkillDir, skillDir, platform)) {
+    // A merge copy (`recursive + force`) leaves files the upstream deleted behind forever,
+    // and a failure mid-copy leaves a half-updated skill with no way back. Stage the new
+    // copy beside the target and swap it in with a backup kept until the swap succeeds —
+    // the same replace-with-rollback the archive path applies, so the installed skill
+    // always matches the upstream tree exactly. The completion marker goes into the
+    // staging tree after the copy and before the swap, so a leftover staging without it
+    // is never promoted by the launcher.
+    const skillStagingDir = `${skillDir}.tokenboard-upgrade-staging-${process.pid}`
+    const skillBackupDir = `${skillDir}.tokenboard-upgrade-backup-${process.pid}`
+    steps.push(
+      { command: 'remove', args: [skillStagingDir], options: { recursive: true, force: true } },
+      { command: 'copy', args: [collectorSkillDir, skillStagingDir], options: { recursive: true, force: true } },
+      { command: 'mark-skill-complete', args: [skillStagingDir], options: {} },
+      { command: 'replace', args: [skillStagingDir, skillDir, skillBackupDir], options: { swapLock: true } }
+    )
+  }
 
   return steps
 }
@@ -192,6 +247,15 @@ export function runUpgrade({
   }
 
   try {
+    const stepRuntime = {
+      spawn,
+      copy,
+      remove,
+      rename,
+      log,
+      platform,
+      withSwapLock: (fn) => withSkillSwapLock({ stateDir: configDirectory, fn, exists, log })
+    }
     for (const step of buildUpgradePlan({
       collectorDir: collector,
       skillDir,
@@ -204,7 +268,7 @@ export function runUpgrade({
       backupDir,
       platform
     })) {
-      runStep(step, { spawn, copy, remove, rename, log, platform })
+      runStep(step, stepRuntime)
     }
   } catch (error) {
     if (collectorExists && collectorIsGitRepo) {
@@ -224,6 +288,7 @@ export function runUpgrade({
       readDir,
       remove,
       rename,
+      withSwapLock: (fn) => withSkillSwapLock({ stateDir: configDirectory, fn, exists, log }),
       log
     })
   }

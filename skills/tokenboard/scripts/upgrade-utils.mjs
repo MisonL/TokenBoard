@@ -1,5 +1,5 @@
-import { resolve, win32 as windowsPath } from 'node:path'
-import { cpSync, renameSync, rmSync, statSync } from 'node:fs'
+import { join, resolve, win32 as windowsPath } from 'node:path'
+import { cpSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { scrubbedChildEnv } from './child-env.mjs'
 import { errorMessage } from './error-message.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
@@ -66,16 +66,36 @@ export function runStep(step, runtime) {
     return
   }
 
-  if (step.command === 'replace') {
-    replaceDirectory({
-      replacementDir: step.args[0],
-      collectorDir: step.args[1],
-      backupDir: step.args[2],
-      rename: runtime.rename,
-      copy: runtime.copy,
-      remove: runtime.remove,
-      log: runtime.log
+  if (step.command === 'mark-skill-complete') {
+    // Written after the staging copy and before the swap: the presence of this
+    // file is what lets the launcher trust a *leftover* staging directory after
+    // an interrupted swap. A staging without it is never promoted.
+    mkdirSync(step.args[0], { recursive: true })
+    writeFileSync(join(step.args[0], '.tokenboard-skill-complete'), `${new Date().toISOString()}\n`, {
+      mode: 0o600
     })
+    return
+  }
+
+  if (step.command === 'replace') {
+    const swap = () =>
+      replaceDirectory({
+        replacementDir: step.args[0],
+        collectorDir: step.args[1],
+        backupDir: step.args[2],
+        rename: runtime.rename,
+        copy: runtime.copy,
+        remove: runtime.remove,
+        log: runtime.log
+      })
+    // A skill-directory swap marks its step `swapLock` so it runs under the same
+    // lock the launcher's recovery takes: a launcher must never restore a backup
+    // in the middle of the two renames this step performs.
+    if (step.options?.swapLock) {
+      runtime.withSwapLock(swap)
+      return
+    }
+    swap()
     return
   }
 
@@ -98,9 +118,30 @@ export function runStep(step, runtime) {
   }
 }
 
+// Windows briefly holds directory handles (antivirus, search indexer, an open
+// Explorer window), so a single rename can fail with EPERM on a directory no
+// process obviously uses. Retrying is the documented remedy; the delays match
+// client-binary.mjs so both install paths behave the same.
+const busyRenameRetryDelaysMs = [50, 150, 400]
+
+function renameWithBusyRetry(rename, source, destination) {
+  let attempt = 0
+  for (;;) {
+    try {
+      rename(source, destination)
+      return
+    } catch (error) {
+      const retryable = error && (error.code === 'EPERM' || error.code === 'EACCES' || error.code === 'EBUSY')
+      if (!retryable || attempt >= busyRenameRetryDelaysMs.length) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, busyRenameRetryDelaysMs[attempt])
+      attempt += 1
+    }
+  }
+}
+
 export function movePath(source, destination, { rename = renameSync, copy = cpSync, remove = rmSync } = {}) {
   try {
-    rename(source, destination)
+    renameWithBusyRetry(rename, source, destination)
     return
   } catch (error) {
     if (!error || error.code !== 'EXDEV') throw error

@@ -4,10 +4,11 @@ import {
   escapePowerShellSingleQuoted,
   joinForPlatform,
   movePath,
+  replaceDirectory,
   runStep,
   samePath
 } from './upgrade-utils.mjs'
-import { renameSync, statSync } from 'node:fs'
+import { mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, win32 as windowsPath } from 'node:path'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 
@@ -26,6 +27,9 @@ export function runArchiveFallback({
   remove,
   rename = renameSync,
   stat = statSync,
+  // Provided by the upgrade driver: runs the skill-directory swap under the same
+  // lock the launcher's recovery takes, so the two never interleave.
+  withSwapLock = (fn) => fn(),
   log = () => {}
 }) {
   if (configDir && samePath(skillDir, configDir, platform)) {
@@ -41,13 +45,10 @@ export function runArchiveFallback({
   const replacementDir = joinForPlatform(workDir, 'TokenBoard')
   recoverOrphanedBackup({ collectorDir, platform, readDir, rename, copy, remove, log })
   const backupDir = selectAvailableBackupPath({ collectorDir, platform, readDir, stat })
-  const skillBackupDir = selectAvailableBackupPath({ collectorDir: skillDir, platform, readDir, stat })
   remove(workDir, { recursive: true, force: true })
   mkdir(workDir, { recursive: true })
   let backupCreated = false
   let replacementInstalled = false
-  let skillBackupCreated = false
-  let skillInstallStarted = false
   try {
     downloadArchive({ archiveUrls: urls, zipPath, platform, spawn, log })
     extractArchive({ zipPath, extractDir, platform, spawn, mkdir, log })
@@ -88,32 +89,10 @@ export function runArchiveFallback({
 
     const collectorSkillDir = joinForPlatform(collectorDir, 'skills', 'tokenboard')
     if (!samePath(collectorSkillDir, skillDir, platform)) {
-      try {
-        movePath(skillDir, skillBackupDir, { rename, copy, remove })
-        skillBackupCreated = true
-      } catch (error) {
-        if (!error || error.code !== 'ENOENT') throw error
-      }
-      skillInstallStarted = true
-      copy(collectorSkillDir, skillDir, { recursive: true, force: true })
+      withSwapLock(() => installSkillFromCopy({ collectorSkillDir, skillDir, copy, remove, rename, log }))
     }
   } catch (error) {
     const rollbackErrors = []
-    if (skillInstallStarted || skillBackupCreated) {
-      try {
-        remove(skillDir, { recursive: true, force: true })
-      } catch (cleanupError) {
-        rollbackErrors.push(`failed to remove incomplete skill: ${errorMessage(cleanupError)}`)
-      }
-    }
-    if (skillBackupCreated) {
-      try {
-        movePath(skillBackupDir, skillDir, { rename, copy, remove })
-        skillBackupCreated = false
-      } catch (restoreError) {
-        rollbackErrors.push(`existing skill restore failed: ${errorMessage(restoreError)}`)
-      }
-    }
     if (backupCreated) {
       try {
         remove(collectorDir, { recursive: true, force: true })
@@ -157,15 +136,6 @@ export function runArchiveFallback({
       backupCreated = false
     } catch (error) {
       log(`TokenBoard collector upgraded, but old checkout cleanup failed: ${errorMessage(error)}`)
-    }
-  }
-
-  if (replacementInstalled && skillBackupCreated) {
-    try {
-      remove(skillBackupDir, { recursive: true, force: true })
-      skillBackupCreated = false
-    } catch (error) {
-      log(`TokenBoard collector upgraded, but old skill cleanup failed: ${errorMessage(error)}`)
     }
   }
 }
@@ -318,4 +288,37 @@ function findExtractedRoot({ extractDir, readDir }) {
     throw new Error(`Expected one extracted TokenBoard directory in ${extractDir}`)
   }
   return joinForPlatform(extractDir, entries[0].name)
+}
+
+export const skillCompleteMarkerName = '.tokenboard-skill-complete'
+
+// Installs the checkout's skill tree beside the live one and swaps it in with the
+// same two-hop rename the git path uses, instead of copying straight into the
+// live directory. Two properties follow:
+// - a copy killed midway only ever leaves a staging directory; the completion
+//   marker is written after the copy finishes, so the launcher never promotes a
+//   half-copied staging, and
+// - the live skill directory is never a partially-copied tree, which is what the
+//   launcher's "script exists ⇒ healthy" check depends on.
+export function installSkillFromCopy({ collectorSkillDir, skillDir, copy, remove, rename, log = () => {} }) {
+  const stagingDir = `${skillDir}.tokenboard-upgrade-staging-${process.pid}`
+  const backupDir = `${skillDir}.tokenboard-upgrade-backup-${process.pid}`
+  remove(stagingDir, { recursive: true, force: true })
+  copy(collectorSkillDir, stagingDir, { recursive: true, force: true })
+  writeCompletionMarker({ stagingDir })
+  replaceDirectory({
+    replacementDir: stagingDir,
+    collectorDir: skillDir,
+    backupDir,
+    rename,
+    copy,
+    remove,
+    log
+  })
+}
+
+function writeCompletionMarker({ stagingDir }) {
+  const markerPath = joinForPlatform(stagingDir, skillCompleteMarkerName)
+  mkdirSync(stagingDir, { recursive: true })
+  writeFileSync(markerPath, `${new Date().toISOString()}\n`, { mode: 0o600 })
 }
