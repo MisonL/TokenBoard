@@ -1,0 +1,14 @@
+-- daily_usage_user_date_idx(user_id, usage_date) is a strict prefix of
+-- daily_usage_logical_key_device_idx(user_id, usage_date, source, model, device_id),
+-- so any query it can serve the longer index serves at the same or better cost.
+-- Dropping it removes one index write from every daily_usage insert (D1 bills one
+-- row write per index), which is the dominant write volume on a first upload.
+--
+-- Verified on a database built from this chain with EXPLAIN QUERY PLAN, for both the
+-- shape before and after this migration:
+--   * MAX(usage_date) per user: was `daily_usage_user_date_idx (user_id=?)`, becomes
+--     `daily_usage_logical_key_device_idx (user_id=?)` — still a covering user-seek.
+--   * the per-user dedup range, the /check key lookup (row-value IN), and the daily
+--     backfill walk already used daily_usage_logical_key_device_idx.
+--   * the device-filtered range uses daily_usage_user_device_date_idx and is unaffected.
+DROP INDEX IF EXISTS daily_usage_user_date_idx;
