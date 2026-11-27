@@ -897,7 +897,10 @@ describe('findExistingSnapshotHashes', () => {
     expect(sqlStatements[0]).toContain('FROM daily_usage')
     expect(sqlStatements[0]).toContain('user_id = ?')
     expect(sqlStatements[0]).toContain('device_id = ?')
-    expect(sqlStatements[0]).toContain('(source = ? AND usage_date = ? AND model = ?)')
+    // Row-value IN, not an OR chain: only this shape is sargable on the full logical key,
+    // so the check seeks one row per key instead of the device's whole date range.
+    expect(sqlStatements[0]).toContain('(source, usage_date, model) IN (VALUES (?, ?, ?), (?, ?, ?))')
+    expect(sqlStatements[0]).not.toContain('(source = ? AND usage_date = ? AND model = ?)')
     expect(sqlStatements[1]).toContain('expected_summary')
     expect(bindings[0]).toEqual([
       'seed-user',
