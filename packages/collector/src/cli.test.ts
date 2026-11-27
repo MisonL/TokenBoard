@@ -1317,6 +1317,51 @@ describe('runCollectorCli', () => {
     expect(stderr.some((line) => line.includes('check this machine'))).toBe(true)
   })
 
+  // An unrecognized status is a server-supplied string kept verbatim in the log line; a
+  // control character in it would forge entries in the sync log, and an unbounded one
+  // would bloat it. Both are neutralized before the message is built.
+  test('sanitizes an unrecognized withheld status before logging it', async () => {
+    const stderr: string[] = []
+    const injected = { ...claudeSnapshot, usageDate: '2026-05-21' }
+    const long = { ...claudeSnapshot, usageDate: '2026-05-22' }
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'claude-code'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_HOOK_MODE: '1',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => [injected, long],
+        collectCodexUsage: async () => {
+          throw new Error('claude-code-only test must not collect Codex')
+        },
+        uploadSnapshots: async () => ({
+          upserted: 0,
+          [uploadDeliveredSymbol]: [],
+          [uploadWithheldSymbol]: [
+            { snapshot: injected, status: 'st\nale' },
+            { snapshot: long, status: 'z'.repeat(40) }
+          ]
+        }),
+        clearPendingUploadCursors: async () => undefined
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(stderr.every((line) => !line.includes('\n'))).toBe(true)
+    const summary = stderr.find((line) => line.includes('not written by the server'))
+    expect(summary).toBeDefined()
+    expect(summary).toContain('st_ale x1')
+    expect(summary).toContain(`${'z'.repeat(32)} x1`)
+    expect(summary).not.toContain('z'.repeat(33))
+  })
+
   test('acknowledges a row the upload can never accept so it is not rescanned forever', async () => {
     // An invalid usageDate can never be uploaded. Leaving it out of the ack would
     // keep its pending entry forever and rescan the file every run; including it

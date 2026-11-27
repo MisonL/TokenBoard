@@ -393,27 +393,7 @@ func syncLocked(
 	// re-queued row is a clock fault, not a retry. Statuses only: the values
 	// belong to the local session files.
 	if len(result.Withheld) > 0 {
-		counts := map[string]int{}
-		// Status is a server-supplied string (an unrecognized future value is
-		// kept verbatim), so strip anything that could forge log lines before
-		// it reaches the sync log.
-		for _, withheld := range result.Withheld {
-			counts[sanitizeOutcomeStatus(withheld.Status)]++
-		}
-		statuses := make([]string, 0, len(counts))
-		for status := range counts {
-			statuses = append(statuses, status)
-		}
-		sort.Strings(statuses)
-		parts := make([]string, 0, len(statuses))
-		for _, status := range statuses {
-			parts = append(parts, fmt.Sprintf("%s x%d", status, counts[status]))
-		}
-		fmt.Fprintf(stderr, "TokenBoard upload: %d snapshot(s) not written by the server: %s; they stay pending\n",
-			len(result.Withheld), strings.Join(parts, ", "))
-		if counts["stale"] > 0 {
-			fmt.Fprintf(stderr, "TokenBoard upload: the server holds newer measurements for these rows — check this machine's clock and timezone settings\n")
-		}
+		reportWithheldOutcomes(stderr, result.Withheld)
 	}
 	payloadFields := map[string]any{
 		"upserted": result.Upserted,
@@ -440,6 +420,32 @@ func elapsedMillis(start time.Time) int64 {
 		return 0
 	}
 	return elapsed
+}
+
+// reportWithheldOutcomes narrates the rows the server did not write. Statuses only:
+// the values belong to the local session files.
+func reportWithheldOutcomes(stderr io.Writer, withheld []upload.WithheldSnapshot) {
+	counts := map[string]int{}
+	// Status is a server-supplied string (an unrecognized future value is kept
+	// verbatim), so strip anything that could forge log lines before it reaches
+	// the sync log.
+	for _, row := range withheld {
+		counts[sanitizeOutcomeStatus(row.Status)]++
+	}
+	statuses := make([]string, 0, len(counts))
+	for status := range counts {
+		statuses = append(statuses, status)
+	}
+	sort.Strings(statuses)
+	parts := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		parts = append(parts, fmt.Sprintf("%s x%d", status, counts[status]))
+	}
+	fmt.Fprintf(stderr, "TokenBoard upload: %d snapshot(s) not written by the server: %s; they stay pending\n",
+		len(withheld), strings.Join(parts, ", "))
+	if counts["stale"] > 0 {
+		fmt.Fprintf(stderr, "TokenBoard upload: the server holds newer measurements for these rows — check this machine's clock and timezone settings\n")
+	}
 }
 
 // sanitizeOutcomeStatus mirrors the TS collector's filter: an outcome status is a
