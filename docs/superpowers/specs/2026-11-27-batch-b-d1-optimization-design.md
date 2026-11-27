@@ -121,4 +121,7 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   复查，这也是 C1 strict 的观测输入之一）。
 - 自愈轮在真实 keyspace 下的完成周期未测（本机库小）；`repaired` 计数是 C1 的观测输入。
 - B2 的减读量比例沿用调研文档的归因（totals ≈ 读侧 55%），未在真实流量下复测。
-- 生产 chaosyn 未部署；按方案其部署与观察需 yeton 侧配合（`docs/specs/go-client-spec.md` §150）。
+- 发布分工（2026-11-27 用户裁决）：生产 chaosyn 上线走**上游的自动化构建发布机制**，
+  本侧不再手动部署 chaosyn；本侧验收口径 = 私人 CF（`tokenboard-independent`）测试通过
+  （已完成，见 §2.2）。批次 C 各项在本分支实现并以私人 CF 验证，进入上游后由其流水线
+  承载生产上线与观察窗口。
