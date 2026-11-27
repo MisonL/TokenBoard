@@ -337,31 +337,32 @@ function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSou
   }
 }
 
-// Wait until the current window closes before re-scanning what the scheduled run might
-// have missed: the trailing worker's wake time is the scheduled time of the window it was
-// suppressed in plus the window width (12:05 suppressed by the 12:00 window wakes at
-// 12:30), not the next scheduled slot hours away and not a fixed nap that would land
-// inside the same window again. When no window is configured or the clock is unusable,
-// no trailing retry is booked — the next hook trigger re-evaluates on its own.
+// Wait until the window closes before re-scanning what the scheduled run might have
+// missed. The window is symmetric around the scheduled time (`isWithinScheduleWindow`
+// accepts T±windowMs), so the deadline is always the scheduled time plus the window
+// width: 12:05 suppressed by the 12:00 window wakes at 12:30, 8:45 wakes at 9:30, and a
+// 23:59 trigger near the 00:00 window wakes at 00:30 rather than at the next slot hours
+// away — or at a fixed nap that would land inside the same window again. Absolute
+// millisecond arithmetic, so midnight wraps the way the wall clock does.
 function scheduleWindowTrailingDelayMs(runtime) {
   const window = runtime.scheduleWindow
   if (!window?.times?.length || !Number.isFinite(window.windowMs) || window.windowMs <= 0) return 0
-  const date = new Date(runtime.now())
-  const currentMinutes = date.getHours() * 60 + date.getMinutes()
-  const windowMinutes = window.windowMs / 60_000
+  const now = runtime.now()
   let delay = Number.POSITIVE_INFINITY
   for (const time of window.times) {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
     if (!match) continue
-    const scheduledMinutes = Number(match[1]) * 60 + Number(match[2])
-    const direct = currentMinutes - scheduledMinutes
-    const distance = direct >= 0 ? direct : direct + 24 * 60
-    // Only a window this instant is inside is a candidate; anything else means the skip
-    // did not come from the window (defensive: the caller checks the window first).
-    if (distance > windowMinutes) continue
-    delay = Math.min(delay, (windowMinutes - distance) * 60_000)
+    const base = new Date(now)
+    base.setHours(Number(match[1]), Number(match[2]), 0, 0)
+    // The previous or the upcoming occurrence of this wall-clock time: a symmetric window
+    // reaches across midnight, so a trigger may be inside yesterday's or tomorrow's one.
+    for (const offsetMs of [-24 * 60 * 60_000, 0, 24 * 60 * 60_000]) {
+      const scheduledMs = base.getTime() + offsetMs
+      if (now < scheduledMs - window.windowMs || now > scheduledMs + window.windowMs) continue
+      delay = Math.min(delay, scheduledMs + window.windowMs - now)
+    }
   }
-  return Number.isFinite(delay) ? delay : 0
+  return Number.isFinite(delay) && delay > 0 ? delay : 0
 }
 
 // The request time rides on the queue entry, not on the trigger: a trailing worker is

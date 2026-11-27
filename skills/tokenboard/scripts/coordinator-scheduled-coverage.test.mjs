@@ -85,6 +85,46 @@ test('a signal the scheduled run has not covered yet gets a trailing retry with 
   assert.equal(trailing[0].delayMs, 25 * 60_000)
 })
 
+test('a trigger on the early side of the window wakes when that window closes', () => {
+  // 08:45 sits in the symmetric window of the 09:00 run (T-30..T+30); the retry must wait
+  // until 09:30, not treat the window as starting at 09:00 and not skip the retry.
+  const fs = memoryRuntime()
+  queueSignal(fs, 'codex', utcForLocal(8, 45))
+  const trailing = []
+
+  const result = runAt(fs, { now: localTime(8, 45), trailing })
+
+  assert.equal(result.skippedReason, 'scheduled-window')
+  assert.equal(trailing.length, 1)
+  assert.equal(trailing[0].delayMs, 45 * 60_000)
+})
+
+test('a trigger before midnight near the 00:00 window wakes after midnight', () => {
+  const fs = memoryRuntime()
+  queueSignal(fs, 'codex', new Date(2026, 10, 27, 23, 50).toISOString())
+  const trailing = []
+  const options = { now: new Date(2026, 10, 27, 23, 50).getTime(), trailing }
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => options.now,
+      process: fakeProcess(902),
+      scheduleWindow: { times: ['00:00', '12:00'], windowMs: 30 * 60_000 },
+      scheduleTrailing: (trigger, delayMs) => {
+        trailing.push({ trigger, delayMs })
+        return true
+      },
+      executeSync: () => ({})
+    }
+  )
+
+  assert.equal(result.skippedReason, 'scheduled-window')
+  assert.equal(trailing.length, 1)
+  assert.equal(trailing[0].delayMs, 40 * 60_000)
+})
+
 test('a window skip books a trailing retry only for sources the scheduled run missed', () => {
   // codex was queued yesterday and its scheduled run finished after that request (23:59
   // local yesterday): covered, so it must not come back as a trailing retry. claude-code
