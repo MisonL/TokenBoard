@@ -5,7 +5,13 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../test/sqlite-d1'
 import { upsertUsageSnapshots, type IngestRecord } from './repository'
-import { classifyUnchangedRecords, classifyUnchangedRow, type StoredRow } from './repository/outcomes'
+import {
+  classifyUnchangedRecords,
+  classifyUnchangedRow,
+  outcomeQueryChunkSize,
+  outcomeQuerySql,
+  type StoredRow
+} from './repository/outcomes'
 import { snapshotHash } from './repository/types'
 
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../db/migrations')
@@ -16,6 +22,17 @@ const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../..
 // not-delivered (`stale`, `unknown`). These tests run the real statements against real SQLite
 // so the classification is verified against the SQL that actually decided the skip — a mocked
 // D1 cannot make that claim.
+// D1 caps a statement at 100 bound parameters; local SQLite does not, so only production
+// would reject an outcome query that outgrew the cap. The chunk size carries a 1-slot
+// headroom (`types.ts` `d1BoundParameterHeadroom`); this pins the arithmetic that keeps it
+// inside — two identity bindings per group plus three per key.
+test('the outcome query stays under the D1 parameter cap', () => {
+  const sql = outcomeQuerySql(outcomeQueryChunkSize)
+  const placeholders = sql.split('?').length - 1
+  expect(placeholders).toBe(2 + 3 * outcomeQueryChunkSize)
+  expect(placeholders).toBeLessThanOrEqual(99)
+})
+
 describe('ingest row outcomes', () => {
   const tempDirs: string[] = []
   afterEach(() => {
