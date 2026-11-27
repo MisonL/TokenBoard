@@ -128,12 +128,16 @@ func TestWatermarkRecordsOnlyDeliveredDates(t *testing.T) {
 	}
 }
 
+// Both tests below keep Delivered rows for the *same* source as the pending one:
+// with no delivered candidate the source has nothing to advance to and the
+// assertion would pass even with the pending-filter removed (the earlier fixtures
+// made these guards vacuous).
 func TestWatermarkSkipsASourceWithPendingRows(t *testing.T) {
 	dir := t.TempDir()
 	options := baseOptions()
-	outcome := collection{collectedSources: []contract.Source{contract.SourceClaudeCode, contract.SourceCodex}}
+	outcome := collection{collectedSources: []contract.Source{contract.SourceCodex}}
 	result := upload.Result{
-		Delivered: []contract.Snapshot{{Source: contract.SourceClaudeCode, UsageDate: "2026-11-24"}},
+		Delivered: []contract.Snapshot{{Source: contract.SourceCodex, UsageDate: "2026-11-24"}},
 		// A blocked row still has an undelivered date; advancing past it would
 		// lose that date for good.
 		Blocked: []upload.BlockedSnapshot{{Snapshot: contract.Snapshot{Source: contract.SourceCodex, UsageDate: "2026-11-21"}, Code: "invalid-value"}},
@@ -141,12 +145,8 @@ func TestWatermarkSkipsASourceWithPendingRows(t *testing.T) {
 	if err := recordDeliveredWatermarks(dir, outcome, result, options, watermarkNow(t)); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	entries := watermark.Load(dir)
-	if _, ok := entries["codex"]; ok {
-		t.Fatal("a source with a blocked row must not advance its watermark")
-	}
-	if entries["claude-code"].UsageDate != "2026-11-24" {
-		t.Fatalf("claude-code watermark = %q", entries["claude-code"].UsageDate)
+	if entries := watermark.Load(dir); len(entries) != 0 {
+		t.Fatalf("a source with a blocked row must not advance its watermark, got %+v", entries)
 	}
 }
 
@@ -156,9 +156,11 @@ func TestWatermarkSkipsASourceWithPendingRows(t *testing.T) {
 func TestWatermarkSkipsASourceWithWithheldRows(t *testing.T) {
 	dir := t.TempDir()
 	options := baseOptions()
-	outcome := collection{collectedSources: []contract.Source{contract.SourceClaudeCode, contract.SourceCodex}}
+	outcome := collection{collectedSources: []contract.Source{contract.SourceCodex}}
 	result := upload.Result{
-		Delivered: []contract.Snapshot{{Source: contract.SourceClaudeCode, UsageDate: "2026-11-24"}},
+		// A later delivered date for the same source is the candidate the withheld
+		// row must suppress: without the pending filter the watermark advances to it.
+		Delivered: []contract.Snapshot{{Source: contract.SourceCodex, UsageDate: "2026-11-24"}},
 		Withheld: []upload.WithheldSnapshot{{
 			Snapshot: contract.Snapshot{Source: contract.SourceCodex, UsageDate: "2026-11-21"},
 			Status:   "stale",
@@ -167,12 +169,8 @@ func TestWatermarkSkipsASourceWithWithheldRows(t *testing.T) {
 	if err := recordDeliveredWatermarks(dir, outcome, result, options, watermarkNow(t)); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	entries := watermark.Load(dir)
-	if _, ok := entries["codex"]; ok {
-		t.Fatal("a source with a withheld row must not advance its watermark")
-	}
-	if entries["claude-code"].UsageDate != "2026-11-24" {
-		t.Fatalf("claude-code watermark = %q", entries["claude-code"].UsageDate)
+	if entries := watermark.Load(dir); len(entries) != 0 {
+		t.Fatalf("a source with a withheld row must not advance its watermark, got %+v", entries)
 	}
 }
 

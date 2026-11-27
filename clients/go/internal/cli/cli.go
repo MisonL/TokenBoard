@@ -394,8 +394,11 @@ func syncLocked(
 	// belong to the local session files.
 	if len(result.Withheld) > 0 {
 		counts := map[string]int{}
+		// Status is a server-supplied string (an unrecognized future value is
+		// kept verbatim), so strip anything that could forge log lines before
+		// it reaches the sync log.
 		for _, withheld := range result.Withheld {
-			counts[withheld.Status]++
+			counts[sanitizeOutcomeStatus(withheld.Status)]++
 		}
 		statuses := make([]string, 0, len(counts))
 		for status := range counts {
@@ -437,6 +440,28 @@ func elapsedMillis(start time.Time) int64 {
 		return 0
 	}
 	return elapsed
+}
+
+// sanitizeOutcomeStatus mirrors the TS collector's filter: an outcome status is a
+// server-supplied string (unrecognized future values are kept verbatim), and a
+// control character in it would forge lines in the sync log.
+func sanitizeOutcomeStatus(status string) string {
+	cleaned := make([]rune, 0, len(status))
+	for _, character := range status {
+		switch {
+		case character >= 'a' && character <= 'z',
+			character >= 'A' && character <= 'Z',
+			character >= '0' && character <= '9',
+			character == '_', character == '.', character == '-':
+			cleaned = append(cleaned, character)
+		default:
+			cleaned = append(cleaned, '_')
+		}
+		if len(cleaned) == 32 {
+			break
+		}
+	}
+	return string(cleaned)
 }
 
 // classifyFailure applies the exit-code contract: only a non-hook sync run

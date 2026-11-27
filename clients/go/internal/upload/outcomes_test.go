@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -156,6 +158,36 @@ func TestUploadRejectsOutcomeIndexOutsideTheBatch(t *testing.T) {
 	}
 }
 
+// A response that names one row twice, or accounts for rows it never posted, is
+// contradictory: one in-range name plus one bogus index must not let the in-range
+// row be acknowledged while the bogus one is ignored.
+func TestUploadRejectsContradictoryOutcomeSets(t *testing.T) {
+	for name, body := range map[string]string{
+		// Written 1 + named 1 for a single posted row: the row cannot be both.
+		"written and named": `{"upserted":1,"outcomes":[{"index":0,"status":"stale"}]}`,
+		// Two named rows for two posted rows, but both names address the same row.
+		"duplicate index":             `{"upserted":0,"outcomes":[{"index":0,"status":"stale"},{"index":0,"status":"stale"}]}`,
+		"out-of-range delivered name": `{"upserted":0,"outcomes":[{"index":1,"status":"same"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/check") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			_, err := UploadSnapshots(t.Context(), testConfig(server.URL),
+				[]contract.Snapshot{baseSnapshot("a", 1)}, server.Client())
+			if err == nil || !strings.Contains(err.Error(), "Upload returned invalid response") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
 func TestUploadRejectsMalformedOutcomes(t *testing.T) {
 	for name, outcomes := range map[string]string{
 		"string index":   `[{"index":"x","status":"stale"}]`,
@@ -163,6 +195,10 @@ func TestUploadRejectsMalformedOutcomes(t *testing.T) {
 		"numeric status": `[{"index":0,"status":7}]`,
 		"not objects":    `["stale"]`,
 		"not an array":   `"stale"`,
+		// `null` must not masquerade as the absent field: absent means "old server,
+		// deliver everything", while `null` is a response the server never produced —
+		// rows must not be acknowledged on its authority.
+		"explicit null": `null`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -213,13 +249,17 @@ func TestUploadWithoutOutcomesDeliversEverything(t *testing.T) {
 // The client's delivered-status mirror must track the server's classifier: if
 // the server renames `same`/`protected`, every unchanged row would be withheld
 // forever (which is at least safe) — but if it *repurposes* one of them as a
-// not-written status, the client would acknowledge undelivered rows.
+// not-written status, the client would acknowledge undelivered rows. The union
+// is parsed, not substring-matched, so adding a fifth status fails here too
+// (the TS mirror in packages/collector/src/upload-batches.test.ts parses the
+// same line); an unwritten status the client has not classified is withheld at
+// runtime, so a fifth status is safe until this test forces a decision.
 func TestOutcomeStatusesMirrorTheServer(t *testing.T) {
 	source := readServerOutcomesSource(t)
-	for _, status := range []string{"same", "protected", "stale", "unknown"} {
-		if !strings.Contains(source, "'"+status+"'") {
-			t.Fatalf("server outcomes.ts no longer declares %q; update deliveredOutcomeStatuses", status)
-		}
+	declared := parseIngestRowStatusUnion(t, source)
+	want := []string{"protected", "same", "stale", "unknown"}
+	if strings.Join(declared, ",") != strings.Join(want, ",") {
+		t.Fatalf("server IngestRowStatus = %v, want %v; update deliveredOutcomeStatuses and this mirror", declared, want)
 	}
 	if !deliveredOutcomeStatuses["same"] || !deliveredOutcomeStatuses["protected"] {
 		t.Fatal("same and protected must count as delivered")
@@ -227,6 +267,24 @@ func TestOutcomeStatusesMirrorTheServer(t *testing.T) {
 	if deliveredOutcomeStatuses["stale"] || deliveredOutcomeStatuses["unknown"] {
 		t.Fatal("stale and unknown must stay unacknowledged")
 	}
+}
+
+// parseIngestRowStatusUnion extracts the single-quoted members of the server's
+// `export type IngestRowStatus = ...` declaration, sorted, the same way the TS
+// mirror does.
+func parseIngestRowStatusUnion(t *testing.T, source string) []string {
+	t.Helper()
+	declaration := regexp.MustCompile(`(?s)export type IngestRowStatus =([^
+]+)`).FindStringSubmatch(source)
+	if declaration == nil {
+		t.Fatal("server outcomes.ts no longer declares `export type IngestRowStatus = ...` on one line")
+	}
+	var statuses []string
+	for _, match := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(declaration[1], -1) {
+		statuses = append(statuses, match[1])
+	}
+	sort.Strings(statuses)
+	return statuses
 }
 
 func readServerOutcomesSource(t *testing.T) string {

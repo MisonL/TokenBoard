@@ -485,16 +485,28 @@ func uploadBatch(
 	if err != nil {
 		return 0, nil, err
 	}
+	if !response.outcomesPresent {
+		return response.upserted, nil, nil
+	}
+	// The outcomes array names every row this batch did not write, so every posted
+	// row is accounted for exactly once. Enforcing that closes the one path where a
+	// contradictory response could ack a row nobody vouched for: an in-range outcome
+	// for one row plus a bogus index for another.
+	if response.upserted+len(response.outcomes) != len(snapshots) {
+		return 0, nil, fmt.Errorf("Upload returned invalid response")
+	}
+	seen := make(map[int]bool, len(response.outcomes))
 	withheld := make([]WithheldSnapshot, 0, len(response.outcomes))
 	for _, outcome := range response.outcomes {
+		// The outcome indexes the array this batch posted; an index outside it or a
+		// repeat of one is a contract breakage, and withholding (or acknowledging)
+		// an unnamed row would be a guess.
+		if outcome.Index >= len(snapshots) || seen[outcome.Index] {
+			return 0, nil, fmt.Errorf("Upload returned invalid response")
+		}
+		seen[outcome.Index] = true
 		if deliveredOutcomeStatuses[outcome.Status] {
 			continue
-		}
-		// The outcome indexes the array this batch posted; an index outside it
-		// is a contract breakage, and withholding (or acknowledging) an unnamed
-		// row would be a guess.
-		if outcome.Index >= len(snapshots) {
-			return 0, nil, fmt.Errorf("Upload returned invalid response")
 		}
 		withheld = append(withheld, WithheldSnapshot{Snapshot: snapshots[outcome.Index], Status: outcome.Status})
 	}
@@ -502,10 +514,14 @@ func uploadBatch(
 }
 
 type parsedResponse struct {
-	upserted    int
-	outcomes    []rowOutcome
-	existing    []ExistingSnapshotHash
-	unsupported bool
+	upserted int
+	outcomes []rowOutcome
+	// outcomesPresent distinguishes an old server that omits `outcomes` from one that
+	// emitted it: the absent field means "deliver everything", while an emitted array
+	// must account for every posted row.
+	outcomesPresent bool
+	existing        []ExistingSnapshotHash
+	unsupported     bool
 }
 
 // rowOutcome is one entry of the ingest response's `outcomes` array, addressed by
@@ -593,10 +609,11 @@ func parseUploadResponse(response *http.Response) (parsedResponse, error) {
 	}
 	var payload struct {
 		Upserted *int `json:"upserted"`
-		Outcomes *[]struct {
-			Index  *int    `json:"index"`
-			Status *string `json:"status"`
-		} `json:"outcomes"`
+		// RawMessage, not *[]struct: a pointer slice cannot tell `"outcomes": null`
+		// from an absent field, and null must be a contract breakage (the TS parser
+		// rejects it too) — treating it as "absent" would acknowledge rows a
+		// misbehaving response never vouched for.
+		Outcomes json.RawMessage `json:"outcomes"`
 	}
 	if err := decodeExactlyOne(json.NewDecoder(response.Body), &payload); err != nil {
 		return parsedResponse{}, fmt.Errorf("Upload returned invalid response: %w", err)
@@ -605,16 +622,24 @@ func parseUploadResponse(response *http.Response) (parsedResponse, error) {
 		return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
 	}
 	outcomes := make([]rowOutcome, 0)
+	outcomesPresent := payload.Outcomes != nil
 	// Old servers omit `outcomes` entirely; that is not a contract breakage.
 	if payload.Outcomes != nil {
-		for _, outcome := range *payload.Outcomes {
+		var entries []struct {
+			Index  *int    `json:"index"`
+			Status *string `json:"status"`
+		}
+		if err := json.Unmarshal(payload.Outcomes, &entries); err != nil || entries == nil {
+			return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
+		}
+		for _, outcome := range entries {
 			if outcome.Index == nil || *outcome.Index < 0 || outcome.Status == nil || *outcome.Status == "" {
 				return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
 			}
 			outcomes = append(outcomes, rowOutcome{Index: *outcome.Index, Status: *outcome.Status})
 		}
 	}
-	return parsedResponse{upserted: *payload.Upserted, outcomes: outcomes}, nil
+	return parsedResponse{upserted: *payload.Upserted, outcomes: outcomes, outcomesPresent: outcomesPresent}, nil
 }
 
 var snapshotHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
