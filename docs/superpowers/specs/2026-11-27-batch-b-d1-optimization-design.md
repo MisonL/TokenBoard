@@ -150,3 +150,31 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
 - 两侧同步：TS `packages/collector/src/upload.ts` 与 Go
   `clients/go/internal/upload/upload.go` 的 `snapshotBatchSize = 200`，
   测试分别钉 501→6 请求与 450→[200,200,50] 分块。
+
+### 4.2 C2 行级投递结果
+
+- 服务端 ingest 响应从 `{ upserted }` 扩为 `{ upserted, outcomes }`：`outcomes` 只列
+  **未写入**的行，按提交数组的绝对下标寻址（跨服务端 30 行内部块、跨客户端 200 行批均
+  一致；实现见 `apps/web/app/features/ingest/repository/outcomes.ts`）。四态：
+  `same`（存量同 hash）、`protected`（Codex 全零守护保住更富的存量行）、`stale`（存量
+  `synced_at` 严格更新——时钟回拨）、`unknown`（无解释，fail-closed）。分类发生在 upsert
+  语句执行之后、派生刷新之前，以同一批语句结果为准。
+- 语义裁决：`same`/`protected` 计为已投递（服务端持有的就是这条测量或更富超集）；
+  `stale`/`unknown` **不计投递**——客户端不 ack、pending 保留，下一轮重试；`stale` 另打
+  时钟告警（正常时钟下不可能发生）。`session_count > 0` 的 Codex 会话报告走 CASE 守护，
+  仍**写入**（hash/session_count 落库），计入 `upserted`，不进入 `outcomes`。
+- 客户端（TS `packages/collector/src/upload.ts` 与 Go
+  `clients/go/internal/upload/upload.go` 同步实现）：解析 `outcomes`，交付集 = 可上行行
+  − blocked − withheld；`withheld` 与 blocked 同等对待——不进 ack 组、Codex 文件级确认
+  退让（文件列表无法指向被扣行的来源）、投递水位不前进；`stale` 在 stderr 聚合告警并提示
+  检查本机时钟/时区。旧服务端无 `outcomes` 字段 → 全部按已投递处理（现行为不变）；旧客户端
+  只读 `upserted` 不受影响。未识别的未来状态一律 withhold（ack 一条服务端没写的行会永久
+  丢弃该测量）。
+- 契约镜像：客户端「计入投递的状态集」由 `packages/collector/src/upload-batches.test.ts`
+  （读服务端 `outcomes.ts` 源文本）与 `clients/go/internal/upload/outcomes_test.go`
+  （同法向上查找源文件）双向钉住；服务端每坏行一个错误名额（`1dee835`）使 32 条按行计。
+- 验证面：服务端 `outcomes.sqlite.test.ts`（10 例，真 SQLite：四态、混合批绝对下标、
+  同批同 key、40 键跨查询分块；两处分类分支经变异核验）；TS/Go 各覆盖同批好坏混合、
+  隔离重发后的下发下标、旧服务端降级、畸形 outcomes、Codex 文件确认退让、水位跳过；
+  Go 侧另有源文本镜像用例。部署顺序：先服务端（旧服务端下新客户端按旧行为工作），
+  服务端随本分支发布即满足。

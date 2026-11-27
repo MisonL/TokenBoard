@@ -90,11 +90,27 @@ export function readUploadBlocked(value: unknown): BlockedUploadSnapshot[] | und
   return Array.isArray(blocked) ? blocked : undefined
 }
 
+// The rows the server reported but did not write, with the reason. `stale` means the
+// server holds a *newer* measurement for the key (usually this machine's clock went
+// backwards) and `unknown` means no explanation at all — an unrecognized future status is
+// kept here too, because acknowledging a row the server did not write would discard its
+// measurement for good. Like blocked rows they stay pending in the cursor for a later run.
+export const uploadWithheldSymbol = Symbol('tokenboard.uploadWithheld')
+
+export type WithheldUploadSnapshot = { snapshot: UsageSnapshot; status: string }
+
+export function readUploadWithheld(value: unknown): WithheldUploadSnapshot[] | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const withheld = (value as { [uploadWithheldSymbol]?: WithheldUploadSnapshot[] })[uploadWithheldSymbol]
+  return Array.isArray(withheld) ? withheld : undefined
+}
+
 function withDelivered<T extends object>(
   payload: T,
   delivered: UsageSnapshot[],
   rejected: RejectedUploadSnapshot[],
-  blocked: BlockedUploadSnapshot[]
+  blocked: BlockedUploadSnapshot[],
+  withheld: WithheldUploadSnapshot[]
 ): T {
   Object.defineProperty(payload, uploadDeliveredSymbol, {
     configurable: false,
@@ -112,6 +128,12 @@ function withDelivered<T extends object>(
     configurable: false,
     enumerable: false,
     value: blocked,
+    writable: false
+  })
+  Object.defineProperty(payload, uploadWithheldSymbol, {
+    configurable: false,
+    enumerable: false,
+    value: withheld,
     writable: false
   })
   return payload
@@ -156,14 +178,15 @@ export async function uploadSnapshots(
     // at all, so the server's `upserted:0` keeps answering the same way for a genuinely
     // empty run. A run whose only snapshots were rejected sends no batch: posting an
     // empty one would claim a delivery that did not happen.
-    const upserted = snapshots.length === 0 ? await uploadSnapshotBatch(config, [], fetcher) : 0
-    return withDelivered(withRejectionCount({ upserted, skipped: 0 }, rejected.length), [], rejected, [])
+    const upserted = snapshots.length === 0 ? (await uploadSnapshotBatch(config, [], fetcher)).upserted : 0
+    return withDelivered(withRejectionCount({ upserted, skipped: 0 }, rejected.length), [], rejected, [], [])
   }
 
   let upserted = 0
   let skipped = 0
   let uploaded = false
   const blocked: BlockedUploadSnapshot[] = []
+  const withheld: WithheldUploadSnapshot[] = []
 
   for (const batch of chunkSnapshots(uploadable, snapshotBatchSize)) {
     const checked = await filterChangedWithIsolation(config, batch, fetcher)
@@ -173,7 +196,7 @@ export async function uploadSnapshots(
       continue
     }
 
-    upserted += await uploadBatchWithIsolation(config, checked.snapshots, fetcher, blocked)
+    upserted += await uploadBatchWithIsolation(config, checked.snapshots, fetcher, blocked, withheld)
     uploaded = true
   }
 
@@ -181,14 +204,21 @@ export async function uploadSnapshots(
   // when nothing needed uploading, which covers both "every snapshot was already there"
   // and the genuinely-empty run handled above.
   if (!uploaded) {
-    upserted += await uploadSnapshotBatch(config, [], fetcher)
+    upserted += (await uploadSnapshotBatch(config, [], fetcher)).upserted
   }
 
-  // A blocked row never reached the server: it must not be acknowledged. Everything
-  // else in `uploadable` did (posted, or already present server-side).
-  const blockedRows = new Set(blocked.map((entry) => entry.snapshot))
-  const delivered = uploadable.filter((snapshot) => !blockedRows.has(snapshot))
-  return withDelivered(withRejectionCount({ upserted, skipped }, rejected.length), delivered, rejected, blocked)
+  // A blocked row never reached the server, and a withheld row reached it but was not
+  // written without being already-present: neither may be acknowledged. Everything else in
+  // `uploadable` did land (posted, or `same`/`protected` on the server).
+  const notDelivered = new Set([...blocked.map((entry) => entry.snapshot), ...withheld.map((entry) => entry.snapshot)])
+  const delivered = uploadable.filter((snapshot) => !notDelivered.has(snapshot))
+  return withDelivered(
+    withRejectionCount({ upserted, skipped }, rejected.length),
+    delivered,
+    rejected,
+    blocked,
+    withheld
+  )
 }
 
 // The server can only reject a key it can name. A rejected key is dropped and the
@@ -247,18 +277,24 @@ async function filterChangedWithIsolation(
 
 // Posts one batch; when the server names rejected rows, removes exactly those and
 // re-sends the rest, at most `maxIsolationRounds` times. Rows the server named land in
-// `blockedAcc`; any other error (no usable details, a non-validation failure, rounds
+// `blockedAcc`; rows it did not write but did not reject (`stale`/`unknown` outcomes) land
+// in `withheldAcc`; any other error (no usable details, a non-validation failure, rounds
 // exhausted) fails the upload as it would have before.
 async function uploadBatchWithIsolation(
   config: CollectorConfig,
   snapshots: UsageSnapshot[],
   fetcher: Fetcher,
-  blockedAcc: BlockedUploadSnapshot[]
+  blockedAcc: BlockedUploadSnapshot[],
+  withheldAcc: WithheldUploadSnapshot[]
 ): Promise<number> {
   let send = snapshots
   for (let round = 0; ; round += 1) {
     try {
-      return await uploadSnapshotBatch(config, send, fetcher)
+      const accepted = await uploadSnapshotBatch(config, send, fetcher)
+      // Outcome indexes referred to the array this round posted (`send`, after any blocked
+      // removals); uploadSnapshotBatch already re-keyed them to snapshot objects.
+      withheldAcc.push(...accepted.withheld)
+      return accepted.upserted
     } catch (error) {
       if (!(error instanceof ValidationRejection) || error.snapshots.length === 0 || round >= maxIsolationRounds) {
         throw error
@@ -476,7 +512,15 @@ async function uploadSnapshotBatch(config: CollectorConfig, snapshots: UsageSnap
     throw new Error(`Upload failed with status ${response.status}`)
   }
 
-  return value as number
+  const parsed = value as ParsedUploadResponse
+  const withheld = parsed.withheld.map((entry) => {
+    const snapshot = snapshots[entry.index]
+    // An index outside the posted array is a contract breakage; acknowledging nothing
+    // is safer than guessing which row the server meant.
+    if (snapshot === undefined) throw new Error('Upload returned invalid response')
+    return { snapshot, status: entry.status }
+  })
+  return { upserted: parsed.upserted, withheld }
 }
 
 function chunkSnapshots(snapshots: UsageSnapshot[], size: number) {
@@ -616,11 +660,40 @@ function isExistingSnapshotHash(value: unknown): value is ExistingSnapshotHash {
   )
 }
 
-function parseUploadResponse(value: unknown) {
+type ParsedUploadResponse = {
+  upserted: number
+  // Rows the server reported as not written, minus the ones that count as delivered
+  // (`same` — the row already holds this measurement; `protected` — the stored row is a
+  // superset). An unrecognized status keeps the row pending: acknowledging a row the
+  // server did not write would discard its measurement for good.
+  withheld: Array<{ index: number; status: string }>
+}
+
+const deliveredOutcomeStatuses = new Set(['same', 'protected'])
+
+function parseUploadResponse(value: unknown): ParsedUploadResponse {
   if (!isRecord(value) || !isNonNegativeInteger(value.upserted)) {
     throw new Error('Upload returned invalid response')
   }
-  return value.upserted
+  const withheld: ParsedUploadResponse['withheld'] = []
+  // Old servers omit `outcomes` entirely; that is not a contract breakage.
+  if (value.outcomes !== undefined) {
+    if (!Array.isArray(value.outcomes)) throw new Error('Upload returned invalid response')
+    for (const outcome of value.outcomes) {
+      if (
+        !isRecord(outcome) ||
+        !isNonNegativeInteger(outcome.index) ||
+        typeof outcome.status !== 'string' ||
+        outcome.status === ''
+      ) {
+        throw new Error('Upload returned invalid response')
+      }
+      if (!deliveredOutcomeStatuses.has(outcome.status)) {
+        withheld.push({ index: outcome.index, status: outcome.status })
+      }
+    }
+  }
+  return { upserted: value.upserted, withheld }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

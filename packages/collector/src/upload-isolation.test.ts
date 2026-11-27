@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { readUploadBlocked, readUploadDelivered, uploadSnapshots } from './upload'
+import { readUploadBlocked, readUploadDelivered, readUploadWithheld, uploadSnapshots } from './upload'
 import { unchangedSnapshot } from './upload-test-helpers'
 
 const config = {
@@ -51,6 +51,142 @@ function isolationFetcher(state: { ingestCalls: number; badCode?: string }) {
     return jsonResponse({ upserted: body.snapshots.length })
   }
 }
+
+describe('upload row outcomes', () => {
+  // A server that answers with `outcomes` (C2): same/protected rows count as delivered,
+  // stale/unknown rows stay pending like blocked ones.
+  function outcomeFetcher(outcomes: Array<{ index: number; status: string }>, state: { ingestCalls: number }) {
+    return async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/check')) return jsonResponse({}, 404)
+      state.ingestCalls += 1
+      const body = JSON.parse(String(init?.body ?? '{}')) as { snapshots: unknown[] }
+      return jsonResponse({ upserted: body.snapshots.length - outcomes.length, outcomes })
+    }
+  }
+
+  test('same and protected outcomes stay delivered', async () => {
+    const state = { ingestCalls: 0 }
+    const rows = [snapshot('a'), snapshot('b'), snapshot('c')]
+    const fetcher = await outcomeFetcher(
+      [
+        { index: 0, status: 'same' },
+        { index: 1, status: 'protected' }
+      ],
+      state
+    )
+
+    const result = await uploadSnapshots(config, rows, fetcher)
+
+    expect(readUploadWithheld(result)).toEqual([])
+    expect(readUploadDelivered(result)?.map((row) => row.model)).toEqual(['a', 'b', 'c'])
+  })
+
+  test('stale and unknown outcomes withhold their rows and stay pending', async () => {
+    const state = { ingestCalls: 0 }
+    const rows = [snapshot('a'), snapshot('b'), snapshot('c')]
+    const fetcher = await outcomeFetcher(
+      [
+        { index: 0, status: 'stale' },
+        { index: 2, status: 'unknown' }
+      ],
+      state
+    )
+
+    const result = await uploadSnapshots(config, rows, fetcher)
+
+    expect(readUploadWithheld(result)).toEqual([
+      { snapshot: rows[0], status: 'stale' },
+      { snapshot: rows[2], status: 'unknown' }
+    ])
+    expect(readUploadDelivered(result)?.map((row) => row.model)).toEqual(['b'])
+  })
+
+  // A future server status must fail closed: acknowledging a row the server did not
+  // write would discard the measurement for good.
+  test('an unrecognized outcome status withholds the row', async () => {
+    const state = { ingestCalls: 0 }
+    const rows = [snapshot('a'), snapshot('b')]
+    const fetcher = await outcomeFetcher([{ index: 1, status: 'quarantined' }], state)
+
+    const result = await uploadSnapshots(config, rows, fetcher)
+
+    expect(readUploadWithheld(result)).toEqual([{ snapshot: rows[1], status: 'quarantined' }])
+    expect(readUploadDelivered(result)?.map((row) => row.model)).toEqual(['a'])
+  })
+
+  // Isolation rounds re-send a narrowed array; outcome indexes address the array of
+  // *that round*, so the withheld rows must be found in `send`, not the original batch.
+  test('outcome indexes address the narrowed resend', async () => {
+    const state = { ingestCalls: 0 }
+    const fetcher = async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/check')) return jsonResponse({}, 404)
+      state.ingestCalls += 1
+      const body = JSON.parse(String(init?.body ?? '{}')) as { snapshots: Array<{ model: string }> }
+      if (state.ingestCalls === 1) {
+        return jsonResponse(
+          {
+            error: {
+              code: 'BAD_REQUEST',
+              message: 'Invalid request',
+              details: [{ index: 0, path: 'snapshots.0.model', code: 'invalid-value' }]
+            }
+          },
+          400
+        )
+      }
+      // Second round posted [b, c]; the server left b unwritten.
+      return jsonResponse({ upserted: 1, outcomes: [{ index: 0, status: 'stale' }] })
+    }
+    const rows = [snapshot('bad'), snapshot('b'), snapshot('c')]
+
+    const result = await uploadSnapshots(config, rows, fetcher)
+
+    expect(readUploadBlocked(result)?.map((entry) => entry.snapshot.model)).toEqual(['bad'])
+    expect(readUploadWithheld(result)).toEqual([{ snapshot: rows[1], status: 'stale' }])
+    expect(readUploadDelivered(result)?.map((row) => row.model)).toEqual(['c'])
+  })
+
+  // The classifier's index must exist in the posted array; a server that names a row
+  // outside it broke the contract, and guessing would acknowledge or withhold the wrong row.
+  test('an outcome index outside the batch breaks the contract', async () => {
+    const state = { ingestCalls: 0 }
+    const fetcher = await outcomeFetcher([{ index: 5, status: 'stale' }], state)
+
+    await expect(uploadSnapshots(config, [snapshot('a')], fetcher)).rejects.toThrow('Upload returned invalid response')
+  })
+
+  test('a malformed outcome breaks the contract', async () => {
+    const state = { ingestCalls: 0 }
+    for (const outcome of [
+      { index: 'x', status: 'stale' },
+      { index: 0, status: '' },
+      { index: 0, status: 7 },
+      'stale'
+    ]) {
+      const fetcher = await outcomeFetcher([outcome as never], state)
+      await expect(uploadSnapshots(config, [snapshot('a')], fetcher)).rejects.toThrow(
+        'Upload returned invalid response'
+      )
+    }
+  })
+
+  // Old servers answer with only `upserted`; everything posted is delivered, as before.
+  test('a response without outcomes behaves as before C2', async () => {
+    const state = { ingestCalls: 0 }
+    const rows = [snapshot('a'), snapshot('b')]
+    const fetcher = async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/check')) return jsonResponse({}, 404)
+      state.ingestCalls += 1
+      const body = JSON.parse(String(init?.body ?? '{}')) as { snapshots: unknown[] }
+      return jsonResponse({ upserted: body.snapshots.length })
+    }
+
+    const result = await uploadSnapshots(config, rows, fetcher)
+
+    expect(readUploadWithheld(result)).toEqual([])
+    expect(readUploadDelivered(result)?.map((row) => row.model)).toEqual(['a', 'b'])
+  })
+})
 
 describe('upload isolation', () => {
   test('isolates the rows a 400 names and delivers the rest', async () => {

@@ -386,6 +386,32 @@ func syncLocked(
 		fmt.Fprintf(stderr, "TokenBoard upload: %d snapshot(s) blocked by server validation: %s; they stay pending\n",
 			len(result.Blocked), strings.Join(parts, ", "))
 	}
+	// A withheld row reached the server but was not written, and nothing on the
+	// row says it is already there: it stays pending like a blocked row. `stale`
+	// specifically means the server holds a *newer* measurement for the key,
+	// which on a working clock cannot happen — say so, because a silently
+	// re-queued row is a clock fault, not a retry. Statuses only: the values
+	// belong to the local session files.
+	if len(result.Withheld) > 0 {
+		counts := map[string]int{}
+		for _, withheld := range result.Withheld {
+			counts[withheld.Status]++
+		}
+		statuses := make([]string, 0, len(counts))
+		for status := range counts {
+			statuses = append(statuses, status)
+		}
+		sort.Strings(statuses)
+		parts := make([]string, 0, len(statuses))
+		for _, status := range statuses {
+			parts = append(parts, fmt.Sprintf("%s x%d", status, counts[status]))
+		}
+		fmt.Fprintf(stderr, "TokenBoard upload: %d snapshot(s) not written by the server: %s; they stay pending\n",
+			len(result.Withheld), strings.Join(parts, ", "))
+		if counts["stale"] > 0 {
+			fmt.Fprintf(stderr, "TokenBoard upload: the server holds newer measurements for these rows — check this machine's clock and timezone settings\n")
+		}
+	}
 	payloadFields := map[string]any{
 		"upserted": result.Upserted,
 		"skipped":  result.Skipped,
@@ -692,10 +718,11 @@ func applyAutoSince(options Options, env Env, stateDir string, now time.Time) Op
 
 // recordDeliveredWatermarks advances each collected source's watermark to the
 // latest usage date this run actually delivered or permanently rejected. A
-// source with a blocked row or a too-far-future drop is skipped entirely: one
-// of its dates is still pending, and advancing past it would lose that date for
-// good. The write happens only on the success path (after the cursor
-// acknowledgement), so a paused or failed upload never moves the watermark.
+// source with a blocked or withheld row, or a too-far-future drop, is skipped
+// entirely: one of its dates is still pending, and advancing past it would lose
+// that date for good. The write happens only on the success path (after the
+// cursor acknowledgement), so a paused or failed upload never moves the
+// watermark.
 func recordDeliveredWatermarks(
 	stateDir string, outcome collection, result upload.Result, options Options, now time.Time,
 ) error {
@@ -709,6 +736,12 @@ func recordDeliveredWatermarks(
 	}
 	blocked := map[contract.Source]bool{}
 	for _, row := range result.Blocked {
+		blocked[row.Snapshot.Source] = true
+	}
+	// A withheld row is still pending for its source, exactly like a blocked one:
+	// advancing that source's watermark past it would retire the date the row
+	// still lives in.
+	for _, row := range result.Withheld {
 		blocked[row.Snapshot.Source] = true
 	}
 	tooFarFuture := map[contract.Source]bool{}
@@ -1295,8 +1328,10 @@ func acknowledgeUploadCursors(
 	}
 	// A row the server blocked this run is not in Delivered, so group
 	// acknowledgement already withholds it — but the Codex file-level rule
-	// would still clear the file and retire a blocked row it cannot name.
-	codexSkipFileAck = codexSkipFileAck || len(delivered.Blocked) > 0
+	// would still clear the file and retire a blocked row it cannot name. The
+	// same trap exists for withheld rows: they were posted, but never landed in
+	// the table, and the file revision says nothing about which file held them.
+	codexSkipFileAck = codexSkipFileAck || len(delivered.Blocked) > 0 || len(delivered.Withheld) > 0
 	for _, source := range outcome.collectedSources {
 		acknowledged := map[string]bool{}
 		for _, snapshot := range delivered.Delivered {

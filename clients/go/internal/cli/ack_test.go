@@ -552,3 +552,77 @@ func resolveCodexHome(home string) string {
 	}
 	return filepath.Clean(absolute)
 }
+
+// A withheld row is the same trap as a blocked one: it was posted, but never
+// landed in the table, and nothing in the cursor says so. Acknowledging it
+// would retire the measurement for good.
+func TestAcknowledgeUploadCursorsKeepsWithheldRowsPending(t *testing.T) {
+	stateDir := t.TempDir()
+	snapshot := hookAckFixture(t, stateDir)
+	env := func(key string) string {
+		if key == "TOKENBOARD_HOOK_MODE" {
+			return "1"
+		}
+		return ""
+	}
+	if err := acknowledgeUploadCursors(stateDir, collection{
+		collectedSources: []contract.Source{contract.SourceClaudeCode},
+		snapshots:        []contract.Snapshot{snapshot},
+	}, upload.Result{Withheld: []upload.WithheldSnapshot{{
+		Snapshot: snapshot,
+		Status:   "stale",
+	}}}, Options{}, "", env); err != nil {
+		t.Fatal(err)
+	}
+	entry := readHookAckCursor(t, stateDir)
+	if entry.PendingUpload == nil || !*entry.PendingUpload {
+		t.Errorf("a withheld row must not be acknowledged: %+v", entry)
+	}
+}
+
+// The Codex file-level rule clears every file whose revision was uploaded, and
+// a withheld row would be retired without ever landing in the table. The rule
+// must step aside for withheld rows exactly as it does for blocked ones: the
+// file whose group was delivered still clears, the one holding the withheld
+// group stays pending.
+func TestAcknowledgeUploadCursorsKeepsCodexFileWhenARowWasWithheld(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	home := filepath.Join(root, "codex")
+	writeCodexAckCursor(t, filepath.Join(stateDir, "codex-cursor.json"), map[string]codexAckEntry{
+		"2026/05/22/session.jsonl": {digest: strings.Repeat("a", 64), pending: true},
+		"2026/05/21/session.jsonl": {digest: strings.Repeat("b", 64), pending: true, date: "2026-05-21"},
+	})
+	env := func(key string) string {
+		switch key {
+		case "TOKENBOARD_HOOK_MODE":
+			return "1"
+		case "CODEX_HOME":
+			return home
+		}
+		return ""
+	}
+	withheldRow := codexAckSnapshot()
+	withheldRow.UsageDate = "2026-05-21"
+	if err := acknowledgeUploadCursors(stateDir, collection{
+		collectedSources: []contract.Source{contract.SourceCodex},
+		codexAcknowledgement: []collect.CursorScopeFiles{{
+			Files: []sessioncursor.AcknowledgedFile{
+				{RelativePath: "2026/05/22/session.jsonl", SHA256: strings.Repeat("a", 64)},
+				{RelativePath: "2026/05/21/session.jsonl", SHA256: strings.Repeat("b", 64)},
+			},
+		}},
+	}, upload.Result{
+		Delivered: []contract.Snapshot{codexAckSnapshot()},
+		Withheld:  []upload.WithheldSnapshot{{Snapshot: withheldRow, Status: "stale"}},
+	}, Options{}, "", env); err != nil {
+		t.Fatal(err)
+	}
+	files := readCodexAckCursor(t, filepath.Join(stateDir, "codex-cursor.json"))
+	if entry := files["2026/05/21/session.jsonl"]; entry.PendingUpload == nil || !*entry.PendingUpload {
+		t.Error("the file holding a withheld row must stay pending")
+	}
+	if entry := files["2026/05/22/session.jsonl"]; entry.PendingUpload != nil && *entry.PendingUpload {
+		t.Error("the file whose group was delivered must clear")
+	}
+}

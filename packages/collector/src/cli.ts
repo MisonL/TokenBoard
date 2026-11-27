@@ -32,9 +32,11 @@ import {
   readUploadBlocked,
   readUploadDelivered,
   readUploadRejected,
+  readUploadWithheld,
   uploadSnapshots,
   type BlockedUploadSnapshot,
-  type RejectedUploadSnapshot
+  type RejectedUploadSnapshot,
+  type WithheldUploadSnapshot
 } from './upload'
 import { assertValidTimeZone } from './timezone'
 import { isAllDateFilter } from './iso-calendar-date'
@@ -216,6 +218,7 @@ export async function runCollectorCli(
     let delivered = collection.snapshots
     let rejected: RejectedUploadSnapshot[] | undefined
     let blocked: BlockedUploadSnapshot[] | undefined
+    let withheld: WithheldUploadSnapshot[] | undefined
     let result: unknown
     try {
       result = await timePhase(timings, 'upload', () =>
@@ -233,6 +236,7 @@ export async function runCollectorCli(
       delivered = readUploadDelivered(result) ?? collection.snapshots
       rejected = readUploadRejected(result)
       blocked = readUploadBlocked(result)
+      withheld = readUploadWithheld(result)
       uploadSucceeded = true
     } catch (error) {
       uploadError = error
@@ -276,12 +280,34 @@ export async function runCollectorCli(
         `TokenBoard upload: ${blocked.length} snapshot(s) blocked by server validation: ${summary}; they stay pending`
       )
     }
+    // A withheld row reached the server but was not written, and nothing on the row says
+    // it is already there: it stays pending like a blocked row. `stale` specifically means
+    // the server holds a *newer* measurement for the key, which on a working clock cannot
+    // happen — say so, because a silently re-queued row is a clock fault, not a retry.
+    if (withheld !== undefined && withheld.length > 0) {
+      const counts = new Map<string, number>()
+      for (const entry of withheld) counts.set(entry.status, (counts.get(entry.status) ?? 0) + 1)
+      const summary = [...counts.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([status, count]) => `${status} x${count}`)
+        .join(', ')
+      collectorDeps.stderr(
+        `TokenBoard upload: ${withheld.length} snapshot(s) not written by the server: ${summary}; they stay pending`
+      )
+      if (counts.has('stale')) {
+        collectorDeps.stderr(
+          "TokenBoard upload: the server holds newer measurements for these rows — check this machine's clock and timezone settings"
+        )
+      }
+    }
     // A blocked row was not delivered, so the group rule already withholds it; the
     // Codex file-level rule must also step aside or it retires a row it cannot name.
+    // A withheld row is the same trap: it was posted, but never landed in the table.
     const codexFutureRejected =
       (rejected !== undefined &&
         rejected.some((entry) => entry.snapshot.source === 'codex' && entry.issue === 'too-far-future')) ||
-      (blocked !== undefined && blocked.length > 0)
+      (blocked !== undefined && blocked.length > 0) ||
+      (withheld !== undefined && withheld.length > 0)
     await timePhase(timings, 'cursorAck', () =>
       ackUploadCursors({
         collectedSources: collection.collectedSources,
@@ -306,6 +332,7 @@ export async function runCollectorCli(
         delivered: readUploadDelivered(result),
         rejected,
         blocked,
+        withheld,
         endpoint: options.endpoint,
         uploadToken: options.uploadToken,
         timezone: options.timezone
@@ -475,6 +502,7 @@ async function recordDeliveredWatermarks(input: {
   delivered: UsageSnapshot[] | undefined
   rejected: RejectedUploadSnapshot[] | undefined
   blocked: BlockedUploadSnapshot[] | undefined
+  withheld: WithheldUploadSnapshot[] | undefined
   endpoint: string
   uploadToken: string
   timezone: string
@@ -483,6 +511,9 @@ async function recordDeliveredWatermarks(input: {
   const tokenHash = tokenFingerprint(input.uploadToken)
   if (!tokenHash || input.delivered === undefined) return
   const blockedSources = new Set((input.blocked ?? []).map((entry) => entry.snapshot.source))
+  // A withheld row is still pending for its source, exactly like a blocked one: advancing
+  // that source's watermark past it would retire the date the row still lives in.
+  for (const entry of input.withheld ?? []) blockedSources.add(entry.snapshot.source)
   const tooFarFutureSources = new Set(
     (input.rejected ?? []).filter((entry) => entry.issue === 'too-far-future').map((entry) => entry.snapshot.source)
   )

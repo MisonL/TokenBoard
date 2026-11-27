@@ -9,7 +9,7 @@ import { usageSources, type UsageSnapshot } from '@tokenboard/usage-core'
 import { runCollectorCli, transientSyncExitCode } from './cli'
 import { attachCodexHookAcknowledgement } from './providers/codex-hook-profiles'
 import { cursorSnapshotGroupKey } from './providers/session-cursor'
-import { uploadDeliveredSymbol, uploadRejectedSymbol } from './upload'
+import { uploadDeliveredSymbol, uploadRejectedSymbol, uploadWithheldSymbol } from './upload'
 
 const claudeSnapshot: UsageSnapshot = {
   source: 'claude-code',
@@ -1258,6 +1258,63 @@ describe('runCollectorCli', () => {
     // The tagged file must not be acknowledged by any cursor whose scope saw the drop.
     expect(calls.every((call) => call.files === undefined)).toBe(true)
     expect(calls.find((call) => call.cursorScope === undefined)?.groups).toEqual([cursorSnapshotGroupKey(delivered)])
+  })
+
+  // A withheld row was posted but not written and not already-present: same trap
+  // as the too-far-future drop — the file-level ack cannot tell which file held
+  // it, so the ack steps aside and only the delivered group clears.
+  test('withholds Codex file acknowledgement when a row was not written by the server', async () => {
+    const calls: Array<{
+      cursorScope: string | undefined
+      files: ReadonlyArray<{ relativePath: string; sha256: string }> | undefined
+      groups: string[] | undefined
+    }> = []
+    const staleRow = { ...codexSnapshot, usageDate: '2026-05-21' }
+    const delivered = attachCodexHookAcknowledgement(
+      [{ ...codexSnapshot }, staleRow],
+      [{ files: [{ relativePath: 'current.jsonl', sha256: 'b'.repeat(64) }] }]
+    )[0]
+    const stderr: string[] = []
+
+    const result = await runCollectorCli(
+      ['sync', '--source', 'codex'],
+      {
+        TOKENBOARD_ENDPOINT: 'https://tokenboard.example.com/api/v1/ingest',
+        TOKENBOARD_UPLOAD_TOKEN: 'test-upload-token',
+        TOKENBOARD_TIMEZONE: 'Asia/Shanghai',
+        TOKENBOARD_HOOK_MODE: '1',
+        TOKENBOARD_STATE_DIR: '/state'
+      },
+      {
+        stdout: () => undefined,
+        stderr: (line) => stderr.push(line),
+        collectClaudeCodeUsage: async () => {
+          throw new Error('codex-only test must not collect Claude Code')
+        },
+        collectCodexUsage: async () => [delivered, staleRow],
+        uploadSnapshots: async () => ({
+          upserted: 1,
+          [uploadDeliveredSymbol]: [delivered],
+          [uploadWithheldSymbol]: [{ snapshot: staleRow, status: 'stale' }]
+        }),
+        clearPendingUploadCursors: async (input) => {
+          calls.push({
+            cursorScope: input.cursorScope,
+            files: input.acknowledgedSnapshotFiles,
+            groups: input.acknowledgedSnapshotGroups
+          })
+        }
+      }
+    )
+
+    expect(result).toBe(0)
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((call) => call.files === undefined)).toBe(true)
+    expect(calls.find((call) => call.cursorScope === undefined)?.groups).toEqual([cursorSnapshotGroupKey(delivered)])
+    // A stale row means the server holds a newer measurement, which on a working
+    // clock cannot happen — the operator must hear about the clock, not just the count.
+    expect(stderr.some((line) => line.includes('not written by the server: stale x1'))).toBe(true)
+    expect(stderr.some((line) => line.includes('check this machine'))).toBe(true)
   })
 
   test('acknowledges a row the upload can never accept so it is not rescanned forever', async () => {

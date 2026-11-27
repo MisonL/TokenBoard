@@ -36,6 +36,23 @@ describe('snapshotBatchSize', () => {
     expect(declared).not.toBeNull()
     expect(Number(declared![1])).toBe(maxServerNamedRejects)
   })
+
+  // C2 outcomes mirror: the client treats exactly the statuses the server declares as
+  // already-present (`same`, `protected`) and withholds the rest. If the server renames
+  // or repurposes one of these, an unchanged row could be withheld forever (safe) or a
+  // not-written row acknowledged (data loss) — so the set is pinned against the server
+  // source, like the cap above. The Go client mirrors this test in
+  // clients/go/internal/upload/outcomes_test.go.
+  test('delivered outcome statuses mirror the server classifier', () => {
+    const serverSource = readFileSync(
+      new URL('../../../apps/web/app/features/ingest/repository/outcomes.ts', import.meta.url),
+      'utf8'
+    )
+    const declared = /export type IngestRowStatus = (.+)/.exec(serverSource)
+    expect(declared).not.toBeNull()
+    const statuses = [...declared![1]!.matchAll(/'([a-z]+)'/g)].map((match) => match[1])
+    expect(statuses.sort()).toEqual(['protected', 'same', 'stale', 'unknown'])
+  })
 })
 
 describe('uploadSnapshots batches', () => {

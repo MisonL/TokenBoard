@@ -84,6 +84,20 @@ type Result struct {
 	// neither delivered nor permanently rejected: they stay pending, out of the
 	// acknowledgement set, until a later run gets them through.
 	Blocked []BlockedSnapshot
+	// Withheld names rows that reached the server but were not written without
+	// being already present (the `stale`/`unknown`/future outcomes of the
+	// response's `outcomes`). Like Blocked they stay pending and must never be
+	// acknowledged: a `stale` row means the server holds a *newer* measurement
+	// for the key (a clock that ran backwards), and `unknown` means nothing on
+	// the row explains the skip — acking either would discard real data.
+	Withheld []WithheldSnapshot
+}
+
+// WithheldSnapshot is one snapshot the server reported but did not write, with
+// the outcome status it gave (mirrors the TS collector's WithheldUploadSnapshot).
+type WithheldSnapshot struct {
+	Snapshot contract.Snapshot
+	Status   string
 }
 
 // RejectedSnapshot is one snapshot the upload path dropped because the server
@@ -230,11 +244,11 @@ func UploadSnapshots(ctx context.Context, config Config, snapshots []contract.Sn
 		client = http.DefaultClient
 	}
 	if len(snapshots) == 0 {
-		upserted, err := uploadBatch(ctx, config, nil, client)
+		upserted, withheld, err := uploadBatch(ctx, config, nil, client)
 		if err != nil {
 			return Result{}, err
 		}
-		return Result{Upserted: upserted}, nil
+		return Result{Upserted: upserted, Withheld: withheld}, nil
 	}
 
 	// The server rejects a whole batch when any snapshot's usageDate falls outside
@@ -273,6 +287,7 @@ func UploadSnapshots(ctx context.Context, config Config, snapshots []contract.Sn
 	}
 
 	blocked := make(map[contract.Snapshot]bool)
+	withheldSet := make(map[contract.Snapshot]bool)
 	uploaded := false
 	for _, batch := range chunk(uploadable, snapshotBatchSize) {
 		checked, err := filterChanged(ctx, config, batch, client)
@@ -283,7 +298,7 @@ func UploadSnapshots(ctx context.Context, config Config, snapshots []contract.Sn
 		if len(checked.snapshots) == 0 {
 			continue
 		}
-		upserted, blockedRows, err := uploadBatchWithIsolation(ctx, config, checked.snapshots, client)
+		upserted, blockedRows, withheldRows, err := uploadBatchWithIsolation(ctx, config, checked.snapshots, client)
 		if err != nil {
 			return Result{}, err
 		}
@@ -292,20 +307,27 @@ func UploadSnapshots(ctx context.Context, config Config, snapshots []contract.Sn
 			blocked[row.Snapshot] = true
 			result.Blocked = append(result.Blocked, row)
 		}
+		for _, row := range withheldRows {
+			withheldSet[row.Snapshot] = true
+			result.Withheld = append(result.Withheld, row)
+		}
 		uploaded = true
 	}
 	if !uploaded {
-		upserted, err := uploadBatch(ctx, config, nil, client)
+		upserted, withheldRows, err := uploadBatch(ctx, config, nil, client)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Upserted += upserted
+		result.Withheld = append(result.Withheld, withheldRows...)
 	}
 	// Every uploadable row reached the server or already sat there — except the
-	// ones the server named as rejected, which stay pending and unacknowledged.
+	// ones the server named as rejected (blocked) and the ones it reported but did
+	// not write without explaining they are already present (withheld). Both stay
+	// pending and unacknowledged.
 	result.Delivered = make([]contract.Snapshot, 0, len(uploadable))
 	for _, snapshot := range uploadable {
-		if blocked[snapshot] {
+		if blocked[snapshot] || withheldSet[snapshot] {
 			continue
 		}
 		result.Delivered = append(result.Delivered, snapshot)
@@ -315,20 +337,24 @@ func UploadSnapshots(ctx context.Context, config Config, snapshots []contract.Sn
 
 // uploadBatchWithIsolation posts one batch, and on a 400 that names rows,
 // removes exactly those rows and re-sends the rest — at most
-// maxIsolationRounds times. Rows the server named come back as Blocked; any
-// other error (no usable details, a non-validation failure, rounds exhausted)
-// fails the upload as it would have before.
-func uploadBatchWithIsolation(ctx context.Context, config Config, snapshots []contract.Snapshot, client *http.Client) (int, []BlockedSnapshot, error) {
+// maxIsolationRounds times. Rows the server named come back as Blocked; rows it
+// reported but did not write (stale/unknown/future outcomes) come back as
+// Withheld. Any other error (no usable details, a non-validation failure,
+// rounds exhausted) fails the upload as it would have before.
+func uploadBatchWithIsolation(
+	ctx context.Context, config Config, snapshots []contract.Snapshot, client *http.Client,
+) (int, []BlockedSnapshot, []WithheldSnapshot, error) {
 	send := snapshots
 	blocked := make([]BlockedSnapshot, 0)
+	withheld := make([]WithheldSnapshot, 0)
 	for round := 0; ; round++ {
-		upserted, err := uploadBatch(ctx, config, send, client)
+		upserted, withheldRows, err := uploadBatch(ctx, config, send, client)
 		if err == nil {
-			return upserted, blocked, nil
+			return upserted, blocked, append(withheld, withheldRows...), nil
 		}
 		var validation *ValidationError
 		if !errors.As(err, &validation) || round == maxIsolationRounds {
-			return 0, blocked, err
+			return 0, blocked, withheld, err
 		}
 		removed := map[int]bool{}
 		for _, issue := range validation.Snapshots {
@@ -338,7 +364,7 @@ func uploadBatchWithIsolation(ctx context.Context, config Config, snapshots []co
 			}
 		}
 		if len(removed) == 0 {
-			return 0, blocked, err
+			return 0, blocked, withheld, err
 		}
 		kept := make([]contract.Snapshot, 0, len(send)-len(removed))
 		for index, snapshot := range send {
@@ -347,7 +373,7 @@ func uploadBatchWithIsolation(ctx context.Context, config Config, snapshots []co
 			}
 		}
 		if len(kept) == 0 {
-			return 0, blocked, nil
+			return 0, blocked, withheld, nil
 		}
 		send = kept
 	}
@@ -443,7 +469,9 @@ func fetchExistingHashes(ctx context.Context, config Config, keys []map[string]s
 	return response.existing, false, nil
 }
 
-func uploadBatch(ctx context.Context, config Config, snapshots []contract.Snapshot, client *http.Client) (int, error) {
+func uploadBatch(
+	ctx context.Context, config Config, snapshots []contract.Snapshot, client *http.Client,
+) (int, []WithheldSnapshot, error) {
 	// A nil slice would marshal as `null`, but the server (and the TS
 	// collector) expect `[]` for the empty keep-alive batch.
 	if snapshots == nil {
@@ -451,20 +479,48 @@ func uploadBatch(ctx context.Context, config Config, snapshots []contract.Snapsh
 	}
 	body, err := json.Marshal(map[string]any{"snapshots": snapshots})
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	response, err := postWithRetries(ctx, config, config.Endpoint, body, client, parseUploadResponse)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return response.upserted, nil
+	withheld := make([]WithheldSnapshot, 0, len(response.outcomes))
+	for _, outcome := range response.outcomes {
+		if deliveredOutcomeStatuses[outcome.Status] {
+			continue
+		}
+		// The outcome indexes the array this batch posted; an index outside it
+		// is a contract breakage, and withholding (or acknowledging) an unnamed
+		// row would be a guess.
+		if outcome.Index >= len(snapshots) {
+			return 0, nil, fmt.Errorf("Upload returned invalid response")
+		}
+		withheld = append(withheld, WithheldSnapshot{Snapshot: snapshots[outcome.Index], Status: outcome.Status})
+	}
+	return response.upserted, withheld, nil
 }
 
 type parsedResponse struct {
 	upserted    int
+	outcomes    []rowOutcome
 	existing    []ExistingSnapshotHash
 	unsupported bool
 }
+
+// rowOutcome is one entry of the ingest response's `outcomes` array, addressed by
+// its index in the array that batch posted.
+type rowOutcome struct {
+	Index  int
+	Status string
+}
+
+// deliveredOutcomeStatuses mirrors the server's classifier (`repository/outcomes.ts`
+// `IngestRowStatus`): the outcomes that mean "the server holds this measurement".
+// Anything else — stale, unknown, or a status added by a newer server — withholds the
+// row, because acknowledging a row the server did not write discards it for good.
+// TestOutcomeStatusesMirrorTheServer checks this set against the TS source.
+var deliveredOutcomeStatuses = map[string]bool{"same": true, "protected": true}
 
 type responseParser func(*http.Response) (parsedResponse, error)
 
@@ -537,6 +593,10 @@ func parseUploadResponse(response *http.Response) (parsedResponse, error) {
 	}
 	var payload struct {
 		Upserted *int `json:"upserted"`
+		Outcomes *[]struct {
+			Index  *int    `json:"index"`
+			Status *string `json:"status"`
+		} `json:"outcomes"`
 	}
 	if err := decodeExactlyOne(json.NewDecoder(response.Body), &payload); err != nil {
 		return parsedResponse{}, fmt.Errorf("Upload returned invalid response: %w", err)
@@ -544,7 +604,17 @@ func parseUploadResponse(response *http.Response) (parsedResponse, error) {
 	if payload.Upserted == nil || *payload.Upserted < 0 {
 		return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
 	}
-	return parsedResponse{upserted: *payload.Upserted}, nil
+	outcomes := make([]rowOutcome, 0)
+	// Old servers omit `outcomes` entirely; that is not a contract breakage.
+	if payload.Outcomes != nil {
+		for _, outcome := range *payload.Outcomes {
+			if outcome.Index == nil || *outcome.Index < 0 || outcome.Status == nil || *outcome.Status == "" {
+				return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
+			}
+			outcomes = append(outcomes, rowOutcome{Index: *outcome.Index, Status: *outcome.Status})
+		}
+	}
+	return parsedResponse{upserted: *payload.Upserted, outcomes: outcomes}, nil
 }
 
 var snapshotHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)

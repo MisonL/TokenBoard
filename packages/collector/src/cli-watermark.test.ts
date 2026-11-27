@@ -14,8 +14,10 @@ import {
   uploadBlockedSymbol,
   uploadDeliveredSymbol,
   uploadRejectedSymbol,
+  uploadWithheldSymbol,
   type BlockedUploadSnapshot,
-  type RejectedUploadSnapshot
+  type RejectedUploadSnapshot,
+  type WithheldUploadSnapshot
 } from './upload'
 
 const endpoint = 'https://tb.example'
@@ -64,6 +66,7 @@ function uploadResult(input: {
   delivered: UsageSnapshot[]
   rejected?: RejectedUploadSnapshot[]
   blocked?: BlockedUploadSnapshot[]
+  withheld?: WithheldUploadSnapshot[]
 }) {
   const payload: Record<string, unknown> = { upserted: input.delivered.length, skipped: 0 }
   const attach = (symbol: symbol, value: unknown) =>
@@ -71,6 +74,7 @@ function uploadResult(input: {
   attach(uploadDeliveredSymbol, input.delivered)
   attach(uploadRejectedSymbol, input.rejected ?? [])
   attach(uploadBlockedSymbol, input.blocked ?? [])
+  attach(uploadWithheldSymbol, input.withheld ?? [])
   return payload
 }
 
@@ -248,6 +252,27 @@ describe('recording delivered watermarks', () => {
           uploadResult({
             delivered: [snapshot('claude-code', shiftDays(today, -1))],
             blocked: [{ snapshot: snapshot('claude-code', shiftDays(today, -2)), code: 'invalid-value' }]
+          })
+      })
+    )
+    expect(result).toBe(0)
+    const entries = await loadDeliveredWatermark(stateDir)
+    expect(entries['claude-code']).toBeUndefined()
+  })
+
+  // A withheld row was posted but never written by the server — same trap as a
+  // blocked one: advancing past the source's dates would retire the pending row.
+  test('does not record dates for a source with withheld rows', async () => {
+    const today = todayInTimeZone()
+    const result = await runCollectorCli(
+      ['sync', '--source', 'claude-code'],
+      baseEnv(),
+      testDeps({
+        collectClaudeCodeUsage: async () => [snapshot('claude-code', shiftDays(today, -1))],
+        uploadSnapshots: async () =>
+          uploadResult({
+            delivered: [snapshot('claude-code', shiftDays(today, -1))],
+            withheld: [{ snapshot: snapshot('claude-code', shiftDays(today, -2)), status: 'stale' }]
           })
       })
     )

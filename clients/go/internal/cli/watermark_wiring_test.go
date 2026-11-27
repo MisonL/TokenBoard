@@ -150,6 +150,32 @@ func TestWatermarkSkipsASourceWithPendingRows(t *testing.T) {
 	}
 }
 
+// A withheld row is still pending for its source: the server reported it but
+// did not write it, so advancing that source's watermark past its date would
+// retire the date the row still lives in.
+func TestWatermarkSkipsASourceWithWithheldRows(t *testing.T) {
+	dir := t.TempDir()
+	options := baseOptions()
+	outcome := collection{collectedSources: []contract.Source{contract.SourceClaudeCode, contract.SourceCodex}}
+	result := upload.Result{
+		Delivered: []contract.Snapshot{{Source: contract.SourceClaudeCode, UsageDate: "2026-11-24"}},
+		Withheld: []upload.WithheldSnapshot{{
+			Snapshot: contract.Snapshot{Source: contract.SourceCodex, UsageDate: "2026-11-21"},
+			Status:   "stale",
+		}},
+	}
+	if err := recordDeliveredWatermarks(dir, outcome, result, options, watermarkNow(t)); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	entries := watermark.Load(dir)
+	if _, ok := entries["codex"]; ok {
+		t.Fatal("a source with a withheld row must not advance its watermark")
+	}
+	if entries["claude-code"].UsageDate != "2026-11-24" {
+		t.Fatalf("claude-code watermark = %q", entries["claude-code"].UsageDate)
+	}
+}
+
 func TestWatermarkSkipsASourceWithTooFarFutureRows(t *testing.T) {
 	dir := t.TempDir()
 	options := baseOptions()
