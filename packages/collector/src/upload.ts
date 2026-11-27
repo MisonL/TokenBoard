@@ -24,8 +24,12 @@ type Fetcher = (url: string, init: RequestInit) => Promise<Response>
 export const snapshotBatchSize = 200
 // The server names at most this many rows per 400 response
 // (apps/web/app/features/ingest/error-details.ts `maxIngestErrorDetails`).
-// Keep in step with that constant: the round budget below is derived from it.
-const maxServerNamedRejects = 32
+// Keep in step with that constant: the round budget below is derived from it, and both
+// are pinned by literal on the server side too, so a change anywhich way fails a test.
+export const maxServerNamedRejects = 32
+// Rounds needed to drain one full batch of server-named rows. Beyond this the server is
+// misbehaving and the batch fails loudly (rows stay pending either way).
+export const maxIsolationRounds = Math.ceil(snapshotBatchSize / maxServerNamedRejects)
 const transientFetchAttempts = 3
 const defaultRetryDelayMs = 250
 const maxRetryDelayMs = 5_000
@@ -273,7 +277,6 @@ async function uploadBatchWithIsolation(
   }
 }
 
-const maxIsolationRounds = Math.ceil(snapshotBatchSize / maxServerNamedRejects)
 const maxValidationBodyBytes = 64 * 1024
 
 type ValidationIssue = { index: number; code: string }

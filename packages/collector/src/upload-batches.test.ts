@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
-import { snapshotBatchSize, uploadSnapshots } from './upload'
+import { maxIsolationRounds, maxServerNamedRejects, snapshotBatchSize, uploadSnapshots } from './upload'
 import { unchangedSnapshot } from './upload-test-helpers'
 
 // The server rejects an array larger than 500 outright, and its array-level detail
@@ -9,6 +10,31 @@ describe('snapshotBatchSize', () => {
   test('stays under the server ingest cap', () => {
     const serverMaxIngestSnapshotBatchSize = 500
     expect(snapshotBatchSize).toBeLessThanOrEqual(serverMaxIngestSnapshotBatchSize)
+  })
+
+  // Pin the isolation capacity formula with literals: the budget must drain one full
+  // batch of server-named rows (the width-30 property C3 must not lose). Reading the
+  // constants back would only prove the source is self-consistent, not that the
+  // derivation still holds if either constant drifts.
+  test('isolation rounds cover a full batch of named rejects', () => {
+    expect(maxServerNamedRejects).toBe(32)
+    expect(maxIsolationRounds).toBe(Math.ceil(200 / 32))
+    expect(maxIsolationRounds * maxServerNamedRejects).toBeGreaterThanOrEqual(snapshotBatchSize)
+  })
+
+  // maxServerNamedRejects mirrors the server's maxIngestErrorDetails (the same mirror
+  // pattern as usage-sources.test.mjs): if the server lowers its per-response cap, the
+  // client's round budget silently stops covering a full batch. The deploy order also
+  // matters — the server-side per-row cap (ingest error-details, commit 1dee835) must
+  // not lag behind clients that assume it.
+  test('server-named-rejects constant matches the ingest cap', () => {
+    const serverSource = readFileSync(
+      new URL('../../../apps/web/app/features/ingest/error-details.ts', import.meta.url),
+      'utf8'
+    )
+    const declared = /export const maxIngestErrorDetails = (\d+)/.exec(serverSource)
+    expect(declared).not.toBeNull()
+    expect(Number(declared![1])).toBe(maxServerNamedRejects)
   })
 })
 

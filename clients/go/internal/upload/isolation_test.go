@@ -173,6 +173,21 @@ func TestUploadStopsIsolatingAtTheRoundBudget(t *testing.T) {
 	}
 }
 
+// The budget must drain a full batch of server-named rows — the width-30 property
+// C3 must not lose. Pinned with literals: deriving the expectation from the same
+// constants the code uses would only prove the source is self-consistent.
+func TestIsolationBudgetCoversAFullBatch(t *testing.T) {
+	if maxServerNamedRejects != 32 {
+		t.Errorf("maxServerNamedRejects = %d, want 32 (the server's maxIngestErrorDetails)", maxServerNamedRejects)
+	}
+	if maxIsolationRounds != (200+32-1)/32 {
+		t.Errorf("maxIsolationRounds = %d, want %d", maxIsolationRounds, (200+32-1)/32)
+	}
+	if capacity := maxIsolationRounds * maxServerNamedRejects; capacity < snapshotBatchSize {
+		t.Errorf("isolation capacity %d cannot cover a %d-row batch", capacity, snapshotBatchSize)
+	}
+}
+
 // An old server answers 400 without details; the client must fail the batch as
 // a whole and never re-send it (no details, no idea which row is at fault).
 func TestUploadWithoutDetailsFailsWholeBatch(t *testing.T) {
