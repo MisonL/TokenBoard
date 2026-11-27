@@ -73,6 +73,70 @@ export function readSignalSources(runtime) {
   )
 }
 
+// When the queued signals for each source were last requested. `readSignalSources` only
+// says *that* a source is waiting; the window decision needs to know whether a scheduled
+// run that finished after the request has covered it. An unparseable timestamp
+// is reported as such (null, not 0): an unknown age must never let a request be treated as
+// already covered. Recovery-journal entries and drained files are not inspected — after a
+// drain they carry no record of when the request was made, and the active queue copy
+// normally holds it.
+export function readSignalRequestTimes(runtime) {
+  const times = new Map()
+  const record = (source, line) => {
+    const requestedAt = parseSignalRequestedAt(line)
+    const previous = times.get(source)
+    // "Unknown" (null) is the weakest fact and must not displace a known time; among several
+    // requests for the same source the newest known time is the claim: an older request may
+    // already have been covered by a scheduled run, while this one still needs deciding.
+    if (requestedAt === null) {
+      if (!times.has(source)) times.set(source, null)
+      return
+    }
+    if (previous === undefined || previous === null || requestedAt > previous) times.set(source, requestedAt)
+  }
+  const inspect = (text) => {
+    for (const line of text.split(/\r?\n/)) {
+      const source = parseSignalSource(line)
+      if (source) record(source, line)
+    }
+  }
+  const readIfPresent = (path) => {
+    try {
+      inspect(runtime.readFile(path))
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
+  if (typeof runtime.readdir === 'function') {
+    let names = []
+    try {
+      names = readQueueEntries(runtime)
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+    // Only active entries: a drained file is in-flight work for a run that is already
+    // consuming it, not a request still waiting for a scheduled run.
+    for (const name of names) if (!isDrainedSignalEntry(name)) readIfPresent(join(signalQueueDir(runtime), name))
+  }
+  readIfPresent(signalPath(runtime))
+  return times
+}
+
+// `appendSignal` writes the full object, but the signal file is also appended to by hand and
+// by older versions: a bare source name or an object without `requestedAt` yields null, the
+// "unknown age" answer.
+function parseSignalRequestedAt(line) {
+  const value = line.trim()
+  if (!value || !value.startsWith('{')) return null
+  try {
+    const parsed = JSON.parse(value)
+    const requestedAt = parsed?.requestedAt
+    return typeof requestedAt === 'string' && Number.isFinite(Date.parse(requestedAt)) ? requestedAt : null
+  } catch {
+    return null
+  }
+}
+
 function readLegacySignalSources(runtime) {
   const sources = readRetainedLegacySignalSources(runtime)
   try {

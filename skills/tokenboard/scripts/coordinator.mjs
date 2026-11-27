@@ -14,9 +14,16 @@ import {
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
-import { acknowledgeSignalSource, appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
+import {
+  acknowledgeSignalSource,
+  appendSignal,
+  drainSignalSources,
+  readSignalRequestTimes,
+  readSignalSources
+} from './coordinator-signal.mjs'
 import { errorMessage } from './error-message.mjs'
 import { currentProcessStartIdentity, probeProcessStartIdentity } from './process-liveness.mjs'
+import { sourceCoveredByScheduledRun as scheduledRunCoversSource } from './scheduled-coverage.mjs'
 import { isWithinScheduleWindow } from './schedule.mjs'
 
 const defaultLockTimeoutMs = 60_000
@@ -145,6 +152,22 @@ function runCoordinator(trigger, runtime, result) {
       return { ...result, waitedForLock: true, skippedSync: true }
     }
     let syncSources = mergeSources(pendingSources, [trigger.source])
+    // A scheduled run that finished after the request already collected a source — whether
+    // the hook trigger now lands inside the window or in a trailing worker after it. Drop
+    // those sources from everything below (the skip paths would otherwise re-queue them
+    // from `pendingSources`); a duplicate scan costs a multi-GB ccusage run for nothing.
+    const covered = syncSources.filter((source) => sourceCoveredByScheduledRun(runtime, source))
+    if (covered.length > 0) {
+      for (const source of covered) {
+        acknowledgeSignalSource(runtime, source)
+        const index = pendingSources.indexOf(source)
+        if (index >= 0) pendingSources.splice(index, 1)
+      }
+      syncSources = syncSources.filter((source) => !covered.includes(source))
+    }
+    if (syncSources.length === 0) {
+      return { ...result, waitedForLock: lock.waited, skippedSync: true, skippedReason: 'scheduled-covered' }
+    }
     const remainingMs = cooldownRemainingMs(runtime)
     if (remainingMs > 0) {
       return skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock })
@@ -156,8 +179,8 @@ function runCoordinator(trigger, runtime, result) {
     // for the next hook run to acknowledge. Skipping here only avoids a second full
     // ccusage scan minutes before or after the scheduled one.
     if (isInsideScheduledWindow(runtime)) {
-      keepCooldownTrigger(trigger, runtime, pendingSources, syncSources)
-      return { ...result, waitedForLock: lock.waited, skippedSync: true, skippedReason: 'scheduled-window' }
+      const trailingSources = keepCooldownTrigger(trigger, runtime, pendingSources, syncSources)
+      return skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources })
     }
     // A scan costs 4.6-7.6 GB of resident memory. On a machine that is already out of memory
     // or swapping, it runs many times longer and can still fail on the way out (2026-11-24:
@@ -292,6 +315,64 @@ function skipForCooldown({ trigger, runtime, result, pendingSources, syncSources
     remainingMs,
     trailingScheduled: scheduleTrailingSources(trigger, trailingSources, runtime, remainingMs),
     trailingSources
+  })
+}
+
+// Sources that reach this point are the ones the coverage gate did not drop: no scheduled
+// run has finished after their request. Book one trailing retry at a deadline the window
+// itself defines — the scheduled run is still expected to finish before then, and that
+// run's own state file (checked as the worker's gate) is what stops the retry from
+// re-scanning a source it covered.
+function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources }) {
+  const delayMs = scheduleWindowTrailingDelayMs(runtime)
+  const scheduled =
+    trailingSources.length > 0 && runtime.scheduleTrailing({ ...trigger, source: trailingSources[0] }, delayMs)
+  return {
+    ...result,
+    waitedForLock: lock.waited,
+    skippedSync: true,
+    skippedReason: 'scheduled-window',
+    ...(scheduled ? { trailingScheduled: true, trailingDelayMs: delayMs } : {}),
+    trailingSources
+  }
+}
+
+// Wait until the current window closes before re-scanning what the scheduled run might
+// have missed: the trailing worker's wake time is the scheduled time of the window it was
+// suppressed in plus the window width (12:05 suppressed by the 12:00 window wakes at
+// 12:30), not the next scheduled slot hours away and not a fixed nap that would land
+// inside the same window again. When no window is configured or the clock is unusable,
+// no trailing retry is booked — the next hook trigger re-evaluates on its own.
+function scheduleWindowTrailingDelayMs(runtime) {
+  const window = runtime.scheduleWindow
+  if (!window?.times?.length || !Number.isFinite(window.windowMs) || window.windowMs <= 0) return 0
+  const date = new Date(runtime.now())
+  const currentMinutes = date.getHours() * 60 + date.getMinutes()
+  const windowMinutes = window.windowMs / 60_000
+  let delay = Number.POSITIVE_INFINITY
+  for (const time of window.times) {
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
+    if (!match) continue
+    const scheduledMinutes = Number(match[1]) * 60 + Number(match[2])
+    const direct = currentMinutes - scheduledMinutes
+    const distance = direct >= 0 ? direct : direct + 24 * 60
+    // Only a window this instant is inside is a candidate; anything else means the skip
+    // did not come from the window (defensive: the caller checks the window first).
+    if (distance > windowMinutes) continue
+    delay = Math.min(delay, (windowMinutes - distance) * 60_000)
+  }
+  return Number.isFinite(delay) ? delay : 0
+}
+
+// The request time rides on the queue entry, not on the trigger: a trailing worker is
+// spawned from a skip, and the signal it is retrying may have been queued long before.
+function sourceCoveredByScheduledRun(runtime, source) {
+  return scheduledRunCoversSource({
+    stateDir: runtime.stateDir,
+    source,
+    requestedAt: readSignalRequestTimes(runtime).get(source),
+    now: runtime.now,
+    readFile: runtime.readFile
   })
 }
 
