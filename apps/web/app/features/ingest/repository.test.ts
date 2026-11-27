@@ -193,8 +193,11 @@ describe('upsertUsageSnapshots', () => {
       makeRecord({ usageDate: '2026-04-29' })
     ])
 
-    const summaryBindings = bindings.filter((values) => values.length === 8)
-    const totalsBindings = bindings.filter((values) => values.length === 2)
+    // Summary: four key columns + four join columns + the batch timestamp. Totals: user id,
+    // the same batch timestamp, then the join's user id — one stamp shared by both aggregates
+    // so the public-card freshness check never sees one newer than the other.
+    const summaryBindings = bindings.filter((values) => values.length === 9)
+    const totalsBindings = bindings.filter((values) => values.length === 3)
     expect(summaryBindings).toEqual([
       [
         'seed-user',
@@ -204,7 +207,8 @@ describe('upsertUsageSnapshots', () => {
         'seed-user',
         '2026-04-28',
         'claude-code',
-        'claude-sonnet-4-5'
+        'claude-sonnet-4-5',
+        expect.any(String)
       ],
       [
         'seed-user',
@@ -214,10 +218,12 @@ describe('upsertUsageSnapshots', () => {
         'seed-user',
         '2026-04-29',
         'claude-code',
-        'claude-sonnet-4-5'
+        'claude-sonnet-4-5',
+        expect.any(String)
       ]
     ])
-    expect(totalsBindings).toEqual([['seed-user', 'seed-user']])
+    expect(totalsBindings).toEqual([['seed-user', expect.any(String), 'seed-user']])
+    expect(totalsBindings[0][1]).toBe(summaryBindings[0][8])
     const totalRefreshSql = sqlStatements.find((sql) => sql.includes('INSERT INTO user_usage_totals')) ?? ''
     expect(totalRefreshSql).toContain('FROM usage_summary_backfill_state')
     expect(totalRefreshSql).toContain('LEFT JOIN daily_usage_summary')
@@ -319,8 +325,10 @@ describe('upsertUsageSnapshots', () => {
     expect(sqlStatements.some((sql) => sql.includes('expected_totals'))).toBe(false)
     expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toHaveLength(1)
     expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO user_usage_totals'))).toHaveLength(1)
-    expect(bindings.some((values) => values.length === 8)).toBe(true)
-    expect(bindings.some((values) => values.length === 2 && values.every((value) => value === 'seed-user'))).toBe(true)
+    expect(bindings.some((values) => values.length === 9)).toBe(true)
+    expect(
+      bindings.some((values) => values.length === 3 && values[0] === 'seed-user' && values[2] === 'seed-user')
+    ).toBe(true)
     expect(batches).toHaveLength(2)
     expect(batches[0]).toHaveLength(1)
     expect(batches[1]).toHaveLength(2)
@@ -797,7 +805,9 @@ describe('backfillUsageSummaryCache', () => {
     expect(sqlStatements.join('\n')).not.toContain('aggregate_totals AS')
     expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toHaveLength(0)
     expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO user_usage_totals'))).toHaveLength(2)
-    expect(bindings.some((values) => values.length === 2 && values.every((value) => value === 'user_1'))).toBe(true)
+    expect(bindings.some((values) => values.length === 3 && values[0] === 'user_1' && values[2] === 'user_1')).toBe(
+      true
+    )
     expect(batches).toHaveLength(1)
     expect(batches[0]).toHaveLength(2)
   })

@@ -1,6 +1,7 @@
 import {
   listSummaryKeysNeedingRefresh,
   listUserIdsNeedingTotalRefresh,
+  nextAggregateTimestamp,
   prepareSummaryRefresh,
   prepareUserTotalFromSummaryRefresh
 } from './refresh'
@@ -42,9 +43,13 @@ async function upsertUsageSnapshotBatch(db: D1Database, records: IngestRecord[])
     ))
   ]
   if (summaryKeysToRefresh.length > 0 || totalUserIdsToRefresh.length > 0) {
+    // One stamp per derived batch: the summary rows and the user totals this batch writes
+    // must carry identical updated_at values, because the public-card path treats a summary
+    // stamp newer than the totals stamp as "totals are stale, re-derive from raw rows".
+    const stamp = nextAggregateTimestamp().toISOString()
     await runStatementBatches(db, [
-      ...summaryKeysToRefresh.map((key) => prepareSummaryRefresh(db, key)),
-      ...totalUserIdsToRefresh.map((userId) => prepareUserTotalFromSummaryRefresh(db, userId))
+      ...summaryKeysToRefresh.map((key) => prepareSummaryRefresh(db, key, stamp)),
+      ...totalUserIdsToRefresh.map((userId) => prepareUserTotalFromSummaryRefresh(db, userId, stamp))
     ])
   }
   return changedRecords.length

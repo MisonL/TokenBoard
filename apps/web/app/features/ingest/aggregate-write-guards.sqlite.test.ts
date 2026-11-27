@@ -76,12 +76,16 @@ describe('aggregate upsert value guards', () => {
     // The stored summary already matches what the device row aggregates to.
     insertSummaryRow(path, { totalTokens: 160, costUsd: 1.25, updatedAt: '2026-06-01T10:00:00.000Z' })
 
-    const result = await prepareSummaryRefresh(db, {
-      userId: 'u1',
-      usageDate: '2026-06-01',
-      source: 'codex',
-      model: 'gpt-5'
-    }).run()
+    const result = await prepareSummaryRefresh(
+      db,
+      {
+        userId: 'u1',
+        usageDate: '2026-06-01',
+        source: 'codex',
+        model: 'gpt-5'
+      },
+      new Date('2026-06-02T00:00:00.000Z').toISOString()
+    ).run()
 
     expect(Number(result.meta?.changes)).toBe(0)
     expect(
@@ -94,12 +98,16 @@ describe('aggregate upsert value guards', () => {
     insertUsageRow(path, { totalTokens: 999, costUsd: 9.5 })
     insertSummaryRow(path, { totalTokens: 160, costUsd: 1.25, updatedAt: '2026-06-01T10:00:00.000Z' })
 
-    const result = await prepareSummaryRefresh(db, {
-      userId: 'u1',
-      usageDate: '2026-06-01',
-      source: 'codex',
-      model: 'gpt-5'
-    }).run()
+    const result = await prepareSummaryRefresh(
+      db,
+      {
+        userId: 'u1',
+        usageDate: '2026-06-01',
+        source: 'codex',
+        model: 'gpt-5'
+      },
+      new Date('2026-06-02T00:00:00.000Z').toISOString()
+    ).run()
 
     expect(Number(result.meta?.changes)).toBe(1)
     const stored = runSql(path, `SELECT total_tokens, updated_at FROM daily_usage_summary WHERE user_id = 'u1';`)
@@ -113,12 +121,16 @@ describe('aggregate upsert value guards', () => {
     insertSummaryRow(path, { totalTokens: 160, costUsd: 1.25, updatedAt: '2026-06-01T10:00:00.000Z' })
     runSql(path, `UPDATE daily_usage_summary SET timezone = 'Asia/Shanghai' WHERE user_id = 'u1';`)
 
-    const result = await prepareSummaryRefresh(db, {
-      userId: 'u1',
-      usageDate: '2026-06-01',
-      source: 'codex',
-      model: 'gpt-5'
-    }).run()
+    const result = await prepareSummaryRefresh(
+      db,
+      {
+        userId: 'u1',
+        usageDate: '2026-06-01',
+        source: 'codex',
+        model: 'gpt-5'
+      },
+      new Date('2026-06-02T00:00:00.000Z').toISOString()
+    ).run()
 
     // timezone is a persisted business field, so the guard has to cover it: a user who changes
     // their date-attribution zone must see it reflected, not skipped as "unchanged".
@@ -139,7 +151,11 @@ describe('aggregate upsert value guards', () => {
        VALUES ('u1',160,110,1.25,2,'2026-06-01T10:00:00.000Z');`
     )
 
-    const result = await prepareUserTotalFromSummaryRefresh(db, 'u1').run()
+    const result = await prepareUserTotalFromSummaryRefresh(
+      db,
+      'u1',
+      new Date('2026-06-02T00:00:00.000Z').toISOString()
+    ).run()
 
     expect(Number(result.meta?.changes)).toBe(0)
     expect(runSql(path, `SELECT updated_at FROM user_usage_totals;`).trim().split('\n').at(-1)).toBe(
@@ -161,7 +177,11 @@ describe('aggregate upsert value guards', () => {
        VALUES ('u1',160,110,1.25,2,'2026-06-01T10:00:00.000Z');`
     )
 
-    const result = await prepareUserTotalFromSummaryRefresh(db, 'u1').run()
+    const result = await prepareUserTotalFromSummaryRefresh(
+      db,
+      'u1',
+      new Date('2026-06-02T00:00:00.000Z').toISOString()
+    ).run()
 
     expect(Number(result.meta?.changes)).toBe(1)
     expect(runSql(path, `SELECT total_tokens FROM user_usage_totals;`).trim().split('\n').at(-1)).toBe('400')
@@ -183,7 +203,11 @@ describe('aggregate upsert value guards', () => {
        VALUES ('u1',9999,9999,9,9,'2026-06-01T10:00:00.000Z');`
     )
 
-    const result = await prepareUserTotalFromSummaryRefresh(db, 'u1').run()
+    const result = await prepareUserTotalFromSummaryRefresh(
+      db,
+      'u1',
+      new Date('2026-06-02T00:00:00.000Z').toISOString()
+    ).run()
 
     expect(Number(result.meta?.changes)).toBe(0)
     expect(runSql(path, `SELECT total_tokens FROM user_usage_totals;`).trim().split('\n').at(-1)).toBe('9999')

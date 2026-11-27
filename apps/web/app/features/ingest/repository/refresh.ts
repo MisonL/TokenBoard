@@ -7,14 +7,26 @@ import {
 } from './types'
 import { billableCostSql } from '../../../lib/usage-cost'
 
-export function prepareSummaryRefresh(db: D1Database, key: UsageSummaryKey) {
-  return db
-    .prepare(refreshSummarySql)
-    .bind(key.userId, key.usageDate, key.source, key.model, key.userId, key.usageDate, key.source, key.model)
+// One timestamp per batch: the public-card cache key hashes both aggregate `updated_at`
+// columns, so a request-wide stamp would keep the key constant across batches while the
+// underlying data changed. A per-batch stamp advances it; all statements in one batch share
+// the same value so a reader can never see a newer stamp on one aggregate than the other.
+export function nextAggregateTimestamp(previous?: Date): Date {
+  const now = new Date()
+  return previous && now.getTime() <= previous.getTime() ? new Date(previous.getTime() + 1) : now
 }
 
-export function prepareUserTotalFromSummaryRefresh(db: D1Database, userId: string) {
-  return db.prepare(refreshUserTotalsFromSummarySql).bind(userId, userId)
+export function prepareSummaryRefresh(db: D1Database, key: UsageSummaryKey, updatedAt: string) {
+  return db
+    .prepare(refreshSummarySql)
+    .bind(key.userId, key.usageDate, key.source, key.model, key.userId, key.usageDate, key.source, key.model, updatedAt)
+}
+
+export function prepareUserTotalFromSummaryRefresh(db: D1Database, userId: string, updatedAt: string) {
+  // Parameter order follows the SQL text: the selected user_id, then updated_at, then the
+  // join's user_id. The timestamp sits between the two user ids because it appears in the
+  // final SELECT column list, ahead of the LEFT JOIN.
+  return db.prepare(refreshUserTotalsFromSummarySql).bind(userId, updatedAt, userId)
 }
 
 export async function listSummaryKeysNeedingRefresh(db: D1Database, records: UsageSummaryKey[]) {
@@ -202,7 +214,10 @@ const refreshSummarySql = `
     COALESCE(SUM(total_tokens - cache_read_tokens), 0),
     COALESCE(SUM(${billableCostSql()}), 0),
     COALESCE(SUM(session_count), 0),
-    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    -- Bound by the caller rather than strftime('now'): statements inside one D1 batch must
+    -- carry the same stamp (the public-card freshness check compares summary.updated_at
+    -- against totals.updated_at), and the batch loop keeps it monotonic across batches.
+    ?
   FROM deduped_usage
   WHERE true
   ON CONFLICT(user_id, usage_date, source, model) DO UPDATE SET
@@ -258,7 +273,7 @@ const refreshUserTotalsFromSummarySql = `
     COALESCE(SUM(total_tokens_without_cache_read), 0),
     COALESCE(SUM(${billableCostSql()}), 0),
     COALESCE(SUM(session_count), 0),
-    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    ?
   FROM totals_refresh_allowed
   LEFT JOIN daily_usage_summary ON daily_usage_summary.user_id = ?
   GROUP BY totals_refresh_allowed.allowed

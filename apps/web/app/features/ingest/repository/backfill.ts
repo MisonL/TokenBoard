@@ -1,4 +1,4 @@
-import { prepareSummaryRefresh, prepareUserTotalFromSummaryRefresh } from './refresh'
+import { nextAggregateTimestamp, prepareSummaryRefresh, prepareUserTotalFromSummaryRefresh } from './refresh'
 import { backfillLookahead, runStatementBatches, usageSummaryBackfillStateId, type UsageSummaryKey } from './types'
 import {
   summaryBackfillCursorSql,
@@ -65,9 +65,10 @@ async function refreshBackfillSummaries(
     state
   })
   const keysToRefresh = keys.slice(0, input.limit)
+  const stamp = nextAggregateTimestamp().toISOString()
   await runStatementBatches(
     input.db,
-    keysToRefresh.map((key) => prepareSummaryRefresh(input.db, key))
+    keysToRefresh.map((key) => prepareSummaryRefresh(input.db, key, stamp))
   )
 
   const hasMoreSummaries = keys.length > input.limit
@@ -102,9 +103,10 @@ async function refreshBackfillTotals(
     cursorUserId
   })
   const userIdsToRefresh = userIds.slice(0, input.limit)
+  const stamp = nextAggregateTimestamp().toISOString()
   await runStatementBatches(
     input.db,
-    userIdsToRefresh.map((userId) => prepareUserTotalFromSummaryRefresh(input.db, userId))
+    userIdsToRefresh.map((userId) => prepareUserTotalFromSummaryRefresh(input.db, userId, stamp))
   )
 
   if (userIds.length > input.limit) {
