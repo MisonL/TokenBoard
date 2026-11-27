@@ -155,6 +155,50 @@ describe('upload row outcomes', () => {
     await expect(uploadSnapshots(config, [snapshot('a')], fetcher)).rejects.toThrow('Upload returned invalid response')
   })
 
+  // The `outcomes` field itself must be an array of well-formed entries. `null` is
+  // not "the field is absent": absent means "old server, deliver everything", and a
+  // response the server never produced must not be acknowledged as if it had.
+  test.each([['stale'], [5], [null], [{ index: 0, status: 'stale' }]])(
+    'a non-array outcomes value (%j) breaks the contract',
+    async (outcomes) => {
+      const fetcher = async (url: string) => {
+        if (url.endsWith('/check')) return jsonResponse({}, 404)
+        return jsonResponse({ upserted: 1, outcomes })
+      }
+
+      await expect(uploadSnapshots(config, [snapshot('a')], fetcher)).rejects.toThrow(
+        'Upload returned invalid response'
+      )
+    }
+  )
+
+  // A response that names one row twice, or accounts for rows it never posted, is
+  // contradictory: one in-range name plus one bogus index must not let the in-range row
+  // be acknowledged while the bogus one is ignored.
+  test.each([
+    // Written 1 + named 1 for a single posted row: the row cannot be both.
+    ['written and named', { upserted: 1, outcomes: [{ index: 0, status: 'stale' }] }],
+    // Two named rows for two posted rows, but both names address the same row.
+    [
+      'a duplicate index',
+      {
+        upserted: 0,
+        outcomes: [
+          { index: 0, status: 'stale' },
+          { index: 0, status: 'stale' }
+        ]
+      }
+    ],
+    ['an out-of-range delivered name', { upserted: 0, outcomes: [{ index: 1, status: 'same' }] }]
+  ])('a contradictory outcome set (%s) breaks the contract', async (_name, body) => {
+    const fetcher = async (url: string) => {
+      if (url.endsWith('/check')) return jsonResponse({}, 404)
+      return jsonResponse(body)
+    }
+
+    await expect(uploadSnapshots(config, [snapshot('a')], fetcher)).rejects.toThrow('Upload returned invalid response')
+  })
+
   test('a malformed outcome breaks the contract', async () => {
     const state = { ingestCalls: 0 }
     for (const outcome of [

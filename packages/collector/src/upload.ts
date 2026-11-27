@@ -513,13 +513,23 @@ async function uploadSnapshotBatch(config: CollectorConfig, snapshots: UsageSnap
   }
 
   const parsed = value as ParsedUploadResponse
-  const withheld = parsed.withheld.map((entry) => {
+  if (parsed.outcomes === undefined) return { upserted: parsed.upserted, withheld: [] }
+  // The outcomes array names every row this batch did not write, so — against a server
+  // that emits it — every posted row is accounted for exactly once. Enforcing that
+  // closes the one path where a contradictory response could ack a row nobody vouched
+  // for: an in-range outcome for one row plus a bogus index for another.
+  if (parsed.upserted + parsed.outcomes.length !== snapshots.length) {
+    throw new Error('Upload returned invalid response')
+  }
+  const seen = new Set<number>()
+  const withheld: WithheldUploadSnapshot[] = []
+  for (const entry of parsed.outcomes) {
     const snapshot = snapshots[entry.index]
-    // An index outside the posted array is a contract breakage; acknowledging nothing
-    // is safer than guessing which row the server meant.
-    if (snapshot === undefined) throw new Error('Upload returned invalid response')
-    return { snapshot, status: entry.status }
-  })
+    if (snapshot === undefined || seen.has(entry.index)) throw new Error('Upload returned invalid response')
+    seen.add(entry.index)
+    if (deliveredOutcomeStatuses.has(entry.status)) continue
+    withheld.push({ snapshot, status: entry.status })
+  }
   return { upserted: parsed.upserted, withheld }
 }
 
@@ -662,38 +672,38 @@ function isExistingSnapshotHash(value: unknown): value is ExistingSnapshotHash {
 
 type ParsedUploadResponse = {
   upserted: number
-  // Rows the server reported as not written, minus the ones that count as delivered
-  // (`same` — the row already holds this measurement; `protected` — the stored row is a
-  // superset). An unrecognized status keeps the row pending: acknowledging a row the
-  // server did not write would discard its measurement for good.
-  withheld: Array<{ index: number; status: string }>
+  // Every row the server reported as not written, addressed by its index in the posted
+  // array — or undefined from an old server that does not emit `outcomes` at all.
+  outcomes: Array<{ index: number; status: string }> | undefined
 }
 
+// The outcomes that mean "the server already holds this measurement": `same` — the row's
+// hash matches the stored one; `protected` — the stored row is a superset (Codex guard).
+// Everything else — stale, unknown, a status a newer server adds — keeps the row pending.
 const deliveredOutcomeStatuses = new Set(['same', 'protected'])
 
 function parseUploadResponse(value: unknown): ParsedUploadResponse {
   if (!isRecord(value) || !isNonNegativeInteger(value.upserted)) {
     throw new Error('Upload returned invalid response')
   }
-  const withheld: ParsedUploadResponse['withheld'] = []
-  // Old servers omit `outcomes` entirely; that is not a contract breakage.
-  if (value.outcomes !== undefined) {
-    if (!Array.isArray(value.outcomes)) throw new Error('Upload returned invalid response')
-    for (const outcome of value.outcomes) {
-      if (
-        !isRecord(outcome) ||
-        !isNonNegativeInteger(outcome.index) ||
-        typeof outcome.status !== 'string' ||
-        outcome.status === ''
-      ) {
-        throw new Error('Upload returned invalid response')
-      }
-      if (!deliveredOutcomeStatuses.has(outcome.status)) {
-        withheld.push({ index: outcome.index, status: outcome.status })
-      }
+  // Old servers omit `outcomes` entirely; that is not a contract breakage. Our field
+  // shape checks happen here; the index checks need the posted array and live in
+  // uploadSnapshotBatch.
+  if (value.outcomes === undefined) return { upserted: value.upserted, outcomes: undefined }
+  if (!Array.isArray(value.outcomes)) throw new Error('Upload returned invalid response')
+  const outcomes: Array<{ index: number; status: string }> = []
+  for (const outcome of value.outcomes) {
+    if (
+      !isRecord(outcome) ||
+      !isNonNegativeInteger(outcome.index) ||
+      typeof outcome.status !== 'string' ||
+      outcome.status === ''
+    ) {
+      throw new Error('Upload returned invalid response')
     }
+    outcomes.push({ index: outcome.index, status: outcome.status })
   }
-  return { upserted: value.upserted, withheld }
+  return { upserted: value.upserted, outcomes }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

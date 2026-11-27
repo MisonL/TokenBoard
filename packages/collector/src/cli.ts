@@ -286,7 +286,13 @@ export async function runCollectorCli(
     // happen — say so, because a silently re-queued row is a clock fault, not a retry.
     if (withheld !== undefined && withheld.length > 0) {
       const counts = new Map<string, number>()
-      for (const entry of withheld) counts.set(entry.status, (counts.get(entry.status) ?? 0) + 1)
+      // `status` is a server-supplied string (an unrecognized future value is
+      // kept verbatim), so strip anything that could forge log lines before it
+      // reaches the sync log.
+      for (const entry of withheld) {
+        const status = entry.status.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 32)
+        counts.set(status, (counts.get(status) ?? 0) + 1)
+      }
       const summary = [...counts.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([status, count]) => `${status} x${count}`)
