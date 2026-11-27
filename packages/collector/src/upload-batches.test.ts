@@ -50,7 +50,9 @@ describe('snapshotBatchSize', () => {
     )
     const declared = /export type IngestRowStatus = (.+)/.exec(serverSource)
     expect(declared).not.toBeNull()
-    const statuses = [...declared![1]!.matchAll(/'([a-z]+)'/g)].map((match) => match[1])
+    // `[^']+`, not `[a-z]+`: a status that starts with a digit or contains `_`/`-`
+    // must still count, or a fifth status could slip past this mirror unnoticed.
+    const statuses = [...declared![1]!.matchAll(/'([^']+)'/g)].map((match) => match[1])
     expect(statuses.sort()).toEqual(['protected', 'same', 'stale', 'unknown'])
   })
 })

@@ -178,17 +178,6 @@ describe('upload row outcomes', () => {
   test.each([
     // Written 1 + named 1 for a single posted row: the row cannot be both.
     ['written and named', { upserted: 1, outcomes: [{ index: 0, status: 'stale' }] }],
-    // Two named rows for two posted rows, but both names address the same row.
-    [
-      'a duplicate index',
-      {
-        upserted: 0,
-        outcomes: [
-          { index: 0, status: 'stale' },
-          { index: 0, status: 'stale' }
-        ]
-      }
-    ],
     ['an out-of-range delivered name', { upserted: 0, outcomes: [{ index: 1, status: 'same' }] }]
   ])('a contradictory outcome set (%s) breaks the contract', async (_name, body) => {
     const fetcher = async (url: string) => {
@@ -197,6 +186,26 @@ describe('upload row outcomes', () => {
     }
 
     await expect(uploadSnapshots(config, [snapshot('a')], fetcher)).rejects.toThrow('Upload returned invalid response')
+  })
+
+  // Two posted rows with two names that address the same one: the count adds up, so only
+  // the duplicate check can reject this — posted as two rows on purpose, because with one
+  // row the count check would fire first and leave the duplicate check untested.
+  test('a duplicate outcome index breaks the contract', async () => {
+    const fetcher = async (url: string) => {
+      if (url.endsWith('/check')) return jsonResponse({}, 404)
+      return jsonResponse({
+        upserted: 0,
+        outcomes: [
+          { index: 0, status: 'stale' },
+          { index: 0, status: 'stale' }
+        ]
+      })
+    }
+
+    await expect(uploadSnapshots(config, [snapshot('a'), snapshot('b')], fetcher)).rejects.toThrow(
+      'Upload returned invalid response'
+    )
   })
 
   test('a malformed outcome breaks the contract', async () => {
@@ -212,6 +221,17 @@ describe('upload row outcomes', () => {
         'Upload returned invalid response'
       )
     }
+  })
+
+  // A server writes at most one row per posted one; a larger count without `outcomes`
+  // is a response the server cannot have produced.
+  test('an old-server count above the batch breaks the contract', async () => {
+    const fetcher = async (url: string) => {
+      if (url.endsWith('/check')) return jsonResponse({}, 404)
+      return jsonResponse({ upserted: 2 })
+    }
+
+    await expect(uploadSnapshots(config, [snapshot('a')], fetcher)).rejects.toThrow('Upload returned invalid response')
   })
 
   // Old servers answer with only `upserted`; everything posted is delivered, as before.

@@ -486,6 +486,11 @@ func uploadBatch(
 		return 0, nil, err
 	}
 	if !response.outcomesPresent {
+		// An old server writes at most one row per posted one; a larger count cannot
+		// have happened, and this path acknowledges every row.
+		if response.upserted > len(snapshots) {
+			return 0, nil, fmt.Errorf("Upload returned invalid response")
+		}
 		return response.upserted, nil, nil
 	}
 	// The outcomes array names every row this batch did not write, so every posted
@@ -607,39 +612,77 @@ func parseUploadResponse(response *http.Response) (parsedResponse, error) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return parsedResponse{}, fmt.Errorf("Upload failed with status %d", response.StatusCode)
 	}
-	var payload struct {
-		Upserted *int `json:"upserted"`
-		// RawMessage, not *[]struct: a pointer slice cannot tell `"outcomes": null`
-		// from an absent field, and null must be a contract breakage (the TS parser
-		// rejects it too) — treating it as "absent" would acknowledge rows a
-		// misbehaving response never vouched for.
-		Outcomes json.RawMessage `json:"outcomes"`
-	}
+	// Decoded through a map, not a struct: encoding/json matches struct fields
+	// case-insensitively, so `{"outcomes":null,"Outcomes":[]}` would resolve last-wins
+	// in a struct and hide the null. Keys are read exactly, and a case variant of a
+	// field this parser reads is a contract breakage (the TS parser sees two distinct
+	// keys there and rejects the null).
+	var payload map[string]json.RawMessage
 	if err := decodeExactlyOne(json.NewDecoder(response.Body), &payload); err != nil {
 		return parsedResponse{}, fmt.Errorf("Upload returned invalid response: %w", err)
 	}
-	if payload.Upserted == nil || *payload.Upserted < 0 {
+	if err := rejectCaseAliasedKeys(payload, "upserted", "outcomes"); err != nil {
+		return parsedResponse{}, err
+	}
+	var upserted *int
+	if raw, ok := payload["upserted"]; ok {
+		if err := json.Unmarshal(raw, &upserted); err != nil {
+			return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
+		}
+	}
+	if upserted == nil || *upserted < 0 {
 		return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
 	}
 	outcomes := make([]rowOutcome, 0)
-	outcomesPresent := payload.Outcomes != nil
-	// Old servers omit `outcomes` entirely; that is not a contract breakage.
-	if payload.Outcomes != nil {
-		var entries []struct {
-			Index  *int    `json:"index"`
-			Status *string `json:"status"`
-		}
-		if err := json.Unmarshal(payload.Outcomes, &entries); err != nil || entries == nil {
+	// The absent field means "old server, deliver everything"; an emitted value —
+	// including `null` — must carry a well-formed array.
+	rawOutcomes, outcomesPresent := payload["outcomes"]
+	if outcomesPresent {
+		var rawEntries []json.RawMessage
+		if err := json.Unmarshal(rawOutcomes, &rawEntries); err != nil || rawEntries == nil {
 			return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
 		}
-		for _, outcome := range entries {
-			if outcome.Index == nil || *outcome.Index < 0 || outcome.Status == nil || *outcome.Status == "" {
+		for _, rawEntry := range rawEntries {
+			var entry map[string]json.RawMessage
+			if err := json.Unmarshal(rawEntry, &entry); err != nil {
 				return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
 			}
-			outcomes = append(outcomes, rowOutcome{Index: *outcome.Index, Status: *outcome.Status})
+			if err := rejectCaseAliasedKeys(entry, "index", "status"); err != nil {
+				return parsedResponse{}, err
+			}
+			var index *int
+			if raw, ok := entry["index"]; ok {
+				if err := json.Unmarshal(raw, &index); err != nil {
+					return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
+				}
+			}
+			var status *string
+			if raw, ok := entry["status"]; ok {
+				if err := json.Unmarshal(raw, &status); err != nil {
+					return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
+				}
+			}
+			if index == nil || *index < 0 || status == nil || *status == "" {
+				return parsedResponse{}, fmt.Errorf("Upload returned invalid response")
+			}
+			outcomes = append(outcomes, rowOutcome{Index: *index, Status: *status})
 		}
 	}
-	return parsedResponse{upserted: *payload.Upserted, outcomes: outcomes, outcomesPresent: outcomesPresent}, nil
+	return parsedResponse{upserted: *upserted, outcomes: outcomes, outcomesPresent: outcomesPresent}, nil
+}
+
+// rejectCaseAliasedKeys refuses a key that differs from one of the exact names only by
+// case: a struct or case-insensitive lookup could otherwise let the alias win and
+// conceal what the exact key said.
+func rejectCaseAliasedKeys(payload map[string]json.RawMessage, names ...string) error {
+	for key := range payload {
+		for _, name := range names {
+			if key != name && strings.EqualFold(key, name) {
+				return fmt.Errorf("Upload returned invalid response")
+			}
+		}
+	}
+	return nil
 }
 
 var snapshotHashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)

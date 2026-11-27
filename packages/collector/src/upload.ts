@@ -513,7 +513,13 @@ async function uploadSnapshotBatch(config: CollectorConfig, snapshots: UsageSnap
   }
 
   const parsed = value as ParsedUploadResponse
-  if (parsed.outcomes === undefined) return { upserted: parsed.upserted, withheld: [] }
+  if (parsed.outcomes === undefined) {
+    // A server writes at most one row per posted one, so a count above the batch is a
+    // response the server cannot have produced — and an old-server reply must still
+    // leave every row acknowledged only if the count is plausible.
+    if (parsed.upserted > snapshots.length) throw new Error('Upload returned invalid response')
+    return { upserted: parsed.upserted, withheld: [] }
+  }
   // The outcomes array names every row this batch did not write, so — against a server
   // that emits it — every posted row is accounted for exactly once. Enforcing that
   // closes the one path where a contradictory response could ack a row nobody vouched

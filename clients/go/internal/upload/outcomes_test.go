@@ -164,9 +164,7 @@ func TestUploadRejectsOutcomeIndexOutsideTheBatch(t *testing.T) {
 func TestUploadRejectsContradictoryOutcomeSets(t *testing.T) {
 	for name, body := range map[string]string{
 		// Written 1 + named 1 for a single posted row: the row cannot be both.
-		"written and named": `{"upserted":1,"outcomes":[{"index":0,"status":"stale"}]}`,
-		// Two named rows for two posted rows, but both names address the same row.
-		"duplicate index":             `{"upserted":0,"outcomes":[{"index":0,"status":"stale"},{"index":0,"status":"stale"}]}`,
+		"written and named":           `{"upserted":1,"outcomes":[{"index":0,"status":"stale"}]}`,
 		"out-of-range delivered name": `{"upserted":0,"outcomes":[{"index":1,"status":"same"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -188,17 +186,43 @@ func TestUploadRejectsContradictoryOutcomeSets(t *testing.T) {
 	}
 }
 
+// Two posted rows with two names that address the same one: the count adds up, so only
+// the duplicate check can reject this — posted as two rows on purpose, because with one
+// row the count check would fire first and leave the duplicate check untested.
+func TestUploadRejectsDuplicateOutcomeIndexes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/check") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"upserted":0,"outcomes":[{"index":0,"status":"stale"},{"index":0,"status":"stale"}]}`))
+	}))
+	defer server.Close()
+
+	_, err := UploadSnapshots(t.Context(), testConfig(server.URL),
+		[]contract.Snapshot{baseSnapshot("a", 1), baseSnapshot("b", 2)}, server.Client())
+	if err == nil || !strings.Contains(err.Error(), "Upload returned invalid response") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestUploadRejectsMalformedOutcomes(t *testing.T) {
-	for name, outcomes := range map[string]string{
-		"string index":   `[{"index":"x","status":"stale"}]`,
-		"empty status":   `[{"index":0,"status":""}]`,
-		"numeric status": `[{"index":0,"status":7}]`,
-		"not objects":    `["stale"]`,
-		"not an array":   `"stale"`,
+	// The counts below are made to add up (upserted 0 + one named row for a one-row
+	// batch), so each case fails for its own reason instead of the batch arithmetic.
+	for name, body := range map[string]string{
+		"string index":   `{"upserted":0,"outcomes":[{"index":"x","status":"stale"}]}`,
+		"empty status":   `{"upserted":0,"outcomes":[{"index":0,"status":""}]}`,
+		"numeric status": `{"upserted":0,"outcomes":[{"index":0,"status":7}]}`,
+		"not objects":    `{"upserted":0,"outcomes":["stale"]}`,
+		"not an array":   `{"upserted":0,"outcomes":"stale"}`,
 		// `null` must not masquerade as the absent field: absent means "old server,
 		// deliver everything", while `null` is a response the server never produced —
 		// rows must not be acknowledged on its authority.
-		"explicit null": `null`,
+		"explicit null": `{"upserted":1,"outcomes":null}`,
+		// encoding/json would fold this into `outcomes` in a struct and the empty array
+		// would win; keys are read exactly, so the case alias is a contract breakage.
+		"case-aliased key":       `{"upserted":1,"outcomes":[],"Outcomes":[]}`,
+		"case-aliased entry key": `{"upserted":0,"outcomes":[{"Index":0,"status":"stale"}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +230,7 @@ func TestUploadRejectsMalformedOutcomes(t *testing.T) {
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
-				_, _ = w.Write([]byte(`{"upserted":1,"outcomes":` + outcomes + `}`))
+				_, _ = w.Write([]byte(body))
 			}))
 			defer server.Close()
 
@@ -216,6 +240,25 @@ func TestUploadRejectsMalformedOutcomes(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			}
 		})
+	}
+}
+
+// An old server writes at most one row per posted one; a larger count cannot have
+// happened, and the compat path acknowledges every row.
+func TestUploadRejectsCountAboveTheBatchWithoutOutcomes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/check") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"upserted":2}`))
+	}))
+	defer server.Close()
+
+	_, err := UploadSnapshots(t.Context(), testConfig(server.URL),
+		[]contract.Snapshot{baseSnapshot("a", 1)}, server.Client())
+	if err == nil || !strings.Contains(err.Error(), "Upload returned invalid response") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -280,7 +323,9 @@ func parseIngestRowStatusUnion(t *testing.T, source string) []string {
 		t.Fatal("server outcomes.ts no longer declares `export type IngestRowStatus = ...` on one line")
 	}
 	var statuses []string
-	for _, match := range regexp.MustCompile(`'([a-z]+)'`).FindAllStringSubmatch(declaration[1], -1) {
+	// `[^']+`, not `[a-z]+`: a status that starts with a digit or contains `_`/`-`
+	// must still count, or a fifth status could slip past this mirror unnoticed.
+	for _, match := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(declaration[1], -1) {
 		statuses = append(statuses, match[1])
 	}
 	sort.Strings(statuses)
