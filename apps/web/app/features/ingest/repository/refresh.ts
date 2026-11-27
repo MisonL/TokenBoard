@@ -216,6 +216,22 @@ const refreshSummarySql = `
     cost_usd = excluded.cost_usd,
     session_count = excluded.session_count,
     updated_at = excluded.updated_at
+  -- W3: rewriting an unchanged row is wasted work twice over. D1 bills one index write per
+  -- index column on every UPDATE, and — the larger cost — advancing updated_at changes the
+  -- public-card cache key (profile.ts folds MAX(summary.updated_at) into it), so an identical
+  -- re-upload invalidates a cached card for 300 seconds of nothing-new. IS NOT compares
+  -- NULL-safely and treats 1 = 1.0, unlike the plain <> operator. A row whose stored columns are NULL (only
+  -- reachable through a manual write) fails every comparison and is rewritten, which is the
+  -- repair direction anyway.
+  WHERE daily_usage_summary.timezone IS NOT excluded.timezone
+    OR daily_usage_summary.input_tokens IS NOT excluded.input_tokens
+    OR daily_usage_summary.output_tokens IS NOT excluded.output_tokens
+    OR daily_usage_summary.cache_creation_tokens IS NOT excluded.cache_creation_tokens
+    OR daily_usage_summary.cache_read_tokens IS NOT excluded.cache_read_tokens
+    OR daily_usage_summary.total_tokens IS NOT excluded.total_tokens
+    OR daily_usage_summary.total_tokens_without_cache_read IS NOT excluded.total_tokens_without_cache_read
+    OR daily_usage_summary.cost_usd IS NOT excluded.cost_usd
+    OR daily_usage_summary.session_count IS NOT excluded.session_count
 `
 
 const refreshUserTotalsFromSummarySql = `
@@ -252,4 +268,15 @@ const refreshUserTotalsFromSummarySql = `
     cost_usd = excluded.cost_usd,
     session_count = excluded.session_count,
     updated_at = excluded.updated_at
+  -- The same guard as the summary upsert, and for the same second reason: totals.updated_at
+  -- is the other half of the public-card cache key (profile.ts reads it as usageUpdatedAt),
+  -- and public/service/totals.ts compares summary.updated_at > totals.updated_at to decide
+  -- whether to re-derive costs. If summary was written but totals kept an older stamp with
+  -- identical values, every card read would take that re-derivation path. Skipping the write
+  -- only when *both* are unchanged keeps the two stamps consistent: they move together in the
+  -- same batch, so an unchanged batch advances neither.
+  WHERE user_usage_totals.total_tokens IS NOT excluded.total_tokens
+    OR user_usage_totals.total_tokens_without_cache_read IS NOT excluded.total_tokens_without_cache_read
+    OR user_usage_totals.cost_usd IS NOT excluded.cost_usd
+    OR user_usage_totals.session_count IS NOT excluded.session_count
 `
