@@ -67,7 +67,10 @@ describe('upload isolation', () => {
     expect(readUploadDelivered(result)?.map((row) => row.model)).toEqual(['good', 'also-good'])
   })
 
-  test('stops isolating after two rounds instead of looping', async () => {
+  test('drains a batch whose every row is named, without throwing', async () => {
+    // A server that names rows is behaving correctly; isolating must not stop at a
+    // round budget below the batch width, because the throw would abort the run's
+    // remaining batches — other sources' rows — and feed the 24h pause.
     let ingestCalls = 0
     const fetcher = async (url: string, init?: RequestInit) => {
       if (url.endsWith('/check')) return jsonResponse({}, 404)
@@ -86,10 +89,39 @@ describe('upload isolation', () => {
       )
     }
 
-    await expect(uploadSnapshots(config, [snapshot('a'), snapshot('b'), snapshot('c')], fetcher)).rejects.toThrow(
-      'Upload failed with status 400'
-    )
+    const rows = [snapshot('a'), snapshot('b'), snapshot('c')]
+    const result = await uploadSnapshots(config, rows, fetcher)
+
     expect(ingestCalls).toBe(3)
+    expect((result as { upserted: number }).upserted).toBe(0)
+    expect(readUploadDelivered(result)).toEqual([])
+    expect(readUploadBlocked(result)).toHaveLength(3)
+  })
+
+  test('stops isolating at the width-derived round budget instead of looping', async () => {
+    // Beyond ceil(batchWidth/32) rounds a server that still names rows is
+    // misbehaving, and the batch fails like it always did.
+    let ingestCalls = 0
+    const fetcher = async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/check')) return jsonResponse({}, 404)
+      ingestCalls += 1
+      const body = JSON.parse(String(init?.body ?? '{}')) as { snapshots: unknown[] }
+      if (body.snapshots.length === 0) return jsonResponse({ upserted: 0 })
+      return jsonResponse(
+        {
+          error: {
+            code: 'BAD_REQUEST',
+            message: 'Invalid request',
+            details: [{ index: 0, path: 'snapshots.0.model', code: 'invalid-value' }]
+          }
+        },
+        400
+      )
+    }
+
+    const rows = Array.from({ length: 10 }, (_, index) => snapshot(`m-${index}`))
+    await expect(uploadSnapshots(config, rows, fetcher)).rejects.toThrow('Upload failed with status 400')
+    expect(ingestCalls).toBe(Math.ceil(200 / 32) + 1)
   })
 
   test('fails the whole batch on a 400 without details', async () => {

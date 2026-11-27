@@ -85,9 +85,10 @@ func TestUploadIsolatesRowsTheServerNames(t *testing.T) {
 	}
 }
 
-// A server that keeps naming rows must not be able to loop the client: after
-// two removal rounds the batch fails like it does today.
-func TestUploadStopsIsolatingAfterTwoRounds(t *testing.T) {
+// A server that names one row per 400 must be drained to completion within the
+// width-derived round budget (ceil(200/32) = 7 rounds): throwing mid-batch would
+// abort the run's later batches — other sources' rows — and feed the 24h pause.
+func TestUploadDrainsNamedRowsWithoutThrowing(t *testing.T) {
 	var ingestCalls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/check") {
@@ -112,14 +113,63 @@ func TestUploadStopsIsolatingAfterTwoRounds(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := UploadSnapshots(t.Context(), testConfig(server.URL), []contract.Snapshot{
+	result, err := UploadSnapshots(t.Context(), testConfig(server.URL), []contract.Snapshot{
 		baseSnapshot("a", 1), baseSnapshot("b", 2), baseSnapshot("c", 3),
 	}, server.Client())
+	if err != nil {
+		t.Fatalf("a three-row batch must drain inside the round budget, got %v", err)
+	}
+	if atomic.LoadInt32(&ingestCalls) != 3 {
+		t.Errorf("ingest calls = %d, want 3", ingestCalls)
+	}
+	if len(result.Blocked) != 3 {
+		t.Errorf("blocked = %d, want 3", len(result.Blocked))
+	}
+	if len(result.Delivered) != 0 {
+		t.Errorf("delivered = %d, want 0", len(result.Delivered))
+	}
+}
+
+// Beyond the width-derived budget (7 rounds) a server that still names rows is
+// misbehaving, and the batch fails like it always did.
+func TestUploadStopsIsolatingAtTheRoundBudget(t *testing.T) {
+	var ingestCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/check") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&ingestCalls, 1)
+		var body struct {
+			Snapshots []contract.Snapshot `json:"snapshots"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Snapshots) == 0 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"upserted": 0})
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"details": []map[string]any{{
+				"index": 0, "path": "snapshots.0.model", "code": "invalid-value",
+			}}},
+		})
+	}))
+	defer server.Close()
+
+	rows := make([]contract.Snapshot, 10)
+	for i := range rows {
+		rows[i] = baseSnapshot("model-"+string(rune('a'+i)), int64(10+i))
+	}
+	_, err := UploadSnapshots(t.Context(), testConfig(server.URL), rows, server.Client())
 	if err == nil {
 		t.Fatal("expected an error once the isolation rounds are exhausted")
 	}
 	if !strings.Contains(err.Error(), "Upload failed with status 400") {
 		t.Errorf("error = %v", err)
+	}
+	if got := atomic.LoadInt32(&ingestCalls); got != maxIsolationRounds+1 {
+		t.Errorf("ingest calls = %d, want %d", got, maxIsolationRounds+1)
 	}
 }
 

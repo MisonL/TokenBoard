@@ -125,3 +125,23 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   本侧不再手动部署 chaosyn；本侧验收口径 = 私人 CF（`tokenboard-independent`）测试通过
   （已完成，见 §2.2）。批次 C 各项在本分支实现并以私人 CF 验证，进入上游后由其流水线
   承载生产上线与观察窗口。
+
+## 4. 批次 C 实施记录
+
+### 4.1 C3 客户端批 30→200
+
+- 私人 Worker 实测（`tokenboard-independent`，`3695fb4b` 之后的候选；同一请求内
+  `check + ingest` 两跳合计墙钟）：200 条全变化 1.7 s、200 条全命中 1.1 s、
+  100 条混合 2.1 s——均远低于 30 s 请求超时，未触发 Plan B（退 100）。
+  （测量发生于 C3 实现期，原始记录在提交 `55f2633` 的提交说明中；本表为转录。）
+- 请求数：501 条快照从 ceil(501/30)=17 块 × 2 跳 = 34 次降到 ceil(501/200)=3 块 × 2 = 6 次
+  （全变化最坏口径；全命中时为 3 次 check + 1 次 keep-alive 空 ingest）。
+- 服务端未改动：上限仍 500（`maxIngestSnapshotBatchSize`），内部仍按 30 条/D1 事务切
+  （`snapshotUpsertBatchSize`）。行隔离预算改为按批宽推导（`ceil(200/32)=7` 轮，
+  审查后修订）：2 轮 × 32 在 30条批下覆盖整批、在 200 条批下不覆盖——超预算抛错会
+  中断本轮后续批次（殃及其他来源投递）并累计 backoff，而 7 轮保证「服务端具名拒收的
+  整批」总能排干；超出即视为病态服务端，仍按旧语义失败。服务端 400 明细同时改为
+ 每坏行只占一个名额（`1dee835`），使「32 条」名副其实按行计。
+- 两侧同步：TS `packages/collector/src/upload.ts` 与 Go
+  `clients/go/internal/upload/upload.go` 的 `snapshotBatchSize = 200`，
+  测试分别钉 501→6 请求与 450→[200,200,50] 分块。

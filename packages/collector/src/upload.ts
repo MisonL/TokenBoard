@@ -12,13 +12,20 @@ import type { CollectorConfig } from './config'
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>
 
 // 200 snapshots per request (batch C3). The server accepts up to 500 and re-chunks
-// internally at 30 records per D1 transaction, so the request size changes only the
-// number of round trips: 30→200 was measured on the private Worker (200 all-changed,
-// all-identical and mixed batches: 0.7–2.1 s wall, far below the 30 s request timeout).
-// Row isolation absorbs up to 2×32 named rejects per batch; a source producing more
-// than that many invalid rows in one batch now fails the batch loudly instead of being
-// silently blocked (rows stay pending either way).
-const snapshotBatchSize = 200
+// internally at 30 records per D1 transaction (plus one derived-aggregate transaction
+// per chunk), so the request size changes only the number of round trips: 200-row
+// batches were measured on the private Worker (all-changed 1.7 s, all-identical 1.1 s,
+// 100-mixed 2.1 s wall, far below the 30 s request timeout).
+// Row isolation absorbs a full batch's worth of named rejects: the server names up
+// to 32 rows per 400 (maxIngestErrorDetails) and the round budget below covers
+// ceil(200/32) rounds, so a pathological source blocks its own rows instead of
+// throwing mid-loop — a throw aborts every later batch in the run (other sources'
+// data) and feeds the 24h upload pause.
+export const snapshotBatchSize = 200
+// The server names at most this many rows per 400 response
+// (apps/web/app/features/ingest/error-details.ts `maxIngestErrorDetails`).
+// Keep in step with that constant: the round budget below is derived from it.
+const maxServerNamedRejects = 32
 const transientFetchAttempts = 3
 const defaultRetryDelayMs = 250
 const maxRetryDelayMs = 5_000
@@ -266,7 +273,7 @@ async function uploadBatchWithIsolation(
   }
 }
 
-const maxIsolationRounds = 2
+const maxIsolationRounds = Math.ceil(snapshotBatchSize / maxServerNamedRejects)
 const maxValidationBodyBytes = 64 * 1024
 
 type ValidationIssue = { index: number; code: string }

@@ -1,5 +1,5 @@
 // Package upload mirrors packages/collector/src/upload.ts: the ingest/check
-// protocol, batch size 30, transient retry with Retry-After, response
+// protocol, batch size 200, transient retry with Retry-After, response
 // validation, and the consecutive-failure pause from upload-backoff.ts.
 package upload
 
@@ -30,8 +30,9 @@ import (
 const (
 	// snapshotBatchSize is 200 per request (batch C3, mirroring the TS collector). The
 	// server accepts up to 500 and re-chunks internally at 30 records per D1 transaction,
-	// so this only changes round-trip count; 30→200 was measured on the private Worker
-	// (all-changed / all-identical / mixed: 0.7–2.1 s wall, far below the 30 s timeout).
+	// so this only changes round-trip count; 200-row batches were measured on the private
+	// Worker (all-changed 1.7 s, all-identical 1.1 s, 100-mixed 2.1 s wall, far below the
+	// 30 s timeout).
 	snapshotBatchSize       = 200
 	transientFetchAttempts  = 3
 	defaultRetryDelayMs     = 250
@@ -102,10 +103,17 @@ type BlockedSnapshot struct {
 	Code     string
 }
 
-// maxIsolationRounds bounds how many times one batch is shrunk and re-sent
-// after the server named rejected rows. A server that keeps naming rows must
-// not be able to loop the client; after two rounds the batch fails as before.
-const maxIsolationRounds = 2
+// maxServerNamedRejects mirrors the server's maxIngestErrorDetails: one 400 names
+// at most 32 rows (apps/web/app/features/ingest/error-details.ts, one entry per
+// bad row). maxIsolationRounds is derived from it so one full batch's worth of
+// named rejects can always be drained: ceil(200/32) rounds. A batch that would
+// still have named rows after that budget is a misbehaving server, and failing
+// (as before) is better than looping; draining matters because a throw aborts
+// every later batch in the run — other sources' data — and feeds the 24h pause.
+const (
+	maxServerNamedRejects = 32
+	maxIsolationRounds    = (snapshotBatchSize + maxServerNamedRejects - 1) / maxServerNamedRejects
+)
 
 // maxValidationBodyBytes mirrors the TS reader's cap. A 400 body larger than
 // this is not one of ours and is treated as having no details.
@@ -210,7 +218,7 @@ func SnapshotHash(snapshot contract.Snapshot) string {
 }
 
 // UploadSnapshots filters snapshots through /check (when the server supports
-// it) and posts the changed ones in batches of 30. An empty input still
+// it) and posts the changed ones in batches of 200. An empty input still
 // posts one empty ingest batch, matching the TS collector's keep-alive
 // semantics; if every batch came back unchanged, one empty batch is posted
 // too.
