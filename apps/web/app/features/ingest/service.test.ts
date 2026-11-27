@@ -70,7 +70,7 @@ describe('ingest service', () => {
 
     const result = await ingestSnapshots(db, legacyUser, [makeSnapshot()], '2026-05-22T09:00:00.000Z')
 
-    expect(result).toEqual({ upserted: 1 })
+    expect(result).toEqual({ upserted: 1, outcomes: [] })
     expect(batches).toHaveLength(3)
     expect(batches[0]).toHaveLength(1)
     expect(batches[1]).toHaveLength(2)

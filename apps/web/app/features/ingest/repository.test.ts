@@ -70,7 +70,7 @@ describe('upsertUsageSnapshots', () => {
 
     const result = await upsertUsageSnapshots(db, [makeRecord(), makeRecord({ model: 'claude-opus-4-5' })])
 
-    expect(result).toEqual({ upserted: 2 })
+    expect(result).toEqual({ upserted: 2, outcomes: [] })
     expect(sqlStatements[0]).toContain('INSERT INTO daily_usage')
     expect(sqlStatements[0]).toContain('ON CONFLICT(user_id, device_id, source, usage_date, model) DO UPDATE SET')
     expect(sqlStatements[0]).toContain('daily_usage.snapshot_hash IS NULL')
@@ -155,7 +155,7 @@ describe('upsertUsageSnapshots', () => {
     // 100-statement ceiling, and each key's delta and its summary upsert share one batch —
     // runStatementBatches splits above 100 into separate transactions, and they must never
     // straddle such a split.
-    expect(result).toEqual({ upserted: 501 })
+    expect(result).toEqual({ upserted: 501, outcomes: [] })
     expect(batches).toHaveLength(34)
     expect(batches.every((batch) => batch.length <= 100)).toBe(true)
     // Usage and derived batches alternate: 16 full cycles of [30, 32], then [21,23] for the
@@ -320,7 +320,15 @@ describe('upsertUsageSnapshots', () => {
 
     const result = await upsertUsageSnapshots(db, [makeRecord(), makeRecord({ model: 'claude-opus-4-5' })])
 
-    expect(result).toEqual({ upserted: 0 })
+    // The fixture keeps no stored rows, so nothing explains the skip and both rows report the
+    // fail-closed `unknown` — a real skip always finds its stored row (same, protected or stale).
+    expect(result).toEqual({
+      upserted: 0,
+      outcomes: [
+        { index: 0, status: 'unknown' },
+        { index: 1, status: 'unknown' }
+      ]
+    })
     // The unchanged rows still get the summary freshness check (a lost summary row must be
     // repaired on the next retry), but with no key needing a refresh there is no derived batch
     // at all — and the old per-request totals reconciliation query is gone with it.
@@ -378,7 +386,7 @@ describe('upsertUsageSnapshots', () => {
 
     const result = await upsertUsageSnapshots(db, [makeRecord()])
 
-    expect(result).toEqual({ upserted: 0 })
+    expect(result).toEqual({ upserted: 0, outcomes: [{ index: 0, status: 'unknown' }] })
     expect(sqlStatements.some((sql) => sql.includes('expected_summary'))).toBe(true)
     expect(sqlStatements.some((sql) => sql.includes('expected_totals'))).toBe(false)
     expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toHaveLength(1)
@@ -426,7 +434,7 @@ describe('upsertUsageSnapshots', () => {
 
     const result = await upsertUsageSnapshots(db, [makeRecord()])
 
-    expect(result).toEqual({ upserted: 0 })
+    expect(result).toEqual({ upserted: 0, outcomes: [{ index: 0, status: 'unknown' }] })
     expect(batches).toHaveLength(1)
     expect(sqlStatements.some((sql) => sql.includes('INSERT INTO user_usage_totals'))).toBe(false)
     expect(sqlStatements.some((sql) => sql.includes('UPDATE user_usage_totals'))).toBe(false)

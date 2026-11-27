@@ -1,4 +1,5 @@
 import { listSummaryKeysNeedingRefresh, prepareSummaryRefresh, prepareUserTotalFromSummaryRefresh } from './refresh'
+import { classifyUnchangedRecords, type IngestRowOutcome } from './outcomes'
 import { listUsersWithTotalRowsSql, prepareTotalsDelta, totalsDeltaChunkKeys } from './totals-delta'
 import {
   createAggregateStamps,
@@ -12,37 +13,73 @@ import {
 
 const snapshotUpsertBatchSize = 30
 
-export async function upsertUsageSnapshots(db: D1Database, records: IngestRecord[]) {
+export type IngestResult = {
+  upserted: number
+  // Why each *not written* row was skipped, addressed by its index in the posted array.
+  // Absent entries were written. Old clients read `upserted` and ignore this.
+  outcomes: IngestRowOutcome[]
+}
+
+export async function upsertUsageSnapshots(db: D1Database, records: IngestRecord[]): Promise<IngestResult> {
   // One stamp sequence for the whole request: it keeps the cache key moving batch to batch
   // (within-millisecond batches get distinct values) while every statement inside one batch
   // shares its stamp, so no reader can see the summary and totals aggregates disagree on
   // freshness when their values agree.
   const stamps = createAggregateStamps()
+  // Hashes are needed by the statements and by the row classifier; computing them once keeps
+  // the two views of a row identical (a classifier that hashed differently would report a
+  // stored-identical row as stale).
+  const hashes = await Promise.all(records.map((record) => snapshotHash(record)))
   let upserted = 0
-  for (let index = 0; index < records.length; index += snapshotUpsertBatchSize) {
-    const batch = records.slice(index, index + snapshotUpsertBatchSize)
-    upserted += await upsertUsageSnapshotBatch(db, batch, stamps)
+  const outcomes: IngestRowOutcome[] = []
+  for (let offset = 0; offset < records.length; offset += snapshotUpsertBatchSize) {
+    const batch = records.slice(offset, offset + snapshotUpsertBatchSize)
+    const batchHashes = hashes.slice(offset, offset + snapshotUpsertBatchSize)
+    const result = await upsertUsageSnapshotBatch(db, batch, batchHashes, stamps)
+    upserted += result.upserted
+    // Re-key to the position in the posted array: the client indexes its own list.
+    for (const outcome of result.outcomes) {
+      outcomes.push({ index: offset + outcome.index, status: outcome.status })
+    }
   }
 
-  return { upserted }
+  return { upserted, outcomes }
 }
 
 async function upsertUsageSnapshotBatch(
   db: D1Database,
   records: IngestRecord[],
+  hashes: string[],
   stamps: ReturnType<typeof createAggregateStamps>
-) {
-  if (records.length === 0) return 0
-  const usageStatements = await Promise.all(records.map((record) => prepareUsageUpsert(db, record)))
+): Promise<{ upserted: number; outcomes: IngestRowOutcome[] }> {
+  if (records.length === 0) return { upserted: 0, outcomes: [] }
+  const usageStatements = await Promise.all(
+    records.map((record, index) => prepareUsageUpsert(db, record, hashes[index]))
+  )
   const results = await runStatementBatches(db, usageStatements)
-  const changedRecords = records.filter((_, index) => statementChanged(results[index]))
-  const unchangedRecords = records.filter((_, index) => !statementChanged(results[index]))
+  const changedIndexes: number[] = []
+  const unchangedIndexes: number[] = []
+  records.forEach((_, index) => (statementChanged(results[index]) ? changedIndexes : unchangedIndexes).push(index))
+  const changedRecords = changedIndexes.map((index) => records[index])
+  const unchangedRecords = unchangedIndexes.map((index) => records[index])
+  // A skipped write is not an error, but it is not a delivery either unless something on the
+  // row explains it. Classify before the derived refresh so a partial failure still leaves the
+  // outcome question answered by the same statement results this batch produced.
+  const unchangedOutcomes = await classifyUnchangedRecords(
+    db,
+    unchangedRecords,
+    unchangedIndexes.map((index) => hashes[index])
+  )
+  const outcomes = unchangedOutcomes.map((outcome, position) => ({
+    index: unchangedIndexes[position],
+    status: outcome.status
+  }))
   // A key whose summary row is missing or stale must be refreshed even if this batch did not
   // change it — the summary is the read path, and this is the only repair that keeps it current
   // without the per-request totals reconciliation.
   const missingOrStaleSummaryKeys = await listSummaryKeysNeedingRefresh(db, unchangedRecords)
   const summaryKeysToRefresh = uniqueSummaryKeys([...changedRecords, ...missingOrStaleSummaryKeys])
-  if (summaryKeysToRefresh.length === 0) return changedRecords.length
+  if (summaryKeysToRefresh.length === 0) return { upserted: changedRecords.length, outcomes }
 
   const userIdsToRefresh = uniqueUserIds(summaryKeysToRefresh)
   const existingTotalUsers = await listUsersWithTotalRows(db, userIdsToRefresh)
@@ -67,7 +104,7 @@ async function upsertUsageSnapshotBatch(
   }
 
   await runStatementBatches(db, statements)
-  return changedRecords.length
+  return { upserted: changedRecords.length, outcomes }
 }
 
 async function listUsersWithTotalRows(db: D1Database, userIds: string[]) {
@@ -83,7 +120,7 @@ async function listUsersWithTotalRows(db: D1Database, userIds: string[]) {
   return withRows
 }
 
-async function prepareUsageUpsert(db: D1Database, record: IngestRecord) {
+async function prepareUsageUpsert(db: D1Database, record: IngestRecord, hash: string) {
   const correctionFlag = record.correction ? 1 : 0
   return db.prepare(upsertUsageSql).bind(
     record.userId,
@@ -99,7 +136,7 @@ async function prepareUsageUpsert(db: D1Database, record: IngestRecord) {
     record.totalTokens,
     record.costUsd,
     record.sessionCount,
-    await snapshotHash(record),
+    hash,
     // This column is the last-writer-wins freshness marker for the snapshot;
     // server receipt time is tracked separately by the device heartbeat rows.
     record.collectedAt,

@@ -315,7 +315,7 @@ describe('usage summary cache integration', () => {
 
     const syncResult = await upsertUsageSnapshots(db, [makeIngestRecord({ usageDate: today })])
 
-    expect(syncResult).toEqual({ upserted: 1 })
+    expect(syncResult).toEqual({ upserted: 1, outcomes: [] })
     await expectScalar(db, 'SELECT COUNT(*) FROM user_usage_totals WHERE user_id = ?', 0, ['smoke-user'])
   })
 
@@ -333,7 +333,7 @@ describe('usage summary cache integration', () => {
 
     const syncResult = await upsertUsageSnapshots(db, [makeIngestRecord({ usageDate: today })])
 
-    expect(syncResult).toEqual({ upserted: 1 })
+    expect(syncResult).toEqual({ upserted: 1, outcomes: [] })
     await expectScalar(db, 'SELECT total_tokens AS value FROM user_usage_totals WHERE user_id = ?', 100, ['smoke-user'])
 
     const response = await worker.fetch(
@@ -761,7 +761,7 @@ describe('usage summary cache integration', () => {
 
     const result = await upsertUsageSnapshots(db, [snapshot])
 
-    expect(result).toEqual({ upserted: 0 })
+    expect(result).toEqual({ upserted: 0, outcomes: [{ index: 0, status: 'same' }] })
     await expectScalar(db, 'SELECT total_tokens AS value FROM daily_usage_summary WHERE user_id = ?', 1000, [
       'smoke-user'
     ])
@@ -814,7 +814,7 @@ describe('usage summary cache integration', () => {
       collectedAt: '2026-06-02T10:05:00.000Z'
     })
 
-    await expect(upsertUsageSnapshots(db, [sessionOnly])).resolves.toEqual({ upserted: 1 })
+    await expect(upsertUsageSnapshots(db, [sessionOnly])).resolves.toEqual({ upserted: 1, outcomes: [] })
     await expectScalar(
       db,
       `SELECT total_tokens AS value FROM daily_usage
@@ -834,7 +834,10 @@ describe('usage summary cache integration', () => {
       sessionCount: 0,
       collectedAt: '2026-06-02T10:06:00.000Z'
     }
-    await expect(upsertUsageSnapshots(db, [zeroSessionOnly])).resolves.toEqual({ upserted: 0 })
+    await expect(upsertUsageSnapshots(db, [zeroSessionOnly])).resolves.toEqual({
+      upserted: 0,
+      outcomes: [{ index: 0, status: 'protected' }]
+    })
     await expectScalar(
       db,
       `SELECT total_tokens AS value FROM daily_usage
@@ -848,7 +851,10 @@ describe('usage summary cache integration', () => {
       costUsd: 0.5,
       collectedAt: '2026-06-02T10:06:30.000Z'
     }
-    await expect(upsertUsageSnapshots(db, [anomalousCostOnly])).resolves.toEqual({ upserted: 0 })
+    await expect(upsertUsageSnapshots(db, [anomalousCostOnly])).resolves.toEqual({
+      upserted: 0,
+      outcomes: [{ index: 0, status: 'protected' }]
+    })
     await expectScalar(
       db,
       `SELECT cost_usd AS value FROM daily_usage
@@ -862,7 +868,7 @@ describe('usage summary cache integration', () => {
       correction: 'codex-context-pricing' as const,
       collectedAt: '2026-06-02T10:07:00.000Z'
     }
-    await expect(upsertUsageSnapshots(db, [contextCorrection])).resolves.toEqual({ upserted: 1 })
+    await expect(upsertUsageSnapshots(db, [contextCorrection])).resolves.toEqual({ upserted: 1, outcomes: [] })
     await expectScalar(
       db,
       `SELECT total_tokens AS value FROM daily_usage
@@ -888,7 +894,7 @@ describe('usage summary cache integration', () => {
       outputTokens: 300,
       collectedAt: '2026-06-02T10:05:00.000Z'
     })
-    await expect(upsertUsageSnapshots(db, [newer])).resolves.toEqual({ upserted: 1 })
+    await expect(upsertUsageSnapshots(db, [newer])).resolves.toEqual({ upserted: 1, outcomes: [] })
 
     const older = {
       ...newer,
@@ -897,7 +903,10 @@ describe('usage summary cache integration', () => {
       outputTokens: 20,
       collectedAt: '2026-06-02T10:00:00.000Z'
     }
-    await expect(upsertUsageSnapshots(db, [older])).resolves.toEqual({ upserted: 0 })
+    await expect(upsertUsageSnapshots(db, [older])).resolves.toEqual({
+      upserted: 0,
+      outcomes: [{ index: 0, status: 'stale' }]
+    })
     await expectScalar(
       db,
       `SELECT total_tokens AS value FROM daily_usage
@@ -929,7 +938,7 @@ describe('usage summary cache integration', () => {
       outputTokens: 20,
       collectedAt: '2026-06-02T10:00:00.000Z'
     })
-    await expect(upsertUsageSnapshots(db, [existing])).resolves.toEqual({ upserted: 1 })
+    await expect(upsertUsageSnapshots(db, [existing])).resolves.toEqual({ upserted: 1, outcomes: [] })
     await db
       .prepare(
         `UPDATE daily_usage
@@ -946,7 +955,7 @@ describe('usage summary cache integration', () => {
       outputTokens: 300,
       collectedAt: '2026-06-02T09:00:00.000Z'
     }
-    await expect(upsertUsageSnapshots(db, [replacement])).resolves.toEqual({ upserted: 1 })
+    await expect(upsertUsageSnapshots(db, [replacement])).resolves.toEqual({ upserted: 1, outcomes: [] })
     await expectScalar(
       db,
       `SELECT total_tokens AS value FROM daily_usage
@@ -992,9 +1001,12 @@ describe('usage summary cache integration', () => {
       collectedAt: '2026-06-02T10:00:00.050Z'
     }
 
-    await expect(upsertUsageSnapshots(db, [secondPrecision])).resolves.toEqual({ upserted: 1 })
-    await expect(upsertUsageSnapshots(db, [millisecondPrecision])).resolves.toEqual({ upserted: 1 })
-    await expect(upsertUsageSnapshots(db, [olderMillisecondPrecision])).resolves.toEqual({ upserted: 0 })
+    await expect(upsertUsageSnapshots(db, [secondPrecision])).resolves.toEqual({ upserted: 1, outcomes: [] })
+    await expect(upsertUsageSnapshots(db, [millisecondPrecision])).resolves.toEqual({ upserted: 1, outcomes: [] })
+    await expect(upsertUsageSnapshots(db, [olderMillisecondPrecision])).resolves.toEqual({
+      upserted: 0,
+      outcomes: [{ index: 0, status: 'stale' }]
+    })
     await expectScalar(
       db,
       `SELECT total_tokens AS value FROM daily_usage
