@@ -145,7 +145,8 @@ describe('uploadSnapshots resilience', () => {
     const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
 
     try {
-      await uploadSnapshots(config, [], async (url: string) => successResponse(url))
+      // An empty keep-alive batch: a real server writes nothing, so the count is 0.
+      await uploadSnapshots(config, [], async (url: string) => successResponse(url, 0))
 
       expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 30_000)
     } finally {
@@ -299,8 +300,8 @@ describe('uploadSnapshots resilience', () => {
   })
 })
 
-function successResponse(url: string) {
-  return jsonResponse(url.endsWith('/check') ? { existing: [] } : { upserted: 1 })
+function successResponse(url: string, upserted = 1) {
+  return jsonResponse(url.endsWith('/check') ? { existing: [] } : { upserted })
 }
 
 function retryableResponse(status: number) {
