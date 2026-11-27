@@ -173,8 +173,19 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
 - 契约镜像：客户端「计入投递的状态集」由 `packages/collector/src/upload-batches.test.ts`
   （读服务端 `outcomes.ts` 源文本）与 `clients/go/internal/upload/outcomes_test.go`
   （同法向上查找源文件）双向钉住；服务端每坏行一个错误名额（`1dee835`）使 32 条按行计。
-- 验证面：服务端 `outcomes.sqlite.test.ts`（10 例，真 SQLite：四态、混合批绝对下标、
-  同批同 key、40 键跨查询分块；两处分类分支经变异核验）；TS/Go 各覆盖同批好坏混合、
-  隔离重发后的下发下标、旧服务端降级、畸形 outcomes、Codex 文件确认退让、水位跳过；
-  Go 侧另有源文本镜像用例。部署顺序：先服务端（旧服务端下新客户端按旧行为工作），
-  服务端随本分支发布即满足。
+- 验证面：服务端 `outcomes.sqlite.test.ts`（12 例，真 SQLite：四态、混合批绝对下标、
+  同批同 key、40 行跨 upsert 批与 40 键跨查询分块、毫秒相等报 stale、身份键含设备、
+  单位缺失 fail-closed；分类分支改动均经变异核验）；TS/Go 各覆盖同批好坏混合、隔离重发
+  后的下发下标、旧服务端降级、畸形/矛盾/`null` outcomes、Codex 文件确认退让、水位跳过
+  （delivered 与 pending 同源夹具，删过滤循环即变红）；Go 侧另有源文本镜像用例。部署
+  顺序：先服务端（旧服务端下新客户端按旧行为工作），服务端随本分支发布即满足。
+- 已知边界（审查裁决，接受不修）：
+  - **hook pending 重放会改投 model `all`**：Codex hook 扣留行在下一轮重放时经
+    `codex-hook-pending-merge` 归并到 `model: 'all'` 摘要行。C2 之前该行在第一轮就被
+    ack 丢弃（更差），重放机制本身是既有设计；C2 只是让它更常发生，不构成回归。
+  - **非 hook 来源只有 7 天重试窗口**：全量同步后即使有 withheld 行，`--since` 水位
+    仍按既有行为推进（blocked 行同样不阻断）。交付保证本就分两类（hook 有持久 pending，
+    其余受 7 天窗口约束），C2 不改变这一点。
+  - **同 key 重复行的状态依赖 30 行分块**：同一 POST 内同 key 的两行，其 same/stale
+    分类取决于两行是否落在同一服务端块。客户端上传前按五元键聚合
+    （`mergeSnapshots`），生产不可达；若出现只会多报时钟告警并让 pending 往复，不丢数据。
