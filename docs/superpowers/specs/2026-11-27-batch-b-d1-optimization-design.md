@@ -202,3 +202,37 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   - **同 key 重复行的状态依赖 30 行分块**：同一 POST 内同 key 的两行，其 same/stale
     分类取决于两行是否落在同一服务端块。客户端上传前按五元键聚合
     （`mergeSnapshots`），生产不可达；若出现只会多报时钟告警并让 pending 往复，不丢数据。
+
+### 4.3 C4 计划窗口内被跳过的信号续跑
+
+- **前置（方案列为硬门槛）**：「计划同步是否已覆盖该信号」按来源判定，不能只看计划任务的
+  退出码（上传暂停时计划任务同样记 success），也不能只按墙钟算延迟（`12:05` 的信号在
+  `12:19` 唤醒仍被窗口拦下）。实现为 `skills/tokenboard/scripts/scheduled-coverage.mjs`
+  `sourceCoveredByScheduledRun`：读取计划同步自己写的
+  `scheduled-sync-state.json`（`all`）或 `scheduled-sync-state.<source>.json`，要求
+  ① 终态为 `success`（`running`/`deferred`/`failed`/`invalid` 都不算）② `completedAt`
+  不早于信号请求时间、不晚于当前时刻、且距当前不超过 24 小时（文件每次运行覆盖，过老的
+  完成记录不构成证据）③ 该文件描述的是 `all` 或正是该来源。任一不确定（无文件、不可读、
+  时间不可解析、请求时间不可解析）一律判「未覆盖」——方向保守：最多多扫一次，而不是少传。
+- 信号请求时间来自 `coordinator-signal.mjs` 的 `readSignalRequestTimes`（只读活跃队列
+  entry，不读 in-flight 的 `.drain` 文件）；同一来源多次请求取**最新**的一次——更早的请求
+  可能已被某次计划运行覆盖，最新的一次仍需判定。
+- 协调器（`coordinator.mjs`）在合并信号来源后先过覆盖门控：被计划运行覆盖的来源从本轮
+  全部集合中剔除并 ack 信号队列，全部被覆盖时返回 `skippedReason: 'scheduled-covered'`
+  且不排任何续跑。未被覆盖的进入原有分支：
+  - 窗口内：跳过（`scheduled-window`），并为这些来源排一次 trailing 续跑，**唤醒时刻 = 当
+    前所处窗口的结束时间**（12:05 被 12:00 窗口拦下 → 12:30），复用既有
+    `scheduleTrailing`/`runtime.scheduleTrailing` 通道（notify 的 trailing worker 在延迟
+    后复跑协调器）。worker 醒来时窗口已结束，若计划运行已成功覆盖则由上面的门控放行并
+    跳过，否则正常采集——这就是「带截止时间的续跑」，不需要另起计时器。
+  - 冷却/锁超时：现状不改（冷却本身会排 trailing）；覆盖门控已在它们之前剔除被覆盖来源。
+- 验证面：`scheduled-coverage.test.mjs`（成功晚于请求覆盖、早于请求不覆盖、failed/
+  deferred/running 不覆盖、部分来源运行不覆盖别的来源、per-source 覆盖、无状态/损坏/
+  时间不可解析不覆盖、12:05→12:31 已覆盖不重扫、未来/过旧完成不覆盖）；`coordinator-
+  scheduled-coverage.test.mjs`（合成时钟：窗口内未覆盖排 25 分钟续跑、12:31 未覆盖则采
+  集、已覆盖则 `scheduled-covered` 不采集、混合来源只续未覆盖来源、failed/deferred 不
+  覆盖、完成早于请求不覆盖、无请求时间按未覆盖）。覆盖门控与续跑 deadline 均经变异核验
+  （删门控 → 2 例变红）。
+- 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与 `scheduled-sync-state` 写入
+  时序只经合成时钟验证；计划同步在外部系统被杀死（无任何状态文件写入）的场景等价于
+  「文件停在 running/旧值」——按未覆盖处理，下次 hook 触发会重采。
