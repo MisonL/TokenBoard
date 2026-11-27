@@ -183,9 +183,22 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   - **hook pending 重放会改投 model `all`**：Codex hook 扣留行在下一轮重放时经
     `codex-hook-pending-merge` 归并到 `model: 'all'` 摘要行。C2 之前该行在第一轮就被
     ack 丢弃（更差），重放机制本身是既有设计；C2 只是让它更常发生，不构成回归。
-  - **非 hook 来源只有 7 天重试窗口**：全量同步后即使有 withheld 行，`--since` 水位
-    仍按既有行为推进（blocked 行同样不阻断）。交付保证本就分两类（hook 有持久 pending，
-    其余受 7 天窗口约束），C2 不改变这一点。
+  - **非 hook 来源只有 7 天重试窗口**：全量同步后即使有 withheld 行，投递水位仍按既有
+    行为推进（blocked 行同样不阻断）；`sync --since all` 也会推进该源的 hook 扫描高水位
+    （`warmHookCursors`，同样不因 blocked/withheld 跳过，A1 起既有）。被扣留行由后续定时
+    全量的自动窗口重试，窗口下界是 `max(today-30, …)`——超过 30 天的日期不再被重扫，这
+    是有界扫描的固有边界；对 `stale` 行无影响（服务端本就持有更新的测量，重试不会改变
+    结果）。要区分三种进度：滚动扫描窗口、投递水位（`delivered-watermark.json`）、hook
+    扫描高水位（hook cursor），只有第一个决定重试机会。
+  - **Codex 分组确认的既有暴露面**：出现 blocked/withheld 行时回退到按组确认（`(source,
+    usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 withheld 并入触发
+    条件（`git diff` 可见仅新增 `|| withheld`）。组键正是 `mergeSnapshots` 的折叠键，同批
+    同组行必被合并为一条快照，故 delivered/withheld 在同一组内非此即彼；残余场景需 cursor
+    条目保留旧的 `model: 'all'` 标签而重采以具名模型上报，属上面第一条 hook 重放边界的
+    变体。
+  - **毫秒相等报 `stale`**：upsert 与分类查询分开执行，若同一 key 的两行落在同一 POST
+    （上一条边界，生产不可达）或并发写改变了行，分类会把哈希不同但毫秒时间相等的行报成
+    `stale`（附带时钟告警）。方向保守（withhold 不丢数据），接受。
   - **同 key 重复行的状态依赖 30 行分块**：同一 POST 内同 key 的两行，其 same/stale
     分类取决于两行是否落在同一服务端块。客户端上传前按五元键聚合
     （`mergeSnapshots`），生产不可达；若出现只会多报时钟告警并让 pending 往复，不丢数据。
