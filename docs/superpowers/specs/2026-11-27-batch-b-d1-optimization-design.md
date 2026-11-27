@@ -1,7 +1,7 @@
 # 批次 B 实现记录：D1 读写优化（B1–B6）
 
 - 日期：2026-11-27
-- 状态：六项全部实现并提交；未部署（部署属 C 批次门槛）
+- 状态：六项全部实现并提交；已部署私人 CF（`tokenboard-independent` / tokenboard.431695.xyz，版本 `3695fb4b`），真实 D1 端到端验证通过；生产 chaosyn 未部署
 - 分支：`feat/skill-swap-selfheal`
 - 方案出处：`docs/research/2026-11-25-optimization-final-plan.md` §二·批次 B
 - 依据探针：`docs/research/2026-11-25-d1-write-probe/`（写入成本、索引删除、差值正确性）
@@ -76,6 +76,9 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
 
 ## 2. 验证口径
 
+### 2.1 本地
+
+
 - 定向套件（白天口径，见 memory `no-heavy-tests-during-daytime`）：
   `vitest run app/features/ingest`（10 文件 110 测试）、
   `app/features/usage app/features/public-card app/features/leaderboards app/server.test.ts app/lib`
@@ -88,10 +91,34 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   （totals PK 自动索引、summary PK 自动索引、`daily_usage_logical_key_device_idx`）且无
   对三张表任何一张的 SCAN。B1 的 EQP 正反前提在 `snapshot-hash-query-plan.test.ts`。
 
+### 2.2 私人 CF 真实部署验证（2026-11-27）
+
+`TOKENBOARD_WRANGLER_CONFIG=wrangler.production.private.jsonc pnpm run deploy` 全链绿
+（migrations 0040/0041 已 apply、五道 schema 门、发布版本 `3695fb4b`、health 200）。
+`daily_usage` 索引清单核对 `daily_usage_user_date_idx` 已从真实 D1 删除。
+真实 HTTP 端到端（一次性探针用户，跑完删除并核对 0 残留）：
+
+| 场景 | 结果 |
+|------|------|
+| 首传 30 新 key（无 totals 行） | `upserted:30`，totals 创建且 == 全量推导（3435/3435/0.3/30） |
+| 1/30 变化 | `upserted:1`，totals == 推导（3485） |
+| 全命中重试 | `upserted:0`，totals 行**逐列含 updated_at 不变**（B2 无差值 + B5 守卫在真实数据上生效） |
+| `/check` 30 键 | 全部报告已投递——在线 totals 核对删除后，陈旧 totals 不再逼客户端重传 |
+| 删 summary 行后重传（§1.1 故障路径） | 线上复现过计（3588 vs 推导 3485），随后用 B6 同一 SQL 文本（`totalRepairCheckSql` 检出 + `prepareUserTotalFromSummaryRefresh` 修复）在真实 D1 收敛回 3485——**自愈通道在线上闭环**，非本地模拟 |
+
+写量（复跑归档探针 `docs/research/2026-11-25-d1-write-probe/write-probe.mts` 对 B2 后代码，
+本地逻辑行写口径）：首传 64（totals 为 1 次 INSERT 创建，非差值）、1/30 变化 6、
+全命中重试 3（只剩心跳）、check 0。方案预警的「W2 可能比现状多一次 totals 更新」
+实测确认其成立条件是**单批变化 key 跨多个 15 键 chunk**（30 键全变 = 2 条差值 UPDATE，
+基线全量刷新 = 1 次）；1/30 变化场景与基线持平。写额度 10 万行/天，量级可忽略。
+真实 D1 的逐请求 rowsRead/rowsWritten（含索引写的 `meta.rows_written`）本机 wrangler 不返回，
+未覆盖——发布后可用 D1 Observability（`events.d1Queries`）复查。
+
 ## 3. 未覆盖边界
 
-- 全部结论来自本地 SQLite（`node:sqlite`）夹具；D1 侧的语句上限/事务语义按
-  wrangler 文档与既有 `runStatementBatches` 注释推定，**未对真实 D1 跑过 B2**
-  （部署验证属 C 批次第一道门槛，方案 §二 C 注）。
+- 真实 D1 的语句上限/事务语义已由私人 CF 部署走通（batch/差值/backfill 门控均为线上执行
+  结果），但 **rowsRead/rowsWritten 的线上配额曲线尚未观测**（发布后用 D1 Observability
+  复查，这也是 C1 strict 的观测输入之一）。
 - 自愈轮在真实 keyspace 下的完成周期未测（本机库小）；`repaired` 计数是 C1 的观测输入。
 - B2 的减读量比例沿用调研文档的归因（totals ≈ 读侧 55%），未在真实流量下复测。
+- 生产 chaosyn 未部署；按方案其部署与观察需 yeton 侧配合（`docs/specs/go-client-spec.md` §150）。
