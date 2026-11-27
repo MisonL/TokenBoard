@@ -28,7 +28,11 @@ import (
 )
 
 const (
-	snapshotBatchSize       = 30
+	// snapshotBatchSize is 200 per request (batch C3, mirroring the TS collector). The
+	// server accepts up to 500 and re-chunks internally at 30 records per D1 transaction,
+	// so this only changes round-trip count; 30→200 was measured on the private Worker
+	// (all-changed / all-identical / mixed: 0.7–2.1 s wall, far below the 30 s timeout).
+	snapshotBatchSize       = 200
 	transientFetchAttempts  = 3
 	defaultRetryDelayMs     = 250
 	maxRetryDelayMs         = 5_000

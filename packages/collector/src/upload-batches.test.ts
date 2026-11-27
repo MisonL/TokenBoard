@@ -3,7 +3,7 @@ import { uploadSnapshots } from './upload'
 import { unchangedSnapshot } from './upload-test-helpers'
 
 describe('uploadSnapshots batches', () => {
-  test('splits large uploads into free-tier sized batches', async () => {
+  test('splits large uploads into C3-sized batches of 200', async () => {
     const snapshots = largeSnapshotSet()
     const requests: Array<{ url: string; body: unknown }> = []
     const result = await uploadSnapshots(
@@ -17,10 +17,13 @@ describe('uploadSnapshots batches', () => {
     )
 
     expect(result).toEqual({ upserted: 501, skipped: 0 })
-    expect(requests).toHaveLength(34)
+    // 501 snapshots → 200 + 200 + 100, each batch preceded by its /check: 6 requests.
+    // (The keep-alive empty ingest only fires when nothing needed uploading, which the
+    // always-stale stub below prevents.)
+    expect(requests).toHaveLength(6)
     for (let index = 0; index < requests.length; index += 2) {
-      const offset = (index / 2) * 30
-      const batch = snapshots.slice(offset, offset + 30)
+      const offset = (index / 2) * 200
+      const batch = snapshots.slice(offset, offset + 200)
       expect(requests[index]).toEqual(checkRequest(batch))
       expect(requests[index + 1]).toEqual(uploadRequest(batch))
     }

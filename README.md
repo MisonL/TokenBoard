@@ -54,7 +54,7 @@
   - 支持按用户时区与星期配置每日最多 4 个推送时段，附带仅含聚合快照的公开日报分享页（支持全局开关、单条撤销与保留期控制）。
 
 - **面向 Cloudflare 免费额度与低侵入本机运行优化**
-  - 新采集器按 30 条/批分片上传，结合 `/api/v1/ingest/check` 跳过未变化快照；后端提供 D1 汇总缓存（`user_usage_totals`、`daily_usage_summary`）与有界 cron backfill。
+  - 新采集器按 200 条/批分片上传，结合 `/api/v1/ingest/check` 跳过未变化快照；后端提供 D1 汇总缓存（`user_usage_totals`、`daily_usage_summary`）与有界 cron backfill。
   - 本机 Hook 采用信号合并、15 分钟冷却、临近定时任务跳过、**主机资源压力守卫**（内存 / Swap / Linux PSI / 负载）与持久故障 10 分钟退避，绝不拖慢日常开发机器。
 
 ---
@@ -237,7 +237,7 @@ pnpm --filter @tokenboard/web exec wrangler secret put WEBHOOK_ENCRYPTION_KEY
 ### 增量同步、冷却与防抖策略
 
 - **时间窗与分片**：定时与手动同步默认回看本地 7 天；`--since all` 触发显式全量历史回填；Hook 模式仅增量尾读 Claude Code / Codex 追加写入的 JSONL 后缀并按变更日期对账（文件截断、替换或游标缺失时自动回退全文件扫描）。
-- **批大小与变更检测**：新采集器每批最多上传 30 条快照，并通过 `POST /api/v1/ingest/check` 跳过未变动记录；服务端仍向后兼容旧版 500 条批量请求并在内部自动分片落库。
+- **批大小与变更检测**：新采集器每批最多上传 200 条快照，并通过 `POST /api/v1/ingest/check` 跳过未变动记录；服务端仍向后兼容旧版 500 条批量请求并在内部自动分片落库。
 - **Hook 合并与冷却**：各来源信号原子写入 `~/.tokenboard/notify.signal.d` 合并去重，与定时/手动任务共用 `sync.lock`；运行期间收到的信号在默认 15 分钟冷却后合并为单次尾随同步（`TOKENBOARD_NOTIFY_COOLDOWN_MS` 可设 `60000`–`7200000`）。距离下一次定时同步不足 30 分钟的 Hook 触发会自动跳过。
 - **主机资源压力守卫**：当主机剩余内存 `< 10%`、Swap 已用 `>= 90%`、Linux I/O PSI `>= 60` 或单核负载 `> 2` 时，自动跳过本次 Hook 扫描并保留信号交由定时任务采集（可通过 `TOKENBOARD_RESOURCE_MEMORY_FREE_MIN_PERCENT`、`TOKENBOARD_RESOURCE_SWAP_USED_MAX_PERCENT`、`TOKENBOARD_RESOURCE_IO_AVG10_MAX` 调整，或设 `TOKENBOARD_RESOURCE_GUARD=off` 关闭；无法读取的指标绝不误拦截）。
 - **持久故障退避与定时重试**：Hook 因不可达端点或 provider 错误失败后进入默认 10 分钟退避（`TOKENBOARD_NOTIFY_FAILURE_BACKOFF_MS` 或配置项 `notifyFailureBackoffMs`，支持 `60000`–`7200000` 或 `0` 关闭），纯锁竞争不触发退避且维持 1 分钟重试；定时任务遇锁超时最多在进程内间隔 1 分钟重试 5 次。

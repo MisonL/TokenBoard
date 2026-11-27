@@ -206,7 +206,7 @@ ccusage 工具类来源约束（amp、droid、codebuff、hermes、goose、kilo�
 - **Codex 静态费率用运行时除法**：`internal/collect/providers/codex/context_pricing.go` 的 `codexDivisor` 是 `var` 而非 `const`——Go 对无类型常量表达式精确求值后舍入一次，JS 是 double 除法再舍入一次，`0.2/1e6` 一类字面量两边差 1 ULP，会让 `snapshotHash` 分叉、shadow 报 diff。`TestStaticRatesMatchTheJavaScriptDoubles` 钉住位模式。
 - **公开端点 `/api/public/model-pricing` 有 IP 限流**（`publicModelPricingRead` 120/60s）。Worker Cache 只存 200，所以带随机 `cursor` 的请求每次都直达 D1，不能撤掉这道闸。
 - **上传端点强制 https**，loopback（`localhost`/`127.0.0.1`/`::1`）例外（TS `endpoint.ts`，Go `cli/endpoint.go`）。上传请求一律 `redirect: 'manual'` / `CheckRedirect`（Go 同 host 异 port 会带 Authorization 转发）。
-- **上传前过滤 usageDate 越界行**（usage-core `uploadIsoDateIssue`，Go `contract.UploadIsoDateIssue`）。服务端对整批 fail-closed，一行坏日期会把同批 30 行全堵死并触发 24h 上传暂停。
+- **上传前过滤 usageDate 越界行**（usage-core `uploadIsoDateIssue`，Go `contract.UploadIsoDateIssue`）。服务端对整批 fail-closed，一行坏日期会把同批最多 200 行全堵死并触发 24h 上传暂停。
 - **cursor 确认集 = 已送达行 ∪ 永久不可上传行**（TS `cli.ts` 的 `ackSnapshots`，Go `cli.go` 的 `acknowledgeUploadCursors`）。`invalid`/`before-history-window` 的日期永远不会变成可上传，确认掉以免每轮重扫并重复告警；`too-far-future` 必须保留 pending 以便时钟追上后重试。Codex 文件级确认无法辨识被丢行来自哪个文件，因此本轮出现 `too-far-future` 时跳过整文件确认、退回按组确认（组规则不会过度确认）。改 ack 逻辑必须两侧同步并跑 `clients/go` 与 `packages/collector` 的 ack 测试。
 - **cursor 条目在「所有根都解析成功且未见于本次扫描」时回收**（TS `preserveMissingCursorEntries` 的 `allRootsResolved`，Go 同名参数）。pending 条目永不回收；根解析失败时全部保留。
 - **ccusage 折叠语义是双向后缀剥离**，比 `foldToBaseModelId` 宽得多；两端实现必须保持同序同次数（见 `docs/model-pricing.md` 的「Known limitation」一节）。

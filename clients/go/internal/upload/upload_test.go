@@ -220,7 +220,7 @@ func TestUploadRejectsMalformedResponses(t *testing.T) {
 	}
 }
 
-func TestUploadChunksAtThirty(t *testing.T) {
+func TestUploadChunksAtTwoHundred(t *testing.T) {
 	var batchSizes []int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/check") {
@@ -236,7 +236,7 @@ func TestUploadChunksAtThirty(t *testing.T) {
 	}))
 	defer server.Close()
 
-	snapshots := make([]contract.Snapshot, 65)
+	snapshots := make([]contract.Snapshot, 450)
 	for i := range snapshots {
 		snapshots[i] = baseSnapshot("model-"+string(rune('a'+i%26)), int64(10+i))
 	}
@@ -244,10 +244,10 @@ func TestUploadChunksAtThirty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Upserted != 65 {
+	if result.Upserted != 450 {
 		t.Errorf("upserted %d", result.Upserted)
 	}
-	want := []int{30, 30, 5}
+	want := []int{200, 200, 50}
 	if len(batchSizes) != len(want) {
 		t.Fatalf("batches %v, want %v", batchSizes, want)
 	}
