@@ -205,36 +205,61 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
 
 ### 4.3 C4 计划窗口内被跳过的信号续跑
 
-- **前置（方案列为硬门槛）**：「计划同步是否已覆盖该信号」按来源判定，不能只看计划任务的
-  退出码（上传暂停时计划任务同样记 success），也不能只按墙钟算延迟（`12:05` 的信号在
-  `12:19` 唤醒仍被窗口拦下）。实现为 `skills/tokenboard/scripts/scheduled-coverage.mjs`
-  `sourceCoveredByScheduledRun`：读取计划同步自己写的
-  `scheduled-sync-state.json`（`all`）或 `scheduled-sync-state.<source>.json`，要求
-  ① 终态为 `success`（`running`/`deferred`/`failed`/`invalid` 都不算）② `completedAt`
-  不早于信号请求时间、不晚于当前时刻、且距当前不超过 24 小时（文件每次运行覆盖，过老的
-  完成记录不构成证据）③ 该文件描述的是 `all` 或正是该来源。任一不确定（无文件、不可读、
-  时间不可解析、请求时间不可解析）一律判「未覆盖」——方向保守：最多多扫一次，而不是少传。
-- 信号请求时间来自 `coordinator-signal.mjs` 的 `readSignalRequestTimes`（只读活跃队列
-  entry，不读 in-flight 的 `.drain` 文件）；同一来源多次请求取**最新**的一次——更早的请求
-  可能已被某次计划运行覆盖，最新的一次仍需判定。
-- 协调器（`coordinator.mjs`）在合并信号来源后先过覆盖门控：被计划运行覆盖的来源从本轮
-  全部集合中剔除并 ack 信号队列，全部被覆盖时返回 `skippedReason: 'scheduled-covered'`
-  且不排任何续跑。未被覆盖的进入原有分支：
-  - 窗口内：跳过（`scheduled-window`），并为这些来源排一次 trailing 续跑，**唤醒时刻 = 当
-    前所处窗口的结束时间**（窗口对称：T±30min；12:05 被 12:00 窗口拦下 → 12:30，8:45 被
-    9:00 窗口拦下 → 9:30，23:50 被 00:00 窗口拦下 → 次日 00:30），复用既有
-    `scheduleTrailing`/`runtime.scheduleTrailing` 通道（notify 的 trailing worker 在延迟
-    后复跑协调器）。worker 醒来时窗口已结束，若计划运行已成功覆盖则由上面的门控放行并
-    跳过，否则正常采集——这就是「带截止时间的续跑」，不需要另起计时器。
-  - 冷却/锁超时：现状不改（冷却本身会排 trailing）；覆盖门控已在它们之前剔除被覆盖来源。
-- 验证面：`scheduled-coverage.test.mjs`（成功晚于请求覆盖、早于请求不覆盖、failed/
-  deferred/running 不覆盖、部分来源运行不覆盖别的来源、per-source 覆盖、无状态/损坏/
-  时间不可解析不覆盖、12:05→12:31 已覆盖不重扫、未来/过旧完成不覆盖）；`coordinator-
-  scheduled-coverage.test.mjs`（合成时钟：窗口内未覆盖排 25 分钟续跑、窗口前半 8:45 排
-  45 分钟、23:50 跨午夜排 40 分钟、12:31 未覆盖则采集、已覆盖则 `scheduled-covered` 不
-  采集、混合来源只续未覆盖来源、failed/deferred 不覆盖、完成早于请求不覆盖、无请求时间
-  按未覆盖）。覆盖门控与续跑 deadline 均经变异核验（删门控 → 2 例变红；窗口改回非对称
-  → 2 例变红）。
-- 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与 `scheduled-sync-state` 写入
-  时序只经合成时钟验证；计划同步在外部系统被杀死（无任何状态文件写入）的场景等价于
-  「文件停在 running/旧值」——按未覆盖处理，下次 hook 触发会重采。
+- **前置（方案列为硬门槛）**：「计划同步是否已覆盖该信号」按来源判定，不只看计划任务的
+  退出码（上传暂停时同样记 success），也不按墙钟定延迟（`12:05` 的信号在 `12:19` 唤醒
+  仍会被窗口拦下）。判定实现为 `skills/tokenboard/scripts/scheduled-coverage.mjs`
+  `sourceCoveredByScheduledRun`，读取计划同步自己写的 `scheduled-sync-state.json`
+  （`all`）或 `scheduled-sync-state.<source>.json`，全部满足才算覆盖：
+  ① 终态 `success`（`running`/`deferred`/`failed`/`invalid` 都不算）；
+  ② 文件内 `source` 字段与文件名一致；
+  ③ **请求早于本次运行开始**（`requestedAt <= startedAt`）——运行开始后才到达的信号可能
+     描述的是该次扫描之后才写入的会话，不能被它覆盖（保守方向：多扫一次）；
+  ④ 显式 `completedAt`，不早于 `startedAt`、不晚于当前时刻、且距当前不超过 24 小时
+     （状态文件每次运行覆盖，过老的完成记录不构成证据）。
+  任一不确定（无文件、不可读（EACCES/EIO 逐候选吞掉）、时间不可解析、时钟异常）一律判
+  「未覆盖」——方向保守：最多多扫一次，而不是少传。
+- 信号请求时间来自 `coordinator-signal.mjs` 的 `readSignalRequestTimes`：只读活跃队列
+  entry（不读 in-flight 的 `.drain` 文件）；同源多次请求按 **epoch 毫秒**取最新（ISO 串
+  带不同偏移时字典序≠时间序）；同源存在任一无法定时（旧格式）的请求时该源报「未知
+  时间」——未知可能比任何已知时间都新，任何覆盖判定都不得采信。
+- 协调器（`coordinator.mjs`）在合并信号来源后先过覆盖门控：被覆盖的来源从本轮集合剔除，
+  并调用 `acknowledgeCoveredSignalSource` 同时清理恢复日志与**活跃队列 entry**——后者只
+  在 entry 仍描述判定时所用的那个请求（`requestedAt <= 判定时间`）时删除，并发写入的新
+  请求保留；不清理的话 `runLockedCycles` 内的 drain 会把被覆盖来源重新并入采集。全部被
+  覆盖时返回 `skippedReason: 'scheduled-covered'`，不排任何续跑。
+- 窗口判定（`schedule.mjs` `isWithinScheduleWindow`）改为**毫秒级半开区间**
+  `[T−windowMs, T+windowMs)`，按相邻本地日历日构造（`setDate`，跨 DST 不依赖固定 ±24h）。
+  这是与 deadline 对齐的必要条件：闭区间下 `12:30:00.2` 醒来的续跑仍算在 12:00 窗口内，
+  只能排出 0ms 续跑并原地退出，来源永远不被扫描（审查实测）。
+- 窗口内未覆盖来源排一次 trailing 续跑，**唤醒时刻 = 当前所处（合并后）窗口的结束时刻**：
+  `12:05` → `12:30`，`8:45` → `9:30`，`23:50` → 次日 `00:30`。配置的窗口若重叠合并成
+  全天（如每小时一档 + 30 分钟窗口），没有可醒的空档，不排续跑（否则链每轮自续、永不
+  扫描）；deadline 为 0 同样不排。复用既有 `scheduleTrailing`/`runtime.scheduleTrailing`
+  通道（notify 的 trailing worker 延迟后在独立进程复跑协调器）；worker 醒来时窗口已结束，
+  若计划运行已成功覆盖则由覆盖门控放行并跳过，否则正常采集。
+- 验证面：`scheduled-coverage.test.mjs`（成功晚于请求覆盖、早于请求/运行中途开始不覆盖、
+  failed/deferred/running 不覆盖、partial 不覆盖别的来源、per-source 覆盖、无状态/坏
+  JSON/无 `completedAt`/source 错配/完成早于开始/未来完成不覆盖、EACCES 不中止、24h 上限
+  独立验证、12:05→12:31 已覆盖不重扫、未知请求时间不覆盖）；`coordinator-signal.test.mjs`
+  （epoch 比较、旧格式请求压制、覆盖 ack 删队列 entry、并发新请求保留）；
+  `coordinator-scheduled-coverage.test.mjs`（合成时钟：窗口内未覆盖排 25 分钟续跑、窗口
+  前半 8:45 排 45 分钟、23:50 跨午夜排 40 分钟、**12:30 整点唤醒即采集**、12:31 未覆盖则
+  采集、已覆盖则 `scheduled-covered` 不采集、drain 不复活被覆盖来源、混合来源只续未覆盖
+  来源、全天合并窗口不排续跑、failed/deferred 不覆盖、完成早于请求不覆盖、无请求时间
+  按未覆盖）。覆盖门控、`startedAt` 前置、source 匹配、队列清理、undatable 压制、epoch
+  比较、半开窗口边界、零延迟不排续跑均经变异核验变红。
+- 已知边界（接受）：
+  - **上传暂停的计划运行仍判覆盖**。覆盖语义是「一次全量/该来源扫描在该请求之后成功完成
+    并结束」，不是「数据已送达」：上传暂停时行留在 collector 的 pending cursor / 投递
+    水位窗口里，后续运行会重试，ack 信号不会丢数据；为此再扫一次收益极小、代价是一次
+    多 GB 的全量扫描。
+  - 运行中途到达的信号（`requestedAt > startedAt`）一律不覆盖 → 多扫一次；要区分「该来源
+    已被本次运行采集」需要 collector 输出逐源扫描结果并写入状态，超出 C4 范围。
+  - legacy 共享 `notify.signal` 文件里的被覆盖来源无法精确删除（多来源同一文件、只能整体
+    truncate），drain 可能重扫一次。
+  - PLAUSIBLE（未复现）：计划端先释放 `sync.lock` 再写终态，等待中的 hook 可能先拿锁、
+    读到 `running` 而重复扫描一次；全覆盖返回与同刻新入队信号的跨进程交接可能把新信号
+    留给下一次外部触发。
+- 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与状态写入时序只经合成时钟验证；
+  DST 切换日的 deadline 由本地日历日构造保证，未用真实 DST 时区端到端测试；计划同步在
+  外部系统被杀死（状态停在 running/旧值）按未覆盖处理，下次 hook 触发会重采。
