@@ -222,8 +222,14 @@ func TestUploadRejectsMalformedResponses(t *testing.T) {
 
 func TestUploadChunksAtTwoHundred(t *testing.T) {
 	var batchSizes []int
+	var checkSizes []int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/check") {
+			var body struct {
+				Keys []map[string]string `json:"keys"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			checkSizes = append(checkSizes, len(body.Keys))
 			_ = json.NewEncoder(w).Encode(map[string]any{"existing": []any{}})
 			return
 		}
@@ -255,6 +261,26 @@ func TestUploadChunksAtTwoHundred(t *testing.T) {
 		if batchSizes[i] != want[i] {
 			t.Errorf("batch %d size %d, want %d", i, batchSizes[i], want[i])
 		}
+	}
+	// The check pre-pass must ride the same width; a drift there would silently
+	// revert the round-trip win without failing any ingest-size assertion.
+	if len(checkSizes) != len(want) {
+		t.Fatalf("check batches %v, want %v", checkSizes, want)
+	}
+	for i := range want {
+		if checkSizes[i] != want[i] {
+			t.Errorf("check %d size %d, want %d", i, checkSizes[i], want[i])
+		}
+	}
+}
+
+// The server rejects an array larger than 500 outright, and its array-level
+// detail carries no row index — every client parser would find zero nameable
+// rejects and the batch would fail forever. The width must stay under the cap.
+func TestSnapshotBatchSizeStaysUnderServerCap(t *testing.T) {
+	const serverMaxIngestSnapshotBatchSize = 500
+	if snapshotBatchSize > serverMaxIngestSnapshotBatchSize {
+		t.Fatalf("snapshotBatchSize %d exceeds server cap %d", snapshotBatchSize, serverMaxIngestSnapshotBatchSize)
 	}
 }
 
