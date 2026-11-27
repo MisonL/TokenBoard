@@ -121,6 +121,57 @@ describe('ingest row outcomes', () => {
     })
   })
 
+  // SQL decides freshness with julianday, which resolves sub-millisecond fractions that
+  // Date.parse truncates: a stored `.000900Z` beats an incoming `.000Z` (the upsert skips)
+  // while both parse to the same millisecond. That is still a newer stored row — stale,
+  // with the clock warning — not an unexplained `unknown`.
+  test('a sub-millisecond newer stored row still reports stale', async () => {
+    const { db } = createDb(tempDirs)
+    const stored = makeRecord({ totalTokens: 265, collectedAt: '2026-04-28T09:00:00.000900Z' })
+    await upsertUsageSnapshots(db, [stored])
+
+    const truncated = await upsertUsageSnapshots(db, [
+      makeRecord({ totalTokens: 100, collectedAt: '2026-04-28T09:00:00.000Z' })
+    ])
+
+    expect(truncated).toEqual({ upserted: 0, outcomes: [{ index: 0, status: 'stale' }] })
+  })
+
+  // The stored-row lookup queries per (user, device); the classifier must key its map the
+  // same way. A batch mixing devices (possible through direct repository callers) would
+  // otherwise let one device's row explain the other's skip and acknowledge it as `same`.
+  test('records from different devices do not share stored rows', async () => {
+    const { db } = createDb(tempDirs)
+    // Device B's stored measurement is exactly what device A's stale re-send carries.
+    // A classifier that dropped the device from its key would let B's row explain A's
+    // skip as `same` — the wrong status — instead of the freshness skip it really was.
+    const deviceA = makeRecord({ deviceId: 'dev-a', model: 'shared', totalTokens: 265 })
+    const deviceB = makeRecord({
+      deviceId: 'dev-b',
+      model: 'shared',
+      totalTokens: 100,
+      collectedAt: '2026-04-28T06:00:00.000Z'
+    })
+    await upsertUsageSnapshots(db, [deviceA])
+    await upsertUsageSnapshots(db, [deviceB])
+
+    const aOlder = makeRecord({
+      deviceId: 'dev-a',
+      model: 'shared',
+      totalTokens: 100,
+      collectedAt: '2026-04-28T06:00:00.000Z'
+    })
+    const result = await upsertUsageSnapshots(db, [aOlder, deviceB])
+
+    expect(result).toEqual({
+      upserted: 0,
+      outcomes: [
+        { index: 0, status: 'stale' },
+        { index: 1, status: 'same' }
+      ]
+    })
+  })
+
   // Two rows for one key inside a single statement batch: the first insert wins, and the
   // second meets the row the same batch just wrote. It skipped for freshness, so the outcome
   // must say stale (not delivered) — acking it would discard a real measurement.
@@ -183,6 +234,8 @@ describe('classifyUnchangedRow fail-closed cases', () => {
 
   test('an unparseable stored timestamp with an equal-or-older incoming row is unknown', async () => {
     const stored: StoredRow = {
+      userId: record.userId,
+      deviceId: record.deviceId,
       source: record.source,
       usageDate: record.usageDate,
       model: record.model,

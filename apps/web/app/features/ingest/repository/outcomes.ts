@@ -29,6 +29,8 @@ export type IngestRowOutcome = {
 }
 
 export type StoredRow = {
+  userId: string
+  deviceId: string
   source: string
   usageDate: string
   model: string
@@ -45,6 +47,8 @@ export function outcomeQuerySql(keyCount: number) {
   const rows = Array.from({ length: keyCount }, () => '(?, ?, ?)').join(', ')
   return `
     SELECT
+      user_id AS userId,
+      device_id AS deviceId,
       source,
       usage_date AS usageDate,
       model,
@@ -117,9 +121,12 @@ export function classifyUnchangedRow(
   if (isCodexNothingToSay(record) && stored.storedHasUsage > 0) return 'protected'
   const storedMs = Date.parse(stored.syncedAt)
   const incomingMs = Date.parse(record.collectedAt)
-  // `julianday(a) >= julianday(b)` in the upsert writes on equality, so only a strictly newer
-  // stored row explains a skipped write here.
-  if (Number.isFinite(storedMs) && Number.isFinite(incomingMs) && storedMs > incomingMs) return 'stale'
+  // `julianday(a) >= julianday(b)` in the upsert writes on equality, so an older incoming
+  // timestamp at SQLite's precision means the stored row is strictly newer. Equality at
+  // millisecond precision means the same: julianday resolves sub-millisecond fractions that
+  // Date.parse truncates, so an instant-equal pair would have been written, and an
+  // equal-millisecond skip is a stored row some fraction newer.
+  if (Number.isFinite(storedMs) && Number.isFinite(incomingMs) && storedMs >= incomingMs) return 'stale'
   return 'unknown'
 }
 
@@ -130,16 +137,19 @@ export async function classifyUnchangedRecords(
 ): Promise<IngestRowOutcome[]> {
   if (records.length === 0) return []
   const storedRows = await listStoredRowsForOutcomes(db, records)
+  // Keyed by the full upsert identity, device included: a direct caller can pass records
+  // from more than one device, and the conflict key — so the row each record was compared
+  // against — carries the device.
   const storedByKey = new Map<string, StoredRow>()
   for (const row of storedRows) {
-    storedByKey.set(`${row.source}\0${row.usageDate}\0${row.model}`, row)
+    storedByKey.set(identityKey(row), row)
   }
   return records.map((record, index) => ({
     index,
-    status: classifyUnchangedRow(
-      record,
-      hashes[index]!,
-      storedByKey.get(`${record.source}\0${record.usageDate}\0${record.model}`)
-    )
+    status: classifyUnchangedRow(record, hashes[index]!, storedByKey.get(identityKey(record)))
   }))
+}
+
+function identityKey(row: { userId: string; deviceId: string; source: string; usageDate: string; model: string }) {
+  return `${row.userId}\0${row.deviceId}\0${row.source}\0${row.usageDate}\0${row.model}`
 }
