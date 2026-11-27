@@ -221,7 +221,8 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   全部集合中剔除并 ack 信号队列，全部被覆盖时返回 `skippedReason: 'scheduled-covered'`
   且不排任何续跑。未被覆盖的进入原有分支：
   - 窗口内：跳过（`scheduled-window`），并为这些来源排一次 trailing 续跑，**唤醒时刻 = 当
-    前所处窗口的结束时间**（12:05 被 12:00 窗口拦下 → 12:30），复用既有
+    前所处窗口的结束时间**（窗口对称：T±30min；12:05 被 12:00 窗口拦下 → 12:30，8:45 被
+    9:00 窗口拦下 → 9:30，23:50 被 00:00 窗口拦下 → 次日 00:30），复用既有
     `scheduleTrailing`/`runtime.scheduleTrailing` 通道（notify 的 trailing worker 在延迟
     后复跑协调器）。worker 醒来时窗口已结束，若计划运行已成功覆盖则由上面的门控放行并
     跳过，否则正常采集——这就是「带截止时间的续跑」，不需要另起计时器。
@@ -229,10 +230,11 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
 - 验证面：`scheduled-coverage.test.mjs`（成功晚于请求覆盖、早于请求不覆盖、failed/
   deferred/running 不覆盖、部分来源运行不覆盖别的来源、per-source 覆盖、无状态/损坏/
   时间不可解析不覆盖、12:05→12:31 已覆盖不重扫、未来/过旧完成不覆盖）；`coordinator-
-  scheduled-coverage.test.mjs`（合成时钟：窗口内未覆盖排 25 分钟续跑、12:31 未覆盖则采
-  集、已覆盖则 `scheduled-covered` 不采集、混合来源只续未覆盖来源、failed/deferred 不
-  覆盖、完成早于请求不覆盖、无请求时间按未覆盖）。覆盖门控与续跑 deadline 均经变异核验
-  （删门控 → 2 例变红）。
+  scheduled-coverage.test.mjs`（合成时钟：窗口内未覆盖排 25 分钟续跑、窗口前半 8:45 排
+  45 分钟、23:50 跨午夜排 40 分钟、12:31 未覆盖则采集、已覆盖则 `scheduled-covered` 不
+  采集、混合来源只续未覆盖来源、failed/deferred 不覆盖、完成早于请求不覆盖、无请求时间
+  按未覆盖）。覆盖门控与续跑 deadline 均经变异核验（删门控 → 2 例变红；窗口改回非对称
+  → 2 例变红）。
 - 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与 `scheduled-sync-state` 写入
   时序只经合成时钟验证；计划同步在外部系统被杀死（无任何状态文件写入）的场景等价于
   「文件停在 running/旧值」——按未覆盖处理，下次 hook 触发会重采。
