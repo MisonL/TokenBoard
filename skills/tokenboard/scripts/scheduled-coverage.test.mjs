@@ -16,7 +16,8 @@ function stateFs(overrides = {}) {
       stateDir,
       source: 'all',
       status: 'success',
-      startedAt: '2026-11-27T12:04:00.000Z',
+      // Coverage requires the run to have *started after* the request (12:05).
+      startedAt: '2026-11-27T12:06:00.000Z',
       updatedAt: now,
       completedAt: now,
       exitCode: 0,
@@ -44,7 +45,29 @@ test('a successful all-source run finished after the signal covers it', () => {
 
 test('a run that finished before the signal does not cover it', () => {
   assert.equal(
-    covered(stateFs({ completedAt: '2026-11-27T12:04:30.000Z', updatedAt: '2026-11-27T12:04:30.000Z' })),
+    covered(
+      stateFs({
+        startedAt: '2026-11-27T12:00:00.000Z',
+        completedAt: '2026-11-27T12:04:30.000Z',
+        updatedAt: '2026-11-27T12:04:30.000Z'
+      })
+    ),
+    false
+  )
+})
+
+// The run may have scanned the source before the signal arrived: a request that lands while
+// the scheduled run is in flight is not guaranteed to be inside that run's scan, so it is
+// not covered (the conservative direction — a duplicate scan, never a missed signal).
+test('a run that was already scanning when the signal arrived does not cover it', () => {
+  assert.equal(
+    covered(
+      stateFs({
+        startedAt: '2026-11-27T12:03:00.000Z',
+        completedAt: now,
+        updatedAt: now
+      })
+    ),
     false
   )
 })
@@ -65,7 +88,11 @@ test('a partial-source run does not cover a different source', () => {
 })
 
 test('a per-source success covers that source even when the all-source state is older', () => {
-  const fs = stateFs({ completedAt: '2026-11-27T12:04:30.000Z', updatedAt: '2026-11-27T12:04:30.000Z' })
+  const fs = stateFs({
+    startedAt: '2026-11-27T12:00:00.000Z',
+    completedAt: '2026-11-27T12:04:30.000Z',
+    updatedAt: '2026-11-27T12:04:30.000Z'
+  })
   writeScheduledSyncState(
     {
       stateDir,
@@ -80,37 +107,65 @@ test('a per-source success covers that source even when the all-source state is 
   assert.equal(covered(fs), true)
 })
 
-test('no state, an unreadable state, or a malformed timestamp means not covered', () => {
+test('no state or a corrupt state means not covered', () => {
   assert.equal(covered(memoryRuntime()), false)
   const broken = stateFs()
   broken.writeFile(`${stateDir}/scheduled-sync-state.json`, '{')
   assert.equal(covered(broken), false)
-  // A file that passes the reader's shape check but whose time cannot be parsed (written by
-  // an older or hand-edited producer).
-  const noTime = stateFs()
-  noTime.writeFile(
-    `${stateDir}/scheduled-sync-state.json`,
-    '{"schemaVersion":"tokenboard-scheduled-sync/v1","source":"all","status":"success",' +
-      '"startedAt":"2026-11-27T12:04:00.000Z","updatedAt":"2026-11-27T12:04:00.000Z",' +
-      '"completedAt":"2026-11-27T12:04:00.000Z"}\n'
-  )
-  assert.equal(covered(noTime), false)
 })
 
-test('a covered signal does not reappear as a trailing retry after the window passes', () => {
-  // 12:05 signal, suppressed in the window, scheduled run finishes at 12:19. A trailing
-  // worker waking at 12:31 must not re-scan the source: the state file is the evidence,
-  // not the wall clock and not the scheduled task's exit code.
-  const fs = stateFs({ completedAt: '2026-11-27T12:19:00.000Z', updatedAt: '2026-11-27T12:19:00.000Z' })
+// A success row without an explicit completion is not evidence of a finished scan: the
+// shape check allows the field to be absent (a `running` row has none), so coverage must
+// not borrow `updatedAt` to fill it in.
+test('a success state without completedAt is not covered', () => {
+  const fs = stateFs()
+  fs.writeFile(
+    `${stateDir}/scheduled-sync-state.json`,
+    '{"schemaVersion":"tokenboard-scheduled-sync/v1","source":"all","status":"success",' +
+      '"startedAt":"2026-11-27T12:06:00.000Z","updatedAt":"2026-11-27T12:30:00.000Z"}\n'
+  )
+  assert.equal(covered(fs), false)
+})
+
+// An unreadable state file is a bookkeeping problem, not a reason to abort the hook: the
+// candidate is simply not covered and the run proceeds.
+test('an unreadable state file means not covered instead of failing the hook', () => {
+  const fs = stateFs()
+  const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
   assert.equal(
-    sourceCoveredByScheduledRun({
-      stateDir,
-      source,
-      requestedAt,
-      now: () => Date.parse('2026-11-27T12:31:00.000Z'),
-      readFile: fs.readFile
+    covered(fs, {
+      readFile: (path) => {
+        if (String(path).endsWith('scheduled-sync-state.json')) throw eacces
+        return fs.readFile(path)
+      }
     }),
-    true
+    false
+  )
+})
+
+test('a state file whose own source does not match the file it lives in is not covered', () => {
+  const fs = stateFs()
+  // The all-source file claiming to be a claude-code-only run: the file name the gate
+  // trusts and the content it reads must agree.
+  fs.writeFile(
+    `${stateDir}/scheduled-sync-state.json`,
+    '{"schemaVersion":"tokenboard-scheduled-sync/v1","source":"claude-code","status":"success",' +
+      '"startedAt":"2026-11-27T12:06:00.000Z","updatedAt":"2026-11-27T12:31:00.000Z",' +
+      '"completedAt":"2026-11-27T12:31:00.000Z"}\n'
+  )
+  assert.equal(covered(fs, { source: 'claude-code' }), false)
+})
+
+test('a completion before the run start is a corrupt file, not coverage', () => {
+  assert.equal(
+    covered(
+      stateFs({
+        startedAt: '2026-11-27T12:10:00.000Z',
+        completedAt: '2026-11-27T12:08:00.000Z',
+        updatedAt: '2026-11-27T12:08:00.000Z'
+      })
+    ),
+    false
   )
 })
 
@@ -119,13 +174,26 @@ test('an unknown request age never counts as covered', () => {
   assert.equal(covered(stateFs(), { requestedAt: undefined }), false)
 })
 
-test('a completion in the future or far in the past does not cover a signal', () => {
+test('a completion in the future does not cover a signal', () => {
   assert.equal(
     covered(stateFs({ completedAt: '2026-11-27T13:00:00.000Z', updatedAt: '2026-11-27T13:00:00.000Z' })),
     false
   )
-  assert.equal(
-    covered(stateFs({ completedAt: '2026-11-26T12:31:00.000Z', updatedAt: '2026-11-26T12:31:00.000Z' })),
-    false
-  )
+})
+
+// The one-day age cap on its own: a request two days ago, a run that started after it and
+// finished 25 hours before now — every timestamp order is valid, so only the cap rejects it.
+test('a completion older than a day does not cover a signal even though it is after the request', () => {
+  const fs = stateFs({
+    startedAt: '2026-11-26T11:00:00.000Z',
+    completedAt: '2026-11-26T11:30:00.000Z',
+    updatedAt: '2026-11-26T11:30:00.000Z'
+  })
+  assert.equal(covered(fs, { requestedAt: '2026-11-26T10:00:00.000Z' }), false)
+  const recent = stateFs({
+    startedAt: '2026-11-26T13:00:00.000Z',
+    completedAt: '2026-11-26T13:30:00.000Z',
+    updatedAt: '2026-11-26T13:30:00.000Z'
+  })
+  assert.equal(covered(recent, { requestedAt: '2026-11-26T10:00:00.000Z' }), true)
 })

@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { acknowledgeSignalSource, appendSignal, drainSignalSources, readSignalSources } from './coordinator-signal.mjs'
+import {
+  acknowledgeCoveredSignalSource,
+  acknowledgeSignalSource,
+  appendSignal,
+  drainSignalSources,
+  readSignalRequestTimes,
+  readSignalSources
+} from './coordinator-signal.mjs'
 import { fakeProcess, memoryPathIncludes, memoryRuntime } from './coordinator-test-helpers.mjs'
 
 function signal(source) {
@@ -480,4 +487,58 @@ test('leaves the queue usable when it cannot be listed for orphan cleanup', () =
   appendSignal(fs, { source: 'codex' })
 
   assert.ok(fs.files.has('/state/notify.signal.d/codex.json'))
+})
+
+test('signal request times compare instants, not strings', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T11:30:00.000Z' })}\n${JSON.stringify({
+      source: 'codex',
+      requestedAt: '2026-11-27T12:01:00.000+01:00'
+    })}\n`
+  )
+  // 12:01+01:00 is 11:01Z, earlier than 11:30Z; a string comparison picks it as "newest".
+  assert.equal(readSignalRequestTimes({ ...fs, stateDir: '/state' }).get('codex'), '2026-11-27T11:30:00.000Z')
+})
+
+test('an undatable request for a source dominates the datable ones', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T11:30:00.000Z' })}\ncodex\n`
+  )
+  // The bare entry has no time; it may well be the newest request, so the source reports
+  // an unknown age and no coverage decision may treat it as covered.
+  assert.equal(readSignalRequestTimes({ ...fs, stateDir: '/state' }).get('codex'), null)
+})
+
+test('acknowledging a covered signal removes its active queue entry', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:05:00.000Z' })}\n`
+  )
+  acknowledgeCoveredSignalSource(
+    { ...fs, stateDir: '/state', process: fakeProcess(901) },
+    'codex',
+    '2026-11-27T04:05:00.000Z'
+  )
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false)
+})
+
+test('a covered acknowledgement keeps a queue entry a later request replaced', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:20:00.000Z' })}\n`
+  )
+  // The gate judged the 04:05 request; a hook has since queued a newer one, which the
+  // scheduled run has not covered.
+  acknowledgeCoveredSignalSource(
+    { ...fs, stateDir: '/state', process: fakeProcess(901) },
+    'codex',
+    '2026-11-27T04:05:00.000Z'
+  )
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), true)
 })

@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import {
+  acknowledgeCoveredSignalSource,
   acknowledgeSignalSource,
   appendSignal,
   drainSignalSources,
@@ -156,10 +157,15 @@ function runCoordinator(trigger, runtime, result) {
     // the hook trigger now lands inside the window or in a trailing worker after it. Drop
     // those sources from everything below (the skip paths would otherwise re-queue them
     // from `pendingSources`); a duplicate scan costs a multi-GB ccusage run for nothing.
-    const covered = syncSources.filter((source) => sourceCoveredByScheduledRun(runtime, source))
+    const requestTimes = readSignalRequestTimes(runtime)
+    const covered = syncSources.filter((source) =>
+      sourceCoveredByScheduledRun(runtime, source, requestTimes.get(source))
+    )
     if (covered.length > 0) {
       for (const source of covered) {
-        acknowledgeSignalSource(runtime, source)
+        // Drop the queue entry too: the gate runs before `runLockedCycles`, whose drain
+        // re-reads the queue and would otherwise scan the covered source anyway.
+        acknowledgeCoveredSignalSource(runtime, source, requestTimes.get(source))
         const index = pendingSources.indexOf(source)
         if (index >= 0) pendingSources.splice(index, 1)
       }
@@ -325,8 +331,12 @@ function skipForCooldown({ trigger, runtime, result, pendingSources, syncSources
 // re-scanning a source it covered.
 function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources }) {
   const delayMs = scheduleWindowTrailingDelayMs(runtime)
+  // A zero deadline means there is no gap to wake into (an all-day merged window or no
+  // usable clock): booking a retry at 0 ms would land immediately inside the same window.
   const scheduled =
-    trailingSources.length > 0 && runtime.scheduleTrailing({ ...trigger, source: trailingSources[0] }, delayMs)
+    trailingSources.length > 0 &&
+    delayMs > 0 &&
+    runtime.scheduleTrailing({ ...trigger, source: trailingSources[0] }, delayMs)
   return {
     ...result,
     waitedForLock: lock.waited,
@@ -338,40 +348,49 @@ function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSou
 }
 
 // Wait until the window closes before re-scanning what the scheduled run might have
-// missed. The window is symmetric around the scheduled time (`isWithinScheduleWindow`
-// accepts T±windowMs), so the deadline is always the scheduled time plus the window
-// width: 12:05 suppressed by the 12:00 window wakes at 12:30, 8:45 wakes at 9:30, and a
-// 23:59 trigger near the 00:00 window wakes at 00:30 rather than at the next slot hours
-// away — or at a fixed nap that would land inside the same window again. Absolute
-// millisecond arithmetic, so midnight wraps the way the wall clock does.
+// missed. The deadline is the end of the (possibly merged) window span containing now:
+// 12:05 in the 12:00 window wakes at 12:30, 8:45 wakes at 9:30, and a 23:50 trigger wakes
+// at 00:30. Spans are built on their own local calendar day and merged, which keeps the
+// wall-clock time right across daylight-saving switches and collapses overlapping
+// configured windows. A configuration whose spans merge into a full day has no gap to
+// wake into, so no trailing retry is booked (the next external trigger re-evaluates) —
+// otherwise the chain would re-arm itself every wake and never scan.
 function scheduleWindowTrailingDelayMs(runtime) {
   const window = runtime.scheduleWindow
   if (!window?.times?.length || !Number.isFinite(window.windowMs) || window.windowMs <= 0) return 0
   const now = runtime.now()
-  let delay = Number.POSITIVE_INFINITY
+  const current = new Date(now)
+  const spans = []
   for (const time of window.times) {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
     if (!match) continue
-    const base = new Date(now)
-    base.setHours(Number(match[1]), Number(match[2]), 0, 0)
-    // The previous or the upcoming occurrence of this wall-clock time: a symmetric window
-    // reaches across midnight, so a trigger may be inside yesterday's or tomorrow's one.
-    for (const offsetMs of [-24 * 60 * 60_000, 0, 24 * 60 * 60_000]) {
-      const scheduledMs = base.getTime() + offsetMs
-      if (now < scheduledMs - window.windowMs || now > scheduledMs + window.windowMs) continue
-      delay = Math.min(delay, scheduledMs + window.windowMs - now)
+    for (const dayOffset of [-1, 0, 1]) {
+      const scheduled = new Date(current)
+      scheduled.setDate(scheduled.getDate() + dayOffset)
+      scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0)
+      spans.push([scheduled.getTime() - window.windowMs, scheduled.getTime() + window.windowMs])
     }
   }
-  return Number.isFinite(delay) && delay > 0 ? delay : 0
+  spans.sort((left, right) => left[0] - right[0])
+  const merged = []
+  for (const span of spans) {
+    const previous = merged[merged.length - 1]
+    if (previous && span[0] <= previous[1]) previous[1] = Math.max(previous[1], span[1])
+    else merged.push([...span])
+  }
+  const containing = merged.find(([start, end]) => now >= start && now < end)
+  if (!containing) return 0
+  if (containing[1] - containing[0] >= 24 * 60 * 60_000) return 0
+  return Math.max(0, containing[1] - now)
 }
 
 // The request time rides on the queue entry, not on the trigger: a trailing worker is
 // spawned from a skip, and the signal it is retrying may have been queued long before.
-function sourceCoveredByScheduledRun(runtime, source) {
+function sourceCoveredByScheduledRun(runtime, source, requestedAt) {
   return scheduledRunCoversSource({
     stateDir: runtime.stateDir,
     source,
-    requestedAt: readSignalRequestTimes(runtime).get(source),
+    requestedAt,
     now: runtime.now,
     readFile: runtime.readFile
   })

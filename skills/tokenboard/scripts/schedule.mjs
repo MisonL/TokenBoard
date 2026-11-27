@@ -250,23 +250,30 @@ export function windowsTaskName(startTime) {
 // the Windows task scheduler all fire on local wall-clock time — so the window
 // has to be evaluated the same way. A UTC comparison would put the window on
 // the wrong hours entirely for anyone east or west of Greenwich.
+// The window is the half-open interval `[T - windowMs, T + windowMs)` in milliseconds.
+// Millisecond precision, not minute buckets, is what lets the coordinator's trailing
+// retry use the same boundary as its deadline: a retry woken exactly at `T + windowMs`
+// must fall outside (a minute-bucketed check kept 12:30:00.2 inside the 12:00 window, so
+// the retry landed on itself — `trailingDelayMs: 0` — and the source was never scanned).
+// Each candidate is built on its own local calendar day, so a daylight-saving switch
+// between the day offsets moves the wall-clock time, not the absolute one.
 export function isWithinScheduleWindow({ times, windowMs, now = Date.now() } = {}) {
   if (!Array.isArray(times) || times.length === 0) return false
   if (!Number.isFinite(windowMs) || windowMs <= 0) return false
 
-  const windowMinutes = windowMs / 60_000
-  const local = new Date(now)
-  const currentMinutes = local.getHours() * 60 + local.getMinutes()
-
+  const current = new Date(now)
   for (const time of times) {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
     if (!match) continue
-    const scheduledMinutes = Number.parseInt(match[1], 10) * 60 + Number.parseInt(match[2], 10)
-    // The distance wraps around midnight: a 23:50 trigger is ten minutes
-    // before a 00:00 schedule, not twenty-three hours and ten minutes after it.
-    const direct = Math.abs(currentMinutes - scheduledMinutes)
-    const distance = Math.min(direct, 24 * 60 - direct)
-    if (distance <= windowMinutes) return true
+    for (const dayOffset of [-1, 0, 1]) {
+      const scheduled = new Date(current)
+      scheduled.setDate(scheduled.getDate() + dayOffset)
+      scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0)
+      const delta = now - scheduled.getTime()
+      // The wrap around midnight falls out of the day offsets: a 23:50 trigger is ten
+      // minutes before a 00:00 schedule through the `+1` day candidate.
+      if (delta >= -windowMs && delta < windowMs) return true
+    }
   }
   return false
 }

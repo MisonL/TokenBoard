@@ -14,7 +14,11 @@ const half = 30 * 60_000
 test('reports a time inside the window on either side of a scheduled run', () => {
   const window = { times: ['09:00'], windowMs: half }
   assert.equal(isWithinScheduleWindow({ ...window, now: localTime(9, 0) }), true)
-  assert.equal(isWithinScheduleWindow({ ...window, now: localTime(9, 30) }), true)
+  // The window is half-open `[T - window, T + window)`: the coordinator's trailing retry
+  // wakes exactly on the upper edge, and it must already be outside — a closed upper edge
+  // made the woken worker land inside the same window and re-book itself.
+  assert.equal(isWithinScheduleWindow({ ...window, now: localTime(9, 30) }), false)
+  assert.equal(isWithinScheduleWindow({ ...window, now: localTime(9, 29) }), true)
   assert.equal(isWithinScheduleWindow({ ...window, now: localTime(8, 30) }), true)
   assert.equal(isWithinScheduleWindow({ ...window, now: localTime(8, 29) }), false)
   assert.equal(isWithinScheduleWindow({ ...window, now: localTime(9, 31) }), false)

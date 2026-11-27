@@ -10,30 +10,29 @@ import { readScheduledSyncState, scheduledSyncStatePath } from './scheduled-sync
 // a lock/cooldown delay pushed the retry past it) starts the duplicate scan the window
 // existed to avoid.
 //
-// The decision may not be made from the scheduled task's exit code. It records `success`
-// even when the upload was paused, and a run can exit 0 after skipping sources or being
-// deferred to a scheduled retry that is still in flight. What is checked instead is the
-// per-source state file the scheduled sync writes (`scheduled-sync-state.<source>.json`,
-// or the plain `all` file for a full run):
+// The decision may not be made from the scheduled task's exit code alone. It records
+// `success` even when the upload was paused — a paused upload keeps its rows in the
+// collector's pending cursors, so the scan still happened and the data is not lost — but a
+// run can also exit 0 after skipping a source or after being deferred to a scheduled retry
+// that is still in flight. What is checked instead is the per-source state file the
+// scheduled sync writes (`scheduled-sync-state.<source>.json`, or the plain `all` file for
+// a full run):
 //
-//   - the latest terminal state (not `running`; `deferred` is a hand-off, not a completion)
-//   - completed no earlier than the request
-//   - covers the source: the state file written for `all` (or for this exact source) — and
-//     it must not be `failed`. A failed scheduled run may still have collected the source
-//     before failing, but that cannot be told apart from one that never reached it, so the
-//     hook run proceeds and re-collects: a duplicate is the accepted cost, a silent skip
-//     of the only remaining attempt is not.
+//   - status `success` — no `running`, no `deferred` (a hand-off, not a completion), and no
+//     `failed` (a failed run may still have collected the source, but that cannot be told
+//     apart from one that never reached it; a duplicate scan is the accepted cost)
+//   - the file's own `source` field matches the file it was read from
+//   - the request predates the run's start (`requestedAt <= startedAt`): a signal that
+//     arrived while the run was already scanning may describe sessions written after that
+//     scan began, and only the run *started after* the request is guaranteed to include it
+//   - an explicit `completedAt` no earlier than `startedAt`, no later than now, and no more
+//     than a day old (the state file is overwritten every run, so an old completion is not
+//     evidence)
 //
-// Every uncertain answer ("no state file", "unreadable", "no timestamp", clock behind the
-// request) means *not covered*, so the hook run proceeds. That direction costs a duplicate
-// scan at worst; the opposite direction loses the hook's sync.
-
-// A completion claim read long after the fact is not evidence. The scheduled state files
-// are overwritten every run, so a stale file means no scheduled run has finished recently
-// and no window decision should treat the hook signal as answered by it.
+// Every uncertain answer — no file, an unreadable file, a malformed timestamp, a clock
+// behind the request — means *not covered*, so the hook run proceeds. That direction costs
+// a duplicate scan at worst; the opposite direction loses the hook's sync.
 export const maximumCoverCompletionAgeMs = 24 * 60 * 60_000
-
-const coveredStatuses = new Set(['success'])
 
 export function sourceCoveredByScheduledRun({ stateDir, source, requestedAt, now = Date.now, readFile }) {
   if (typeof stateDir !== 'string' || !stateDir) return false
@@ -45,19 +44,32 @@ export function sourceCoveredByScheduledRun({ stateDir, source, requestedAt, now
   if (!Number.isFinite(current)) return false
   const runtime = typeof readFile === 'function' ? { readFile } : undefined
   for (const candidate of scheduledStateSources(source)) {
-    const state = readScheduledSyncState(scheduledSyncStatePath(stateDir, candidate), runtime)
-    if (!state || state.status === 'invalid' || state.status === 'running') continue
-    if (!coveredStatuses.has(state.status)) continue
-    if (!(candidate === 'all' || candidate === source)) continue
-    if (completedRecently(state, requestedMs, current)) return true
+    let state
+    try {
+      state = readScheduledSyncState(scheduledSyncStatePath(stateDir, candidate), runtime)
+    } catch {
+      // An unreadable candidate (EACCES, EIO) is "not covered" for this file; the other
+      // candidate may still answer, and failing the hook over C4's input would turned a
+      // bookkeeping problem into a missed sync.
+      continue
+    }
+    if (!state || state.status !== 'success') continue
+    if (state.source !== candidate) continue
+    if (!coversRequestedSignal(state, requestedMs, current)) continue
+    return true
   }
   return false
 }
 
-function completedRecently(state, requestedMs, nowMs) {
-  const completedMs = Date.parse(state.completedAt ?? state.updatedAt)
-  if (!Number.isFinite(completedMs)) return false
-  if (completedMs < requestedMs) return false
+function coversRequestedSignal(state, requestedMs, nowMs) {
+  if (typeof state.completedAt !== 'string') return false
+  const startedMs = Date.parse(state.startedAt)
+  const completedMs = Date.parse(state.completedAt)
+  if (!Number.isFinite(startedMs) || !Number.isFinite(completedMs)) return false
+  // Only a run that started after the request is guaranteed to have scanned it.
+  if (requestedMs > startedMs) return false
+  // Completion before start is a corrupt file, not evidence of a scan.
+  if (completedMs < startedMs) return false
   // A completion after `now` is a clock inconsistency, not proof of coverage.
   if (completedMs > nowMs) return false
   if (nowMs - completedMs > maximumCoverCompletionAgeMs) return false

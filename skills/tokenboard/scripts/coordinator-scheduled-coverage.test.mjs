@@ -34,7 +34,8 @@ function stateFsWith(fs, overrides) {
       stateDir: '/state',
       source: 'all',
       status: 'success',
-      startedAt: utcForLocal(11, 58),
+      // Coverage requires the run to have started after the 12:05 request.
+      startedAt: utcForLocal(12, 6),
       updatedAt: utcForLocal(12, 19),
       completedAt: utcForLocal(12, 19),
       ...overrides
@@ -123,6 +124,36 @@ test('a trigger before midnight near the 00:00 window wakes after midnight', () 
   assert.equal(result.skippedReason, 'scheduled-window')
   assert.equal(trailing.length, 1)
   assert.equal(trailing[0].delayMs, 40 * 60_000)
+})
+
+// Hourly runs with a 30-minute window leave no gap: merged spans cover the whole day, so
+// a trailing retry would wake into the next window and re-arm forever without scanning.
+// No retry is booked; the next external trigger re-evaluates.
+test('a configuration whose windows merge across the whole day books no trailing retry', () => {
+  const fs = memoryRuntime()
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  const trailing = []
+  const hourly = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`)
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(12, 5),
+      process: fakeProcess(903),
+      scheduleWindow: { times: hourly, windowMs: 30 * 60_000 },
+      scheduleTrailing: (trigger, delayMs) => {
+        trailing.push({ trigger, delayMs })
+        return true
+      },
+      executeSync: () => ({})
+    }
+  )
+
+  assert.equal(result.skippedReason, 'scheduled-window')
+  assert.deepEqual(trailing, [])
+  assert.notEqual(result.trailingScheduled, true)
 })
 
 test('a window skip books a trailing retry only for sources the scheduled run missed', () => {
@@ -229,12 +260,47 @@ test('a scheduled run that finished before the signal does not cover it', () => 
 
 // During the window the scheduled run is still in flight: not covered, so the retry is
 // booked — and once it fires after a successful run, the state file stops it there.
-test('a signal queued without a request time is treated as uncovered', () => {
-  const fs = memoryRuntime()
+// A queue entry without a request time cannot be ordered against the run, so even a run
+// that would otherwise cover it must not: treating the missing time as "the epoch" would.
+test('a signal queued without a request time is treated as uncovered despite a covering run', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
   fs.writeFile('/state/notify.signal.d/codex.json', 'codex\n')
   const ran = []
 
   runAt(fs, { now: localTime(12, 31), executeSync: (trigger) => ran.push(trigger.source) })
 
   assert.deepEqual(ran, ['codex'])
+})
+
+// The retry is booked for the window's close; waking exactly there must scan, not land on
+// the window again (a closed upper edge did exactly that and the source was never scanned).
+test('a trailing retry waking exactly at the window close scans the source', () => {
+  const fs = memoryRuntime()
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  const ran = []
+
+  const result = runAt(fs, { now: localTime(12, 30), executeSync: (trigger) => ran.push(trigger.source) })
+
+  assert.deepEqual(ran, ['codex'])
+  assert.notEqual(result.skippedReason, 'scheduled-window')
+})
+
+// Outside the window the gate still drops a covered source, and the run's own drain must
+// not resurrect it: the covered queue entry is removed with the decision.
+test('a covered source is not revived by the drain of the same run', () => {
+  // The all-source run started at 12:06: codex's 12:05 request predates it (covered), while
+  // claude-code's 12:20 request arrived while it was running (not covered).
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  queueSignal(fs, 'claude-code', utcForLocal(12, 20))
+  const ran = []
+
+  runAt(fs, {
+    now: localTime(12, 31),
+    source: 'claude-code',
+    executeSync: (trigger) => ran.push(trigger.source)
+  })
+
+  assert.deepEqual(ran, ['claude-code'])
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false)
 })

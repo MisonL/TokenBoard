@@ -82,17 +82,21 @@ export function readSignalSources(runtime) {
 // normally holds it.
 export function readSignalRequestTimes(runtime) {
   const times = new Map()
+  const undatable = new Set()
   const record = (source, line) => {
     const requestedAt = parseSignalRequestedAt(line)
-    const previous = times.get(source)
-    // "Unknown" (null) is the weakest fact and must not displace a known time; among several
-    // requests for the same source the newest known time is the claim: an older request may
-    // already have been covered by a scheduled run, while this one still needs deciding.
+    // An entry without a parseable time cannot be ordered against anything, and it may
+    // well be the newest request for the source — so it dominates a datable one. The
+    // source then reports "unknown age", which no coverage decision may treat as covered.
     if (requestedAt === null) {
-      if (!times.has(source)) times.set(source, null)
+      undatable.add(source)
       return
     }
-    if (previous === undefined || previous === null || requestedAt > previous) times.set(source, requestedAt)
+    const requestedMs = Date.parse(requestedAt)
+    const previous = times.get(source)
+    // Compare instants, not strings: `12:01+01:00` sorts after `11:30Z` as text but is
+    // the earlier instant.
+    if (previous === undefined || !(Date.parse(previous) >= requestedMs)) times.set(source, requestedAt)
   }
   const inspect = (text) => {
     for (const line of text.split(/\r?\n/)) {
@@ -119,12 +123,45 @@ export function readSignalRequestTimes(runtime) {
     for (const name of names) if (!isDrainedSignalEntry(name)) readIfPresent(join(signalQueueDir(runtime), name))
   }
   readIfPresent(signalPath(runtime))
+  for (const source of undatable) times.set(source, null)
   return times
 }
 
 // `appendSignal` writes the full object, but the signal file is also appended to by hand and
 // by older versions: a bare source name or an object without `requestedAt` yields null, the
 // "unknown age" answer.
+// Removes the active queue entry for a source a scheduled run has covered, together with
+// the recovery-journal records `acknowledgeSignalSource` owns. The entry is only removed
+// while it still describes the request the coverage gate judged — a hook that appended a
+// newer request in between must keep its signal — so a stale entry cannot outlive the
+// decision and be drained into the next run.
+export function acknowledgeCoveredSignalSource(runtime, source, judgedRequestedAt) {
+  acknowledgeSignalSource(runtime, source)
+  if (typeof runtime.rename !== 'function' || typeof runtime.readdir !== 'function') return
+  const judgedMs = Date.parse(judgedRequestedAt)
+  if (!Number.isFinite(judgedMs)) return
+  const path = join(signalQueueDir(runtime), `${signalSourceName(source)}.json`)
+  let text
+  try {
+    text = runtime.readFile(path)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    return
+  }
+  const entries = text.split(/\r?\n/).filter((line) => parseSignalSource(line))
+  if (entries.length === 0) return
+  const stillJudged = entries.every((line) => {
+    const requestedAt = parseSignalRequestedAt(line)
+    return requestedAt !== null && Date.parse(requestedAt) <= judgedMs
+  })
+  if (!stillJudged) return
+  try {
+    runtime.unlink(path)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+}
+
 function parseSignalRequestedAt(line) {
   const value = line.trim()
   if (!value || !value.startsWith('{')) return null
