@@ -19,7 +19,7 @@ type UsageSummaryBackfillState = {
   cursorModel: string | null
   completedAt: string | null
 }
-type UsageSummaryBackfillRow = {
+export type UsageSummaryBackfillRow = {
   phase: string | null
   cursorUserId: string | null
   cursorUsageDate: string | null
@@ -118,6 +118,14 @@ async function refreshBackfillTotals(
   return { backfilled: 0, totalsRefreshed: userIdsToRefresh.length }
 }
 
+async function readUsageSummaryBackfillState(db: D1Database): Promise<UsageSummaryBackfillState> {
+  return normalizeBackfillState(await readUsageSummaryStateRow(db))
+}
+
+async function writeUsageSummaryBackfillState(db: D1Database, state: UsageSummaryBackfillState) {
+  await writeUsageSummaryStateRow(db, usageSummaryBackfillStateId, state)
+}
+
 async function listSummaryKeysForBackfill(input: { db: D1Database; limit: number; state: UsageSummaryBackfillState }) {
   const cursor = summaryBackfillCursor(input.state)
   const statement = cursor
@@ -137,7 +145,10 @@ async function listUserIdsForTotalsBackfill(input: { db: D1Database; limit: numb
   return (rows.results ?? []).map((row) => row.userId)
 }
 
-async function readUsageSummaryBackfillState(db: D1Database): Promise<UsageSummaryBackfillState> {
+export async function readUsageSummaryStateRow(
+  db: D1Database,
+  stateId = usageSummaryBackfillStateId
+): Promise<UsageSummaryBackfillRow | null> {
   const row = await db
     .prepare(
       `
@@ -152,13 +163,17 @@ async function readUsageSummaryBackfillState(db: D1Database): Promise<UsageSumma
         WHERE id = ?
       `
     )
-    .bind(usageSummaryBackfillStateId)
+    .bind(stateId)
     .first<UsageSummaryBackfillRow>()
 
-  return normalizeBackfillState(row)
+  return row ?? null
 }
 
-async function writeUsageSummaryBackfillState(db: D1Database, state: UsageSummaryBackfillState) {
+export async function writeUsageSummaryStateRow(
+  db: D1Database,
+  stateId: string,
+  state: { phase: string; cursorUserId: string | null; cursorUsageDate: string | null; cursorSource: string | null; cursorModel: string | null; completedAt: string | null }
+) {
   await db
     .prepare(
       `
@@ -184,7 +199,7 @@ async function writeUsageSummaryBackfillState(db: D1Database, state: UsageSummar
       `
     )
     .bind(
-      usageSummaryBackfillStateId,
+      stateId,
       state.phase,
       state.cursorUserId,
       state.cursorUsageDate,

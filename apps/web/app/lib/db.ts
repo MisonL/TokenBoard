@@ -10,6 +10,9 @@ export type Bindings = {
   TOKENBOARD_DAILY_REPORT_HISTORY_DAYS?: string
   TOKENBOARD_USAGE_SUMMARY_STRICT?: string
   TOKENBOARD_USAGE_SUMMARY_BACKFILL_LIMIT?: string
+  // Optional tuning for the daily aggregate self-heal pass; the default chunk size is applied
+  // when unset, so it needs no wrangler var to work.
+  TOKENBOARD_USAGE_SELFHEAL_LIMIT?: string
   TOKENBOARD_WEBHOOK_LOG_RETENTION_DAYS?: string
   TOKENBOARD_WEBHOOK_CRON_BATCH_SIZE?: string
   TOKENBOARD_MODEL_PRICING_SYNC_ENABLED?: string

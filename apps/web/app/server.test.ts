@@ -969,6 +969,28 @@ describe('worker server', () => {
     expect(statements).toContain('DELETE FROM api_rate_limits')
     expect(statements).toContain('DELETE FROM pairing_codes')
     expect(statements).toContain('DELETE FROM audit_logs')
+    // The daily aggregate self-heal also runs here: it is the only repair channel for drift the
+    // incremental totals path cannot see, so it must be part of the maintenance tick. The state
+    // row is addressed by a bound id, not inline SQL text.
+    expect(env.boundValues.some((values) => values.includes('selfheal'))).toBe(true)
+  })
+
+  test('the daily aggregate self-heal stays idle outside the maintenance window', async () => {
+    const env = createEnv({ dueSubscription: false })
+    const ctx = createExecutionContext()
+
+    worker.scheduled?.(
+      {
+        scheduledTime: Date.parse('2026-04-29T10:00:00.000Z'),
+        cron: '*/15 * * * *',
+        noRetry() {}
+      },
+      env,
+      ctx
+    )
+    await Promise.all(ctx.waitUntilPromises)
+
+    expect(env.boundValues.some((values) => values.includes('selfheal'))).toBe(false)
   })
 
   test('the daily maintenance window is skipped on later ticks of the same hour', async () => {

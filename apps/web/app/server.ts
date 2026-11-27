@@ -1,6 +1,11 @@
 import { showRoutes } from 'hono/dev'
 import { createApp } from 'honox/server'
-import { backfillUsageSummaryCache, usageSummaryBackfillLimit } from './features/ingest/repository'
+import {
+  backfillUsageSummaryCache,
+  selfHealAggregates,
+  selfHealChunkSize,
+  usageSummaryBackfillLimit
+} from './features/ingest/repository'
 import { runDueWebhookNotifications } from './features/notifications/service'
 import { webhookDiagnostic } from './features/notifications/config'
 import { modelPricingSyncEnabled, runModelPricingSync } from './features/model-pricing/service'
@@ -247,6 +252,7 @@ async function runScheduledTasks(env: Bindings, now: Date) {
     runScheduledNotifications(env, now),
     dailyMaintenance ? runRateLimitPrune(env, now) : Promise.resolve(),
     dailyMaintenance ? runDeviceRetentionPrune(env, now) : Promise.resolve(),
+    dailyMaintenance ? runAggregateSelfHeal(env) : Promise.resolve(),
     runScheduledModelPricing(env)
   ])
   const reasons = results
@@ -327,6 +333,23 @@ async function runUsageSummaryBackfill(env: Bindings) {
     })
   } catch (error) {
     console.error(`TokenBoard usage summary backfill failed: ${errorMessage(error)}`)
+    throw error
+  }
+}
+
+async function runAggregateSelfHeal(env: Bindings) {
+  try {
+    const result = await selfHealAggregates({ db: env.DB, chunkSize: selfHealChunkSize(env) })
+    const repaired = result.summariesRepaired + result.orphansRemoved + result.totalsRepaired
+    if (repaired > 0) {
+      // Loud but bounded: this line is the drift evidence for the summary-strict cutover.
+      console.error(
+        `TokenBoard aggregate self-heal repaired ${repaired} aggregate row(s) ` +
+          `(summaries ${result.summariesRepaired}, orphans ${result.orphansRemoved}, totals ${result.totalsRepaired})`
+      )
+    }
+  } catch (error) {
+    console.error(`TokenBoard aggregate self-heal failed: ${errorMessage(error)}`)
     throw error
   }
 }
