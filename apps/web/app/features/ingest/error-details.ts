@@ -121,8 +121,15 @@ export function toIngestErrorDetails(error: ZodError): IngestErrorDetails {
       code: resolveCode(issue, resolved.path)
     }
     // One oversized number produces one `too_big` per constraint (int and number bounds);
-    // the client addresses rows, not constraints.
-    const key = `${detail.index ?? ''}|${detail.path}|${detail.code}`
+    // the client addresses rows, not constraints. The same holds across *different* bad
+    // fields of one row: both clients fold details to one entry per row index (first code
+    // wins), so a per-field entry would only spend the 32-entry budget on data the client
+    // discards — and each entry the budget wastes is a row the collector cannot isolate
+    // this round.
+    const key =
+      detail.index === undefined
+        ? `path|${detail.path}|${detail.code}`
+        : `index|${detail.path.split('.')[0]}|${detail.index}`
     if (seen.has(key)) continue
     if (details.length >= maxIngestErrorDetails) {
       truncated = true

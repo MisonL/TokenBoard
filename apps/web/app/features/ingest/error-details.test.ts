@@ -117,6 +117,39 @@ describe('toIngestErrorDetails', () => {
     expect(result.truncated).toBe(true)
   })
 
+  // Both clients fold details to one row per index, so the 32-entry budget has to be a
+  // 32-row budget: a row with two bad fields must not cost the batch a second entry,
+  // or multi-field defects shrink how many rows isolation can name per round.
+  // The two failing fields are ones Zod reports from the same object parse (adjacent
+  // issues per row); the usageDate window issues come from a later superRefine and are
+  // appended after the whole array, where they would not interleave.
+  test('spends one entry per bad row, even with several bad fields', () => {
+    const rows = Array.from({ length: maxIngestErrorDetails + 8 }, () => ({
+      ...baseSnapshot,
+      inputTokens: -1,
+      outputTokens: -1
+    }))
+    const { details, truncated } = detailsOf(ingestRequestSchema, { snapshots: rows })
+    expect(truncated).toBe(true)
+    expect(details).toHaveLength(maxIngestErrorDetails)
+    const indexes = new Set(details.map((detail) => detail.index))
+    expect(indexes.size).toBe(maxIngestErrorDetails)
+  })
+
+  // snapshots.N and keys.N are different rows; folding on the index alone would let one
+  // hide the other when a malformed body mixes both roots.
+  test('keeps snapshot and key rows apart when folding per row', () => {
+    const error = new ZodError([
+      { code: 'custom', path: ['snapshots', 0, 'usageDate'], message: 'Invalid ISO date' },
+      { code: 'invalid_type', path: ['keys', 0], message: 'Expected object, received string' }
+    ] as ZodIssue[])
+    const { details } = toIngestErrorDetails(error)
+    expect(details).toEqual([
+      { index: 0, path: 'snapshots.0.usageDate', code: 'invalid-date' },
+      { index: 0, path: 'keys.0', code: 'invalid-type' }
+    ])
+  })
+
   // The whole point of the whitelist: Zod's default messages interpolate the received value
   // ("Invalid input: expected number, received string"), so nothing but our own stable codes
   // and the schema's fixed messages may reach the response.
