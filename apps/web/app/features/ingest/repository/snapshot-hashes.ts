@@ -1,4 +1,4 @@
-import { listSummaryKeysNeedingRefresh, listUserIdsNeedingTotalRefresh } from './refresh'
+import { listSummaryKeysNeedingRefresh } from './refresh'
 import { snapshotHashQueryChunkSize, summaryKeyId, type ExistingSnapshotHash, type UsageSummaryKey } from './types'
 import type { UsageSnapshotKey } from '@tokenboard/usage-core'
 
@@ -65,8 +65,11 @@ async function filterExistingHashesWithCurrentCaches(db: D1Database, userId: str
       model: row.model
     }))
   )
+  // The per-request totals reconciliation that used to sit here scanned every summary row of
+  // the user on each /check call. Totals drift no longer changes what a snapshot hash proves, and
+  // the daily self-heal pass (repository/selfheal.ts) is the channel that repairs it, so the
+  // check answers its actual question — does this exact row exist with this hash, and is its
+  // summary current — and nothing more.
   const staleKeyIds = new Set(staleSummaryKeys.map(summaryKeyId))
-  const staleTotalUserIds = new Set(await listUserIdsNeedingTotalRefresh(db, [userId]))
-  if (staleTotalUserIds.has(userId)) return []
   return rows.filter((row) => !staleKeyIds.has(summaryKeyId({ userId, ...row } as UsageSummaryKey)))
 }

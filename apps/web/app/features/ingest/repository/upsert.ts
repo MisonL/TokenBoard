@@ -1,11 +1,7 @@
+import { listSummaryKeysNeedingRefresh, prepareSummaryRefresh, prepareUserTotalFromSummaryRefresh } from './refresh'
+import { listUsersWithTotalRowsSql, prepareTotalsDelta, totalsDeltaChunkKeys } from './totals-delta'
 import {
-  listSummaryKeysNeedingRefresh,
-  listUserIdsNeedingTotalRefresh,
-  nextAggregateTimestamp,
-  prepareSummaryRefresh,
-  prepareUserTotalFromSummaryRefresh
-} from './refresh'
-import {
+  createAggregateStamps,
   runStatementBatches,
   snapshotHash,
   statementChanged,
@@ -17,42 +13,74 @@ import {
 const snapshotUpsertBatchSize = 30
 
 export async function upsertUsageSnapshots(db: D1Database, records: IngestRecord[]) {
+  // One stamp sequence for the whole request: it keeps the cache key moving batch to batch
+  // (within-millisecond batches get distinct values) while every statement inside one batch
+  // shares its stamp, so no reader can see the summary and totals aggregates disagree on
+  // freshness when their values agree.
+  const stamps = createAggregateStamps()
   let upserted = 0
   for (let index = 0; index < records.length; index += snapshotUpsertBatchSize) {
     const batch = records.slice(index, index + snapshotUpsertBatchSize)
-    upserted += await upsertUsageSnapshotBatch(db, batch)
+    upserted += await upsertUsageSnapshotBatch(db, batch, stamps)
   }
 
   return { upserted }
 }
 
-async function upsertUsageSnapshotBatch(db: D1Database, records: IngestRecord[]) {
+async function upsertUsageSnapshotBatch(
+  db: D1Database,
+  records: IngestRecord[],
+  stamps: ReturnType<typeof createAggregateStamps>
+) {
   if (records.length === 0) return 0
   const usageStatements = await Promise.all(records.map((record) => prepareUsageUpsert(db, record)))
   const results = await runStatementBatches(db, usageStatements)
   const changedRecords = records.filter((_, index) => statementChanged(results[index]))
   const unchangedRecords = records.filter((_, index) => !statementChanged(results[index]))
+  // A key whose summary row is missing or stale must be refreshed even if this batch did not
+  // change it — the summary is the read path, and this is the only repair that keeps it current
+  // without the per-request totals reconciliation.
   const missingOrStaleSummaryKeys = await listSummaryKeysNeedingRefresh(db, unchangedRecords)
   const summaryKeysToRefresh = uniqueSummaryKeys([...changedRecords, ...missingOrStaleSummaryKeys])
-  const knownSummaryRefreshUserIds = new Set(uniqueUserIds(summaryKeysToRefresh))
-  const totalUserIdsToRefresh = [
-    ...knownSummaryRefreshUserIds,
-    ...(await listUserIdsNeedingTotalRefresh(
-      db,
-      uniqueUserIds(unchangedRecords).filter((userId) => !knownSummaryRefreshUserIds.has(userId))
-    ))
-  ]
-  if (summaryKeysToRefresh.length > 0 || totalUserIdsToRefresh.length > 0) {
-    // One stamp per derived batch: the summary rows and the user totals this batch writes
-    // must carry identical updated_at values, because the public-card path treats a summary
-    // stamp newer than the totals stamp as "totals are stale, re-derive from raw rows".
-    const stamp = nextAggregateTimestamp().toISOString()
-    await runStatementBatches(db, [
-      ...summaryKeysToRefresh.map((key) => prepareSummaryRefresh(db, key, stamp)),
-      ...totalUserIdsToRefresh.map((userId) => prepareUserTotalFromSummaryRefresh(db, userId, stamp))
-    ])
+  if (summaryKeysToRefresh.length === 0) return changedRecords.length
+
+  const userIdsToRefresh = uniqueUserIds(summaryKeysToRefresh)
+  const existingTotalUsers = await listUsersWithTotalRows(db, userIdsToRefresh)
+  const stamp = stamps.next()
+
+  // Ordering is part of the contract. D1 executes a batch sequentially inside one transaction,
+  // so every difference UPDATE reads the stored summary row as it was *before* this batch's
+  // upserts: each key's difference is (new raw aggregate − stored summary), and the summary
+  // upserts that follow land the new value.
+  const statements: D1PreparedStatement[] = []
+  const deltaKeys = summaryKeysToRefresh.filter((key) => existingTotalUsers.has(key.userId))
+  for (let index = 0; index < deltaKeys.length; index += totalsDeltaChunkKeys) {
+    const chunk = deltaKeys.slice(index, index + totalsDeltaChunkKeys)
+    statements.push(prepareTotalsDelta(db, chunk, stamp))
   }
+  for (const key of summaryKeysToRefresh) statements.push(prepareSummaryRefresh(db, key, stamp))
+  // A user with no totals row yet has nothing to add a difference to, so the full refresh runs
+  // for them instead — last, so its SUM includes the values this batch just wrote. That is the
+  // first-upload path and the self-heal's creation path, never the routine one.
+  for (const userId of userIdsToRefresh) {
+    if (!existingTotalUsers.has(userId)) statements.push(prepareUserTotalFromSummaryRefresh(db, userId, stamp))
+  }
+
+  await runStatementBatches(db, statements)
   return changedRecords.length
+}
+
+async function listUsersWithTotalRows(db: D1Database, userIds: string[]) {
+  const withRows = new Set<string>()
+  for (let index = 0; index < userIds.length; index += totalsDeltaChunkKeys) {
+    const chunk = userIds.slice(index, index + totalsDeltaChunkKeys)
+    const rows = await db
+      .prepare(listUsersWithTotalRowsSql(chunk.length))
+      .bind(...chunk)
+      .all<{ userId: string }>()
+    for (const row of rows.results ?? []) withRows.add(row.userId)
+  }
+  return withRows
 }
 
 async function prepareUsageUpsert(db: D1Database, record: IngestRecord) {

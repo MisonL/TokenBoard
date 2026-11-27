@@ -13,6 +13,22 @@ export type UsageSummaryKey = Pick<IngestRecord, 'userId' | 'usageDate' | 'sourc
 
 export const d1MaxBoundParameters = 100
 export const d1MaxBatchStatements = 100
+
+// One monotonic ISO stamp per derived batch inside a request. Two different values are
+// guaranteed even when two batches complete within the same millisecond, because the public-card
+// cache key hashes the aggregates' updated_at: an unchanged stamp across a batch boundary would
+// let a card cached mid-request serve the pre-batch body for its whole TTL.
+export function createAggregateStamps(now: () => Date = () => new Date()) {
+  let previousMs = 0
+  return {
+    next(): string {
+      const current = now()
+      const ms = Math.max(current.getTime(), previousMs + 1)
+      previousMs = ms
+      return new Date(ms).toISOString()
+    }
+  }
+}
 // Every derived chunk size leaves at least one parameter of headroom below the D1 limit. The
 // exact-limit version is legal today, but a future change that adds a binding to the same
 // statement would push it over and fail only in production. (The snapshot-hash formula already
@@ -30,7 +46,6 @@ export const snapshotHashQueryChunkSize = Math.floor(
 export const summaryRefreshCheckChunkSize = Math.floor(
   (d1MaxBoundParameters - d1BoundParameterHeadroom) / summaryRefreshCheckParameterCount
 )
-export const totalRefreshCheckChunkSize = d1MaxBoundParameters - d1BoundParameterHeadroom
 
 export async function runStatementBatches(db: D1Database, statements: D1PreparedStatement[]) {
   const results: D1Result<unknown>[] = []

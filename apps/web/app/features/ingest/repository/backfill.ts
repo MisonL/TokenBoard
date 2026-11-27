@@ -172,7 +172,14 @@ export async function readUsageSummaryStateRow(
 export async function writeUsageSummaryStateRow(
   db: D1Database,
   stateId: string,
-  state: { phase: string; cursorUserId: string | null; cursorUsageDate: string | null; cursorSource: string | null; cursorModel: string | null; completedAt: string | null }
+  state: {
+    phase: string
+    cursorUserId: string | null
+    cursorUsageDate: string | null
+    cursorSource: string | null
+    cursorModel: string | null
+    completedAt: string | null
+  }
 ) {
   await db
     .prepare(

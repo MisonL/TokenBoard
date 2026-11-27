@@ -51,6 +51,12 @@ describe('upsertUsageSnapshots', () => {
               async run() {
                 runCount += 1
                 return { success: true }
+              },
+              async all() {
+                // The totals-delta path probes which users already have a totals row; this
+                // fixture reports one, so the batch takes the UPDATE path.
+                if (sql.includes('FROM user_usage_totals')) return { results: [{ userId: 'seed-user' }] }
+                return { results: [] }
               }
             }
           }
@@ -72,11 +78,15 @@ describe('upsertUsageSnapshots', () => {
     expect(sqlStatements[0]).toContain("excluded.source = 'codex'")
     expect(sqlStatements[0]).toContain('daily_usage.total_tokens > 0')
     expect(runCount).toBe(0)
+    // batch 0: the two usage upserts. batch 1: one totals-delta UPDATE for the two summary keys
+    // sharing the user, then one summary upsert per key. No full totals refresh, because the
+    // user's totals row already exists.
     expect(batches).toHaveLength(2)
     expect(batches[0]).toHaveLength(2)
     expect(batches[1]).toHaveLength(3)
+    expect((batches[1][0] as { sql: string }).sql.includes('UPDATE user_usage_totals')).toBe(true)
     expect(sqlStatements.some((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toBe(true)
-    expect(sqlStatements.some((sql) => sql.includes('INSERT INTO user_usage_totals'))).toBe(true)
+    expect(sqlStatements.some((sql) => sql.includes('INSERT INTO user_usage_totals'))).toBe(false)
     const upsertBindings = bindings.filter((values) => values.length === 22)
     expect(upsertBindings.map((values) => values[5]).sort()).toEqual(['claude-opus-4-5', 'claude-sonnet-4-5'])
     expect(upsertBindings.find((values) => values[5] === 'claude-sonnet-4-5')).toEqual([
@@ -115,7 +125,11 @@ describe('upsertUsageSnapshots', () => {
             return {
               sql,
               values,
-              statementIndex: statementIndex++
+              statementIndex: statementIndex++,
+              async all() {
+                if (sql.includes('FROM user_usage_totals')) return { results: [{ userId: 'seed-user' }] }
+                return { results: [] }
+              }
             }
           }
         }
@@ -135,13 +149,21 @@ describe('upsertUsageSnapshots', () => {
 
     const result = await upsertUsageSnapshots(db, records)
 
+    // 17 usage batches (30 records each, 21 models in the last), then one derived batch per
+    // usage batch: 30 changed keys -> 2 totals-delta statements (15 keys each) + 30 summary
+    // upserts (no full refresh: the user's totals row exists). Every batch stays under the
+    // 100-statement ceiling, and each key's delta and its summary upsert share one batch —
+    // runStatementBatches splits above 100 into separate transactions, and they must never
+    // straddle such a split.
     expect(result).toEqual({ upserted: 501 })
     expect(batches).toHaveLength(34)
     expect(batches.every((batch) => batch.length <= 100)).toBe(true)
-    expect(batches.flat()).toHaveLength(1019)
-    expect(batches.slice(0, -2).every((batch, index) => batch.length === (index % 2 === 0 ? 30 : 31))).toBe(true)
-    expect(batches.at(-2)).toHaveLength(21)
-    expect(batches.at(-1)).toHaveLength(22)
+    // Usage and derived batches alternate: 16 full cycles of [30, 32], then [21,23] for the
+    // final 21 records (21 summary upserts + 2 delta statements of 15 + 6 keys).
+    expect(batches.map((batch) => batch.length)).toEqual([
+      30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32, 30, 32,
+      30, 32, 30, 32, 21, 23
+    ])
   })
 
   test('throws when D1 reports a failed ingest batch statement', async () => {
@@ -149,7 +171,14 @@ describe('upsertUsageSnapshots', () => {
       prepare(sql: string) {
         return {
           bind(...values: unknown[]) {
-            return { sql, values }
+            return {
+              sql,
+              values,
+              async all() {
+                if (sql.includes('FROM user_usage_totals')) return { results: [{ userId: 'seed-user' }] }
+                return { results: [] }
+              }
+            }
           }
         }
       },
@@ -171,19 +200,29 @@ describe('upsertUsageSnapshots', () => {
     const sqlStatements: string[] = []
     const batches: unknown[][] = []
     let statementIndex = 0
+    const statements: Array<{ sql: string; values: unknown[] }> = []
     const db = {
       prepare(sql: string) {
         sqlStatements.push(sql)
         return {
           bind(...values: unknown[]) {
             bindings.push(values)
-            return { sql, values, statementIndex: statementIndex++ }
+            statements.push({ sql, values })
+            return {
+              sql,
+              values,
+              statementIndex: statementIndex++,
+              async all() {
+                if (sql.includes('FROM user_usage_totals')) return { results: [{ userId: 'seed-user' }] }
+                return { results: [] }
+              }
+            }
           }
         }
       },
-      async batch(statements: unknown[]) {
-        batches.push(statements)
-        return statements.map(() => ({ success: true }))
+      async batch(statements2: unknown[]) {
+        batches.push(statements2)
+        return statements2.map(() => ({ success: true }))
       }
     } as unknown as D1Database
 
@@ -193,42 +232,58 @@ describe('upsertUsageSnapshots', () => {
       makeRecord({ usageDate: '2026-04-29' })
     ])
 
-    // Summary: four key columns + four join columns + the batch timestamp. Totals: user id,
-    // the same batch timestamp, then the join's user id — one stamp shared by both aggregates
-    // so the public-card freshness check never sees one newer than the other.
+    // The two devices collapse into one logical key, so the batch refreshes two summary rows.
+    // Summary binds are four key columns + four join columns + the batch timestamp; the
+    // totals-delta statement binds four key columns per key + the same batch timestamp, so it
+    // carries eight binds for two keys. The delta runs before the summary upserts that
+    // overwrite the rows it reads, and every statement in the batch shares one timestamp.
     const summaryBindings = bindings.filter((values) => values.length === 9)
-    const totalsBindings = bindings.filter((values) => values.length === 3)
-    expect(summaryBindings).toEqual([
-      [
-        'seed-user',
-        '2026-04-28',
-        'claude-code',
-        'claude-sonnet-4-5',
-        'seed-user',
-        '2026-04-28',
-        'claude-code',
-        'claude-sonnet-4-5',
-        expect.any(String)
-      ],
-      [
-        'seed-user',
-        '2026-04-29',
-        'claude-code',
-        'claude-sonnet-4-5',
-        'seed-user',
-        '2026-04-29',
-        'claude-code',
-        'claude-sonnet-4-5',
-        expect.any(String)
-      ]
+    const deltaBindings = statements
+      .filter((entry) => entry.sql.includes('UPDATE user_usage_totals'))
+      .map((entry) => entry.values)
+    expect(summaryBindings).toContainEqual([
+      'seed-user',
+      '2026-04-28',
+      'claude-code',
+      'claude-sonnet-4-5',
+      'seed-user',
+      '2026-04-28',
+      'claude-code',
+      'claude-sonnet-4-5',
+      expect.any(String)
     ])
-    expect(totalsBindings).toEqual([['seed-user', expect.any(String), 'seed-user']])
-    expect(totalsBindings[0][1]).toBe(summaryBindings[0][8])
-    const totalRefreshSql = sqlStatements.find((sql) => sql.includes('INSERT INTO user_usage_totals')) ?? ''
-    expect(totalRefreshSql).toContain('FROM usage_summary_backfill_state')
-    expect(totalRefreshSql).toContain('LEFT JOIN daily_usage_summary')
-    expect(totalRefreshSql).not.toMatch(/FROM daily_usage(?!_summary)/)
-    expect(sqlStatements.some((sql) => sql.includes('COALESCE(SUM(total_tokens - cache_read_tokens), 0)'))).toBe(true)
+    expect(summaryBindings).toContainEqual([
+      'seed-user',
+      '2026-04-29',
+      'claude-code',
+      'claude-sonnet-4-5',
+      'seed-user',
+      '2026-04-29',
+      'claude-code',
+      'claude-sonnet-4-5',
+      expect.any(String)
+    ])
+    const stamp = summaryBindings[0][8]
+    expect(summaryBindings.every((values) => values[8] === stamp)).toBe(true)
+    // One delta statement for the two changed keys (far under the 15-key chunk split).
+    expect(deltaBindings).toHaveLength(1)
+    expect(deltaBindings[0]).toEqual([
+      'seed-user',
+      '2026-04-28',
+      'claude-code',
+      'claude-sonnet-4-5',
+      'seed-user',
+      '2026-04-29',
+      'claude-code',
+      'claude-sonnet-4-5',
+      stamp
+    ])
+    // No full totals refresh: the user already has a totals row, so the delta path is enough.
+    expect(sqlStatements.some((sql) => sql.includes('INSERT INTO user_usage_totals'))).toBe(false)
+    const deltaSql = sqlStatements.find((sql) => sql.includes('UPDATE user_usage_totals')) ?? ''
+    expect(deltaSql).toContain('WITH newkeys(user_id, usage_date, source, model) AS')
+    expect(deltaSql).toContain('totals_refresh_allowed')
+    expect(deltaSql).toContain('daily_usage_summary')
     expect(batches).toHaveLength(2)
     expect(batches[0]).toHaveLength(3)
     expect(batches[1]).toHaveLength(3)
@@ -266,8 +321,11 @@ describe('upsertUsageSnapshots', () => {
     const result = await upsertUsageSnapshots(db, [makeRecord(), makeRecord({ model: 'claude-opus-4-5' })])
 
     expect(result).toEqual({ upserted: 0 })
+    // The unchanged rows still get the summary freshness check (a lost summary row must be
+    // repaired on the next retry), but with no key needing a refresh there is no derived batch
+    // at all — and the old per-request totals reconciliation query is gone with it.
     expect(sqlStatements.some((sql) => sql.includes('expected_summary'))).toBe(true)
-    expect(sqlStatements.some((sql) => sql.includes('expected_totals'))).toBe(true)
+    expect(sqlStatements.some((sql) => sql.includes('expected_totals'))).toBe(false)
     expect(batches).toHaveLength(1)
     expect(batches[0]).toHaveLength(2)
     expect(
@@ -334,7 +392,10 @@ describe('upsertUsageSnapshots', () => {
     expect(batches[1]).toHaveLength(2)
   })
 
-  test('repairs stale totals after an unchanged retry with current summaries', async () => {
+  test('an unchanged retry with current summaries writes no aggregate statements at all', async () => {
+    // The pre-B2 behaviour here was a full per-request totals reconciliation scan (and, on the
+    // check endpoint, a per-user summary scan) that re-derived totals on every retry. With the
+    // incremental path plus the daily self-heal pass, a fully-cached retry touches no aggregate.
     const sqlStatements: string[] = []
     const batches: unknown[][] = []
     let statementIndex = 0
@@ -348,9 +409,6 @@ describe('upsertUsageSnapshots', () => {
               values,
               statementIndex: statementIndex++,
               async all() {
-                if (sql.includes('expected_totals')) {
-                  return { results: [{ userId: 'seed-user' }] }
-                }
                 return { results: [] }
               }
             }
@@ -369,13 +427,10 @@ describe('upsertUsageSnapshots', () => {
     const result = await upsertUsageSnapshots(db, [makeRecord()])
 
     expect(result).toEqual({ upserted: 0 })
-    expect(sqlStatements.some((sql) => sql.includes('expected_summary'))).toBe(true)
-    expect(sqlStatements.some((sql) => sql.includes('expected_totals'))).toBe(true)
-    expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toHaveLength(0)
-    expect(sqlStatements.filter((sql) => sql.includes('INSERT INTO user_usage_totals'))).toHaveLength(1)
-    expect(batches).toHaveLength(2)
-    expect(batches[0]).toHaveLength(1)
-    expect(batches[1]).toHaveLength(1)
+    expect(batches).toHaveLength(1)
+    expect(sqlStatements.some((sql) => sql.includes('INSERT INTO user_usage_totals'))).toBe(false)
+    expect(sqlStatements.some((sql) => sql.includes('UPDATE user_usage_totals'))).toBe(false)
+    expect(sqlStatements.some((sql) => sql.includes('INSERT INTO daily_usage_summary'))).toBe(false)
   })
 
   test('marks the upload token and device as synced after ingest', async () => {
@@ -970,18 +1025,21 @@ describe('findExistingSnapshotHashes', () => {
     expect(result).toEqual([])
   })
 
-  test('does not report existing hashes when user totals are missing or stale', async () => {
+  // The per-request totals reconciliation is gone (batch B2/B4): totals drift no longer changes
+  // what a snapshot-hash check proves, and the daily self-heal pass owns the repair. This test
+  // pins the removal — a stale-totals user must still get its unchanged rows reported, and the
+  // check must never issue an expected_totals query again.
+  test('reports unchanged hashes without consulting user totals', async () => {
+    const sqlStatements: string[] = []
     const db = {
       prepare(sql: string) {
+        sqlStatements.push(sql)
         return {
           bind() {
             return {
               async all() {
                 if (sql.includes('expected_summary')) {
                   return { results: [] }
-                }
-                if (sql.includes('expected_totals')) {
-                  return { results: [{ userId: 'seed-user' }] }
                 }
                 return {
                   results: [
@@ -1006,7 +1064,9 @@ describe('findExistingSnapshotHashes', () => {
       keys: [{ source: 'codex', usageDate: '2026-04-28', model: 'gpt-5' }]
     })
 
-    expect(result).toEqual([])
+    expect(result).toEqual([{ source: 'codex', usageDate: '2026-04-28', model: 'gpt-5', snapshotHash: 'hash_1' }])
+    expect(sqlStatements.some((sql) => sql.includes('expected_totals'))).toBe(false)
+    expect(sqlStatements.some((sql) => sql.includes('user_usage_totals'))).toBe(false)
   })
 
   test('keeps existing hash queries under the D1 bound parameter limit', async () => {
@@ -1020,9 +1080,6 @@ describe('findExistingSnapshotHashes', () => {
             return {
               async all() {
                 if (sql.includes('expected_summary')) {
-                  return { results: [] }
-                }
-                if (sql.includes('expected_totals')) {
                   return { results: [] }
                 }
                 const chunkKeys = values.slice(2)
@@ -1058,7 +1115,8 @@ describe('findExistingSnapshotHashes', () => {
 
     expect(bindings.every((values) => values.length <= 100)).toBe(true)
     // Each chunk keeps one parameter of headroom below the D1 limit, so a statement that later
-    // gains a binding still fits.
-    expect(bindings.map((values) => values.length)).toEqual([98, 26, 96, 64, 1])
+    // gains a binding still fits. 40 keys → 32+8 hash-query chunks, then the 40 hit rows feed
+    // the 24+16 stale-summary check chunks.
+    expect(bindings.map((values) => values.length)).toEqual([98, 26, 96, 64])
   })
 })
