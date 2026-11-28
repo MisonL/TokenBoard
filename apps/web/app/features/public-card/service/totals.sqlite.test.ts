@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../../test/sqlite-d1'
 import { selfHealAggregates } from '../../ingest/repository'
+import { usageSummaryBackfillStateId } from '../../ingest/repository/types'
 import { getPublicTotals } from './totals'
 
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../db/migrations')
@@ -101,12 +102,14 @@ describe('getPublicTotals under a drifted summary row', () => {
     })
   }
 
-  test('a drifted summary row is served until the self-heal round repairs the totals', async () => {
+  // The card's numbers move because the summaries sweep repairs the row; the totals
+  // sweep has its own case in summary-parity (corrupt totals with an intact summary).
+  test('a drifted summary row is served until the self-heal round repairs the summary', async () => {
     const { db } = seed(
       tempDirs,
       `
       INSERT INTO usage_summary_backfill_state (id, phase, completed_at, updated_at)
-      VALUES ('initial', 'totals', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      VALUES ('${usageSummaryBackfillStateId}', 'totals', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
       INSERT INTO daily_usage (
         user_id, device_id, source, usage_date, timezone, model,
         input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
@@ -121,12 +124,15 @@ describe('getPublicTotals under a drifted summary row', () => {
       ) VALUES (
         'seed-user', '2026-05-10', 'claude-code', 'model-a', 'UTC', 7, 7, 0, '2026-05-11T08:00:00.000Z'
       );
+      -- Deliberately different from the drifted summary row: the rollup branch would serve
+      -- 5/0.25, so the 7/0 below proves the newer summary was recomputed instead.
       INSERT INTO user_usage_totals (user_id, total_tokens, total_tokens_without_cache_read, cost_usd, session_count, updated_at)
-      VALUES ('seed-user', 7, 7, 0, 1, '2026-05-10T08:00:00.000Z');
+      VALUES ('seed-user', 5, 5, 0.25, 1, '2026-05-10T08:00:00.000Z');
       `
     )
 
-    // The summary is newer than the rollup, so the card recomputes from the drifted row.
+    // The summary is newer than the rollup, so the card recomputes from the drifted row:
+    // 7/0 (summary), never 5/0.25 (rollup).
     for (const summaryStrict of [false, true]) {
       const drifted = await totalsFor(db, summaryStrict)
       expect(Number(drifted?.totalTokens)).toBe(7)

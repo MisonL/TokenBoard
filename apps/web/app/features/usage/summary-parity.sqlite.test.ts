@@ -103,7 +103,9 @@ describe('strict cutover parity against the raw aggregate', () => {
     expect(heal.summariesRepaired).toBe(1)
     expect(heal.totalsRepaired).toBe(1)
     expect(scalar(path, "SELECT total_tokens FROM user_usage_totals WHERE user_id = 'seed-user';")).toBe('150')
-    expect(scalar(path, "SELECT cost_usd - 2 < 1e-9 FROM user_usage_totals WHERE user_id = 'seed-user';")).toBe('1')
+    expect(scalar(path, "SELECT abs(cost_usd - 2) < 1e-9 FROM user_usage_totals WHERE user_id = 'seed-user';")).toBe(
+      '1'
+    )
     expect((await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })).todayTokens).toBe(150)
   })
 })

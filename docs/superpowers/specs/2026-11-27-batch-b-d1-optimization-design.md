@@ -353,9 +353,16 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
 - **观测输入**：`usage_summary_backfill_state` 的 `selfheal` 行在 2026-11-28T00:00:56Z
   完成了一轮（`phase=summaries`、游标清空、`completed_at` 落章），即 B6 自愈在 private CF
   真实跑满一轮。每轮的 `repaired` 计数只在运行日志里、不落库，逐轮修复量以日志为准。
-- **线上零漂移实测（2026-11-28）**：对 private CF 的 D1 直接核对（只读 SQL）——929 个
-  `daily_usage_summary` 行对 929 个 raw key：错行 0、缺行 0；`user_usage_totals` 对
-  summary 之和错行 0。即该环境 strict 读路径的覆盖面与正确性在完成一轮自愈后成立。
+- **线上零漂移实测（2026-11-28）**：对 private CF 的 D1 用只读 `wrangler d1 execute`
+  核对，口径为：`daily_usage` 按 (user, date, source, model) 聚合出 raw key，与
+  `daily_usage_summary` 比较 `total_tokens`、`input/output/cache_creation/cache_read` 五列，
+  同时统计 raw key 缺 summary 行数；`user_usage_totals` 与 summary 之和比较
+  `total_tokens`/`total_tokens_without_cache_read`/`session_count`；另查 legacy 去重前提
+  （存在同 key 的 legacy 与非 legacy 设备对时为非零，naive 求和才等价于去重口径）。
+  结果：929 个 summary 行对 929 个 raw key，列错行 0、缺行 0；totals 列错行 0；
+  legacy 冲突对 0。即该环境 strict 读路径的覆盖面与正确性在完成一轮自愈后成立。
+  cost 列不在这次比较内（billable 口径与来源可用性过滤要按 `billableCostSql` 重写比较式，
+  留待需要时再做）。
 - **读路径语义**（`effectiveDailyUsageSummaryWith`）：strict 只读 `daily_usage_summary`；
   fallback 读 summary **并**用 raw 去重聚合补齐 summary 缺失的 key。因此
   - 缺行：fallback 兜住；strict 少报，直到 B6 自愈（按 `daily_usage` 原始 key 枚举，
