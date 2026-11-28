@@ -702,6 +702,7 @@ test('a signal left behind by a covered exit is scanned by the next run', () => 
 
   assert.deepEqual([...ran].sort(), ['claude-code', 'codex'])
   // The scan acknowledges what it consumed: the claim file alone disappearing is not
-  // enough evidence (an un-acked entry stays readable under its per-event name).
+  // enough evidence — without the ack the drain's recovery journal still reports the
+  // source to every reader.
   assert.deepEqual(readSignalSources({ ...fs, stateDir: '/state' }), [])
 })
