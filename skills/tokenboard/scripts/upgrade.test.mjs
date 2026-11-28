@@ -2705,7 +2705,7 @@ test('an unflagged --to-binary without a config installs from the default feed',
 // custom one.
 test(
   'a permission problem surfaces instead of falling back to the default feed',
-  { skip: process.platform === 'win32' },
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 },
   async () => {
     const previous = process.env.TOKENBOARD_CONFIG_DIR
     const parent = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-denied-'))

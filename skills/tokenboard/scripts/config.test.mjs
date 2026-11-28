@@ -208,7 +208,7 @@ test('normalizes config by mirroring the active server profile', () => {
 // problem used to be reported as "config not found" and callers silently used defaults.
 test(
   'readConfig reports a permission problem instead of a missing config',
-  { skip: process.platform === 'win32' },
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 },
   () => {
     const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
     const parent = mkdtempSync(join(tmpdir(), 'tokenboard-config-denied-'))
@@ -742,50 +742,58 @@ test('mergeConfig stores only profile-scoped fields from server patches', () => 
   }
 })
 
-test('writeConfig re-tightens existing config file permissions', { skip: process.platform === 'win32' }, () => {
-  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
-  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-mode-'))
-  process.env.TOKENBOARD_CONFIG_DIR = directory
+test(
+  'writeConfig re-tightens existing config file permissions',
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 },
+  () => {
+    const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+    const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-mode-'))
+    process.env.TOKENBOARD_CONFIG_DIR = directory
 
-  try {
-    writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
-    const file = join(directory, 'config.json')
-    chmodSync(file, 0o644)
-    writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest', timezone: 'UTC' })
+    try {
+      writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
+      const file = join(directory, 'config.json')
+      chmodSync(file, 0o644)
+      writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest', timezone: 'UTC' })
 
-    assert.equal(statSync(file).mode & 0o777, 0o600)
-  } finally {
-    if (previousConfigDir === undefined) {
-      delete process.env.TOKENBOARD_CONFIG_DIR
-    } else {
-      process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+      assert.equal(statSync(file).mode & 0o777, 0o600)
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.TOKENBOARD_CONFIG_DIR
+      } else {
+        process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+      }
+      rmSync(directory, { recursive: true, force: true })
     }
-    rmSync(directory, { recursive: true, force: true })
   }
-})
+)
 
 // The directory holds the config file, and `mkdirSync`'s mode applies only when it creates the
 // directory — a pre-existing or later-loosened one keeps its own mode. writeConfig tightens it,
 // so the token is never left readable by other users on the machine.
-test('writeConfig re-tightens an existing config directory', { skip: process.platform === 'win32' }, () => {
-  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
-  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-dir-mode-'))
-  process.env.TOKENBOARD_CONFIG_DIR = directory
+test(
+  'writeConfig re-tightens an existing config directory',
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 },
+  () => {
+    const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+    const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-dir-mode-'))
+    process.env.TOKENBOARD_CONFIG_DIR = directory
 
-  try {
-    chmodSync(directory, 0o777)
-    writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
+    try {
+      chmodSync(directory, 0o777)
+      writeConfig({ endpoint: 'https://tokenboard.example/api/v1/ingest' })
 
-    assert.equal(statSync(directory).mode & 0o777, 0o700)
-  } finally {
-    if (previousConfigDir === undefined) {
-      delete process.env.TOKENBOARD_CONFIG_DIR
-    } else {
-      process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+      assert.equal(statSync(directory).mode & 0o777, 0o700)
+    } finally {
+      if (previousConfigDir === undefined) {
+        delete process.env.TOKENBOARD_CONFIG_DIR
+      } else {
+        process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+      }
+      rmSync(directory, { recursive: true, force: true })
     }
-    rmSync(directory, { recursive: true, force: true })
   }
-})
+)
 
 test('mergeConfig preserves concurrent server profile updates across processes', async () => {
   const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR

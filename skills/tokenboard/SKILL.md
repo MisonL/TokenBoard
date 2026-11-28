@@ -48,13 +48,14 @@ intended source for that machine.
 travel over that URL, so setup refuses a plain-`http` remote before any credential
 is sent and exits with a one-line error.
 
-> **The default binary feed publishes no release.** `--to-binary` and `self-update` point at
-> `evepupil/TokenBoard` (`defaultReleaseRepo` in `client-binary.mjs`), and that repository has no
-> published release, so a binary install against the default feed fails closed — the intended
-> behaviour rather than a bug. Development releases live on the fork `MisonL/TokenBoard`
-> (v0.2.0,2026-11-12); to try the binary channel, pass `--release-repo MisonL/TokenBoard`
-> (or set `TOKENBOARD_RELEASE_REPO`) and keep the matching `TOKENBOARD_RELEASE_BASE_URL` for a
-> custom mirror. Otherwise keep installs on `git`.
+> **The default binary feed publishes releases.** `--to-binary` and `self-update` point at
+> `evepupil/TokenBoard` (`defaultReleaseRepo` in `client-binary.mjs`); its latest release is
+> v0.3.0 (2026-11-24). To use a custom mirror or pin one release, pass `--release-repo` /
+> `--release-tag` / `--release-base-url` (or the matching `TOKENBOARD_RELEASE_*` variables).
+> A feed passed explicitly is recorded for later self-updates; switching back to the default
+> is explicit too — `--release-repo evepupil/TokenBoard` clears a recorded repository and
+> the inline empty form `--release-base-url=` clears a recorded base URL. A re-install with
+> no feed flags keeps whatever the config records.
 
 To roll an install back from `binary` to `git`, do not hand-edit the config
 file: with `activeServer`/`servers` present, `clientType` is profile-scoped and a

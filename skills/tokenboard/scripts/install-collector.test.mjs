@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import {
@@ -31,10 +34,10 @@ test('recording an explicit default switch removes the stored overrides', () => 
 // and release flags on the default git client are refused instead of silently ignored.
 const collectorScript = fileURLToPath(new URL('./install-collector.mjs', import.meta.url))
 
-function runCollector(args) {
+function runCollector(args, configDir = '/nonexistent-tokenboard-collector-test') {
   const result = spawnSync(process.execPath, [collectorScript, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, TOKENBOARD_CONFIG_DIR: '/nonexistent-tokenboard-collector-test' }
+    env: { ...process.env, TOKENBOARD_CONFIG_DIR: configDir }
   })
   return { status: result.status, stderr: result.stderr, stdout: result.stdout }
 }
@@ -45,6 +48,29 @@ test('a bare --release-repo fails with one line instead of a stack', () => {
   assert.match(result.stderr, /--release-repo requires a value/)
   assert.equal(result.stderr.includes('at Object'), false)
   assert.equal(result.stderr.trim().split('\n').length, 1)
+})
+
+test('a bare --release-tag fails with one line instead of installing latest', () => {
+  const result = runCollector(['--client', 'binary', '--release-tag'])
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /--release-tag requires a value/)
+  assert.equal(result.stderr.trim().split('\n').length, 1)
+})
+
+// A config that exists but cannot be parsed must stop the install before anything is
+// downloaded; the message names the file and the parse position, never its contents.
+test('a malformed saved config stops the install instead of using defaults', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-installer-config-'))
+  try {
+    writeFileSync(join(directory, 'config.json'), '{"uploadToken": "tb_supersecret_XYZ",')
+    const result = runCollector(['--client', 'binary'], directory)
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /not valid JSON/)
+    assert.equal(result.stderr.includes('tb_supersecret_XYZ'), false)
+    assert.equal(result.stderr.trim().split('\n').length, 1)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('release flags on the git client are refused', () => {

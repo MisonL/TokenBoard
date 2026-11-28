@@ -437,3 +437,7 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
   变异核验：把切回默认改写为「记录默认值」时 `release-feed` 与 upgrade 用例变红；把
   `configRemovals` 改为恒返回空时 config 用例变红；删掉任一路径的 `remove` 转发时对应入口
   用例变红。
+- 已知边界（接受）：`status.mjs`、`rotate-token.mjs`、`setup.mjs`、`device-link-config.mjs` 等
+  入口仍用 `existsSync` 判定配置存在，父目录不可读时会把权限问题显示成「未配置/找不到」；
+  全部 fail-closed（写路径在凭据锁处失败，不覆盖配置），只是诊断措辞不准确。C6 只改了
+  `readConfig` 及其两个 feed 消费者；其余入口按需再收敛。
