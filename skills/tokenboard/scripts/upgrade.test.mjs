@@ -2671,24 +2671,84 @@ test('migrateToBinaryClient records a non-default release source', async () => {
   ])
 })
 
-// Switching the feed back to the default: the install must use the default *and* the
-// stored override must be cleared, or the next self-update resolves the old mirror.
-test('migrateToBinaryClient clears the stored feed when switching back to the default', async () => {
-  const calls = []
-  await migrateToBinaryClient({
-    flags: { 'release-repo': defaultReleaseRepo },
-    env: {},
-    configDirectory: '/home/user/.tokenboard',
-    readSavedConfig: () => ({}),
-    install: async () => ({ version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }),
-    mergeConfigFile: (patch, options) => {
-      calls.push({ patch, options })
-      return { ...patch }
-    },
-    log: () => {}
-  })
+// The default saved-config reader is what every real `--to-binary` runs: a machine with
+// no config must still install from the default feed, and a malformed one must fail
+// loudly (without echoing its contents) instead of silently falling back.
+test('an unflagged --to-binary without a config installs from the default feed', async () => {
+  const previous = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-saved-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    const installed = []
+    await migrateToBinaryClient({
+      flags: {},
+      env: {},
+      configDirectory: directory,
+      install: async (options) => {
+        installed.push(options)
+        return { version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }
+      },
+      mergeConfigFile: (patch) => ({ ...patch }),
+      log: () => {}
+    })
+    assert.equal(installed[0].repo, defaultReleaseRepo)
+  } finally {
+    if (previous === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previous
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
-  assert.deepEqual(calls, [{ patch: { clientType: 'binary' }, options: { remove: ['releaseRepo'] } }])
+test('a malformed config fails the migration without echoing its contents', async () => {
+  const previous = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-saved-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+  try {
+    writeFileSync(join(directory, 'config.json'), '{"uploadToken": "tb_supersecret_XYZ",')
+    const installed = []
+    await assert.rejects(
+      () =>
+        migrateToBinaryClient({
+          flags: {},
+          env: {},
+          configDirectory: directory,
+          install: async (options) => {
+            installed.push(options)
+            return { version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }
+          },
+          mergeConfigFile: (patch) => ({ ...patch }),
+          log: () => {}
+        }),
+      (error) => {
+        assert.equal(String(error.message).includes('tb_supersecret_XYZ'), false)
+        assert.match(String(error.message), /parse error/)
+        return true
+      }
+    )
+    assert.deepEqual(installed, [])
+  } finally {
+    if (previous === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previous
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+// A bare --release-tag would otherwise be read as "no tag" and quietly install the
+// latest release; the migration must reject it like the other feed flags.
+test('migrateToBinaryClient rejects a bare --release-tag', async () => {
+  await assert.rejects(
+    () =>
+      migrateToBinaryClient({
+        flags: { 'release-tag': true },
+        env: {},
+        configDirectory: '/home/user/.tokenboard',
+        readSavedConfig: () => ({}),
+        install: async () => ({ version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }),
+        mergeConfigFile: (patch) => ({ ...patch }),
+        log: () => {}
+      }),
+    /--release-tag requires a value/
+  )
 })
 
 // Switching the feed back to the default: the install must use the default *and* the

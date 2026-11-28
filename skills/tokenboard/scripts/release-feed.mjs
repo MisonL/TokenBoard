@@ -38,10 +38,26 @@ export function resolveReleaseFeed({ flags = {}, env = process.env, saved = {} }
   return { repo, baseUrl, patch, remove }
 }
 
+// A tag is never recorded — it pins one install — so the only decisions are "use this
+// tag" and "use the latest release". An explicit empty value means latest; a bare flag
+// or whitespace would silently mean the same thing, so those are usage errors.
+export function resolveReleaseTag({ flags = {}, env = process.env } = {}) {
+  const raw = flags['release-tag'] !== undefined ? flags['release-tag'] : env.TOKENBOARD_RELEASE_TAG
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'string') throw new Error('--release-tag requires a value')
+  const tag = raw.trim()
+  if (!tag && raw !== '') throw new Error('--release-tag value is blank')
+  return tag || undefined
+}
+
 // A bare `--release-repo` with no value parses as `true`. Treating that as "clear the
-// feed" would let a typo reset a custom mirror silently, so it is a usage error.
+// feed" would let a typo reset a custom mirror silently, so it is a usage error. A
+// whitespace-only value gets the same treatment: only the exact empty string (the
+// inline `--name=` spelling) expresses "clear".
 function feedValue(value, flagName) {
   if (value === undefined) return ''
   if (typeof value !== 'string') throw new Error(`${flagName} requires a value`)
-  return value.trim()
+  const trimmed = value.trim()
+  if (!trimmed && value !== '') throw new Error(`${flagName} value is blank`)
+  return trimmed
 }

@@ -15,7 +15,7 @@ import {
 } from './config.mjs'
 import { hasHelpFlag, printHelpIfRequested } from './cli-help.mjs'
 import { installClientBinary } from './client-binary.mjs'
-import { resolveReleaseFeed } from './release-feed.mjs'
+import { resolveReleaseFeed, resolveReleaseTag } from './release-feed.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { scrubbedChildEnv } from './child-env.mjs'
 import { assertSupportedNodeVersion } from './node-version.mjs'
@@ -106,7 +106,7 @@ export async function migrateToBinaryClient({
   // resolves the feed on its own, and keeping a stale override would silently move the
   // machine back to the previous feed.
   const feed = resolveReleaseFeed({ flags, env, saved: readSavedConfig() })
-  const tag = trimmedString(flags['release-tag'] || env.TOKENBOARD_RELEASE_TAG) || undefined
+  const tag = resolveReleaseTag({ flags, env })
   const installed = await install({ repo: feed.repo, tag, baseUrl: feed.baseUrl, configDir: configDirectory, log })
   // The switch is recorded so the next sync knows which client to run. A
   // release source that came from a flag or the environment is recorded too:

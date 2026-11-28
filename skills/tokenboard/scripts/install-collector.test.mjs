@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import {
   buildBinaryInstallConfig,
   buildInstallCollectorPlan,
@@ -23,6 +25,32 @@ test('recording an explicit default switch removes the stored overrides', () => 
   assert.deepEqual(calls, [
     { patch: { clientType: 'binary', updatedAt: 'now' }, options: { remove: ['releaseRepo', 'releaseBaseUrl'] } }
   ])
+})
+
+// The CLI-level guarantees: a bare release flag is rejected with one line (not a stack),
+// and release flags on the default git client are refused instead of silently ignored.
+const collectorScript = fileURLToPath(new URL('./install-collector.mjs', import.meta.url))
+
+function runCollector(args) {
+  const result = spawnSync(process.execPath, [collectorScript, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, TOKENBOARD_CONFIG_DIR: '/nonexistent-tokenboard-collector-test' }
+  })
+  return { status: result.status, stderr: result.stderr, stdout: result.stdout }
+}
+
+test('a bare --release-repo fails with one line instead of a stack', () => {
+  const result = runCollector(['--client', 'binary', '--release-repo'])
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /--release-repo requires a value/)
+  assert.equal(result.stderr.includes('at Object'), false)
+  assert.equal(result.stderr.trim().split('\n').length, 1)
+})
+
+test('release flags on the git client are refused', () => {
+  const result = runCollector(['--client', 'git', '--release-repo', 'other/TokenBoard'])
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /apply only to the binary client: --release-repo/)
 })
 
 // A bare re-run is the recovery path sync.mjs names ("run install-collector.mjs

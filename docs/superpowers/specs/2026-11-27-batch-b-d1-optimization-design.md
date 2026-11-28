@@ -415,14 +415,22 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
   视为用法错误而非「清除」，避免误触把自定义镜像静默重置；清除 base URL 的 CLI 写法是
   **inline 空值 `--release-base-url=`**（两 token 的 `--release-base-url ''` 在 parseArgs 里
   同样是裸 flag，会报用法错误——这是有意区分，靠 `release-feed.test.mjs` 经 parseArgs 的
-  用例钉住）。`setup` 通道（`setup-options.mjs` 的 `buildInstallCollectorArgs`）会转发用户
-  实际给出的 release flag（含 inline 空值与裸 flag），否则 `setup --release-base-url=`
-  会被静默丢弃、旧 mirror 继续生效。Go 客户端只经环境变量读 feed（`TOKENBOARD_RELEASE_REPO`
-  等），配置字段由 skill 在 spawn 时按需注入，清除 override 后自然回落到默认。
+  用例钉住）。只有精确空串表达清除，空白字符串（`' '`）同样报用法错误，避免「看起来像
+  输入、实际被 trim 成清除」。`--release-tag` 由 `resolveReleaseTag` 统一：显式空值=装
+  latest，裸 flag/空白报错（旧实现会把裸 flag 静默当作 latest）。git 客户端下出现 release
+  flag 直接报错并提示 `--client binary`，不再静默吸收。`setup` 通道（`setup-options.mjs` 的
+  `buildInstallCollectorArgs`）会转发用户实际给出的 release flag（含 inline 空值与裸 flag），
+  否则 `setup --release-base-url=` 会被静默丢弃、旧 mirror 继续生效。`migrateToBinaryClient`
+  的默认 saved 读取器（配置缺失视为空、损坏抛错且不回声内容）与 install-collector 的单行
+  用法错误均有 CLI 级测试。Go 客户端只经环境变量读 feed（`TOKENBOARD_RELEASE_REPO` 等），
+  配置字段由 skill 在 spawn 时按需注入，清除 override 后自然回落到默认。
 - 验证：`release-feed.test.mjs`（默认/已存/显式自定义/切回默认/清空 base URL/env 与 flag
-  优先级/裸 flag 报错/经 parseArgs 的 inline 与两 token 两种拼写）；`config.test.mjs`（白名单内
-  移除、白名单外拒绝、非数组拒绝、profile 合并路径、lockHeld 路径）；`setup-options.test.mjs`
-  （显式空值与裸 flag 的转发）；两个入口各有「切回默认时以 `remove` 清除」的用例。
+  优先级/裸 flag 与空白值报错/经 parseArgs 的 inline 与两 token 两种拼写/tag 解析矩阵）；
+  `config.test.mjs`（白名单内移除、白名单外拒绝、非数组拒绝、profile 合并路径、lockHeld 路径）；
+  `setup-options.test.mjs`（显式空值与裸 flag 的转发）；`upgrade.test.mjs`（默认 saved 读取器
+  的缺失/损坏两态、裸 tag 拒绝、无参 `--to-binary` 沿用已存源）；`install-collector.test.mjs`
+  的 CLI 级用例（裸 flag 单行错误、git 客户端拒绝 release flag）；两个入口各有「切回默认时
+  以 `remove` 清除」的用例。
   变异核验：把切回默认改写为「记录默认值」时 `release-feed` 与 upgrade 用例变红；把
   `configRemovals` 改为恒返回空时 config 用例变红；删掉任一路径的 `remove` 转发时对应入口
   用例变红。

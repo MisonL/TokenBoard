@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defaultReleaseRepo } from './client-binary.mjs'
 import { parseArgs } from './config.mjs'
-import { resolveReleaseFeed } from './release-feed.mjs'
+import { resolveReleaseFeed, resolveReleaseTag } from './release-feed.mjs'
 
 // The feed a binary install records has to outlive the install: every later
 // `self-update` resolves it from the config. `mergeConfig` preserves fields a patch
@@ -136,4 +136,23 @@ test('a valueless flag is a usage error, not a silent clear', () => {
     () => resolveReleaseFeed({ flags: { 'release-base-url': true }, env: {}, saved: {} }),
     /requires a value/
   )
+})
+
+// A whitespace-only value trims to empty, which would read as "clear" — the same silent
+// reset a bare flag would cause. Only the exact empty string expresses a clear.
+test('a whitespace-only feed value is a usage error, not a clear', () => {
+  assert.throws(() => resolveReleaseFeed({ flags: { 'release-repo': '  ' }, env: {}, saved: {} }), /value is blank/)
+  assert.throws(() => resolveReleaseFeed({ flags: { 'release-base-url': '\t' }, env: {}, saved: {} }), /value is blank/)
+})
+
+// The tag is never recorded, so the only choices are "this tag" and "the latest release".
+// An explicit empty value means latest; a bare flag or whitespace is a usage error
+// instead of silently installing the latest release.
+test('release tags: explicit values pass, empty means latest, bare is an error', () => {
+  assert.equal(resolveReleaseTag({ flags: {}, env: {} }), undefined)
+  assert.equal(resolveReleaseTag({ flags: { 'release-tag': 'v1.2.3' }, env: {} }), 'v1.2.3')
+  assert.equal(resolveReleaseTag({ flags: { 'release-tag': '' }, env: {} }), undefined)
+  assert.equal(resolveReleaseTag({ flags: {}, env: { TOKENBOARD_RELEASE_TAG: 'v2.0.0' } }), 'v2.0.0')
+  assert.throws(() => resolveReleaseTag({ flags: { 'release-tag': true }, env: {} }), /requires a value/)
+  assert.throws(() => resolveReleaseTag({ flags: { 'release-tag': ' ' }, env: {} }), /value is blank/)
 })

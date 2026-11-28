@@ -14,7 +14,7 @@ import {
   readPackageManager
 } from './config.mjs'
 import { installClientBinary } from './client-binary.mjs'
-import { resolveReleaseFeed } from './release-feed.mjs'
+import { resolveReleaseFeed, resolveReleaseTag } from './release-feed.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { assertSupportedNodeVersion } from './node-version.mjs'
 import {
@@ -162,21 +162,33 @@ function runCli() {
     process.exit(1)
   }
 
+  const releaseFlagNames = ['release-repo', 'release-tag', 'release-base-url']
+  const strayReleaseFlags = releaseFlagNames.filter((name) => flags[name] !== undefined)
+  if (clientType !== 'binary' && strayReleaseFlags.length > 0) {
+    console.error(
+      `Release feed flags apply only to the binary client: ${strayReleaseFlags.map((name) => `--${name}`).join(', ')}. ` +
+        'Pass --client binary to install the released client.'
+    )
+    process.exit(1)
+  }
+
   if (clientType === 'binary') {
     // A binary install has no checkout to clone or pull: the release tarball
     // carries everything the client needs. The config directory is the binary's
     // home, so this is the only install step. A non-default feed recorded at
     // install time is reused, for the same reason as the git settings below.
     let feed
+    let tag
     try {
       feed = resolveReleaseFeed({ flags, env: process.env, saved })
+      tag = resolveReleaseTag({ flags, env: process.env })
     } catch (error) {
       console.error(errorMessage(error))
       process.exit(1)
     }
     installClientBinary({
       repo: feed.repo,
-      tag: flags['release-tag'] || process.env.TOKENBOARD_RELEASE_TAG || undefined,
+      tag,
       baseUrl: feed.baseUrl,
       configDir: configDir(),
       // The installer's notices (including "a ccusage from an earlier release
