@@ -17,6 +17,7 @@ import { acquireLock, releaseLock, waitForLock } from './coordinator-lock.mjs'
 import {
   acknowledgeCoveredSignalSource,
   acknowledgeSignalSource,
+  hasQueuedSignalEntry,
   appendSignal,
   drainSignalSources,
   readSignalRequestTimes,
@@ -152,7 +153,9 @@ function runCoordinator(trigger, runtime, result) {
     if (lock.waited && pendingSources.length === 0) {
       return { ...result, waitedForLock: true, skippedSync: true }
     }
-    let syncSources = mergeSources(pendingSources, [trigger.source])
+    // A covered-handoff wake runs whatever the queue holds; its `--source` is the trigger
+    // that booked the wake, not a request, and unioning it in would scan an empty queue.
+    let syncSources = mergeSources(pendingSources, trigger.coveredHandoff ? [] : [trigger.source])
     // A scheduled run that finished after the request already collected a source — whether
     // the hook trigger now lands inside the window or in a trailing worker after it. Drop
     // those sources from everything below (the skip paths would otherwise re-queue them
@@ -167,6 +170,15 @@ function runCoordinator(trigger, runtime, result) {
     for (let pass = 0; ; pass += 1) {
       const requestTimes = readSignalRequestTimes(runtime)
       for (const source of [...syncSources]) {
+        // A canonical entry that reappears after an earlier pass (or arrives on a
+        // covered-handoff wake) was written after the claim that removed it: it is a new
+        // request whatever its timestamp says, and a backward clock step must not be able
+        // to make it look covered.
+        if ((pass > 0 || trigger.coveredHandoff === true) && hasQueuedSignalEntry(runtime, source)) {
+          coveredSet.delete(source)
+          judgedAt.delete(source)
+          continue
+        }
         const judgedMs = judgedAt.get(source)
         if (judgedMs !== undefined) {
           const currentMs = Date.parse(requestTimes.get(source))
@@ -210,13 +222,13 @@ function runCoordinator(trigger, runtime, result) {
       // request is picked up seconds later instead of waiting for the next external trigger.
       // A wake that acknowledges nothing books nothing, so the chain cannot outlive the
       // signals that justified it.
-      const woken = removedAcks > 0 && runtime.scheduleTrailing(trigger, coveredExitWakeMs)
+      const woken = removedAcks > 0 && runtime.scheduleTrailing({ ...trigger, coveredHandoff: true }, coveredExitWakeMs)
       return {
         ...result,
         waitedForLock: lock.waited,
         skippedSync: true,
         skippedReason: 'scheduled-covered',
-        ...(woken ? { trailingScheduled: true, trailingDelayMs: coveredExitWakeMs } : {})
+        ...(woken ? { trailingScheduled: true, trailingDelayMs: coveredExitWakeMs, trailingHandoff: true } : {})
       }
     }
     const remainingMs = cooldownRemainingMs(runtime)

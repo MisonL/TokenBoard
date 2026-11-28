@@ -55,7 +55,10 @@ export function runNotify(options = {}) {
   const env = options.env || process.env
   const stateDir = options.stateDir
   const configDirectory = options.configDir || stateDir
-  const trigger = { kind: 'notify', source }
+  // A covered-handoff wake knows a canonical queue entry it finds is new (the run that
+  // booked it claimed everything it covered), so it must not judge it by wall-clock time.
+  const coveredHandoff = flags.coveredHandoff === true || env.TOKENBOARD_NOTIFY_COVERED_HANDOFF === '1'
+  const trigger = { kind: 'notify', source, ...(coveredHandoff ? { coveredHandoff: true } : {}) }
   return coordinatedSync(trigger, {
     stateDir,
     cooldownMs: readNotifyCooldownMs(options.cooldownMs, env, options.configCooldownMs),
@@ -199,7 +202,8 @@ export function scheduleTrailingNotify(trigger, delayMs, options = {}) {
           : {}),
         TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH: '',
         TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN: '',
-        TOKENBOARD_NOTIFY_DISPATCH_WORKER_PATH: ''
+        TOKENBOARD_NOTIFY_DISPATCH_WORKER_PATH: '',
+        ...(trigger.coveredHandoff ? { TOKENBOARD_NOTIFY_COVERED_HANDOFF: '1' } : {})
       }
     })
     attachTrailingSpawnErrorHandler(child, lockPath, lock.ownerToken, runtime, options)
@@ -286,7 +290,7 @@ function readSource(value) {
 }
 
 export async function runNotifyCli(options = {}) {
-  const env = options.env || process.env
+  let env = options.env || process.env
   const trailingLockPath = env.TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH || ''
   const dispatchLockPath = env.TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH || ''
   const dispatchLockToken = env.TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN || ''
@@ -355,6 +359,9 @@ export async function runNotifyCli(options = {}) {
         if (Array.isArray(result.trailingSources) && result.trailingSources.length > 0) {
           continuationFlags = { source: result.trailingSources[0] }
         }
+        // The covered-handoff marker rides the env into the continuation round (a fresh env
+        // object, never a mutated process.env).
+        env = roundCoveredHandoffEnv(env, result.trailingHandoff === true)
         delayMs = nextDelayMs
       }
     }
@@ -620,6 +627,14 @@ function trailingDelayMsFromEnvironment(env = process.env) {
 function readTransientAttempts(env = process.env) {
   const value = Number.parseInt(env.TOKENBOARD_NOTIFY_TRANSIENT_ATTEMPTS || '', 10)
   return Number.isSafeInteger(value) && value > 0 ? value : 0
+}
+
+function roundCoveredHandoffEnv(env, handoff) {
+  if (handoff) return { ...env, TOKENBOARD_NOTIFY_COVERED_HANDOFF: '1' }
+  if (!env.TOKENBOARD_NOTIFY_COVERED_HANDOFF) return env
+  const next = { ...env }
+  delete next.TOKENBOARD_NOTIFY_COVERED_HANDOFF
+  return next
 }
 
 function trailingContinuationDelay(result, lockPath, runtime = trailingRuntime({})) {

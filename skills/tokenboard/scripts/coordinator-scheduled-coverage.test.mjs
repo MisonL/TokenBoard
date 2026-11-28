@@ -204,8 +204,13 @@ test('a signal already covered by a finished scheduled run is not re-scanned', (
   const fs = stateFsWith(memoryRuntime(), {})
   queueSignal(fs, 'codex', utcForLocal(12, 5))
   const ran = []
+  const trailing = []
 
-  const result = runAt(fs, { now: localTime(12, 31), executeSync: (trigger) => ran.push(trigger.source) })
+  const result = runAt(fs, {
+    now: localTime(12, 31),
+    trailing,
+    executeSync: (trigger) => ran.push(trigger.source)
+  })
 
   assert.deepEqual(ran, [], 'the scheduled run already collected this signal')
   assert.equal(result.skippedSync, true)
@@ -213,9 +218,14 @@ test('a signal already covered by a finished scheduled run is not re-scanned', (
   // One short wake is booked even though nothing is left to scan: a hook that lands after
   // the gate's last queue read but before the dispatch lock is released would otherwise be
   // stranded until the next external trigger. The wake acknowledges nothing, so it books
-  // no further wake.
+  // no further wake — and it must carry the handoff marker, or it would judge a
+  // brand-new entry by the wall clock again.
   assert.equal(result.trailingScheduled, true)
   assert.equal(result.trailingDelayMs, 15_000)
+  assert.deepEqual(
+    trailing.map(({ trigger }) => trigger.coveredHandoff),
+    [true]
+  )
 })
 
 test('a signal the scheduled run has not covered yet is re-scanned after the window', () => {
@@ -568,6 +578,104 @@ test('a covered exit books no wake when nothing was claimed from the queue', () 
   const result = runAt(fs, { now: localTime(12, 31), trailing })
 
   assert.equal(result.skippedReason, 'scheduled-covered')
+  assert.notEqual(result.trailingScheduled, true)
+  assert.deepEqual(trailing, [])
+})
+
+// A backward clock step can make a brand-new request look older than the scheduled run's
+// start, so the coverage predicate would delete it as covered. The covered-handoff wake
+// does not need the clock to know better: the run that booked it claimed every canonical
+// queue entry it covered, so one still present was written afterwards.
+test('a covered-handoff wake scans a canonical entry despite a backward clock step', () => {
+  const fs = stateFsWith(memoryRuntime(), { startedAt: utcForLocal(12, 29, 55), completedAt: utcForLocal(12, 30) })
+  // Written after the run by a clock roughly ten seconds behind: it reads as pre-start.
+  queueSignal(fs, 'codex', utcForLocal(12, 29, 53))
+  const ran = []
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex', coveredHandoff: true },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(12, 30, 15),
+      process: fakeProcess(910),
+      scheduleWindow,
+      scheduleTrailing: () => true,
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.deepEqual(ran, ['codex'])
+  assert.notEqual(result.skippedReason, 'scheduled-covered')
+})
+
+// The same witness inside one run: an entry that reappears after the claim was removed
+// by that claim's judgement of the *old* entry, so it cannot be the same request even if
+// its timestamp sorts before the run.
+test('an entry that reappears after the claim is judged on evidence, not its clock', () => {
+  const fs = stateFsWith(memoryRuntime(), { startedAt: utcForLocal(12, 29, 55), completedAt: utcForLocal(12, 30) })
+  queueSignal(fs, 'codex', utcForLocal(12, 29, 50))
+  let injected = false
+  const ran = []
+
+  coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(14, 0),
+      process: fakeProcess(911),
+      scheduleWindow,
+      rename: (from, to) => {
+        fs.rename(from, to)
+        if (!injected && String(to).replace(/\\/g, '/').includes('/notify.signal.d/')) {
+          injected = true
+          queueSignal(fs, 'codex', utcForLocal(12, 29, 53))
+        }
+      },
+      scheduleTrailing: () => true,
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.equal(injected, true, 'the reappearing entry must actually have been exercised')
+  assert.deepEqual(ran, ['codex'])
+})
+
+// A handoff wake that finds nothing must not do anything: no scan of the trigger source
+// (it is not a request), and no wake of its own to chain.
+test('a covered-handoff wake on an empty queue exits without scanning', () => {
+  const fs = memoryRuntime()
+  const ran = []
+  const trailing = []
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex', coveredHandoff: true },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(14, 0),
+      process: fakeProcess(912),
+      scheduleWindow,
+      scheduleTrailing: (trigger, delayMs) => {
+        trailing.push({ trigger, delayMs })
+        return true
+      },
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.deepEqual(ran, [])
+  assert.equal(result.skippedSync, true)
   assert.notEqual(result.trailingScheduled, true)
   assert.deepEqual(trailing, [])
 })

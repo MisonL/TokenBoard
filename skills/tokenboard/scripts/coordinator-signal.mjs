@@ -193,6 +193,15 @@ export function acknowledgeCoveredSignalSource(runtime, source, judgedRequestedA
   return 'removed'
 }
 
+// Does the source have a live canonical queue entry? The claim removes exactly this file
+// when it judges a request covered, so its presence after that judgement means a newer
+// write landed — an ordering witness that does not depend on the wall clock (a backward
+// clock step can make a brand-new request look older than the scheduled run).
+export function hasQueuedSignalEntry(runtime, source) {
+  if (typeof runtime.exists !== 'function') return false
+  return Boolean(runtime.exists(join(signalQueueDir(runtime), `${signalSourceName(source)}.json`)))
+}
+
 // The same shape `hooks.mjs` and `appendSignal` use for per-event queue files, so the
 // claim is a first-class queue entry from the moment it exists.
 function perEventSignalName(runtime) {
