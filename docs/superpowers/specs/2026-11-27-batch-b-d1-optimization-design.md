@@ -343,3 +343,36 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
 - 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与状态写入时序只经合成时钟验证；
   DST 用例经 Node 的真实时区规则（`process.env.TZ` 切换）验证，未在真实 DST 切换日做端到端
   运行；计划同步在外部系统被杀死（状态停在 running/旧值）按未覆盖处理，下次 hook 触发会重采。
+
+### 4.4 C1 切 `TOKENBOARD_USAGE_SUMMARY_STRICT=true`
+
+- **私人 CF 已在 strict 下运行**：`tokenboard-independent` 的在线版本 `3695fb4b`
+  （2026-11-27T04:36Z 部署）中 `TOKENBOARD_USAGE_SUMMARY_STRICT=true`（`wrangler versions
+view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生产默认仍为 `false`，
+  chaosyn 的翻转与观察由 yeton/上游流水线执行。
+- **观测输入**：`usage_summary_backfill_state` 的 `selfheal` 行在 2026-11-28T00:00:56Z
+  完成了一轮（`phase=summaries`、游标清空、`completed_at` 落章），即 B6 自愈在 private CF
+  真实跑满一轮。每轮的 `repaired` 计数只在运行日志里、不落库，逐轮修复量以日志为准。
+- **读路径语义**（`effectiveDailyUsageSummaryWith`）：strict 只读 `daily_usage_summary`；
+  fallback 读 summary **并**用 raw 去重聚合补齐 summary 缺失的 key。因此
+  - 缺行：fallback 兜住；strict 少报，直到 B6 自愈（按 `daily_usage` 原始 key 枚举，
+    `listSummaryKeysNeedingRefresh` 把缺行判 stale）或同一 key 的重传把它写回；
+  - 错行：两种模式都按存储值返回——fallback **不是**对已有 key 的 raw 重算，
+    所以 strict/fallback 互比看不见这类漂移；现有错误值只能靠 B6 收敛（totals 同理）。
+- **对照测试**（`apps/web/app/features/usage/summary-parity.sqlite.test.ts` 新增
+  「strict cutover parity against the raw aggregate」）：以手算 raw 聚合为独立参照，
+  覆盖缺行（部分写入）、错行（探针的 7 vs 165 形态）、部分提交（summary 缺行 +
+  totals 高企），并断言一轮 `selfHealAggregates` 后 strict 与 raw 重新一致、
+  `summariesRepaired`/`totalsRepaired` 计数为 1。`leaderboards/queries.sqlite.test.ts`
+  另有同形态的排行榜用例（strict 下错行排出 7，自愈后为 165，且与 fallback 一致）。
+  变异核验：`listSummaryKeysNeedingRefresh` 直接返回 `[]` 时三个新用例全部变红。
+- **影响面**：dashboard（`getUsageSummary`）、排行榜（`listLeaderboard`）、日报
+  （`report-queries`）、公开卡片（`public-card`）都经同一个
+  `effective_daily_usage_summary` CTE 读取，flag 由 `usageSummaryStrictMode(env)` 统一
+  解析；strict 只改读哪张表，不改写路径与缓存 key 以外的任何行为（公开 API 缓存 key
+  含 `strict|fallback`，切换即换 key，不会串读旧值）。
+- **回滚口径**：把 `TOKENBOARD_USAGE_SUMMARY_STRICT` 置回 `false` 并重新部署（分钟级），
+  即刻恢复「summary ∪ raw 补缺」读法；但**已存在的错误 summary/totals 不会因回滚消失**，
+  仍由 B6 每轮自愈收敛。chaosyn 当前配置值未知，翻转与回滚 SLA 由 yeton 执行。
+- 未覆盖：chaosyn 以 strict 运行的真实观察与回滚演练；private CF 上实际修复量（日志未
+  持久化，只能从后续轮次的 `completed_at` 与数据观察推断）。

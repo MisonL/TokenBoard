@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../test/sqlite-d1'
-import { upsertUsageSnapshots, type IngestRecord } from '../ingest/repository'
+import { selfHealAggregates, upsertUsageSnapshots, type IngestRecord } from '../ingest/repository'
 import { usageSummaryBackfillStateId } from '../ingest/repository/types'
 import { getUsageSummary } from './queries/summary'
 import { getUsageDetails } from './queries/details'
@@ -16,6 +16,97 @@ const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../..
 // not cached. The two are written to be field-for-field mirrors of each other, but nothing
 // compared them: a divergence would not fail any test, it would just make the numbers change
 // depending on which mode a deployment ran in. These assert parity on the same data.
+// C1 cutover checks. The suite above compares the two read modes after writing both through
+// ingest; that cannot see the failure this cutover must survive, because the fallback is *not*
+// a raw recompute for keys the cache already holds — it only adds keys the cache is missing.
+// A summary row that exists but is wrong therefore reads wrong in both modes, and no
+// strict-vs-fallback comparison can notice. The reference here is the raw usage aggregate,
+// computed by hand in each expectation, so a defect shared by both SQL paths cannot hide.
+describe('strict cutover parity against the raw aggregate', () => {
+  const tempDirs: string[] = []
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a missing summary row is under-reported by strict until a self-heal round restores it', async () => {
+    const { db, path } = createDb(tempDirs)
+    await refreshSummary(db, [
+      row({ totalTokens: 100, cacheReadTokens: 20, costUsd: 1.5, sessionCount: 2 }),
+      row({ model: 'gpt-5.4', totalTokens: 50, cacheReadTokens: 10, costUsd: 0.5, sessionCount: 1 })
+    ])
+    // A partial cache write: the first key landed, the second did not.
+    runSql(path, "DELETE FROM daily_usage_summary WHERE model = 'gpt-5.4';")
+
+    // The fallback recomputes the missing key from raw rows; strict reads only what is stored.
+    const fallback = await getUsageSummary(db, summaryInput())
+    const strict = await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })
+    expect(fallback.todayTokens).toBe(150)
+    expect(fallback.todayCostUsd).toBe(2)
+    expect(strict.todayTokens).toBe(100)
+    expect(strict.todayCostUsd).toBe(1.5)
+
+    // The daily self-heal enumerates raw keys, so it is the channel that restores a missing
+    // summary row; strict mode is only as complete as the repair cycle behind it.
+    const heal = await selfHealAggregates({ db })
+    expect(heal.summariesRepaired).toBe(1)
+
+    const strictAfterHeal = await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })
+    expect(strictAfterHeal.todayTokens).toBe(150)
+    expect(strictAfterHeal.todayCostUsd).toBe(2)
+    expect(strictAfterHeal).toEqual(await getUsageSummary(db, summaryInput()))
+  })
+
+  test('a wrong summary row is served by both modes until a self-heal round repairs it', async () => {
+    const { db, path } = createDb(tempDirs)
+    await refreshSummary(db, [row({ totalTokens: 165, cacheReadTokens: 5, costUsd: 0.5, sessionCount: 2 })])
+    // The drift shape the 2026-11-25 probe reproduced: raw rows say 165, the stored summary
+    // says 7. Both read modes serve the stored row, so the divergence from raw is invisible
+    // to any strict-vs-fallback comparison.
+    runSql(path, 'UPDATE daily_usage_summary SET total_tokens = 7, total_tokens_without_cache_read = 7, cost_usd = 0;')
+
+    const fallback = await getUsageSummary(db, summaryInput())
+    const strict = await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })
+    expect(fallback.todayTokens).toBe(7)
+    expect(strict.todayTokens).toBe(7)
+    expect(fallback.todayCostUsd).toBe(0)
+    expect(strict.todayCostUsd).toBe(0)
+
+    const heal = await selfHealAggregates({ db })
+    expect(heal.summariesRepaired).toBe(1)
+
+    const strictAfterHeal = await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })
+    expect(strictAfterHeal.todayTokens).toBe(165)
+    expect(strictAfterHeal.todayCostUsd).toBe(0.5)
+    expect(strictAfterHeal).toEqual(await getUsageSummary(db, summaryInput()))
+  })
+
+  test('a partial commit that leaves the totals rollup wrong is repaired in the totals sweep', async () => {
+    const { db, path } = createDb(tempDirs)
+    await refreshSummary(db, [
+      row({ totalTokens: 100, cacheReadTokens: 20, costUsd: 1.5, sessionCount: 2 }),
+      row({ model: 'gpt-5.4', totalTokens: 50, cacheReadTokens: 10, costUsd: 0.5, sessionCount: 1 })
+    ])
+    // A crash between the two writes of the pair: the second summary row never landed and the
+    // rollup was overstated for the whole batch.
+    runSql(
+      path,
+      `DELETE FROM daily_usage_summary WHERE model = 'gpt-5.4';
+       UPDATE user_usage_totals SET total_tokens = 9999;`
+    )
+
+    expect((await getUsageSummary(db, summaryInput())).todayTokens).toBe(150)
+    expect((await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })).todayTokens).toBe(100)
+
+    // One round repairs both halves: the summaries sweep restores the missing key and the
+    // totals sweep re-derives the rollup from the restored summaries.
+    const heal = await selfHealAggregates({ db })
+    expect(heal.summariesRepaired).toBe(1)
+    expect(heal.totalsRepaired).toBe(1)
+    expect(scalar(path, "SELECT total_tokens FROM user_usage_totals WHERE user_id = 'seed-user';")).toBe('150')
+    expect((await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })).todayTokens).toBe(150)
+  })
+})
+
 describe('summary cache parity', () => {
   const tempDirs: string[] = []
   afterEach(() => {
@@ -134,6 +225,8 @@ describe('summary cache parity', () => {
 })
 
 const today = '2026-04-28'
+
+const scalar = (path: string, sql: string) => String(runSql(path, sql)).trim().split('\n').at(-1)
 
 function summaryInput() {
   return { userId: 'seed-user', today, monthStart: '2026-04-01' }

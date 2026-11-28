@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../test/sqlite-d1'
+import { selfHealAggregates } from '../ingest/repository'
 import { listLeaderboard, type LeaderboardQuery } from './queries'
 
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../db/migrations')
@@ -171,6 +172,26 @@ describe('listLeaderboard against SQLite', () => {
     const entries = await listLeaderboard(db, monthly({ metric: 'tokens', summaryStrict: true }))
 
     expect(entries[0]?.totalTokens).toBe(200)
+  })
+
+  // C1 surface check: the leaderboard reads the same summary rows as the dashboard, so a
+  // drifted row ranks wrong in strict mode; the daily self-heal is the repair channel and
+  // afterwards both modes agree on the raw aggregate.
+  test('a drifted summary row ranks wrong until the self-heal round repairs it', async () => {
+    const { db } = createDb(tempDirs, {
+      profiles: [profile('u_alice', 'alice', { isPublic: 1, participates: 1 })],
+      summaries: [summary({ user: 'u_alice', source: 'codex', model: 'gpt-5-codex', total: 7 })],
+      usage: [usage({ user: 'u_alice', source: 'codex', model: 'gpt-5-codex', total: 165 })]
+    })
+
+    const drifted = await listLeaderboard(db, monthly({ metric: 'tokens', summaryStrict: true }))
+    expect(drifted[0]?.totalTokens).toBe(7)
+
+    await selfHealAggregates({ db })
+
+    const repaired = await listLeaderboard(db, monthly({ metric: 'tokens', summaryStrict: true }))
+    expect(repaired[0]?.totalTokens).toBe(165)
+    expect(await listLeaderboard(db, monthly({ metric: 'tokens' }))).toEqual(repaired)
   })
 
   test('names the model with the most tokens, breaking ties by model id', async () => {
