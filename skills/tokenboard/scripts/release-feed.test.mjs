@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defaultReleaseRepo } from './client-binary.mjs'
+import { parseArgs } from './config.mjs'
 import { resolveReleaseFeed } from './release-feed.mjs'
 
 // The feed a binary install records has to outlive the install: every later
@@ -81,6 +82,24 @@ test('an explicit empty base URL clears the recorded override', () => {
       remove: ['releaseBaseUrl']
     }
   )
+})
+
+// The CLI spelling for a clear is the inline empty value: a two-token
+// `--release-base-url ''` parses as a bare flag (the empty next token is falsy), which is
+// a usage error, and a bare flag must never silently mean "clear".
+test('the inline --release-base-url= spelling reaches the clear path through parseArgs', () => {
+  const flags = parseArgs(['--release-base-url='])
+  assert.deepEqual(flags, { 'release-base-url': '' })
+  const feed = resolveReleaseFeed({ flags, env: {}, saved: { releaseBaseUrl: 'https://github.example' } })
+  assert.equal(feed.baseUrl, undefined)
+  assert.deepEqual(feed.remove, ['releaseBaseUrl'])
+})
+
+// A bare flag is rejected rather than treated as a clear, whichever way it was spelled.
+test('the two-token empty spelling is a usage error, not a clear', () => {
+  const flags = parseArgs(['--release-base-url', ''])
+  assert.deepEqual(flags, { 'release-base-url': true })
+  assert.throws(() => resolveReleaseFeed({ flags, env: {}, saved: {} }), /requires a value/)
 })
 
 test('environment values count as explicit and are recorded', () => {

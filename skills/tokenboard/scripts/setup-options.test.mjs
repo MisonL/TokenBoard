@@ -546,6 +546,36 @@ test('setup passes repo-url override to install collector', () => {
   )
 })
 
+// A release flag the user actually typed must reach the installer even when its value
+// is empty: an empty source is how a stored feed override is cleared, and dropping the
+// flag would silently keep the previous mirror. A bare flag is forwarded so the
+// installer rejects it instead of setup treating it as absent.
+test('setup forwards explicit and empty release flags to the installer', () => {
+  assert.deepEqual(
+    buildInstallCollectorArgs({
+      flags: { 'release-base-url': '', 'release-repo': 'other/TokenBoard' },
+      clientType: 'binary',
+      installCollectorScript: '/repo/i.mjs'
+    }),
+    ['/repo/i.mjs', '--client', 'binary', '--release-repo', 'other/TokenBoard', '--release-base-url=']
+  )
+
+  assert.deepEqual(
+    buildInstallCollectorArgs({
+      flags: { 'release-repo': true },
+      clientType: 'binary',
+      installCollectorScript: '/repo/i.mjs'
+    }),
+    ['/repo/i.mjs', '--client', 'binary', '--release-repo']
+  )
+
+  // Absent flags stay absent, so a plain setup leaves the stored feed alone.
+  assert.deepEqual(
+    buildInstallCollectorArgs({ flags: {}, clientType: 'binary', installCollectorScript: '/repo/i.mjs' }),
+    ['/repo/i.mjs', '--client', 'binary']
+  )
+})
+
 test('setup forwards the binary client choice to the collector installer', () => {
   assert.deepEqual(
     buildInstallCollectorArgs({ flags: {}, clientType: 'binary', installCollectorScript: '/repo/i.mjs' }),

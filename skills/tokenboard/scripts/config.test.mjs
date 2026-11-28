@@ -232,6 +232,58 @@ test('mergeConfig removes an allow-listed override on request', () => {
   }
 })
 
+test('mergeConfig removal touches only the root override, not server profiles', () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+
+  try {
+    writeConfig({
+      activeServer: 'https://prod.example.com',
+      servers: {
+        'https://prod.example.com': {
+          endpoint: 'https://prod.example.com/api/v1/ingest',
+          uploadToken: 'prod-token',
+          clientType: 'binary'
+        }
+      },
+      releaseRepo: 'other/TokenBoard',
+      releaseBaseUrl: 'https://github.example'
+    })
+
+    const next = mergeConfig({}, { remove: ['releaseRepo', 'releaseBaseUrl'] })
+
+    assert.equal(next.releaseRepo, undefined)
+    assert.equal(next.releaseBaseUrl, undefined)
+    assert.equal(next.servers['https://prod.example.com'].endpoint, 'https://prod.example.com/api/v1/ingest')
+    assert.equal(next.servers['https://prod.example.com'].uploadToken, 'prod-token')
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('mergeConfig applies removals on the lockHeld path too', () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+
+  try {
+    writeConfig({ releaseRepo: 'other/TokenBoard', deviceId: 'dev_keep' })
+
+    const next = mergeConfig({ clientType: 'binary' }, { remove: ['releaseRepo'], lockHeld: true })
+
+    assert.equal(next.releaseRepo, undefined)
+    assert.equal(next.clientType, 'binary')
+    assert.equal(next.deviceId, 'dev_keep')
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('mergeConfig refuses removals outside the allow-list', () => {
   assert.throws(() => mergeConfig({}, { remove: ['uploadToken'] }), /cannot remove uploadToken/)
   assert.throws(() => mergeConfig({}, { remove: 'releaseRepo' }), /must be an array/)

@@ -167,7 +167,13 @@ function runCli() {
     // carries everything the client needs. The config directory is the binary's
     // home, so this is the only install step. A non-default feed recorded at
     // install time is reused, for the same reason as the git settings below.
-    const feed = resolveReleaseFeed({ flags, env: process.env, saved })
+    let feed
+    try {
+      feed = resolveReleaseFeed({ flags, env: process.env, saved })
+    } catch (error) {
+      console.error(errorMessage(error))
+      process.exit(1)
+    }
     installClientBinary({
       repo: feed.repo,
       tag: flags['release-tag'] || process.env.TOKENBOARD_RELEASE_TAG || undefined,

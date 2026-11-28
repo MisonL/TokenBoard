@@ -129,12 +129,20 @@ export function buildInstallCollectorArgs({
   }
   // Without these a `setup --release-repo` install silently used the default
   // feed: the flag never reached the installer, so neither the download nor
-  // the recorded release source could honour it.
+  // the recorded release source could honour it. A present-but-empty value is
+  // forwarded inline (`--name=`) instead of dropped: an empty release source is
+  // how the installer is told to clear a stored override, and dropping it would
+  // silently keep the previous mirror. A bare flag is forwarded as-is so the
+  // installer rejects it as a usage error rather than setup reading it as
+  // "not supplied".
   for (const name of ['release-repo', 'release-tag', 'release-base-url']) {
     const value = flags[name]
-    if (typeof value === 'string' && value.trim()) {
-      args.push(`--${name}`, value)
+    if (value === undefined) continue
+    if (typeof value !== 'string') {
+      args.push(`--${name}`)
+      continue
     }
+    args.push(value === '' ? `--${name}=` : `--${name}`, ...(value === '' ? [] : [value]))
   }
   return args
 }
