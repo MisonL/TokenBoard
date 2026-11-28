@@ -6,7 +6,6 @@ import {
   linkSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -717,7 +716,6 @@ function trailingRuntime(options = {}) {
     isTrailingContinuation: Boolean(env.TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH),
     isRealProcess: processValue === process,
     writeFile: options.writeFile || writeFileSync,
-    readdir: options.readdir || readdirSync,
     rename: options.rename || (hasCustomFileOps ? undefined : renameSync),
     link: options.link || (hasCustomFileOps ? undefined : linkSync),
     unlink: options.unlink || unlinkSync

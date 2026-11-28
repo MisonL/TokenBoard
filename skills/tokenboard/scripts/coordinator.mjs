@@ -178,7 +178,16 @@ function runCoordinator(trigger, runtime, result) {
         const judgedMs = judgedAt.get(source)
         if (judgedMs !== undefined) {
           const currentMs = Date.parse(requestTimes.get(source))
-          if (!Number.isFinite(currentMs) || currentMs <= judgedMs) continue
+          // An entry that carries no parseable time is a request whose age is unknown
+          // (another writer may have appended an undated line beside the dated one).
+          // The first judgement never treats an undatable request as covered; the
+          // re-read must not quietly reinstate coverage it would have refused.
+          if (!Number.isFinite(currentMs)) {
+            coveredSet.delete(source)
+            judgedAt.delete(source)
+            continue
+          }
+          if (currentMs <= judgedMs) continue
           coveredSet.delete(source)
           judgedAt.delete(source)
         }
@@ -212,8 +221,9 @@ function runCoordinator(trigger, runtime, result) {
     }
     if (syncSources.length === 0) {
       // A hook landing between this read and the lock release is not scanned by this run;
-      // its signal stays queued and the next trigger (another hook, the scheduled sync)
-      // picks it up. Its data is never at risk — hook signals carry only the source name.
+      // its signal stays queued for the next hook-triggered worker (any source's hook
+      // merges the whole queue). Its data is never at risk — hook signals carry only the
+      // source name, and a later scheduled run that covers the request claims it then.
       return {
         ...result,
         waitedForLock: lock.waited,

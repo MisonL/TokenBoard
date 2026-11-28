@@ -611,3 +611,92 @@ test('an entry that reappears after the claim is judged on evidence, not its clo
   assert.equal(injected, true, 'the reappearing entry must actually have been exercised')
   assert.deepEqual(ran, ['codex'])
 })
+
+// A re-read can meet a signal whose time cannot be parsed — another writer appended a
+// bare source line to the legacy journal while the claim ran. The first judgement never
+// treats an undatable request as covered; the re-read must not quietly reinstate the
+// earlier coverage for it, or the request waits for the next trigger after the gate had
+// already decided it needed a scan.
+test('an undatable arrival during the re-read is scanned, not left covered', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  let injected = false
+  const ran = []
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(12, 31),
+      process: fakeProcess(915),
+      scheduleWindow,
+      rename: (from, to) => {
+        fs.rename(from, to)
+        if (!injected && String(to).replace(/\\/g, '/').includes('/notify.signal.d/')) {
+          injected = true
+          let existing = ''
+          try {
+            existing = fs.readFile('/state/notify.signal')
+          } catch {
+            // no legacy journal yet
+          }
+          fs.writeFile('/state/notify.signal', `${existing}codex\n`)
+        }
+      },
+      scheduleTrailing: () => true,
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.equal(injected, true, 'the undatable arrival must actually have been exercised')
+  assert.deepEqual(ran, ['codex'])
+  assert.notEqual(result.skippedReason, 'scheduled-covered')
+})
+
+// The hand-off window in sequence: the covered exit scans nothing and leaves a late
+// signal in the queue; the next run (any hook trigger) merges the queue and scans it.
+test('a signal left behind by a covered exit is scanned by the next run', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+
+  const first = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(12, 31),
+      process: fakeProcess(916),
+      scheduleWindow,
+      scheduleTrailing: () => true,
+      executeSync: () => {
+        throw new Error('the covered request must not be scanned')
+      }
+    }
+  )
+  assert.equal(first.skippedReason, 'scheduled-covered')
+
+  queueSignal(fs, 'codex', utcForLocal(12, 31))
+  const ran = []
+  coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...stateFsWith(memoryRuntime(), {}),
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(12, 32),
+      process: fakeProcess(917),
+      scheduleWindow,
+      scheduleTrailing: () => true,
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.deepEqual(ran, ['codex'])
+})

@@ -1853,6 +1853,42 @@ test('the trailing loop continues as the sources the gate left open', async () =
 // idle event loop (observed on a loaded macOS host: 34 minutes late with 0.23s of CPU). The
 // wait has to be sliced against a deadline taken from the wall clock, so each slice is short
 // enough to be re-evaluated and the total is bounded by real elapsed time, not by one timer.
+
+// A covered exit ends the worker. A signal that lands after the gate's last re-read while
+// the worker still holds its locks waits for the next trigger; its data is safe because
+// hook signals carry only the source name. A regression reintroducing an in-process
+// resume would run a second round on the queued file planted here.
+test('a covered exit runs one round and releases the dispatch lock', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-covered-single-round-'))
+  const rounds = []
+  const order = []
+  try {
+    await mkdir(join(root, 'notify.signal.d'), { recursive: true })
+    await writeFile(
+      join(root, 'notify.signal.d', 'codex.json'),
+      `${JSON.stringify({ source: 'codex', requestedAt: '2026-05-22T10:00:00.000Z' })}\n`
+    )
+    const exitCode = await runNotifyCli({
+      env: { TOKENBOARD_CONFIG_DIR: root, TOKENBOARD_STATE_DIR: root },
+      readConfig: () => ({ updatedAt: 'test-version' }),
+      configDir: () => root,
+      runNotify: (options) => {
+        rounds.push(options)
+        order.push(`round-${rounds.length}`)
+        return { source: 'codex', exitCode: 0, skippedReason: 'scheduled-covered' }
+      },
+      releaseDispatchLock: () => {
+        order.push('release-dispatch')
+        return true
+      }
+    })
+    assert.equal(exitCode, 0)
+    assert.deepEqual(order, ['round-1', 'release-dispatch'])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('trailing wait slices a long delay so each sleep is bounded', async () => {
   const sleeps = []
   let nowMs = 0

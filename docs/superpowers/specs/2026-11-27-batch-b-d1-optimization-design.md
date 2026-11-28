@@ -234,17 +234,21 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   只有真实扫描的 `acknowledgeSignalSource` 才能确认它们（二轮评审的 P1）。
   覆盖来源还会从 `pendingSources` 中剔除，且各跳过分支（冷却/窗口/资源压力/失败退避）的
   `keepCooldownTrigger` 接收 covered 集合——否则它会用当前时间把刚判定覆盖的触发源重新
-  入队，续跑再扫一遍。全部被覆盖时**先复查一次队列**：门控运行期间入队的 hook 看到本
-  worker 持有 dispatch 锁而不会另起进程，直接以 `scheduled-covered` 退出会把该信号搁置到
-  下一次外部触发；门控会把复查到的来源按**请求时间**再判一轮（最多三轮）——覆盖结论按
+  入队，同一次运行再扫一遍。全部被覆盖时**先复查一次队列**：门控运行期间入队的 hook 看到
+  本 worker 持有 dispatch 锁（经 `scheduleTrailingNotify` 派生的 trailing worker 则被
+  `hooks.mjs` 的存活检查经 `trailing.lock` 挡住）而不会另起进程，直接以
+  `scheduled-covered` 退出会把该信号搁置到下一次 hook 触发；门控会把复查到的来源按**请求时间**再判一轮（最多三轮）——覆盖结论按
   来源名缓存，同源**更新的请求**（`requestedAt` 大于已判时间）重新成为待判对象，而不是被
   来源名挡住（三轮评审的 P1）。复查仍为空才返回 `skippedReason: 'scheduled-covered'`。
   **交接以「门控内复查 + 下一次触发」为界，不另起续跑 worker**：复查覆盖门控运行期间
   入队的信号（最多三轮，按请求时间判定，同源新请求重新待判）；复查仍为空即返回
   `scheduled-covered`。此前尝试过三种跨进程/进程内续跑（唤醒标记 → spawn successor →
   同进程重读队列），七轮双轨审查在每种形态下均发现新的 P1（见「已知边界」末段），
-  最终按架构纪律撤除；hook 信号只是触发器、不携带数据，留在队列的触发由下一次 hook
-  或计划同步消费，不丢用量数据。窗口/冷却/退避跳过各自已排 trailing 续跑。
+  最终按架构纪律撤除；hook 信号只是触发器、不携带数据，留在队列的条目由下一次 hook
+  触发派发的 worker 消费（任一来源的 hook 都会并入整个队列）；如果期间已有更晚的计划
+  运行成功覆盖该请求，门控会在那次 hook 运行里原子认领并删除条目。计划同步本身不读也
+  不 ack 信号队列——它消费的是用量数据。窗口与冷却跳过各自已排 trailing 续跑；失败
+  退避与资源压力只把来源留在队列（与普通 hook 触发一致），不排续跑。
 - trailing 续跑（`notify.mjs` 的 `runNotifyCli` 循环）在每轮之后按
   `result.trailingSources[0]` 更新下一轮的 `--source`：原实现续跑沿用 worker 启动时的
   argv，协调器会把已被覆盖的触发源重新并回本轮再扫一遍，正好抵消 C4 的目的。
@@ -291,7 +295,7 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   对象（按请求时间而非来源名）；认领后重现的条目按顺序见证判未覆盖；窗口判定与 deadline 共用日构造
   （Nuuk 单档 00:00 判定在窗口内）；Casey 回拨后的 +3 天空隙仍排续跑（minute 级独立
   扫描对照）。上述守卫与 `startedAt` 前置、source 匹配、队列清理、混源保护、undatable
-  压制、epoch 比较、半开窗口边界、零延迟不排续跑均经变异核验变红（共 20 项：门控复查、
+  压制、epoch 比较、半开窗口边界、零延迟不排续跑、复查轮 undatable 判未覆盖均经变异核验变红（共 15 项：门控复查、
   同源更新时间判定、顺序见证（工单反例：认领后重现按证据判定）、共用取钟、
   cooldown/pressure/failure 三处 coveredSet、正午构造、共用日构造、视界规则与 +10 枚举、
   续跑换源、认领命名、恢复日志 ack）。
@@ -317,6 +321,10 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   - **回拨时钟 + 并发 worker**（第七轮审查）：另一 worker 先认领同源信号时，本轮的
     顺序见证与 judgedAt 无法辨认「被别人删除后又写回」的条目，可能按回拨时间戳误判
     覆盖；该竞争只影响触发信号（用量由 cursor 补齐），与上述时钟回拨边界同类。
+  - **固定单一来源的定时配置 + 其它来源的遗留触发**：`config.source` 固定为 codex 时，
+    计划运行只扫 codex、也不读 hook 队列；覆盖退出后留在队列的 claude-code 信号要等
+    任一来源的下一次 hook 触发（其 worker 会合并整个队列）才被消费。用量本身由
+    claude-code 的后续计划运行或下一次真实扫描以 cursor 补齐，遗留条目方向安全。
   - **时钟回拨**：pass 0 的覆盖判定依赖请求时间戳与计划状态的比较（顺序见证只覆盖
     pass≥1 与认领后重现）；回拨超过「新请求写入时刻到计划运行完成时刻」的间隔时，新请求
     可能被误判提前到达而 ack 删除。这是 C4 谓词 `requestedAt <= startedAt` 的固有边界，
