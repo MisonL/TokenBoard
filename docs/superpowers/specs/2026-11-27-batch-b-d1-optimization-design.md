@@ -239,19 +239,19 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   下一次外部触发；门控会把复查到的来源按**请求时间**再判一轮（最多三轮）——覆盖结论按
   来源名缓存，同源**更新的请求**（`requestedAt` 大于已判时间）重新成为待判对象，而不是被
   来源名挡住（三轮评审的 P1）。复查仍为空才返回 `skippedReason: 'scheduled-covered'`。
-  即便复查为空，只要本轮真的从队列认领并删除过 entry（`removed`，而非 legacy 通道的
-  `absent`），退出前还排一次 **15 秒短唤醒**（trigger 带 `coveredHandoff` 标记，跨进程
-  走 `TOKENBOARD_NOTIFY_COVERED_HANDOFF`，进程内续跑走 env）：最后一次复查与释放
-  dispatch 锁之间仍有毫秒级窗口，落在其中的 hook 同样会搁置到下一次外部触发。短唤醒的
-  覆盖判定**不信任挂钟**：本 run 认领时删光了它覆盖的 canonical entry，所以唤醒时仍存在
-  的 `<source>.json` 必定是之后新写入的——命中即强制判未覆盖并扫描，即使时钟回拨把它
-  的时间戳排到了计划运行开始之前（四轮评审的 P1：回拨 10 秒的新请求曾会被当作提前到达
-  而删掉）。同一 witness 也用于本轮 pass≥1 的复查（认领后重新出现的 canonical 条目）。
-  唤醒若什么都没认领则不再排下一次，且 handoff 唤醒**不并入** `--source`（它不是请求，
-  空队列时直接退出，否则空跑一次全量扫描）；链不会比信号本身活得长。
-- 同一进程内的 trailing 续跑（`notify.mjs` 的 `runNotifyCli` 循环）在每轮之后按
-  `result.trailingSources[0]` 更新下一轮的 `--source`：原实现续跑沿用 worker 启动时的
-  argv，协调器会把已被覆盖的触发源重新并回本轮再扫一遍，正好抵消 C4 的目的。
+  即便复查为空，交接也不再依赖定时唤醒：`notify.mjs` 在**释放 trailing 锁之后**重读一次
+  队列，非空就以普通 trailing worker 续跑（delay 0，无跨进程标记）。这与 hook 的「先入队、
+  再查存活 worker」构成无竞态交接——hook 入队于 T2、查锁于 T3：若 T3 早于释放 T0，则
+  T2 < T0 < 重读 T1，本 worker 必能看到该信号；若 T3 晚于 T0，hook 看到锁已释放、自己
+  派发。续跑只在本轮是**真实覆盖退出**时触发（`skippedReason === 'scheduled-covered'`
+  且 `coveredAcks > 0`，即确实认领删除了队列 entry）：窗口/冷却/退避跳过各自已排续跑，
+  legacy-only 的 `absent` 若也续跑会与残留记录组成无限链。三至五轮评审曾用「15 秒短唤醒
+  - handoff 标记」关同一个洞，连续三次修出新的 P1（时钟回拨误删、延迟执行丢证据、被既有
+    trailing worker 吞掉），故改为本结构方案：不看挂钟、不需要跨进程状态。同一「顺序见证」
+    仍用于本轮 pass≥1 的复查——认领后 canonical 条目重新出现即新写入，按证据而非时间戳判
+    未覆盖（时钟回拨造不出「比已判更旧」的假象骗过它）。- 同一进程内的 trailing 续跑（`notify.mjs` 的 `runNotifyCli` 循环）在每轮之后按
+    `result.trailingSources[0]` 更新下一轮的 `--source`：原实现续跑沿用 worker 启动时的
+    argv，协调器会把已被覆盖的触发源重新并回本轮再扫一遍，正好抵消 C4 的目的。
 - 窗口判定（`schedule.mjs` `isWithinScheduleWindow`）改为**毫秒级半开区间**
   `[T−windowMs, T+windowMs)`，候选时刻与 deadline 共用 `scheduleDayCandidate`（目标日
   **正午**再 `setHours`）：两者曾各自用 `setDate` 于当前时刻构造，目标日存在被跳过的挂钟
@@ -292,15 +292,15 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   covered 触发源不被冷却/压力/失败退避分支复活、窗口判定与 deadline 共用一次取钟
   （每轮 now 序列第 4 次调用读数在窗口内、其后全部越界）、超半日窗口不排续跑、
   进程内续跑按 `trailingSources[0]` 换源；同源**更新的请求**在门控复查里重新成为待判
-  对象（按请求时间而非来源名）；覆盖退出排 15s 短唤醒，且只在真从队列认领过时（legacy
-  通道的 `absent` 不排，否则每轮都会续一条链）；窗口判定与 deadline 共用日构造
+  对象（按请求时间而非来源名）；认领后重现的条目按顺序见证判未覆盖；覆盖退出后释放锁
+  再查队列——有信号续跑一次、空队列/legacy-only/已有续排的跳过都不续跑（`coveredAcks`
+  只计真实认领）；窗口判定与 deadline 共用日构造
   （Nuuk 单档 00:00 判定在窗口内）；Casey 回拨后的 +3 天空隙仍排续跑（minute 级独立
   扫描对照）。上述守卫与 `startedAt` 前置、source 匹配、队列清理、混源保护、undatable
-  压制、epoch 比较、半开窗口边界、零延迟不排续跑均经变异核验变红（共 15 项：门控复查、
-  同源更新时间判定、共用取钟、cooldown/pressure/failure 三处 coveredSet、正午构造、
-  共用日构造、视界规则与 +10 枚举、续跑换源、认领命名、恢复日志 ack、
-  短唤醒有/无两侧、时钟回拨下 handoff 唤醒仍扫描、认领后重现的条目按证据判定、
-  handoff 唤醒空队列不扫描、handoff 标记经 spawn 与进程内续跑恰好存活一轮）。
+  压制、epoch 比较、半开窗口边界、零延迟不排续跑均经变异核验变红（共 20 项：门控复查、
+  同源更新时间判定、顺序见证（工单反例：认领后重现按证据判定）、共用取钟、
+  cooldown/pressure/failure 三处 coveredSet、正午构造、共用日构造、视界规则与 +10 枚举、
+  续跑换源、认领命名、恢复日志 ack、续查交接的有/空/跳过三种退出、`coveredAcks` 计数）。
 - 已知边界（接受）：
   - **上传暂停的计划运行仍判覆盖**。覆盖语义是「一次全量/该来源扫描在该请求之后成功完成
     并结束」，不是「数据已送达」：上传暂停时行留在 collector 的 pending cursor / 投递
@@ -320,11 +320,13 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
     方向安全（重复扫描），消除它需要把请求时间随 trigger 跨进程传递，超出本轮范围。
   - 已覆盖来源若只剩 legacy `notify.signal`/逐事件文件/崩溃残留认领记录，门控返回
     `absent`、不删文件：该记录留在队列，下一次真实扫描会 drain 并多扫一次（有界）。
-  - 短唤醒之前/之后的极小竞态：hook 若恰在唤醒的队列读取之后入队，信号留在队列等下一次
-    外部触发（窗口同样是毫秒级）；短唤醒只做一次，不做链式续排，避免与 legacy 残留组成
-    无限链。宿主时钟若发生**大幅回拨**，正常 run 的 pass 0 覆盖判定仍依赖请求时间戳
-    （只有「认领后重现」与 handoff 唤醒两条路径有顺序见证）；时钟同步是平台前提，
-    launchd/systemd/Windows 计划任务本身按挂钟触发。
+  - **时钟回拨**：pass 0 的覆盖判定依赖请求时间戳与计划状态的比较（顺序见证只覆盖
+    pass≥1 与认领后重现）；回拨超过「新请求写入时刻到计划运行完成时刻」的间隔时，新请求
+    可能被误判提前到达而 ack 删除。这是 C4 谓词 `requestedAt <= startedAt` 的固有边界，
+    时钟同步是平台前提（launchd/systemd/Windows 计划任务本身按挂钟触发）；删除的只是
+    触发信号，用量数据由下一次同源 hook 或计划运行以 cursor 补齐。
+  - 续查交接的残余：hook 若在本 worker 释放锁之前入队、却在重读之后才对该进程可见
+    （文件系统可见性滞后），信号留到下一次外部触发（毫秒级窗口）。
 - 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与状态写入时序只经合成时钟验证；
   DST 用例经 Node 的真实时区规则（`process.env.TZ` 切换）验证，未在真实 DST 切换日做端到端
   运行；计划同步在外部系统被杀死（状态停在 running/旧值）按未覆盖处理，下次 hook 触发会重采。
