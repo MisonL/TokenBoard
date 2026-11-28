@@ -153,9 +153,7 @@ function runCoordinator(trigger, runtime, result) {
     if (lock.waited && pendingSources.length === 0) {
       return { ...result, waitedForLock: true, skippedSync: true }
     }
-    // A covered-handoff wake runs whatever the queue holds; its `--source` is the trigger
-    // that booked the wake, not a request, and unioning it in would scan an empty queue.
-    let syncSources = mergeSources(pendingSources, trigger.coveredHandoff ? [] : [trigger.source])
+    let syncSources = mergeSources(pendingSources, [trigger.source])
     // A scheduled run that finished after the request already collected a source — whether
     // the hook trigger now lands inside the window or in a trailing worker after it. Drop
     // those sources from everything below (the skip paths would otherwise re-queue them
@@ -170,11 +168,10 @@ function runCoordinator(trigger, runtime, result) {
     for (let pass = 0; ; pass += 1) {
       const requestTimes = readSignalRequestTimes(runtime)
       for (const source of [...syncSources]) {
-        // A canonical entry that reappears after an earlier pass (or arrives on a
-        // covered-handoff wake) was written after the claim that removed it: it is a new
-        // request whatever its timestamp says, and a backward clock step must not be able
-        // to make it look covered.
-        if ((pass > 0 || trigger.coveredHandoff === true) && hasQueuedSignalEntry(runtime, source)) {
+        // A canonical entry that reappears after an earlier pass was written after the claim
+        // that removed it: it is a new request whatever its timestamp says, and a backward
+        // clock step must not be able to make it look covered.
+        if (pass > 0 && hasQueuedSignalEntry(runtime, source)) {
           coveredSet.delete(source)
           judgedAt.delete(source)
           continue
@@ -216,19 +213,17 @@ function runCoordinator(trigger, runtime, result) {
       syncSources = lateSources
     }
     if (syncSources.length === 0) {
-      // The last re-read and the dispatch-lock release still have a gap: a hook landing in
-      // between sees this worker alive, enqueues, and never gets a worker of its own. Book
-      // one short wake whenever this run actually acknowledged a queued signal, so such a
-      // request is picked up seconds later instead of waiting for the next external trigger.
-      // A wake that acknowledges nothing books nothing, so the chain cannot outlive the
-      // signals that justified it.
-      const woken = removedAcks > 0 && runtime.scheduleTrailing({ ...trigger, coveredHandoff: true }, coveredExitWakeMs)
+      // The hand-off to a hook landing between this read and the lock release is closed by
+      // the worker itself: `notify.mjs` re-reads the queue after releasing the trailing lock
+      // and spawns one more worker if anything is still there. `coveredAcks` tells it this
+      // exit was a real coverage decision (not a legacy-only no-op), which is what keeps
+      // that resume bounded.
       return {
         ...result,
         waitedForLock: lock.waited,
         skippedSync: true,
         skippedReason: 'scheduled-covered',
-        ...(woken ? { trailingScheduled: true, trailingDelayMs: coveredExitWakeMs, trailingHandoff: true } : {})
+        coveredAcks: removedAcks
       }
     }
     const remainingMs = cooldownRemainingMs(runtime)
@@ -390,11 +385,6 @@ function skipForCooldown({ trigger, runtime, result, pendingSources, syncSources
 // itself defines — the scheduled run is still expected to finish before then, and that
 // run's own state file (checked as the worker's gate) is what stops the retry from
 // re-scanning a source it covered.
-// A covered run's short wake-up. Its only job is to pick up a hook that landed after the
-// gate's last queue read but before the dispatch lock was released; the signal itself is
-// judged normally on that wake.
-const coveredExitWakeMs = 15_000
-
 function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources, now }) {
   const delayMs = scheduleWindowTrailingDelayMs(runtime, now)
   // A zero deadline means there is no gap to wake into (an all-day merged window or no

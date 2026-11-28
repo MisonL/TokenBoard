@@ -25,6 +25,7 @@ import { errorMessage } from './error-message.mjs'
 import { transientSyncExitCode } from './scheduled-retry.mjs'
 import { currentProcessStartIdentity, probeProcessLiveness, probeProcessStartIdentity } from './process-liveness.mjs'
 import { createResourcePressureProbe } from './resource-pressure.mjs'
+import { readSignalSources } from './coordinator-signal.mjs'
 
 // The child's stdout/stderr are captured to build the failure message and the run log, so the
 // buffer needs the same headroom every other spawn in the skill gives it. Node's default is
@@ -55,10 +56,7 @@ export function runNotify(options = {}) {
   const env = options.env || process.env
   const stateDir = options.stateDir
   const configDirectory = options.configDir || stateDir
-  // A covered-handoff wake knows a canonical queue entry it finds is new (the run that
-  // booked it claimed everything it covered), so it must not judge it by wall-clock time.
-  const coveredHandoff = flags.coveredHandoff === true || env.TOKENBOARD_NOTIFY_COVERED_HANDOFF === '1'
-  const trigger = { kind: 'notify', source, ...(coveredHandoff ? { coveredHandoff: true } : {}) }
+  const trigger = { kind: 'notify', source }
   return coordinatedSync(trigger, {
     stateDir,
     cooldownMs: readNotifyCooldownMs(options.cooldownMs, env, options.configCooldownMs),
@@ -202,8 +200,7 @@ export function scheduleTrailingNotify(trigger, delayMs, options = {}) {
           : {}),
         TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH: '',
         TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN: '',
-        TOKENBOARD_NOTIFY_DISPATCH_WORKER_PATH: '',
-        ...(trigger.coveredHandoff ? { TOKENBOARD_NOTIFY_COVERED_HANDOFF: '1' } : {})
+        TOKENBOARD_NOTIFY_DISPATCH_WORKER_PATH: ''
       }
     })
     attachTrailingSpawnErrorHandler(child, lockPath, lock.ownerToken, runtime, options)
@@ -290,7 +287,7 @@ function readSource(value) {
 }
 
 export async function runNotifyCli(options = {}) {
-  let env = options.env || process.env
+  const env = options.env || process.env
   const trailingLockPath = env.TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH || ''
   const dispatchLockPath = env.TOKENBOARD_NOTIFY_DISPATCH_LOCK_PATH || ''
   const dispatchLockToken = env.TOKENBOARD_NOTIFY_DISPATCH_LOCK_TOKEN || ''
@@ -317,6 +314,7 @@ export async function runNotifyCli(options = {}) {
   const releaseDispatch = options.releaseDispatchLock || releaseDispatchLock
   let dispatchClaimed = false
   let exitCode = 0
+  let lastResult
   try {
     dispatchClaimed = claimDispatch(dispatchLockPath, dispatchLockToken, { workerPath: dispatchWorkerPath })
     if (dispatchClaimed) {
@@ -347,6 +345,7 @@ export async function runNotifyCli(options = {}) {
           version: config.updatedAt || config.createdAt || 'unknown',
           ...(continuationFlags ? { flags: continuationFlags } : {})
         })
+        lastResult = result
         if (result.error) {
           if (!result.trailingScheduled) throw new Error(result.error)
           reportError(`TokenBoard hook sync retry scheduled after error: ${result.error}`)
@@ -359,9 +358,6 @@ export async function runNotifyCli(options = {}) {
         if (Array.isArray(result.trailingSources) && result.trailingSources.length > 0) {
           continuationFlags = { source: result.trailingSources[0] }
         }
-        // The covered-handoff marker rides the env into the continuation round (a fresh env
-        // object, never a mutated process.env).
-        env = roundCoveredHandoffEnv(env, result.trailingHandoff === true)
         delayMs = nextDelayMs
       }
     }
@@ -374,6 +370,20 @@ export async function runNotifyCli(options = {}) {
     } catch (cleanupError) {
       reportFatalError(`TokenBoard trailing lock cleanup failed: ${errorMessage(cleanupError)}`)
       exitCode = 1
+    }
+    // Hand-off, twice over. A hook enqueues its signal *before* it checks for a live
+    // worker, so once the trailing lock is released its signal can only wait in the queue.
+    // Re-reading it here closes the read-then-exit gap with no clock and no cross-process
+    // marker: either this worker sees the request and spawns a plain successor, or the hook
+    // saw the released lock and spawned its own. Only a coverage exit that actually
+    // claimed entries resumes — a skip (window/cooldown/backoff) already booked its own
+    // retry, and a legacy-only no-op would otherwise chain.
+    if (exitCode === 0 && lastResult?.skippedReason === 'scheduled-covered' && lastResult.coveredAcks > 0) {
+      try {
+        resumePendingSignals(options, env, runtime)
+      } catch (resumeError) {
+        reportFatalError(`TokenBoard pending signal resume failed: ${errorMessage(resumeError)}`)
+      }
     }
     if (dispatchClaimed) {
       try {
@@ -629,12 +639,21 @@ function readTransientAttempts(env = process.env) {
   return Number.isSafeInteger(value) && value > 0 ? value : 0
 }
 
-function roundCoveredHandoffEnv(env, handoff) {
-  if (handoff) return { ...env, TOKENBOARD_NOTIFY_COVERED_HANDOFF: '1' }
-  if (!env.TOKENBOARD_NOTIFY_COVERED_HANDOFF) return env
-  const next = { ...env }
-  delete next.TOKENBOARD_NOTIFY_COVERED_HANDOFF
-  return next
+// Spawns one more worker if a signal is still queued after the locks are gone. The read is
+// the hand-off's other half: anything the coordinator missed because it landed before the
+// worker exited is guaranteed to be visible here, and anything landing afterwards is seen
+// by its own hook, which finds no live worker.
+function resumePendingSignals(options, env, runtime) {
+  const readPending = options.readPendingSources || (() => readSignalSources(runtime))
+  const schedule = options.rescheduleTrailing || ((trigger, delayMs) => scheduleTrailingNotify(trigger, delayMs, { ...options, env }))
+  let pending
+  try {
+    pending = readPending()
+  } catch {
+    return
+  }
+  if (!Array.isArray(pending) || pending.length === 0) return
+  schedule({ kind: 'notify', source: pending[0] }, 0)
 }
 
 function trailingContinuationDelay(result, lockPath, runtime = trailingRuntime({})) {

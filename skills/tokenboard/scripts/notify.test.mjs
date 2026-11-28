@@ -1847,92 +1847,64 @@ test('the trailing loop continues as the sources the gate left open', async () =
   assert.deepEqual(rounds[1], { source: 'claude-code' })
 })
 
-// The in-process continuation is a fresh coordinator run too: the handoff marker must
-// reach it through the env, and it must not outlive the round that needed it.
-test('the trailing loop carries the covered-handoff marker for exactly one round', async () => {
-  const stateDir = '/state'
-  const trailingLockPath = join(stateDir, 'trailing.lock')
-  const files = memoryFileMap([[trailingLockPath, JSON.stringify({ pid: 802, token: 'owner-a' })]])
-  const seen = []
-  const runtime = {
-    stateDir,
-    configDir: stateDir,
-    now: () => Date.parse('2026-05-22T10:00:05.000Z'),
-    process: { pid: 802, kill: () => true },
-    ownerToken: 'owner-a',
-    readFile: memoryFileOps(files).readFile,
-    writeFile: (path, value) => files.set(path, String(value)),
-    unlink: (path) => files.delete(path),
-    rename: memoryFileOps(files).rename,
-    link: memoryFileOps(files).link
-  }
-
-  await runNotifyCli({
-    env: {
-      TOKENBOARD_CONFIG_DIR: stateDir,
-      TOKENBOARD_STATE_DIR: stateDir,
-      TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: trailingLockPath,
-      TOKENBOARD_NOTIFY_TRAILING_LOCK_TOKEN: 'owner-a',
-      TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: '0'
-    },
+// The hand-off is closed after the locks are gone: a hook that enqueued while this worker
+// was finishing saw it alive and spawned nothing, so the worker itself has to notice the
+// queued signal and start a plain successor. No delay, no marker, no clock.
+test('the worker resumes once after a covered exit when a signal is still queued', async () => {
+  const stateDir = '/state/resume'
+  const scheduled = []
+  const exitCode = await runNotifyCli({
+    env: { TOKENBOARD_CONFIG_DIR: stateDir, TOKENBOARD_STATE_DIR: stateDir },
     readConfig: () => ({ updatedAt: 'test-version' }),
     configDir: () => stateDir,
-    trailingRuntime: runtime,
-    waitTrailingDelay: async () => {},
-    runNotify: (options) => {
-      seen.push(options.env.TOKENBOARD_NOTIFY_COVERED_HANDOFF)
-      if (seen.length >= 3) return { source: 'codex', exitCode: 0 }
-      return {
-        source: 'codex',
-        exitCode: 0,
-        trailingScheduled: true,
-        trailingDelayMs: 1,
-        trailingSources: ['codex'],
-        trailingHandoff: seen.length === 1
-      }
-    }
+    runNotify: () => ({ source: 'codex', exitCode: 0, skippedReason: 'scheduled-covered', coveredAcks: 1 }),
+    readPendingSources: () => ['claude-code'],
+    rescheduleTrailing: (trigger, delayMs) => {
+      scheduled.push({ trigger, delayMs })
+      return true
+    },
+    trailingRuntime: {
+      process: { pid: 101 },
+      ownerToken: 'owner-a',
+      readFile: () => JSON.stringify({ pid: 101, token: 'owner-a' })
+    },
+    releaseDispatchLock: () => true
   })
 
-  assert.deepEqual(seen, [undefined, '1', undefined])
+  assert.equal(exitCode, 0)
+  assert.deepEqual(scheduled, [{ trigger: { kind: 'notify', source: 'claude-code' }, delayMs: 0 }])
 })
 
-// The covered-handoff wake is spawned out of process; the flag has to ride the env or
-// the worker judges a brand-new entry by the skewed wall clock again.
-test('the covered-handoff trailing spawn carries its marker', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-handoff-'))
-  const spawned = []
-  try {
-    scheduleTrailingNotify({ kind: 'notify', source: 'codex', coveredHandoff: true }, 15_000, {
-      stateDir: root,
-      configDir: root,
-      env: { TOKENBOARD_STATE_DIR: root, TOKENBOARD_CONFIG_DIR: root },
-      spawnDetached: (command, args, options) => {
-        spawned.push(options.env)
-        return { pid: 4245, unref() {} }
-      }
+test('the worker does not resume when the queue is empty or the exit claimed nothing', async () => {
+  for (const [label, result, pending] of [
+    ['empty queue', { skippedReason: 'scheduled-covered', coveredAcks: 1 }, []],
+    ['legacy-only exit', { skippedReason: 'scheduled-covered', coveredAcks: 0 }, ['codex']],
+    ['ordinary scan', { exitCode: 0 }, ['codex']],
+    // Only a coverage exit resumes; a skip already booked its own retry, and resuming it
+    // here would spawn a second worker on top of that retry.
+    ['skip that already booked a retry', { skippedReason: 'cooldown', coveredAcks: 2 }, ['codex']]
+  ]) {
+    const stateDir = `/state/resume-${label.replaceAll(' ', '-')}`
+    const scheduled = []
+    const exitCode = await runNotifyCli({
+      env: { TOKENBOARD_CONFIG_DIR: stateDir, TOKENBOARD_STATE_DIR: stateDir },
+      readConfig: () => ({ updatedAt: 'test-version' }),
+      configDir: () => stateDir,
+      runNotify: () => ({ source: 'codex', ...result }),
+      readPendingSources: () => pending,
+      rescheduleTrailing: (trigger, delayMs) => {
+        scheduled.push({ trigger, delayMs })
+        return true
+      },
+      trailingRuntime: {
+        process: { pid: 101 },
+        ownerToken: 'owner-a',
+        readFile: () => JSON.stringify({ pid: 101, token: 'owner-a' })
+      },
+      releaseDispatchLock: () => true
     })
-    assert.equal(spawned[0].TOKENBOARD_NOTIFY_COVERED_HANDOFF, '1')
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
-test('a plain trailing spawn carries no covered-handoff marker', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'tokenboard-notify-handoff-none-'))
-  const spawned = []
-  try {
-    scheduleTrailingNotify({ kind: 'notify', source: 'codex' }, 60_000, {
-      stateDir: root,
-      configDir: root,
-      env: { TOKENBOARD_STATE_DIR: root, TOKENBOARD_CONFIG_DIR: root },
-      spawnDetached: (command, args, options) => {
-        spawned.push(options.env)
-        return { pid: 4246, unref() {} }
-      }
-    })
-    assert.equal(spawned[0].TOKENBOARD_NOTIFY_COVERED_HANDOFF, undefined)
-  } finally {
-    await rm(root, { recursive: true, force: true })
+    assert.equal(exitCode, 0, label)
+    assert.deepEqual(scheduled, [], label)
   }
 })
 
