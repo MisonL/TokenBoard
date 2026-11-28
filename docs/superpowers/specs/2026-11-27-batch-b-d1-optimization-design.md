@@ -223,18 +223,28 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   带不同偏移时字典序≠时间序）；同源存在任一无法定时（旧格式）的请求时该源报「未知
   时间」——未知可能比任何已知时间都新，任何覆盖判定都不得采信。
 - 协调器（`coordinator.mjs`）在合并信号来源后先过覆盖门控：被覆盖的来源从本轮集合剔除，
-  并调用 `acknowledgeCoveredSignalSource` 同时清理恢复日志与**活跃队列 entry**——后者只
-  在 entry 仍描述判定时所用的那个请求（`requestedAt <= 判定时间`）时删除，并发写入的新
-  请求保留；不清理的话 `runLockedCycles` 内的 drain 会把被覆盖来源重新并入采集。全部被
+  并调用 `acknowledgeCoveredSignalSource` 同时清理恢复日志与**活跃队列 entry**。清除采用
+  **原子认领**：先把 entry 文件 `rename` 到唯一 claim 路径再读判——读-删之间被 hook 换成
+  新请求的窗口因此不存在（旧实现先读后按路径 `unlink`，评审实测会删掉并发写入的新请求）。
+  认领内容必须「每条记录都属于该来源且 `requestedAt <= 判定时间`」才删除；否则原样放回
+  （`link` 独占创建，路径已被重建时退回 legacy append 通道，宁可多扫一次也不丢信号），
+  并返回 `kept`——调用方据此**不**把该源计为覆盖。覆盖来源还会从 `pendingSources` 中
+  剔除，且各跳过分支（冷却/窗口/资源压力/失败退避）的 `keepCooldownTrigger` 接收
+  covered 集合——否则它会用当前时间把刚判定覆盖的触发源重新入队，续跑再扫一遍。全部被
   覆盖时返回 `skippedReason: 'scheduled-covered'`，不排任何续跑。
 - 窗口判定（`schedule.mjs` `isWithinScheduleWindow`）改为**毫秒级半开区间**
   `[T−windowMs, T+windowMs)`，按相邻本地日历日构造（`setDate`，跨 DST 不依赖固定 ±24h）。
   这是与 deadline 对齐的必要条件：闭区间下 `12:30:00.2` 醒来的续跑仍算在 12:00 窗口内，
-  只能排出 0ms 续跑并原地退出，来源永远不被扫描（审查实测）。
+  只能排出 0ms 续跑并原地退出，来源永远不被扫描（审查实测）。窗口判定与 deadline
+  **共用一次取钟**：两次读取跨过右端点（`12:29:59.999` 内、`12:30:00.000` 外）会算出
+  没有容纳 now 的区间而漏排续跑。
 - 窗口内未覆盖来源排一次 trailing 续跑，**唤醒时刻 = 当前所处（合并后）窗口的结束时刻**：
-  `12:05` → `12:30`，`8:45` → `9:30`，`23:50` → 次日 `00:30`。配置的窗口若重叠合并成
-  全天（如每小时一档 + 30 分钟窗口），没有可醒的空档，不排续跑（否则链每轮自续、永不
-  扫描）；deadline 为 0 同样不排。复用既有 `scheduleTrailing`/`runtime.scheduleTrailing`
+  `12:05` → `12:30`，`8:45` → `9:30`，`23:50` → 次日 `00:30`。区间按前后各两天的日历
+  日构造（DST 日 23/25 小时、跨日合并都需要）；配置的窗口若重叠合并成全天（如每小时
+  一档 + 30 分钟窗口），没有可醒的空档，不排续跑（否则链每轮自续、永不扫描）；「合并
+  跨度 ≥24h 即全天」的判据只对 `windowMs ≤ 12h` 生效（超过半天的窗口两两必重叠，
+  13h 窗口合并跨度超一天却仍有真实空档；生产窗口固定 30 分钟，此为注入值防御）；
+  deadline 为 0 同样不排。复用既有 `scheduleTrailing`/`runtime.scheduleTrailing`
   通道（notify 的 trailing worker 延迟后在独立进程复跑协调器）；worker 醒来时窗口已结束，
   若计划运行已成功覆盖则由覆盖门控放行并跳过，否则正常采集。
 - 验证面：`scheduled-coverage.test.mjs`（成功晚于请求覆盖、早于请求/运行中途开始不覆盖、
@@ -243,11 +253,13 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   独立验证、12:05→12:31 已覆盖不重扫、未知请求时间不覆盖）；`coordinator-signal.test.mjs`
   （epoch 比较、旧格式请求压制、覆盖 ack 删队列 entry、并发新请求保留）；
   `coordinator-scheduled-coverage.test.mjs`（合成时钟：窗口内未覆盖排 25 分钟续跑、窗口
-  前半 8:45 排 45 分钟、23:50 跨午夜排 40 分钟、**12:30 整点唤醒即采集**、12:31 未覆盖则
-  采集、已覆盖则 `scheduled-covered` 不采集、drain 不复活被覆盖来源、混合来源只续未覆盖
-  来源、全天合并窗口不排续跑、failed/deferred 不覆盖、完成早于请求不覆盖、无请求时间
-  按未覆盖）。覆盖门控、`startedAt` 前置、source 匹配、队列清理、undatable 压制、epoch
-  比较、半开窗口边界、零延迟不排续跑均经变异核验变红。
+  前半 8:45 排 45 分钟、23:50 跨午夜排 40 分钟、**12:30 整点唤醒即采集**、12:29:59.999
+  排 1ms、12:31 未覆盖则采集、已覆盖则 `scheduled-covered` 不采集、drain 不复活被覆盖
+  来源、已覆盖触发源不被窗口跳过复活、混合来源只续未覆盖来源、全天合并窗口不排续跑、
+  failed/deferred 不覆盖、完成早于请求不覆盖、无请求时间按未覆盖）；信号模块另有原子
+  认领用例（认领期间被换成新请求→`kept` 且还原、混源文件不整删）。覆盖门控、
+  `startedAt` 前置、source 匹配、队列清理、认领还原、混源保护、covered 触发源复活、
+  undatable 压制、epoch 比较、半开窗口边界、零延迟不排续跑均经变异核验变红。
 - 已知边界（接受）：
   - **上传暂停的计划运行仍判覆盖**。覆盖语义是「一次全量/该来源扫描在该请求之后成功完成
     并结束」，不是「数据已送达」：上传暂停时行留在 collector 的 pending cursor / 投递
@@ -255,8 +267,8 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
     多 GB 的全量扫描。
   - 运行中途到达的信号（`requestedAt > startedAt`）一律不覆盖 → 多扫一次；要区分「该来源
     已被本次运行采集」需要 collector 输出逐源扫描结果并写入状态，超出 C4 范围。
-  - legacy 共享 `notify.signal` 文件里的被覆盖来源无法精确删除（多来源同一文件、只能整体
-    truncate），drain 可能重扫一次。
+  - legacy 共享 `notify.signal` 文件、旧逐事件 `.json` 与遗留 `.drain` 里的被覆盖来源无法
+    精确删除（共享/在途文件），drain 可能重扫一次；方向安全（只多扫，不丢信号）。
   - PLAUSIBLE（未复现）：计划端先释放 `sync.lock` 再写终态，等待中的 hook 可能先拿锁、
     读到 `running` 而重复扫描一次；全覆盖返回与同刻新入队信号的跨进程交接可能把新信号
     留给下一次外部触发。
