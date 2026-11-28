@@ -8,14 +8,14 @@
 
 ## 0. 提交映射
 
-| 项 | 提交 | 内容 |
-|----|------|------|
-| B1 | `3ed8868` perf(ingest): seek snapshot hashes by the full logical key | 行值 IN 替换 OR 链 + EQP 测试 |
-| B3 | `5ba6f00` perf(db): drop the redundant daily_usage_user_date_idx | migration 0041 + schema + 迁移形状测试 |
-| B5 | `2724dae` perf(ingest): skip unchanged summary and totals rewrites | 两个聚合 upsert 的 `IS NOT` 值守卫 + sqlite 测试 |
-| 时间戳重构 | `a26a8b5` refactor(ingest): bind one monotonic batch timestamp into aggregate writes | B2 前置：批内共享、跨批单调 |
-| B6 | `187ed3a` feat(ingest): daily aggregate self-heal pass | 三游标自愈核对 + 接线 |
-| B2+B4 | `da90f00` perf(ingest): move user totals by per-key deltas | 差值替换两条在线全量核对 |
+| 项         | 提交                                                                                 | 内容                                             |
+| ---------- | ------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| B1         | `3ed8868` perf(ingest): seek snapshot hashes by the full logical key                 | 行值 IN 替换 OR 链 + EQP 测试                    |
+| B3         | `5ba6f00` perf(db): drop the redundant daily_usage_user_date_idx                     | migration 0041 + schema + 迁移形状测试           |
+| B5         | `2724dae` perf(ingest): skip unchanged summary and totals rewrites                   | 两个聚合 upsert 的 `IS NOT` 值守卫 + sqlite 测试 |
+| 时间戳重构 | `a26a8b5` refactor(ingest): bind one monotonic batch timestamp into aggregate writes | B2 前置：批内共享、跨批单调                      |
+| B6         | `187ed3a` feat(ingest): daily aggregate self-heal pass                               | 三游标自愈核对 + 接线                            |
+| B2+B4      | `da90f00` perf(ingest): move user totals by per-key deltas                           | 差值替换两条在线全量核对                         |
 
 ## 1. 实现期裁决（方案未写死、或写错方向的部分）
 
@@ -26,7 +26,7 @@
 
 - **首次 summarize（正常路径）**：totals 此前不含该 key，加全值正确。
 - **summary 行被删后重传（故障路径）**：totals 仍记着被删行，加全值 = 第二次计入。
- 探针 `delta-correctness-probe.mjs` 复现过 125 → 250。
+  探针 `delta-correctness-probe.mjs` 复现过 125 → 250。
 
 曾评估过 EXISTS 门控的替代写法（summary 行缺失时差值记 0）：它把故障路径变成正确，
 代价是把正常的首次 summarize 变成少计（totals 永远不会把该 key 加进来，除非自愈跑过）。
@@ -78,7 +78,6 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
 
 ### 2.1 本地
 
-
 - 定向套件（白天口径，见 memory `no-heavy-tests-during-daytime`）：
   `vitest run app/features/ingest`（10 文件 110 测试）、
   `app/features/usage app/features/public-card app/features/leaderboards app/server.test.ts app/lib`
@@ -98,12 +97,12 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
 `daily_usage` 索引清单核对 `daily_usage_user_date_idx` 已从真实 D1 删除。
 真实 HTTP 端到端（一次性探针用户，跑完删除并核对 0 残留）：
 
-| 场景 | 结果 |
-|------|------|
-| 首传 30 新 key（无 totals 行） | `upserted:30`，totals 创建且 == 全量推导（3435/3435/0.3/30） |
-| 1/30 变化 | `upserted:1`，totals == 推导（3485） |
-| 全命中重试 | `upserted:0`，totals 行**逐列含 updated_at 不变**（B2 无差值 + B5 守卫在真实数据上生效） |
-| `/check` 30 键 | 全部报告已投递——在线 totals 核对删除后，陈旧 totals 不再逼客户端重传 |
+| 场景                                 | 结果                                                                                                                                                                                          |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 首传 30 新 key（无 totals 行）       | `upserted:30`，totals 创建且 == 全量推导（3435/3435/0.3/30）                                                                                                                                  |
+| 1/30 变化                            | `upserted:1`，totals == 推导（3485）                                                                                                                                                          |
+| 全命中重试                           | `upserted:0`，totals 行**逐列含 updated_at 不变**（B2 无差值 + B5 守卫在真实数据上生效）                                                                                                      |
+| `/check` 30 键                       | 全部报告已投递——在线 totals 核对删除后，陈旧 totals 不再逼客户端重传                                                                                                                          |
 | 删 summary 行后重传（§1.1 故障路径） | 线上复现过计（3588 vs 推导 3485），随后用 B6 同一 SQL 文本（`totalRepairCheckSql` 检出 + `prepareUserTotalFromSummaryRefresh` 修复）在真实 D1 收敛回 3485——**自愈通道在线上闭环**，非本地模拟 |
 
 写量（复跑归档探针 `docs/research/2026-11-25-d1-write-probe/write-probe.mts` 对 B2 后代码，
@@ -146,7 +145,7 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   审查后修订）：2 轮 × 32 在 30条批下覆盖整批、在 200 条批下不覆盖——超预算抛错会
   中断本轮后续批次（殃及其他来源投递）并累计 backoff，而 7 轮保证「服务端具名拒收的
   整批」总能排干；超出即视为病态服务端，仍按旧语义失败。服务端 400 明细同时改为
- 每坏行只占一个名额（`1dee835`），使「32 条」名副其实按行计。
+  每坏行只占一个名额（`1dee835`），使「32 条」名副其实按行计。
 - 两侧同步：TS `packages/collector/src/upload.ts` 与 Go
   `clients/go/internal/upload/upload.go` 的 `snapshotBatchSize = 200`，
   测试分别钉 501→6 请求与 450→[200,200,50] 分块。
@@ -191,7 +190,7 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
     结果）。要区分三种进度：滚动扫描窗口、投递水位（`delivered-watermark.json`）、hook
     扫描高水位（hook cursor），只有第一个决定重试机会。
   - **Codex 分组确认的既有暴露面**：出现 blocked/withheld 行时回退到按组确认（`(source,
-    usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 withheld 并入触发
+usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 withheld 并入触发
     条件（`git diff` 可见仅新增 `|| withheld`）。组键正是 `mergeSnapshots` 的折叠键，同批
     同组行必被合并为一条快照，故 delivered/withheld 在同一组内非此即彼；残余场景需 cursor
     条目保留旧的 `model: 'all'` 标签而重采以具名模型上报，属上面第一条 hook 重放边界的
@@ -213,9 +212,9 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   ① 终态 `success`（`running`/`deferred`/`failed`/`invalid` 都不算）；
   ② 文件内 `source` 字段与文件名一致；
   ③ **请求早于本次运行开始**（`requestedAt <= startedAt`）——运行开始后才到达的信号可能
-     描述的是该次扫描之后才写入的会话，不能被它覆盖（保守方向：多扫一次）；
+  描述的是该次扫描之后才写入的会话，不能被它覆盖（保守方向：多扫一次）；
   ④ 显式 `completedAt`，不早于 `startedAt`、不晚于当前时刻、且距当前不超过 24 小时
-     （状态文件每次运行覆盖，过老的完成记录不构成证据）。
+  （状态文件每次运行覆盖，过老的完成记录不构成证据）。
   任一不确定（无文件、不可读（EACCES/EIO 逐候选吞掉）、时间不可解析、时钟异常）一律判
   「未覆盖」——方向保守：最多多扫一次，而不是少传。
 - 信号请求时间来自 `coordinator-signal.mjs` 的 `readSignalRequestTimes`：只读活跃队列
@@ -223,15 +222,25 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   带不同偏移时字典序≠时间序）；同源存在任一无法定时（旧格式）的请求时该源报「未知
   时间」——未知可能比任何已知时间都新，任何覆盖判定都不得采信。
 - 协调器（`coordinator.mjs`）在合并信号来源后先过覆盖门控：被覆盖的来源从本轮集合剔除，
-  并调用 `acknowledgeCoveredSignalSource` 同时清理恢复日志与**活跃队列 entry**。清除采用
-  **原子认领**：先把 entry 文件 `rename` 到唯一 claim 路径再读判——读-删之间被 hook 换成
-  新请求的窗口因此不存在（旧实现先读后按路径 `unlink`，评审实测会删掉并发写入的新请求）。
-  认领内容必须「每条记录都属于该来源且 `requestedAt <= 判定时间`」才删除；否则原样放回
-  （`link` 独占创建，路径已被重建时退回 legacy append 通道，宁可多扫一次也不丢信号），
-  并返回 `kept`——调用方据此**不**把该源计为覆盖。覆盖来源还会从 `pendingSources` 中
-  剔除，且各跳过分支（冷却/窗口/资源压力/失败退避）的 `keepCooldownTrigger` 接收
-  covered 集合——否则它会用当前时间把刚判定覆盖的触发源重新入队，续跑再扫一遍。全部被
-  覆盖时返回 `skippedReason: 'scheduled-covered'`，不排任何续跑。
+  并调用 `acknowledgeCoveredSignalSource` 清理其**活跃队列 entry**。清除采用
+  **原子认领**：先把 entry 文件 `rename` 到一个**逐事件命名空间**（`<now>-<pid>-<hex>.json`，
+  与 hooks/appendSignal 写队列同型）再读判——读-删之间被 hook 换成新请求的窗口因此不存在
+  （旧实现先读后按路径 `unlink`，评审实测会删掉并发写入的新请求），且认领名从诞生起就是
+  队列 entry：认领后进程在任意点被杀，残留文件仍会被 `readSignalSources` 读、被 drain
+  消费，不会像 `.claim-*` 那样无人识别而丢信号（二轮评审的 P1）。认领内容必须「每条记录
+  都属于该来源且 `requestedAt <= 判定时间`」才删除；否则原地保留（它已是合法队列文件）并
+  返回 `kept`——调用方据此**不**把该源计为覆盖。**恢复日志（recovery journal）不在此处
+  ack**：其记录不带时间戳，可能描述比判定更新的一次请求（某次运行 drain 后崩溃未扫描），
+  只有真实扫描的 `acknowledgeSignalSource` 才能确认它们（二轮评审的 P1）。
+  覆盖来源还会从 `pendingSources` 中剔除，且各跳过分支（冷却/窗口/资源压力/失败退避）的
+  `keepCooldownTrigger` 接收 covered 集合——否则它会用当前时间把刚判定覆盖的触发源重新
+  入队，续跑再扫一遍。全部被覆盖时**先复查一次队列**：门控运行期间入队的 hook 看到本
+  worker 持有 dispatch 锁而不会另起进程，直接以 `scheduled-covered` 退出会把该信号搁置到
+  下一次外部触发；门控会把复查到的、不在 covered 集合内的来源再判一轮（最多三轮）。复查
+  仍为空才返回 `skippedReason: 'scheduled-covered'`，不排任何续跑。
+- 同一进程内的 trailing 续跑（`notify.mjs` 的 `runNotifyCli` 循环）在每轮之后按
+  `result.trailingSources[0]` 更新下一轮的 `--source`：原实现续跑沿用 worker 启动时的
+  argv，协调器会把已被覆盖的触发源重新并回本轮再扫一遍，正好抵消 C4 的目的。
 - 窗口判定（`schedule.mjs` `isWithinScheduleWindow`）改为**毫秒级半开区间**
   `[T−windowMs, T+windowMs)`，按相邻本地日历日构造（`setDate`，跨 DST 不依赖固定 ±24h）。
   这是与 deadline 对齐的必要条件：闭区间下 `12:30:00.2` 醒来的续跑仍算在 12:00 窗口内，
@@ -240,13 +249,17 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   没有容纳 now 的区间而漏排续跑。
 - 窗口内未覆盖来源排一次 trailing 续跑，**唤醒时刻 = 当前所处（合并后）窗口的结束时刻**：
   `12:05` → `12:30`，`8:45` → `9:30`，`23:50` → 次日 `00:30`。区间按前后各两天的日历
-  日构造（DST 日 23/25 小时、跨日合并都需要）；配置的窗口若重叠合并成全天（如每小时
-  一档 + 30 分钟窗口），没有可醒的空档，不排续跑（否则链每轮自续、永不扫描）；「合并
-  跨度 ≥24h 即全天」的判据只对 `windowMs ≤ 12h` 生效（超过半天的窗口两两必重叠，
-  13h 窗口合并跨度超一天却仍有真实空档；生产窗口固定 30 分钟，此为注入值防御）；
-  deadline 为 0 同样不排。复用既有 `scheduleTrailing`/`runtime.scheduleTrailing`
-  通道（notify 的 trailing worker 延迟后在独立进程复跑协调器）；worker 醒来时窗口已结束，
-  若计划运行已成功覆盖则由覆盖门控放行并跳过，否则正常采集。
+  日构造（安全超集；`±1` 已足够，`±2` 为 25 小时日与跨日合并留余量），候选时刻由目标日
+  **正午**再 `setHours` 得到——直接 `setDate(+1)` 一个当天不存在的挂钟时刻会跨日归一化
+  （America/Nuuk 2026-03-27 23:45 +1 日 → 03-29 00:45，漏掉 03-28 00:00 窗口；评审实测）。
+  无空档判定用**视界规则**：若包含 now 的合并区间一路并到了枚举的最后一段（配置按日重复，
+  说明视界内没有间隙），不排续跑——否则链每轮自续、永不扫描。二分依据不是跨度长度：
+  `windowMs` 是**半宽**，半宽 >12h 时相邻两日必然重叠且确实无空档（注入 13h 半宽 =
+  26h 全宽，跨度判据反而会排出 61h 的续跑）；而小时档 + 真实日间隙的配置合并跨度也可能
+  > 24h（23 小时 DST 日上间隙甚至消失，见 `coordinator-dst-deadline.test.mjs`），跨度判据
+  > 会误判为全天。deadline 为 0 同样不排。复用既有 `scheduleTrailing`/
+  > `runtime.scheduleTrailing` 通道（notify 的 trailing worker 延迟后在独立进程复跑协调器）；
+  > worker 醒来时窗口已结束，若计划运行已成功覆盖则由覆盖门控放行并跳过，否则正常采集。
 - 验证面：`scheduled-coverage.test.mjs`（成功晚于请求覆盖、早于请求/运行中途开始不覆盖、
   failed/deferred/running 不覆盖、partial 不覆盖别的来源、per-source 覆盖、无状态/坏
   JSON/无 `completedAt`/source 错配/完成早于开始/未来完成不覆盖、EACCES 不中止、24h 上限
@@ -257,9 +270,16 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   排 1ms、12:31 未覆盖则采集、已覆盖则 `scheduled-covered` 不采集、drain 不复活被覆盖
   来源、已覆盖触发源不被窗口跳过复活、混合来源只续未覆盖来源、全天合并窗口不排续跑、
   failed/deferred 不覆盖、完成早于请求不覆盖、无请求时间按未覆盖）；信号模块另有原子
-  认领用例（认领期间被换成新请求→`kept` 且还原、混源文件不整删）。覆盖门控、
-  `startedAt` 前置、source 匹配、队列清理、认领还原、混源保护、covered 触发源复活、
-  undatable 压制、epoch 比较、半开窗口边界、零延迟不排续跑均经变异核验变红。
+  认领用例（认领后并发替换→新请求存活、混源文件留队列并判未覆盖、认领中断残留仍可读可
+  drain、恢复日志不被覆盖 ack 删除）；`coordinator-dst-deadline.test.mjs`（TZ 钉死
+  America/New_York 与 America/Nuuk：23 小时日上小时档的 01:30 间隙仍排续跑、跳过小时后的
+  00:00 窗口留在自己那天）。另有：覆盖门控运行期间新入队信号不被搁置（注入式并发）、
+  covered 触发源不被冷却/压力/失败退避分支复活、窗口判定与 deadline 共用一次取钟
+  （每轮 now 序列第 4 次调用读数在窗口内、其后全部越界）、超半日窗口不排续跑、
+  进程内续跑按 `trailingSources[0]` 换源。上述守卫与 `startedAt` 前置、source 匹配、
+  队列清理、混源保护、undatable 压制、epoch 比较、半开窗口边界、零延迟不排续跑
+  均经变异核验变红（共 10 项：门控复查、共用取钟、cooldown/pressure/failure 三处
+  coveredSet、正午构造、视界规则、续跑换源、认领命名、恢复日志 ack）。
 - 已知边界（接受）：
   - **上传暂停的计划运行仍判覆盖**。覆盖语义是「一次全量/该来源扫描在该请求之后成功完成
     并结束」，不是「数据已送达」：上传暂停时行留在 collector 的 pending cursor / 投递
@@ -270,8 +290,10 @@ totals sweep 兜底（`selfheal-sql.ts` 的 candidate 空间是 summaries ∪ to
   - legacy 共享 `notify.signal` 文件、旧逐事件 `.json` 与遗留 `.drain` 里的被覆盖来源无法
     精确删除（共享/在途文件），drain 可能重扫一次；方向安全（只多扫，不丢信号）。
   - PLAUSIBLE（未复现）：计划端先释放 `sync.lock` 再写终态，等待中的 hook 可能先拿锁、
-    读到 `running` 而重复扫描一次；全覆盖返回与同刻新入队信号的跨进程交接可能把新信号
-    留给下一次外部触发。
+    读到 `running` 而重复扫描一次。门控复查把「同刻新入队信号被搁置」的窗口收窄到复查
+    之后、退出之前（毫秒级），其余交给下一次外部触发兜底。
+  - 不可读的认领文件（EACCES）判 `kept` 并留在队列；每次门控都会再遇到它（多一次门控
+    判定，不扫描），直到权限恢复或 hook 重写该源文件。
 - 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与状态写入时序只经合成时钟验证；
-  DST 切换日的 deadline 由本地日历日构造保证，未用真实 DST 时区端到端测试；计划同步在
-  外部系统被杀死（状态停在 running/旧值）按未覆盖处理，下次 hook 触发会重采。
+  DST 用例经 Node 的真实时区规则（`process.env.TZ` 切换）验证，未在真实 DST 切换日做端到端
+  运行；计划同步在外部系统被杀死（状态停在 running/旧值）按未覆盖处理，下次 hook 触发会重采。
