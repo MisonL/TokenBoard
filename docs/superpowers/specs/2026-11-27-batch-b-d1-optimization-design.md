@@ -353,6 +353,9 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
 - **观测输入**：`usage_summary_backfill_state` 的 `selfheal` 行在 2026-11-28T00:00:56Z
   完成了一轮（`phase=summaries`、游标清空、`completed_at` 落章），即 B6 自愈在 private CF
   真实跑满一轮。每轮的 `repaired` 计数只在运行日志里、不落库，逐轮修复量以日志为准。
+- **线上零漂移实测（2026-11-28）**：对 private CF 的 D1 直接核对（只读 SQL）——929 个
+  `daily_usage_summary` 行对 929 个 raw key：错行 0、缺行 0；`user_usage_totals` 对
+  summary 之和错行 0。即该环境 strict 读路径的覆盖面与正确性在完成一轮自愈后成立。
 - **读路径语义**（`effectiveDailyUsageSummaryWith`）：strict 只读 `daily_usage_summary`；
   fallback 读 summary **并**用 raw 去重聚合补齐 summary 缺失的 key。因此
   - 缺行：fallback 兜住；strict 少报，直到 B6 自愈（按 `daily_usage` 原始 key 枚举，
@@ -361,13 +364,20 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
     所以 strict/fallback 互比看不见这类漂移；现有错误值只能靠 B6 收敛（totals 同理）。
 - **对照测试**（`apps/web/app/features/usage/summary-parity.sqlite.test.ts` 新增
   「strict cutover parity against the raw aggregate」）：以手算 raw 聚合为独立参照，
-  覆盖缺行（部分写入）、错行（探针的 7 vs 165 形态）、部分提交（summary 缺行 +
+  覆盖缺行（部分写入）、错行（C1 验收注记的 7 vs 165 形态，见
+  `docs/research/2026-11-25-optimization-final-plan.md` 批次 C 表）、部分提交（summary 缺行 +
   totals 高企），并断言一轮 `selfHealAggregates` 后 strict 与 raw 重新一致、
-  `summariesRepaired`/`totalsRepaired` 计数为 1。`leaderboards/queries.sqlite.test.ts`
-  另有同形态的排行榜用例（strict 下错行排出 7，自愈后为 165，且与 fallback 一致）。
-  变异核验：`listSummaryKeysNeedingRefresh` 直接返回 `[]` 时三个新用例全部变红。
-- **影响面**：dashboard（`getUsageSummary`）、排行榜（`listLeaderboard`）、日报
-  （`report-queries`）、公开卡片（`public-card`）都经同一个
+  `summariesRepaired`/`totalsRepaired` 计数为 1（totals 同时校验 tokens 与 cost）。
+  `leaderboards/queries.sqlite.test.ts` 另有双用户用例：错行把 Alice 的 165 降为 7，
+  strict 下名次为 bob(100) > alice(7)，自愈后翻回 alice(165) > bob(100) 且与 fallback
+  一致；`public-card/service/totals.sqlite.test.ts` 用同形态数据验证卡片 all-time 数字
+  在 strict/fallback 下都先按错行输出、自愈后为 raw 值。日报（`report-queries`）与其余
+  入口经同一 CTE，其既有 strict 测试覆盖查询本身；最小化 fixture 里没有 raw 维度，
+  故未复制错行用例，属共享路径上的覆盖边界。
+  变异核验：`listSummaryKeysNeedingRefresh` 直接返回 `[]` 时五个新用例全部变红；
+  `listDriftedTotalUsers` 返回 `[]` 时仅部分提交用例变红。
+- **影响面**：dashboard（`getUsageSummary` 与 30 天趋势 `getDailyUsageTrend`）、排行榜
+  （`listLeaderboard`）、日报（`report-queries`）、公开卡片（`public-card`）都经同一个
   `effective_daily_usage_summary` CTE 读取，flag 由 `usageSummaryStrictMode(env)` 统一
   解析；strict 只改读哪张表，不改写路径与缓存 key 以外的任何行为（公开 API 缓存 key
   含 `strict|fallback`，切换即换 key，不会串读旧值）。

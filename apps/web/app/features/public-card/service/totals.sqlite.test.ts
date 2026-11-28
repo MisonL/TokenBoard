@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, test } from 'vitest'
 import { createSqliteD1, runSql } from '../../../test/sqlite-d1'
+import { selfHealAggregates } from '../../ingest/repository'
 import { getPublicTotals } from './totals'
 
 const migrationsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../db/migrations')
@@ -77,6 +78,70 @@ function createDb(tempDirs: string[]) {
   )
   return { path, db: createSqliteD1(path) }
 }
+
+// C1 surface check: the public card's all-time numbers come from the rollup when it is at
+// least as fresh as the summary rows, and from a summary recompute otherwise. A drifted
+// summary row therefore leaks into the card in both modes until the daily self-heal repairs
+// it — the card has no raw fallback for a key the cache already holds.
+describe('getPublicTotals under a drifted summary row', () => {
+  const tempDirs: string[] = []
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  async function totalsFor(db: D1Database, summaryStrict: boolean) {
+    return getPublicTotals({
+      db,
+      userId: 'seed-user',
+      today: '2026-05-15',
+      monthStart: '2026-05-01',
+      summaryStrict,
+      includeBreakdown: false,
+      includeSourceSplit: false
+    })
+  }
+
+  test('a drifted summary row is served until the self-heal round repairs the totals', async () => {
+    const { db } = seed(
+      tempDirs,
+      `
+      INSERT INTO usage_summary_backfill_state (id, phase, completed_at, updated_at)
+      VALUES ('initial', 'totals', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO daily_usage (
+        user_id, device_id, source, usage_date, timezone, model,
+        input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+        total_tokens, cost_usd, session_count, snapshot_hash, synced_at
+      ) VALUES (
+        'seed-user', 'device-1', 'claude-code', '2026-05-10', 'UTC', 'model-a',
+        100, 0, 0, 0, 165, 0.5, 1, 'hash-a', '2026-05-10T00:00:00Z'
+      );
+      INSERT INTO daily_usage_summary (
+        user_id, usage_date, source, model, timezone, total_tokens,
+        total_tokens_without_cache_read, cost_usd, updated_at
+      ) VALUES (
+        'seed-user', '2026-05-10', 'claude-code', 'model-a', 'UTC', 7, 7, 0, '2026-05-11T08:00:00.000Z'
+      );
+      INSERT INTO user_usage_totals (user_id, total_tokens, total_tokens_without_cache_read, cost_usd, session_count, updated_at)
+      VALUES ('seed-user', 7, 7, 0, 1, '2026-05-10T08:00:00.000Z');
+      `
+    )
+
+    // The summary is newer than the rollup, so the card recomputes from the drifted row.
+    for (const summaryStrict of [false, true]) {
+      const drifted = await totalsFor(db, summaryStrict)
+      expect(Number(drifted?.totalTokens)).toBe(7)
+      expect(Number(drifted?.totalCostUsd)).toBe(0)
+    }
+
+    await selfHealAggregates({ db })
+
+    for (const summaryStrict of [false, true]) {
+      const repaired = await totalsFor(db, summaryStrict)
+      expect(Number(repaired?.totalTokens)).toBe(165)
+      expect(Number(repaired?.totalCostUsd)).toBe(0.5)
+    }
+  })
+})
 
 // `dataUpdatedAt` is what the README card's optional freshness stamp prints, so the two
 // effective_totals branches must each name the instant their numbers come from: the rollup

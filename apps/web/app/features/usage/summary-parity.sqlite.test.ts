@@ -59,9 +59,9 @@ describe('strict cutover parity against the raw aggregate', () => {
   test('a wrong summary row is served by both modes until a self-heal round repairs it', async () => {
     const { db, path } = createDb(tempDirs)
     await refreshSummary(db, [row({ totalTokens: 165, cacheReadTokens: 5, costUsd: 0.5, sessionCount: 2 })])
-    // The drift shape the 2026-11-25 probe reproduced: raw rows say 165, the stored summary
-    // says 7. Both read modes serve the stored row, so the divergence from raw is invisible
-    // to any strict-vs-fallback comparison.
+    // The drift shape the 2026-11-25 C1 acceptance note recorded (summary served 7 while the
+    // raw rows held 165). Both read modes serve the stored row, so the divergence from raw is
+    // invisible to any strict-vs-fallback comparison.
     runSql(path, 'UPDATE daily_usage_summary SET total_tokens = 7, total_tokens_without_cache_read = 7, cost_usd = 0;')
 
     const fallback = await getUsageSummary(db, summaryInput())
@@ -91,7 +91,7 @@ describe('strict cutover parity against the raw aggregate', () => {
     runSql(
       path,
       `DELETE FROM daily_usage_summary WHERE model = 'gpt-5.4';
-       UPDATE user_usage_totals SET total_tokens = 9999;`
+       UPDATE user_usage_totals SET total_tokens = 9999, cost_usd = 999;`
     )
 
     expect((await getUsageSummary(db, summaryInput())).todayTokens).toBe(150)
@@ -103,6 +103,7 @@ describe('strict cutover parity against the raw aggregate', () => {
     expect(heal.summariesRepaired).toBe(1)
     expect(heal.totalsRepaired).toBe(1)
     expect(scalar(path, "SELECT total_tokens FROM user_usage_totals WHERE user_id = 'seed-user';")).toBe('150')
+    expect(scalar(path, "SELECT cost_usd - 2 < 1e-9 FROM user_usage_totals WHERE user_id = 'seed-user';")).toBe('1')
     expect((await getUsageSummary(db, { ...summaryInput(), summaryStrict: true })).todayTokens).toBe(150)
   })
 })

@@ -179,18 +179,34 @@ describe('listLeaderboard against SQLite', () => {
   // afterwards both modes agree on the raw aggregate.
   test('a drifted summary row ranks wrong until the self-heal round repairs it', async () => {
     const { db } = createDb(tempDirs, {
-      profiles: [profile('u_alice', 'alice', { isPublic: 1, participates: 1 })],
-      summaries: [summary({ user: 'u_alice', source: 'codex', model: 'gpt-5-codex', total: 7 })],
-      usage: [usage({ user: 'u_alice', source: 'codex', model: 'gpt-5-codex', total: 165 })]
+      profiles: [
+        profile('u_alice', 'alice', { isPublic: 1, participates: 1 }),
+        profile('u_bob', 'bob', { isPublic: 1, participates: 1 })
+      ],
+      summaries: [
+        // Alice's row drifted down to 7 while the raw rows hold 165; Bob's row is honest.
+        summary({ user: 'u_alice', source: 'codex', model: 'gpt-5-codex', total: 7 }),
+        summary({ user: 'u_bob', source: 'codex', model: 'gpt-5-codex', total: 100 })
+      ],
+      usage: [
+        usage({ user: 'u_alice', source: 'codex', model: 'gpt-5-codex', total: 165 }),
+        usage({ user: 'u_bob', source: 'codex', model: 'gpt-5-codex', total: 100 })
+      ]
     })
 
     const drifted = await listLeaderboard(db, monthly({ metric: 'tokens', summaryStrict: true }))
-    expect(drifted[0]?.totalTokens).toBe(7)
+    expect(drifted.map((entry) => [entry.slug, entry.totalTokens])).toEqual([
+      ['bob', 100],
+      ['alice', 7]
+    ])
 
     await selfHealAggregates({ db })
 
     const repaired = await listLeaderboard(db, monthly({ metric: 'tokens', summaryStrict: true }))
-    expect(repaired[0]?.totalTokens).toBe(165)
+    expect(repaired.map((entry) => [entry.slug, entry.totalTokens])).toEqual([
+      ['alice', 165],
+      ['bob', 100]
+    ])
     expect(await listLeaderboard(db, monthly({ metric: 'tokens' }))).toEqual(repaired)
   })
 
