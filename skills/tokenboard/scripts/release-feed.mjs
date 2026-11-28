@@ -55,12 +55,18 @@ export function resolveReleaseTag({ flags = {}, env = process.env } = {}) {
 // installer runs). It validates the spellings and the client they belong to, and returns
 // nothing: the real resolution happens where the install is recorded.
 export function assertReleaseInputs({ flags = {}, clientType, env = process.env } = {}) {
-  const present = ['release-repo', 'release-tag', 'release-base-url'].filter((name) => flags[name] !== undefined)
-  if (present.length > 0 && clientType !== 'binary') {
-    throw new Error(
-      `Release feed flags apply only to the binary client: ${present.map((name) => `--${name}`).join(', ')}. ` +
-        'Pass --client binary to install the released client.'
-    )
+  if (clientType !== 'binary') {
+    const present = ['release-repo', 'release-tag', 'release-base-url'].filter((name) => flags[name] !== undefined)
+    if (present.length > 0) {
+      throw new Error(
+        `Release feed flags apply only to the binary client: ${present.map((name) => `--${name}`).join(', ')}. ` +
+          'Pass --client binary to install the released client.'
+      )
+    }
+    // A git install never resolves a feed, so release environment values — including
+    // malformed ones — are not its business; flagging them here would break existing
+    // git installs that merely carry such an environment.
+    return
   }
   resolveReleaseFeed({ flags, env, saved: {} })
   resolveReleaseTag({ flags, env })

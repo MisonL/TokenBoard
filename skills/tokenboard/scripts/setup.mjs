@@ -77,10 +77,14 @@ const savedProfile = reusableServerProfile(currentConfig, serverOrigin)
 const useDeviceLink = shouldUseDeviceLink(flags)
 // Refuse bad feed input before pairing or any profile write: pairing consumes the
 // pairing code, so failing afterwards would strand the retry on an already-used code.
+// The client type has to be the one this run will install with — the reused profile of
+// the *target* server (or the flag/env override) — not the active profile's: with
+// several servers configured, the active one can be a different client than the one
+// being set up.
 try {
   assertReleaseInputs({
     flags,
-    clientType: readClientType({ flags, env: process.env, config: currentConfig }),
+    clientType: readClientType({ flags, env: process.env, config: savedProfile ?? {} }),
     env: process.env
   })
 } catch (error) {

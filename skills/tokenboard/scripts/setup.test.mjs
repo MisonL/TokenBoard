@@ -331,3 +331,99 @@ test('setup refuses a bad release flag before it pairs the device', async () => 
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+function runSetupCli(args, env) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./setup.mjs', import.meta.url)), ...args], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    let stderr = ''
+    child.stdout.on('data', () => {})
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.on('close', (status) => resolve({ status, stderr }))
+  })
+}
+
+// The client type that matters is the one this run installs for: the reused profile of
+// the *target* server. Judging by the active profile refused a valid binary install on a
+// second server whose active server runs the git client.
+test('setup judges release flags by the target server profile, not the active one', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-setup-target-client-'))
+  try {
+    writeFileSync(
+      join(directory, 'config.json'),
+      JSON.stringify({
+        activeServer: 'https://git.example.com',
+        servers: {
+          'https://git.example.com': {
+            endpoint: 'https://git.example.com/api/v1/ingest',
+            uploadToken: 'git-token',
+            clientType: 'git'
+          },
+          'https://binary.example.com': {
+            endpoint: 'https://binary.example.com/api/v1/ingest',
+            uploadToken: 'binary-token',
+            clientType: 'binary'
+          }
+        }
+      })
+    )
+    const result = await runSetupCli(
+      ['--base-url', 'https://binary.example.com', '--release-repo', 'mirror/TokenBoard', '--skip-collector'],
+      { PATH: process.env.PATH, TOKENBOARD_CONFIG_DIR: directory }
+    )
+    // The run may still fail later (the target profile's binary is not installed and
+    // --skip-collector leaves it that way); what matters here is that the preflight did
+    // not refuse and the profile was activated.
+    assert.doesNotMatch(result.stderr, /only to the binary client/)
+    const config = JSON.parse(readFileSync(join(directory, 'config.json'), 'utf8'))
+    assert.equal(config.activeServer, 'https://binary.example.com')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+// With no reusable profile for the target server the install will be a git one (unless a
+// flag says otherwise), so a release flag has to be refused before pairing — even when
+// another configured server runs the binary client.
+test('setup refuses release flags for a new server before pairing, regardless of the active client', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-setup-new-server-client-'))
+  writeFileSync(
+    join(directory, 'config.json'),
+    JSON.stringify({
+      activeServer: 'https://binary.example.com',
+      servers: {
+        'https://binary.example.com': {
+          endpoint: 'https://binary.example.com/api/v1/ingest',
+          uploadToken: 'binary-token',
+          clientType: 'binary'
+        }
+      }
+    })
+  )
+  let requests = 0
+  const server = createServer((request, response) => {
+    requests += 1
+    response.setHeader('content-type', 'application/json')
+    response.end('{}')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  try {
+    const result = await runSetupCli(
+      ['--base-url', `http://127.0.0.1:${port}`, '--pairing-code', 'tb_pair_new_server', '--release-tag', 'v1.0.0'],
+      { PATH: process.env.PATH, TOKENBOARD_CONFIG_DIR: directory }
+    )
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /only to the binary client/)
+    assert.equal(requests, 0)
+    const config = JSON.parse(readFileSync(join(directory, 'config.json'), 'utf8'))
+    assert.deepEqual(Object.keys(config.servers), ['https://binary.example.com'])
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

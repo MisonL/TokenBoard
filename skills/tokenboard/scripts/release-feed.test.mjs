@@ -190,3 +190,16 @@ test('pre-flight accepts a clean binary install and an untouched git install', (
   )
   assert.equal(assertReleaseInputs({ flags: {}, clientType: 'git', env: {} }), undefined)
 })
+
+test('pre-flight leaves release environment alone for a git client', () => {
+  // A git install never resolves a feed. A stray or even malformed release env var
+  // must not turn an otherwise valid git install into a refusal.
+  assert.equal(assertReleaseInputs({ flags: {}, clientType: 'git', env: { TOKENBOARD_RELEASE_REPO: '  ' } }), undefined)
+})
+
+test('pre-flight validates release environment for a binary client', () => {
+  assert.throws(
+    () => assertReleaseInputs({ flags: {}, clientType: 'binary', env: { TOKENBOARD_RELEASE_REPO: '  ' } }),
+    /--release-repo value is blank/
+  )
+})

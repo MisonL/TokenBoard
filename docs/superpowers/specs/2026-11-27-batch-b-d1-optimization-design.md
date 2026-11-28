@@ -437,6 +437,25 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
   变异核验：把切回默认改写为「记录默认值」时 `release-feed` 与 upgrade 用例变红；把
   `configRemovals` 改为恒返回空时 config 用例变红；删掉任一路径的 `remove` 转发时对应入口
   用例变红。
+- 审查修复（codex r3，`8e8c793d`/`423ca63c`）：`setup` 先配对后安装，而配对会消耗一次性
+  pairing code，release flag 的合法性此前要等 installer 才被拒，重试时配对码已失效、配置也已
+  切换 activeServer。新增 `assertReleaseInputs({flags, clientType, env})`，在 setup 读完配置、
+  **任何配对/写配置分支之前**校验 flag 拼写与客户端归属（git 客户端带 release flag、裸 tag、
+  空白值都按 installer 的同一措辞拒绝）；`install-collector` 的内联 stray-flag 检查改用它，
+  两入口不再各有一份。预检判断的客户端类型取自**本次安装将要使用的目标服务器 profile**
+  （`savedProfile`，再回落到 flag/env），不是激活 profile——多服务器配置下两者可以不同，
+  按激活 profile 判会把合法的第二服务器 binary 安装误拒（审查 agent 实测 A/B 复现）。没有可复用
+  目标 profile 时按 `git` 判（无 `--client binary` 的重配对确实是 git 安装），release flag 因此在
+  配对前被拒。git 客户端不解析 feed，也不校验 release 环境变量（脏 env 不得让原本可行的 git
+  安装失败）；binary 客户端则连环境值一起校验。setup 层用例用本地 HTTP 假配对服务钉住「零请求、
+  config 未被改写」，另有「目标 profile 为 binary、激活为 git」与「激活为 binary、新服务器」
+  两个方向，删掉预检或改回激活 profile 都变红。`upgrade.test.mjs` 的「无参 `--to-binary` 沿用已存 feed」用例改为走默认
+  读取器（真实 `TOKENBOARD_CONFIG_DIR` + `config.json`），原先注入 `readSavedConfig` 使
+  「读后即丢弃」的变异存活；改写后该变异实测变红。
+- 接受边界（F1 修复的残留）：目标 origin 存在**不可复用**（缺 endpoint/uploadToken）的 binary
+  profile、但又走配对分支时，预检看不到它，会按 git 拒绝 release flag；提示里给出的
+  `--client binary` 即可通过，方向是显式优先而非静默。同 origin 的可复用 profile 走
+  saved-profile 分支，预检与安装使用的是同一个 profile，不存在此偏差。
 - 已知边界（接受）：`status.mjs`、`rotate-token.mjs`、`setup.mjs`、`device-link-config.mjs` 等
   入口仍用 `existsSync` 判定配置存在，父目录不可读时会把权限问题显示成「未配置/找不到」；
   全部 fail-closed（写路径在凭据锁处失败，不覆盖配置），只是诊断措辞不准确。C6 只改了
