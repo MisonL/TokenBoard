@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { coordinatedSync } from './coordinator.mjs'
 import { fakeProcess, memoryRuntime } from './coordinator-test-helpers.mjs'
+import { readSignalSources } from './coordinator-signal.mjs'
 import { writeScheduledSyncState } from './scheduled-sync-state.mjs'
 
 // C4: a hook signal suppressed inside the scheduled-run window is covered by the scheduled
@@ -700,5 +701,7 @@ test('a signal left behind by a covered exit is scanned by the next run', () => 
   )
 
   assert.deepEqual([...ran].sort(), ['claude-code', 'codex'])
-  assert.equal(fs.exists('/state/notify.signal.d/claude-code.json'), false)
+  // The scan acknowledges what it consumed: the claim file alone disappearing is not
+  // enough evidence (an un-acked entry stays readable under its per-event name).
+  assert.deepEqual(readSignalSources({ ...fs, stateDir: '/state' }), [])
 })

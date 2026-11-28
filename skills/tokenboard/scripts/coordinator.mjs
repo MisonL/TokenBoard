@@ -224,8 +224,9 @@ function runCoordinator(trigger, runtime, result) {
       // A hook landing between this read and the lock release is not scanned by this run;
       // its signal stays queued for the next hook-triggered worker (any source's hook
       // merges the whole queue). Its data is never at risk — hook signals carry only the
-      // source name, and a later hook run whose gate finds the request covered by a
-      // scheduled run claims it then.
+      // source name. If a later scheduled run already covers it, some later hook gate
+      // claims it (occasionally the window retry this very exit books: one extra wake,
+      // no rescan).
       return {
         ...result,
         waitedForLock: lock.waited,
