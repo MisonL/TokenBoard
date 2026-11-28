@@ -215,12 +215,11 @@ test('a signal already covered by a finished scheduled run is not re-scanned', (
   assert.deepEqual(ran, [], 'the scheduled run already collected this signal')
   assert.equal(result.skippedSync, true)
   assert.equal(result.skippedReason, 'scheduled-covered')
-  // No retry is booked from here: the hand-off to a hook landing just after this exit is
-  // closed by the worker re-reading the queue after it releases the trailing lock
-  // (`notify.mjs`), and `coveredAcks` marks this exit as a real coverage decision.
+  // No retry is booked from here: the covered request is gone and a hook landing just
+  // after this exit queues a fresh one for the next trigger.
   assert.notEqual(result.trailingScheduled, true)
   assert.deepEqual(trailing, [])
-  assert.equal(result.coveredAcks, 1)
+  assert.equal(fs.exists('/state/notify.signal.d/codex.json'), false)
 })
 
 test('a signal the scheduled run has not covered yet is re-scanned after the window', () => {
@@ -562,8 +561,8 @@ test('a newer request for an already-covered source is not filtered out by name'
   assert.notEqual(result.skippedReason, 'scheduled-covered')
 })
 
-// A covered exit through the legacy channel only (nothing claimed) must not look like a
-// real coverage decision: `coveredAcks` stays 0, and the worker will not resume on it.
+// A covered exit through the legacy channel only writes nothing: the legacy file is not
+// ours to delete, and the exit is still a plain coverage decision.
 test('a covered exit through the legacy channel claims nothing', () => {
   const fs = stateFsWith(memoryRuntime(), {})
   fs.writeFile('/state/notify.signal', `${JSON.stringify({ source: 'codex', requestedAt: utcForLocal(12, 5) })}\n`)
@@ -574,7 +573,7 @@ test('a covered exit through the legacy channel claims nothing', () => {
   assert.equal(result.skippedReason, 'scheduled-covered')
   assert.notEqual(result.trailingScheduled, true)
   assert.deepEqual(trailing, [])
-  assert.equal(result.coveredAcks, 0)
+  assert.equal(fs.exists('/state/notify.signal'), true)
 })
 
 // The same witness inside one run: an entry that reappears after the claim was removed
@@ -611,36 +610,4 @@ test('an entry that reappears after the claim is judged on evidence, not its clo
 
   assert.equal(injected, true, 'the reappearing entry must actually have been exercised')
   assert.deepEqual(ran, ['codex'])
-})
-
-// A same-process resume round is run by the worker that just claimed and released the
-// locks, so a canonical entry it now sees was written afterwards. A backward clock step
-// that makes the entry look older than the scheduled run's start must not fool it.
-test('a resume round scans a canonical entry despite a backward clock step', () => {
-  const fs = stateFsWith(memoryRuntime(), {
-    startedAt: utcForLocal(12, 29, 55),
-    completedAt: utcForLocal(12, 30)
-  })
-  // Written after the run by a clock roughly ten seconds behind: it reads as pre-start.
-  queueSignal(fs, 'codex', utcForLocal(12, 29, 53))
-  const ran = []
-
-  const result = coordinatedSync(
-    { kind: 'notify', source: 'codex', resumeWitness: true },
-    {
-      ...fs,
-      stateDir: '/state',
-      now: () => localTime(12, 30, 15),
-      process: fakeProcess(913),
-      scheduleWindow,
-      scheduleTrailing: () => true,
-      executeSync: (trigger) => {
-        ran.push(trigger.source)
-        return {}
-      }
-    }
-  )
-
-  assert.deepEqual(ran, ['codex'])
-  assert.notEqual(result.skippedReason, 'scheduled-covered')
 })

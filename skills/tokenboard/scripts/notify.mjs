@@ -25,7 +25,6 @@ import { errorMessage } from './error-message.mjs'
 import { transientSyncExitCode } from './scheduled-retry.mjs'
 import { currentProcessStartIdentity, probeProcessLiveness, probeProcessStartIdentity } from './process-liveness.mjs'
 import { createResourcePressureProbe } from './resource-pressure.mjs'
-import { readSignalSources } from './coordinator-signal.mjs'
 
 // The child's stdout/stderr are captured to build the failure message and the run log, so the
 // buffer needs the same headroom every other spawn in the skill gives it. Node's default is
@@ -56,10 +55,7 @@ export function runNotify(options = {}) {
   const env = options.env || process.env
   const stateDir = options.stateDir
   const configDirectory = options.configDir || stateDir
-  // A resume round is run by the same process that just claimed and released the locks;
-  // any canonical entry it now sees was written after those claims, which is evidence the
-  // wall clock may not be trusted for.
-  const trigger = { kind: 'notify', source, ...(flags.resumeWitness === true ? { resumeWitness: true } : {}) }
+  const trigger = { kind: 'notify', source }
   return coordinatedSync(trigger, {
     stateDir,
     cooldownMs: readNotifyCooldownMs(options.cooldownMs, env, options.configCooldownMs),
@@ -317,7 +313,6 @@ export async function runNotifyCli(options = {}) {
   const releaseDispatch = options.releaseDispatchLock || releaseDispatchLock
   let dispatchClaimed = false
   let exitCode = 0
-  let lastResult
   try {
     dispatchClaimed = claimDispatch(dispatchLockPath, dispatchLockToken, { workerPath: dispatchWorkerPath })
     if (dispatchClaimed) {
@@ -348,7 +343,6 @@ export async function runNotifyCli(options = {}) {
           version: config.updatedAt || config.createdAt || 'unknown',
           ...(continuationFlags ? { flags: continuationFlags } : {})
         })
-        lastResult = result
         if (result.error) {
           if (!result.trailingScheduled) throw new Error(result.error)
           reportError(`TokenBoard hook sync retry scheduled after error: ${result.error}`)
@@ -380,49 +374,6 @@ export async function runNotifyCli(options = {}) {
       } catch (cleanupError) {
         reportFatalError(`TokenBoard dispatch lock cleanup failed: ${errorMessage(cleanupError)}`)
         exitCode = 1
-      }
-    }
-    // Hand-off, twice over. A hook enqueues its signal *before* it checks for a live
-    // worker or tries the dispatch lock, so once this process holds neither lock a signal
-    // can only wait in the queue: either this loop sees it and runs one more round
-    // in-process, or the hook saw the released locks and spawned its own. Both locks must
-    // be gone first — a hook is turned away by a dispatch lock too, so resuming while still
-    // holding it leaves both sides standing down. Running the round here instead of
-    // spawning a successor also sidesteps the spawn/publish race (a zero-delay child could
-    // finish before its pid was published) and needs no clock. Only a coverage exit that
-    // actually claimed entries resumes: a skip (window/cooldown/backoff) already booked its
-    // own retry, and a legacy-only no-op would otherwise chain; each resume round must
-    // satisfy the same condition, which is what bounds the chain.
-    for (let resumeRound = 0; resumeRound < 3; resumeRound += 1) {
-      if (exitCode !== 0 || lastResult?.skippedReason !== 'scheduled-covered' || !(lastResult.coveredAcks > 0)) {
-        break
-      }
-      let pending
-      try {
-        const readPending = options.readPendingSources || (() => readSignalSources(runtime))
-        pending = readPending()
-      } catch (resumeError) {
-        reportError(`TokenBoard pending signal resume skipped: ${errorMessage(resumeError)}`)
-        break
-      }
-      if (!Array.isArray(pending) || pending.length === 0) break
-      try {
-        lastResult = notify({
-          configDir: readConfigDirectory(),
-          stateDir,
-          env,
-          configCooldownMs: readCurrentConfig().notifyCooldownMs,
-          configFailureBackoffMs: readCurrentConfig().notifyFailureBackoffMs,
-          configScheduleTimes: readCurrentConfig().scheduleTimes,
-          trailingProcess: true,
-          transientAttempts: readTransientAttempts(env),
-          resourcePressure: options.resourcePressure,
-          version: readCurrentConfig().updatedAt || readCurrentConfig().createdAt || 'unknown',
-          flags: { source: pending[0], resumeWitness: true }
-        })
-      } catch (resumeError) {
-        reportError(`TokenBoard pending signal resume failed: ${errorMessage(resumeError)}`)
-        break
       }
     }
   }

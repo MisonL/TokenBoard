@@ -164,15 +164,13 @@ function runCoordinator(trigger, runtime, result) {
     // can queue one between the gate's read and its exit, and the source name alone must
     // not stand in for the request identity.
     const judgedAt = new Map()
-    let removedAcks = 0
     for (let pass = 0; ; pass += 1) {
       const requestTimes = readSignalRequestTimes(runtime)
       for (const source of [...syncSources]) {
-        // A canonical entry that reappears after an earlier pass — or arrives on a same-
-        // process resume round — was written after the claim that removed it: it is a new
-        // request whatever its timestamp says, and a backward clock step must not be able
-        // to make it look covered.
-        if ((pass > 0 || trigger.resumeWitness === true) && hasQueuedSignalEntry(runtime, source)) {
+        // A canonical entry that reappears after an earlier pass was written after the
+        // claim that removed it: it is a new request whatever its timestamp says, and a
+        // backward clock step must not be able to make it look covered.
+        if (pass > 0 && hasQueuedSignalEntry(runtime, source)) {
           coveredSet.delete(source)
           judgedAt.delete(source)
           continue
@@ -192,7 +190,6 @@ function runCoordinator(trigger, runtime, result) {
         // that source is then *not* covered for this run.
         const disposition = acknowledgeCoveredSignalSource(runtime, source, requestedAt)
         if (disposition === 'kept') continue
-        if (disposition === 'removed') removedAcks += 1
         coveredSet.add(source)
         judgedAt.set(source, Date.parse(requestedAt))
         const index = pendingSources.indexOf(source)
@@ -214,17 +211,14 @@ function runCoordinator(trigger, runtime, result) {
       syncSources = lateSources
     }
     if (syncSources.length === 0) {
-      // The hand-off to a hook landing between this read and the lock release is closed by
-      // the worker itself: `notify.mjs` re-reads the queue after releasing the trailing lock
-      // and spawns one more worker if anything is still there. `coveredAcks` tells it this
-      // exit was a real coverage decision (not a legacy-only no-op), which is what keeps
-      // that resume bounded.
+      // A hook landing between this read and the lock release is not scanned by this run;
+      // its signal stays queued and the next trigger (another hook, the scheduled sync)
+      // picks it up. Its data is never at risk — hook signals carry only the source name.
       return {
         ...result,
         waitedForLock: lock.waited,
         skippedSync: true,
-        skippedReason: 'scheduled-covered',
-        coveredAcks: removedAcks
+        skippedReason: 'scheduled-covered'
       }
     }
     const remainingMs = cooldownRemainingMs(runtime)
