@@ -234,12 +234,14 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   只有真实扫描的 `acknowledgeSignalSource` 才能确认它们（二轮评审的 P1）。
   覆盖来源还会从 `pendingSources` 中剔除，且各跳过分支（冷却/窗口/资源压力/失败退避）的
   `keepCooldownTrigger` 接收 covered 集合——否则它会用当前时间把刚判定覆盖的触发源重新
-  入队，同一次运行再扫一遍。全部被覆盖时**先复查一次队列**：门控运行期间入队的 hook 看到
+  入队，令后续一次触发再扫一遍。全部被覆盖时**先复查一次队列**：门控运行期间入队的 hook 看到
   本 worker 持有 dispatch 锁（经 `scheduleTrailingNotify` 派生的 trailing worker 则被
   `hooks.mjs` 的存活检查经 `trailing.lock` 挡住）而不会另起进程，直接以
   `scheduled-covered` 退出会把该信号搁置到下一次 hook 触发；门控会把复查到的来源按**请求时间**再判一轮（最多三轮）——覆盖结论按
   来源名缓存，同源**更新的请求**（`requestedAt` 大于已判时间）重新成为待判对象，而不是被
-  来源名挡住（三轮评审的 P1）。复查仍为空才返回 `skippedReason: 'scheduled-covered'`。
+  来源名挡住（三轮评审的 P1）；复查轮里出现不可解析时间的条目（或只剩恢复日志/遗留
+  drain 的源）与首判同规则，判未覆盖并让本轮扫描。复查仍为空才返回
+  `skippedReason: 'scheduled-covered'`。
   **交接以「门控内复查 + 下一次触发」为界，不另起续跑 worker**：复查覆盖门控运行期间
   入队的信号（最多三轮，按请求时间判定，同源新请求重新待判）；复查仍为空即返回
   `scheduled-covered`。此前尝试过三种跨进程/进程内续跑（唤醒标记 → spawn successor →

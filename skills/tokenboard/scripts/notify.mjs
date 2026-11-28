@@ -706,7 +706,6 @@ function trailingRuntime(options = {}) {
     nodeVersion: options.nodeVersion || process.versions.node,
     platform: options.platform || process.platform,
     process: processValue,
-    mkdir: options.mkdir || mkdirSync,
     readFile: options.readFile || ((path) => readFileSync(path, 'utf8')),
     runTasklist: options.runTasklist,
     processStartIdentity: options.processStartIdentity || env.TOKENBOARD_NOTIFY_TRAILING_PROCESS_START_IDENTITY,

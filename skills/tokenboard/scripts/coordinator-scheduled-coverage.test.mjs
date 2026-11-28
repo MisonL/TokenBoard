@@ -659,6 +659,8 @@ test('an undatable arrival during the re-read is scanned, not left covered', () 
 
 // The hand-off window in sequence: the covered exit scans nothing and leaves a late
 // signal in the queue; the next run (any hook trigger) merges the queue and scans it.
+// The late request belongs to *another* source: if the next run only scanned its own
+// trigger, or the late entry vanished, the scan below would not happen.
 test('a signal left behind by a covered exit is scanned by the next run', () => {
   const fs = stateFsWith(memoryRuntime(), {})
   queueSignal(fs, 'codex', utcForLocal(12, 5))
@@ -679,12 +681,11 @@ test('a signal left behind by a covered exit is scanned by the next run', () => 
   )
   assert.equal(first.skippedReason, 'scheduled-covered')
 
-  queueSignal(fs, 'codex', utcForLocal(12, 31))
+  queueSignal(fs, 'claude-code', utcForLocal(12, 31))
   const ran = []
   coordinatedSync(
     { kind: 'notify', source: 'codex' },
     {
-      ...stateFsWith(memoryRuntime(), {}),
       ...fs,
       stateDir: '/state',
       now: () => localTime(12, 32),
@@ -698,5 +699,6 @@ test('a signal left behind by a covered exit is scanned by the next run', () => 
     }
   )
 
-  assert.deepEqual(ran, ['codex'])
+  assert.deepEqual([...ran].sort(), ['claude-code', 'codex'])
+  assert.equal(fs.exists('/state/notify.signal.d/claude-code.json'), false)
 })
