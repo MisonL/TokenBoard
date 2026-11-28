@@ -2817,14 +2817,30 @@ test('migrateToBinaryClient clears the stored feed when switching back to the de
 // that feed, exactly like an unflagged binary install: resolving the default here while
 // keeping the stored override would install from one source and then self-update from
 // another.
-test('an unflagged --to-binary installs from the recorded feed and leaves it recorded', async () => {
+// This one goes through the default reader on purpose: injecting `readSavedConfig` would
+// hide a reader that reads the config and then throws the value away, which is exactly the
+// regression an unflagged switch would suffer (it would silently install from the default
+// repository over a recorded mirror).
+test('an unflagged --to-binary installs from the recorded feed and leaves it recorded', async (t) => {
+  const configDir = mkdtempSync(join(tmpdir(), 'tb-upgrade-saved-feed-'))
+  t.after(() => rmSync(configDir, { recursive: true, force: true }))
+  writeFileSync(
+    join(configDir, 'config.json'),
+    JSON.stringify({ releaseRepo: 'other/TokenBoard', releaseBaseUrl: 'https://github.example' })
+  )
+  const previousDir = process.env.TOKENBOARD_CONFIG_DIR
+  process.env.TOKENBOARD_CONFIG_DIR = configDir
+  t.after(() => {
+    if (previousDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousDir
+  })
+
   const installed = []
   const merged = []
   await migrateToBinaryClient({
     flags: {},
     env: {},
-    configDirectory: '/home/user/.tokenboard',
-    readSavedConfig: () => ({ releaseRepo: 'other/TokenBoard', releaseBaseUrl: 'https://github.example' }),
+    configDirectory: configDir,
     install: async (options) => {
       installed.push(options)
       return { version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }
