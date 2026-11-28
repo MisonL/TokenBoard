@@ -50,6 +50,22 @@ export function resolveReleaseTag({ flags = {}, env = process.env } = {}) {
   return tag || undefined
 }
 
+// A pre-flight for callers that must refuse bad feed input before doing anything with
+// side effects (setup pairs a device — which consumes the pairing code — before the
+// installer runs). It validates the spellings and the client they belong to, and returns
+// nothing: the real resolution happens where the install is recorded.
+export function assertReleaseInputs({ flags = {}, clientType, env = process.env } = {}) {
+  const present = ['release-repo', 'release-tag', 'release-base-url'].filter((name) => flags[name] !== undefined)
+  if (present.length > 0 && clientType !== 'binary') {
+    throw new Error(
+      `Release feed flags apply only to the binary client: ${present.map((name) => `--${name}`).join(', ')}. ` +
+        'Pass --client binary to install the released client.'
+    )
+  }
+  resolveReleaseFeed({ flags, env, saved: {} })
+  resolveReleaseTag({ flags, env })
+}
+
 // A bare `--release-repo` with no value parses as `true`. Treating that as "clear the
 // feed" would let a typo reset a custom mirror silently, so it is a usage error. A
 // whitespace-only value gets the same treatment: only the exact empty string (the

@@ -6,6 +6,7 @@ import {
   configDir,
   configPath,
   parseArgs,
+  readClientType,
   readConfig,
   readPackageManager,
   serverOriginFromEndpoint,
@@ -15,6 +16,7 @@ import {
 import { withCredentialsLock } from './credentials-lock.mjs'
 import { existsSync } from 'node:fs'
 import { readDeviceLink, writeDeviceLink } from './device-link.mjs'
+import { assertReleaseInputs } from './release-feed.mjs'
 import { errorMessage } from './error-message.mjs'
 import { assertSupportedNodeVersion } from './node-version.mjs'
 import { printHelpIfRequested } from './cli-help.mjs'
@@ -73,6 +75,18 @@ if (!serverOrigin) {
 }
 const savedProfile = reusableServerProfile(currentConfig, serverOrigin)
 const useDeviceLink = shouldUseDeviceLink(flags)
+// Refuse bad feed input before pairing or any profile write: pairing consumes the
+// pairing code, so failing afterwards would strand the retry on an already-used code.
+try {
+  assertReleaseInputs({
+    flags,
+    clientType: readClientType({ flags, env: process.env, config: currentConfig }),
+    env: process.env
+  })
+} catch (error) {
+  console.error(errorMessage(error))
+  process.exit(1)
+}
 let activeProfile
 // Resolved by whichever branch runs below and reused for the install step.
 // Deliberately kept out of the profile write: `clientType` names a client that

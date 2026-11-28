@@ -14,7 +14,7 @@ import {
   readPackageManager
 } from './config.mjs'
 import { installClientBinary } from './client-binary.mjs'
-import { resolveReleaseFeed, resolveReleaseTag } from './release-feed.mjs'
+import { assertReleaseInputs, resolveReleaseFeed, resolveReleaseTag } from './release-feed.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { assertSupportedNodeVersion } from './node-version.mjs'
 import {
@@ -167,13 +167,10 @@ function runCli() {
     process.exit(1)
   }
 
-  const releaseFlagNames = ['release-repo', 'release-tag', 'release-base-url']
-  const strayReleaseFlags = releaseFlagNames.filter((name) => flags[name] !== undefined)
-  if (clientType !== 'binary' && strayReleaseFlags.length > 0) {
-    console.error(
-      `Release feed flags apply only to the binary client: ${strayReleaseFlags.map((name) => `--${name}`).join(', ')}. ` +
-        'Pass --client binary to install the released client.'
-    )
+  try {
+    assertReleaseInputs({ flags, clientType, env: process.env })
+  } catch (error) {
+    console.error(errorMessage(error))
     process.exit(1)
   }
 

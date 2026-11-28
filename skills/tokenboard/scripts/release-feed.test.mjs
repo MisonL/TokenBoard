@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defaultReleaseRepo } from './client-binary.mjs'
 import { parseArgs } from './config.mjs'
-import { resolveReleaseFeed, resolveReleaseTag } from './release-feed.mjs'
+import { assertReleaseInputs, resolveReleaseFeed, resolveReleaseTag } from './release-feed.mjs'
 
 // The feed a binary install records has to outlive the install: every later
 // `self-update` resolves it from the config. `mergeConfig` preserves fields a patch
@@ -155,4 +155,38 @@ test('release tags: explicit values pass, empty means latest, bare is an error',
   assert.equal(resolveReleaseTag({ flags: {}, env: { TOKENBOARD_RELEASE_TAG: 'v2.0.0' } }), 'v2.0.0')
   assert.throws(() => resolveReleaseTag({ flags: { 'release-tag': true }, env: {} }), /requires a value/)
   assert.throws(() => resolveReleaseTag({ flags: { 'release-tag': ' ' }, env: {} }), /value is blank/)
+})
+
+// The pre-flight exists because setup pairs a device before it installs, and pairing
+// consumes the pairing code. A malformed or client-mismatched feed flag has to be
+// refused before that point, so the retry does not start from an already-used code.
+
+test('pre-flight refuses release flags on a git client', () => {
+  assert.throws(
+    () => assertReleaseInputs({ flags: { 'release-tag': 'v1.0.0' }, clientType: 'git', env: {} }),
+    /only to the binary client: --release-tag.*--client binary/
+  )
+})
+
+test('pre-flight refuses a malformed feed value even for a binary client', () => {
+  assert.throws(
+    () => assertReleaseInputs({ flags: { 'release-tag': true }, clientType: 'binary', env: {} }),
+    /--release-tag requires a value/
+  )
+  assert.throws(
+    () => assertReleaseInputs({ flags: { 'release-base-url': '   ' }, clientType: 'binary', env: {} }),
+    /--release-base-url value is blank/
+  )
+})
+
+test('pre-flight accepts a clean binary install and an untouched git install', () => {
+  assert.equal(
+    assertReleaseInputs({
+      flags: { 'release-repo': 'mirror/TokenBoard', 'release-tag': 'v1.0.0' },
+      clientType: 'binary',
+      env: {}
+    }),
+    undefined
+  )
+  assert.equal(assertReleaseInputs({ flags: {}, clientType: 'git', env: {} }), undefined)
 })

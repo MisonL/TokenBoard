@@ -3,7 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import test from 'node:test'
 import { buildInstallCollectorArgs } from './setup-options.mjs'
 
@@ -264,6 +265,69 @@ test('setup honors explicit device-link reconnect over an existing server profil
     assert.equal(result.status, 1)
     assert.match(result.stderr, /TokenBoard device link not found/)
   } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+// Pairing consumes the pairing code, so a release flag that will be refused must be
+// refused before setup posts to /api/v1/device/pair — otherwise the retry fails on a
+// code that is already spent.
+test('setup refuses a bad release flag before it pairs the device', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-setup-release-preflight-'))
+  let requests = 0
+  const server = createServer((request, response) => {
+    requests += 1
+    response.setHeader('content-type', 'application/json')
+    response.end('{}')
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  const env = { PATH: process.env.PATH, TOKENBOARD_CONFIG_DIR: directory }
+  const runSetup = (args) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [fileURLToPath(new URL('./setup.mjs', import.meta.url)), ...args], {
+        env,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      let stderr = ''
+      child.stdout.on('data', () => {})
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk
+      })
+      child.on('close', (status) => resolve({ status, stderr }))
+    })
+  try {
+    const baseUrl = `http://127.0.0.1:${port}`
+    const malformed = await runSetup([
+      '--base-url',
+      baseUrl,
+      '--pairing-code',
+      'tb_pair_preflight',
+      '--client',
+      'binary',
+      '--release-tag'
+    ])
+    assert.equal(malformed.status, 1)
+    assert.match(malformed.stderr, /--release-tag requires a value/)
+
+    const wrongClient = await runSetup([
+      '--base-url',
+      baseUrl,
+      '--pairing-code',
+      'tb_pair_preflight',
+      '--client',
+      'git',
+      '--release-tag',
+      'v1.0.0'
+    ])
+    assert.equal(wrongClient.status, 1)
+    assert.match(wrongClient.stderr, /only to the binary client/)
+    assert.match(wrongClient.stderr, /--client binary/)
+
+    assert.equal(requests, 0)
+    assert.equal(existsSync(join(directory, 'config.json')), false)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
     rmSync(directory, { recursive: true, force: true })
   }
 })
