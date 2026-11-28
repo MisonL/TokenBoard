@@ -168,10 +168,11 @@ function runCoordinator(trigger, runtime, result) {
     for (let pass = 0; ; pass += 1) {
       const requestTimes = readSignalRequestTimes(runtime)
       for (const source of [...syncSources]) {
-        // A canonical entry that reappears after an earlier pass was written after the claim
-        // that removed it: it is a new request whatever its timestamp says, and a backward
-        // clock step must not be able to make it look covered.
-        if (pass > 0 && hasQueuedSignalEntry(runtime, source)) {
+        // A canonical entry that reappears after an earlier pass — or arrives on a same-
+        // process resume round — was written after the claim that removed it: it is a new
+        // request whatever its timestamp says, and a backward clock step must not be able
+        // to make it look covered.
+        if ((pass > 0 || trigger.resumeWitness === true) && hasQueuedSignalEntry(runtime, source)) {
           coveredSet.delete(source)
           judgedAt.delete(source)
           continue

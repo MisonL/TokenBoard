@@ -612,3 +612,35 @@ test('an entry that reappears after the claim is judged on evidence, not its clo
   assert.equal(injected, true, 'the reappearing entry must actually have been exercised')
   assert.deepEqual(ran, ['codex'])
 })
+
+// A same-process resume round is run by the worker that just claimed and released the
+// locks, so a canonical entry it now sees was written afterwards. A backward clock step
+// that makes the entry look older than the scheduled run's start must not fool it.
+test('a resume round scans a canonical entry despite a backward clock step', () => {
+  const fs = stateFsWith(memoryRuntime(), {
+    startedAt: utcForLocal(12, 29, 55),
+    completedAt: utcForLocal(12, 30)
+  })
+  // Written after the run by a clock roughly ten seconds behind: it reads as pre-start.
+  queueSignal(fs, 'codex', utcForLocal(12, 29, 53))
+  const ran = []
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex', resumeWitness: true },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(12, 30, 15),
+      process: fakeProcess(913),
+      scheduleWindow,
+      scheduleTrailing: () => true,
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.deepEqual(ran, ['codex'])
+  assert.notEqual(result.skippedReason, 'scheduled-covered')
+})
