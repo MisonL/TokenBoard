@@ -272,6 +272,40 @@ test('a signal queued without a request time is treated as uncovered despite a c
   assert.deepEqual(ran, ['codex'])
 })
 
+// The window test and the deadline share one clock reading: two reads that straddle the
+// right edge (12:29:59.999 inside, 12:30:00.000 outside) used to book nothing at all.
+test('a window skip at the last millisecond books the one-millisecond retry', () => {
+  const fs = memoryRuntime()
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  const trailing = []
+  const edge = localTime(12, 30) - 1
+
+  const result = runAt(fs, { now: edge, trailing })
+
+  assert.equal(result.skippedReason, 'scheduled-window')
+  assert.equal(trailing.length, 1)
+  assert.equal(trailing[0].delayMs, 1)
+})
+
+// A covered trigger must not be re-queued by the window skip: re-appending it stamps the
+// current time and hands it the scan the gate just ruled out.
+test('a covered trigger is not revived by the window skip', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  queueSignal(fs, 'claude-code', utcForLocal(12, 20))
+  const trailing = []
+
+  const result = runAt(fs, { now: localTime(12, 20), source: 'codex', trailing })
+
+  assert.equal(result.skippedReason, 'scheduled-window')
+  assert.deepEqual(result.trailingSources, ['claude-code'])
+  assert.deepEqual(
+    trailing.map(({ trigger }) => trigger.source),
+    ['claude-code']
+  )
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false, 'the covered trigger must stay removed')
+})
+
 // The retry is booked for the window's close; waking exactly there must scan, not land on
 // the window again (a closed upper edge did exactly that and the source was never scanned).
 test('a trailing retry waking exactly at the window close scans the source', () => {

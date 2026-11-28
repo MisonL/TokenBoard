@@ -527,6 +527,51 @@ test('acknowledging a covered signal removes its active queue entry', () => {
   assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false)
 })
 
+// A file that also carries another source's line must never be deleted wholesale: only
+// every-entry-judged files are removed.
+test('a covered acknowledgement restores a file that carries another source', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:05:00.000Z' })}\n${JSON.stringify({
+      source: 'claude-code',
+      requestedAt: '2026-11-27T04:04:00.000Z'
+    })}\n`
+  )
+  const disposition = acknowledgeCoveredSignalSource(
+    { ...fs, stateDir: '/state', process: fakeProcess(901) },
+    'codex',
+    '2026-11-27T04:05:00.000Z'
+  )
+  assert.equal(disposition, 'kept')
+  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /claude-code/)
+})
+
+// The claim is taken before the read, so a hook replacing the entry during the call has
+// its newer request restored, not deleted.
+test('a request that replaces the entry during the claim survives', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:05:00.000Z' })}\n`
+  )
+  const newer = `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:31:00.000Z' })}\n`
+  const runtime = {
+    ...fs,
+    stateDir: '/state',
+    process: fakeProcess(901),
+    rename: (from, to) => {
+      // The hook lands its update between the gate's read and our claim.
+      if (String(to).includes('.claim-')) fs.writeFile('/state/notify.signal.d/codex.json', newer)
+      fs.rename(from, to)
+    }
+  }
+  const disposition = acknowledgeCoveredSignalSource(runtime, 'codex', '2026-11-27T04:05:00.000Z')
+  assert.equal(disposition, 'kept')
+  const restored = fs.files.get('/state/notify.signal.d/codex.json') ?? fs.files.get('/state/notify.signal')
+  assert.match(String(restored), /04:31/, 'the newer request must survive')
+})
+
 test('a covered acknowledgement keeps a queue entry a later request replaced', () => {
   const fs = memoryRuntime()
   fs.writeFile(

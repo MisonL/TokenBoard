@@ -158,25 +158,29 @@ function runCoordinator(trigger, runtime, result) {
     // those sources from everything below (the skip paths would otherwise re-queue them
     // from `pendingSources`); a duplicate scan costs a multi-GB ccusage run for nothing.
     const requestTimes = readSignalRequestTimes(runtime)
-    const covered = syncSources.filter((source) =>
-      sourceCoveredByScheduledRun(runtime, source, requestTimes.get(source))
-    )
-    if (covered.length > 0) {
-      for (const source of covered) {
-        // Drop the queue entry too: the gate runs before `runLockedCycles`, whose drain
-        // re-reads the queue and would otherwise scan the covered source anyway.
-        acknowledgeCoveredSignalSource(runtime, source, requestTimes.get(source))
-        const index = pendingSources.indexOf(source)
-        if (index >= 0) pendingSources.splice(index, 1)
-      }
-      syncSources = syncSources.filter((source) => !covered.includes(source))
+    const covered = []
+    for (const source of syncSources) {
+      const requestedAt = requestTimes.get(source)
+      if (!sourceCoveredByScheduledRun(runtime, source, requestedAt)) continue
+      // Drop the queue entry too: the gate runs before `runLockedCycles`, whose drain
+      // re-reads the queue and would otherwise scan the covered source anyway. The claim is
+      // atomic, so a hook that replaced the entry meanwhile keeps its newer request — and
+      // that source is then *not* covered for this run.
+      if (acknowledgeCoveredSignalSource(runtime, source, requestedAt) === 'kept') continue
+      covered.push(source)
+      const index = pendingSources.indexOf(source)
+      if (index >= 0) pendingSources.splice(index, 1)
+    }
+    const coveredSet = new Set(covered)
+    if (coveredSet.size > 0) {
+      syncSources = syncSources.filter((source) => !coveredSet.has(source))
     }
     if (syncSources.length === 0) {
       return { ...result, waitedForLock: lock.waited, skippedSync: true, skippedReason: 'scheduled-covered' }
     }
     const remainingMs = cooldownRemainingMs(runtime)
     if (remainingMs > 0) {
-      return skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock })
+      return skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock, coveredSet })
     }
     // Checked after the cooldown because it is the same decision: a skipped
     // trigger has to leave its source queued, and that is what `keepCooldownTrigger`
@@ -184,9 +188,13 @@ function runCoordinator(trigger, runtime, result) {
     // collects the same usage the skipped hook would have; the queued signal is left
     // for the next hook run to acknowledge. Skipping here only avoids a second full
     // ccusage scan minutes before or after the scheduled one.
-    if (isInsideScheduledWindow(runtime)) {
-      const trailingSources = keepCooldownTrigger(trigger, runtime, pendingSources, syncSources)
-      return skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources })
+    // One clock reading for both the window test and the deadline: two reads can straddle
+    // the window's right edge (12:29:59.999 inside, 12:30:00.000 outside) and then the
+    // deadline finds no containing span and books nothing, stranding the signal.
+    const nowMs = runtime.now()
+    if (isInsideScheduledWindow(runtime, nowMs)) {
+      const trailingSources = keepCooldownTrigger(trigger, runtime, pendingSources, syncSources, coveredSet)
+      return skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources, now: nowMs })
     }
     // A scan costs 4.6-7.6 GB of resident memory. On a machine that is already out of memory
     // or swapping, it runs many times longer and can still fail on the way out (2026-11-24:
@@ -197,7 +205,7 @@ function runCoordinator(trigger, runtime, result) {
     // next real trigger re-evaluates anyway.
     const pressure = runtime.resourcePressure ? runtime.resourcePressure() : null
     if (pressure?.pressured) {
-      keepCooldownTrigger(trigger, runtime, pendingSources, syncSources)
+      keepCooldownTrigger(trigger, runtime, pendingSources, syncSources, coveredSet)
       return {
         ...result,
         waitedForLock: lock.waited,
@@ -216,7 +224,7 @@ function runCoordinator(trigger, runtime, result) {
     // rather than re-scanning a source that just failed permanently.
     const failureRemainingMs = failureBackoffRemainingMs(runtime)
     if (failureRemainingMs > 0) {
-      keepCooldownTrigger(trigger, runtime, pendingSources, syncSources)
+      keepCooldownTrigger(trigger, runtime, pendingSources, syncSources, coveredSet)
       return {
         ...result,
         waitedForLock: lock.waited,
@@ -310,11 +318,11 @@ function acquireCoordinatorLock(lockPath, trigger, runtime, result) {
   }
 }
 
-function skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock }) {
+function skipForCooldown({ trigger, runtime, result, pendingSources, syncSources, remainingMs, lock, coveredSet }) {
   if (pendingSources.length === 0 && runtime.trailingProcess) {
     return cooldownResult({ result, lock, remainingMs, trailingScheduled: false, trailingSources: [] })
   }
-  const trailingSources = keepCooldownTrigger(trigger, runtime, pendingSources, syncSources)
+  const trailingSources = keepCooldownTrigger(trigger, runtime, pendingSources, syncSources, coveredSet)
   return cooldownResult({
     result,
     lock,
@@ -329,8 +337,8 @@ function skipForCooldown({ trigger, runtime, result, pendingSources, syncSources
 // itself defines — the scheduled run is still expected to finish before then, and that
 // run's own state file (checked as the worker's gate) is what stops the retry from
 // re-scanning a source it covered.
-function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources }) {
-  const delayMs = scheduleWindowTrailingDelayMs(runtime)
+function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources, now }) {
+  const delayMs = scheduleWindowTrailingDelayMs(runtime, now)
   // A zero deadline means there is no gap to wake into (an all-day merged window or no
   // usable clock): booking a retry at 0 ms would land immediately inside the same window.
   const scheduled =
@@ -355,16 +363,17 @@ function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSou
 // configured windows. A configuration whose spans merge into a full day has no gap to
 // wake into, so no trailing retry is booked (the next external trigger re-evaluates) —
 // otherwise the chain would re-arm itself every wake and never scan.
-function scheduleWindowTrailingDelayMs(runtime) {
+function scheduleWindowTrailingDelayMs(runtime, now = runtime.now()) {
   const window = runtime.scheduleWindow
   if (!window?.times?.length || !Number.isFinite(window.windowMs) || window.windowMs <= 0) return 0
-  const now = runtime.now()
   const current = new Date(now)
   const spans = []
   for (const time of window.times) {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
     if (!match) continue
-    for (const dayOffset of [-1, 0, 1]) {
+    // Two days either side: a daylight-saving day is 23 or 25 hours long, and a span that
+    // starts yesterday may still be running while tomorrow's windows already merge with it.
+    for (const dayOffset of [-2, -1, 0, 1, 2]) {
       const scheduled = new Date(current)
       scheduled.setDate(scheduled.getDate() + dayOffset)
       scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0)
@@ -380,7 +389,11 @@ function scheduleWindowTrailingDelayMs(runtime) {
   }
   const containing = merged.find(([start, end]) => now >= start && now < end)
   if (!containing) return 0
-  if (containing[1] - containing[0] >= 24 * 60 * 60_000) return 0
+  // "Merged span covers the whole day" is the no-gap signal, but only below half a day:
+  // with windowMs > 12h every adjacent pair overlaps, and a 13h window merged across days
+  // spans more than a day while still leaving a real gap. The production window is fixed
+  // at 30 minutes (`notify.mjs`), so the guard keeps an injected value sane too.
+  if (window.windowMs <= 12 * 60 * 60_000 && containing[1] - containing[0] >= 24 * 60 * 60_000) return 0
   return Math.max(0, containing[1] - now)
 }
 
@@ -396,7 +409,11 @@ function sourceCoveredByScheduledRun(runtime, source, requestedAt) {
   })
 }
 
-function keepCooldownTrigger(trigger, runtime, pendingSources, syncSources) {
+// A source the coverage gate just judged covered must not be re-queued by a skip path —
+// re-appending it would stamp it with the current time and hand it a fresh scan the gate
+// had just ruled out.
+function keepCooldownTrigger(trigger, runtime, pendingSources, syncSources, coveredSet = new Set()) {
+  if (coveredSet.has(trigger.source)) return syncSources
   if (pendingSources.length === 0) {
     appendSignal(runtime, trigger)
     return syncSources
@@ -713,10 +730,10 @@ function cooldownRemainingMs(runtime) {
   return Math.max(0, runtime.cooldownMs - elapsedMs)
 }
 
-function isInsideScheduledWindow(runtime) {
+function isInsideScheduledWindow(runtime, now = runtime.now()) {
   const window = runtime.scheduleWindow
   if (!window) return false
-  return isWithinScheduleWindow({ times: window.times, windowMs: window.windowMs, now: runtime.now() })
+  return isWithinScheduleWindow({ times: window.times, windowMs: window.windowMs, now })
 }
 
 // Mirrors `cooldownRemainingMs` for the other direction: how long to wait after a run that

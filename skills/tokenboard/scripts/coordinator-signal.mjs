@@ -127,41 +127,99 @@ export function readSignalRequestTimes(runtime) {
   return times
 }
 
-// `appendSignal` writes the full object, but the signal file is also appended to by hand and
-// by older versions: a bare source name or an object without `requestedAt` yields null, the
-// "unknown age" answer.
 // Removes the active queue entry for a source a scheduled run has covered, together with
-// the recovery-journal records `acknowledgeSignalSource` owns. The entry is only removed
-// while it still describes the request the coverage gate judged — a hook that appended a
-// newer request in between must keep its signal — so a stale entry cannot outlive the
-// decision and be drained into the next run.
+// the recovery-journal records `acknowledgeSignalSource` owns. The claim is atomic: the
+// file is renamed aside before it is read, so a hook that replaces the entry between the
+// gate's read and this call can never have its newer request deleted. A claimed entry
+// that is not entirely the judged request — a newer timestamp, or another source sharing
+// the file — is put back; the legacy append-only channel is the fallback when the path
+// has been recreated in the meantime.
+//
+// Returns `'removed'` when the judged entry is gone, `'kept'` when a newer request
+// survived (the caller must treat the source as not covered this run), and `'absent'`
+// when there was nothing to claim.
 export function acknowledgeCoveredSignalSource(runtime, source, judgedRequestedAt) {
   acknowledgeSignalSource(runtime, source)
-  if (typeof runtime.rename !== 'function' || typeof runtime.readdir !== 'function') return
+  if (typeof runtime.rename !== 'function' || typeof runtime.readdir !== 'function') return 'absent'
   const judgedMs = Date.parse(judgedRequestedAt)
-  if (!Number.isFinite(judgedMs)) return
+  if (!Number.isFinite(judgedMs)) return 'absent'
   const path = join(signalQueueDir(runtime), `${signalSourceName(source)}.json`)
+  const claimPath = `${path}.claim-${runtime.process?.pid ?? 'x'}-${randomBytes(8).toString('hex')}`
+  try {
+    runtime.rename(path, claimPath)
+  } catch (error) {
+    if (error.code === 'ENOENT') return 'absent'
+    throw error
+  }
   let text
   try {
-    text = runtime.readFile(path)
+    text = runtime.readFile(claimPath)
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error
-    return
+    // An unreadable claim must go back, not be dropped.
+    restoreSignalClaim(runtime, claimPath, path)
+    throw error
   }
   const entries = text.split(/\r?\n/).filter((line) => parseSignalSource(line))
-  if (entries.length === 0) return
-  const stillJudged = entries.every((line) => {
-    const requestedAt = parseSignalRequestedAt(line)
-    return requestedAt !== null && Date.parse(requestedAt) <= judgedMs
-  })
-  if (!stillJudged) return
+  const judgedOnly =
+    entries.length > 0 &&
+    entries.every((line) => {
+      const requestedAt = parseSignalRequestedAt(line)
+      return (
+        parseSignalSource(line) === signalSourceName(source) &&
+        requestedAt !== null &&
+        Date.parse(requestedAt) <= judgedMs
+      )
+    })
+  if (judgedOnly) {
+    try {
+      runtime.unlink(claimPath)
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+    return 'removed'
+  }
+  restoreSignalClaim(runtime, claimPath, path)
+  return 'kept'
+}
+
+// Puts a claimed entry back without ever overwriting a request another writer created in
+// the meantime: `link` fails with EEXIST if the path exists, and the append-only legacy
+// channel is the lossless fallback for that case (it may cost one duplicate scan, never a
+// dropped signal).
+function restoreSignalClaim(runtime, claimPath, path) {
+  if (typeof runtime.link === 'function') {
+    try {
+      runtime.link(claimPath, path)
+      unlinkClaim(runtime, claimPath)
+      return
+    } catch (error) {
+      if (error.code !== 'EEXIST' && error.code !== 'ENOENT') {
+        // Fall through to the append channel; the claim must not be lost either way.
+      }
+      if (error.code === 'ENOENT') return
+    }
+  }
+  let text = ''
   try {
-    runtime.unlink(path)
+    text = runtime.readFile(claimPath)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  if (text) runtime.writeFile(signalPath(runtime), text, { flag: 'a' })
+  unlinkClaim(runtime, claimPath)
+}
+
+function unlinkClaim(runtime, claimPath) {
+  try {
+    runtime.unlink(claimPath)
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
   }
 }
 
+// `appendSignal` writes the full object, but the signal file is also appended to by hand and
+// by older versions: a bare source name or an object without `requestedAt` yields null, the
+// "unknown age" answer.
 function parseSignalRequestedAt(line) {
   const value = line.trim()
   if (!value || !value.startsWith('{')) return null

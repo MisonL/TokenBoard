@@ -49,7 +49,7 @@ export function sourceCoveredByScheduledRun({ stateDir, source, requestedAt, now
       state = readScheduledSyncState(scheduledSyncStatePath(stateDir, candidate), runtime)
     } catch {
       // An unreadable candidate (EACCES, EIO) is "not covered" for this file; the other
-      // candidate may still answer, and failing the hook over C4's input would turned a
+      // candidate may still answer, and failing the hook over C4's input would turn a
       // bookkeeping problem into a missed sync.
       continue
     }
