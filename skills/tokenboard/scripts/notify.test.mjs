@@ -1791,6 +1791,62 @@ test('the trailing loop advances the transient attempt across its own rounds', a
   assert.deepEqual(attempts, [1, 2, 3])
 })
 
+// The coverage gate can trim a round down to the sources a scheduled run has not covered,
+// and the loop re-enters the coordinator with the worker's original argv. Continuing under
+// the original `--source` merges the covered trigger straight back in and scans it after
+// all — the duplicate scan C4 exists to prevent. The loop has to run the sources the gate
+// left open.
+test('the trailing loop continues as the sources the gate left open', async () => {
+  const stateDir = '/state'
+  const trailingLockPath = join(stateDir, 'trailing.lock')
+  const files = memoryFileMap([
+    [join(stateDir, 'last-success.json'), '2026-05-22T10:00:00.000Z'],
+    [trailingLockPath, JSON.stringify({ pid: 802, token: 'owner-a' })]
+  ])
+  const rounds = []
+  const runtime = {
+    stateDir,
+    configDir: stateDir,
+    now: () => Date.parse('2026-05-22T10:00:05.000Z'),
+    process: { pid: 802, kill: () => true },
+    ownerToken: 'owner-a',
+    readFile: memoryFileOps(files).readFile,
+    writeFile: (path, value) => files.set(path, String(value)),
+    unlink: (path) => files.delete(path),
+    rename: memoryFileOps(files).rename,
+    link: memoryFileOps(files).link
+  }
+
+  await runNotifyCli({
+    env: {
+      TOKENBOARD_CONFIG_DIR: stateDir,
+      TOKENBOARD_STATE_DIR: stateDir,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_PATH: trailingLockPath,
+      TOKENBOARD_NOTIFY_TRAILING_LOCK_TOKEN: 'owner-a',
+      TOKENBOARD_NOTIFY_TRAILING_DELAY_MS: '0'
+    },
+    readConfig: () => ({ updatedAt: 'test-version' }),
+    configDir: () => stateDir,
+    trailingRuntime: runtime,
+    waitTrailingDelay: async () => {},
+    runNotify: (options) => {
+      rounds.push(options.flags)
+      if (rounds.length >= 2) return { source: 'claude-code', exitCode: 0 }
+      return {
+        source: 'codex',
+        exitCode: 0,
+        trailingScheduled: true,
+        trailingDelayMs: 1,
+        trailingSources: ['claude-code']
+      }
+    }
+  })
+
+  assert.equal(rounds.length, 2)
+  assert.equal(rounds[0], undefined, 'the first round runs the worker argv as spawned')
+  assert.deepEqual(rounds[1], { source: 'claude-code' })
+})
+
 // A single `setTimeout(delayMs)` for a long trailing delay owns no absolute deadline: the
 // timer's clock is suspended while the host sleeps and is not re-anchored when it wakes or
 // when the wall clock is stepped, so a worker can sit past its wake time for hours with an

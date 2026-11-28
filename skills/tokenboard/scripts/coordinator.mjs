@@ -157,23 +157,33 @@ function runCoordinator(trigger, runtime, result) {
     // the hook trigger now lands inside the window or in a trailing worker after it. Drop
     // those sources from everything below (the skip paths would otherwise re-queue them
     // from `pendingSources`); a duplicate scan costs a multi-GB ccusage run for nothing.
-    const requestTimes = readSignalRequestTimes(runtime)
-    const covered = []
-    for (const source of syncSources) {
-      const requestedAt = requestTimes.get(source)
-      if (!sourceCoveredByScheduledRun(runtime, source, requestedAt)) continue
-      // Drop the queue entry too: the gate runs before `runLockedCycles`, whose drain
-      // re-reads the queue and would otherwise scan the covered source anyway. The claim is
-      // atomic, so a hook that replaced the entry meanwhile keeps its newer request — and
-      // that source is then *not* covered for this run.
-      if (acknowledgeCoveredSignalSource(runtime, source, requestedAt) === 'kept') continue
-      covered.push(source)
-      const index = pendingSources.indexOf(source)
-      if (index >= 0) pendingSources.splice(index, 1)
-    }
-    const coveredSet = new Set(covered)
-    if (coveredSet.size > 0) {
+    const coveredSet = new Set()
+    for (let pass = 0; ; pass += 1) {
+      const requestTimes = readSignalRequestTimes(runtime)
+      for (const source of [...syncSources]) {
+        if (coveredSet.has(source)) continue
+        const requestedAt = requestTimes.get(source)
+        if (!sourceCoveredByScheduledRun(runtime, source, requestedAt)) continue
+        // Drop the queue entry too: the gate runs before `runLockedCycles`, whose drain
+        // re-reads the queue and would otherwise scan the covered source anyway. The claim is
+        // atomic, so a hook that replaced the entry meanwhile keeps its newer request — and
+        // that source is then *not* covered for this run.
+        if (acknowledgeCoveredSignalSource(runtime, source, requestedAt) === 'kept') continue
+        coveredSet.add(source)
+        const index = pendingSources.indexOf(source)
+        if (index >= 0) pendingSources.splice(index, 1)
+      }
       syncSources = syncSources.filter((source) => !coveredSet.has(source))
+      if (syncSources.length > 0) break
+      // A hook that enqueued while the gate ran saw this worker holding the dispatch lock
+      // and did not spawn its own, so exiting here would strand that signal until the next
+      // external trigger — the freshness the hook exists for. Re-read the queue (bounded)
+      // and judge the late arrivals rather than exiting on the first empty answer.
+      if (pass >= 2) break
+      const lateSources = readSignalSources(runtime).filter((source) => !coveredSet.has(source))
+      if (lateSources.length === 0) break
+      for (const source of lateSources) if (!pendingSources.includes(source)) pendingSources.push(source)
+      syncSources = lateSources
     }
     if (syncSources.length === 0) {
       return { ...result, waitedForLock: lock.waited, skippedSync: true, skippedReason: 'scheduled-covered' }
@@ -360,9 +370,7 @@ function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSou
 // 12:05 in the 12:00 window wakes at 12:30, 8:45 wakes at 9:30, and a 23:50 trigger wakes
 // at 00:30. Spans are built on their own local calendar day and merged, which keeps the
 // wall-clock time right across daylight-saving switches and collapses overlapping
-// configured windows. A configuration whose spans merge into a full day has no gap to
-// wake into, so no trailing retry is booked (the next external trigger re-evaluates) —
-// otherwise the chain would re-arm itself every wake and never scan.
+// configured windows.
 function scheduleWindowTrailingDelayMs(runtime, now = runtime.now()) {
   const window = runtime.scheduleWindow
   if (!window?.times?.length || !Number.isFinite(window.windowMs) || window.windowMs <= 0) return 0
@@ -374,8 +382,11 @@ function scheduleWindowTrailingDelayMs(runtime, now = runtime.now()) {
     // Two days either side: a daylight-saving day is 23 or 25 hours long, and a span that
     // starts yesterday may still be running while tomorrow's windows already merge with it.
     for (const dayOffset of [-2, -1, 0, 1, 2]) {
-      const scheduled = new Date(current)
-      scheduled.setDate(scheduled.getDate() + dayOffset)
+      // Build from noon of the target calendar day. A configured time can itself fall in
+      // a daylight-saving gap, and `setDate` on a base time that does not exist on the
+      // target day renormalises across the date boundary (America/Nuuk, 2026-03-27
+      // 23:45 + 1 day lands on 03-29 00:45, and its 03-28 00:00 window goes unseen).
+      const scheduled = new Date(current.getFullYear(), current.getMonth(), current.getDate() + dayOffset, 12, 0, 0, 0)
       scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0)
       spans.push([scheduled.getTime() - window.windowMs, scheduled.getTime() + window.windowMs])
     }
@@ -389,11 +400,13 @@ function scheduleWindowTrailingDelayMs(runtime, now = runtime.now()) {
   }
   const containing = merged.find(([start, end]) => now >= start && now < end)
   if (!containing) return 0
-  // "Merged span covers the whole day" is the no-gap signal, but only below half a day:
-  // with windowMs > 12h every adjacent pair overlaps, and a 13h window merged across days
-  // spans more than a day while still leaving a real gap. The production window is fixed
-  // at 30 minutes (`notify.mjs`), so the guard keeps an injected value sane too.
-  if (window.windowMs <= 12 * 60 * 60_000 && containing[1] - containing[0] >= 24 * 60 * 60_000) return 0
+  // A containing span that has merged into the last enumerated one runs on past the
+  // horizon (the configuration repeats daily), so there is no gap to wake into inside it.
+  // Booking its end would land in the next window and re-arm the chain forever. This is a
+  // horizon test, not a span-length test: hourly slots with a real daily gap also produce
+  // a >24h span (across a 23-hour daylight-saving day the gap can vanish entirely), and
+  // those still deserve their wake-up at the gap.
+  if (containing === merged[merged.length - 1]) return 0
   return Math.max(0, containing[1] - now)
 }
 

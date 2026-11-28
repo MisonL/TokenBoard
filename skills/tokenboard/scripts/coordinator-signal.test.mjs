@@ -528,8 +528,9 @@ test('acknowledging a covered signal removes its active queue entry', () => {
 })
 
 // A file that also carries another source's line must never be deleted wholesale: only
-// every-entry-judged files are removed.
-test('a covered acknowledgement restores a file that carries another source', () => {
+// every-entry-judged files are removed. The claim itself is an ordinary per-event queue
+// file, so the mixed request survives under that name.
+test('a covered acknowledgement leaves a file that carries another source in the queue', () => {
   const fs = memoryRuntime()
   fs.writeFile(
     '/state/notify.signal.d/codex.json',
@@ -538,17 +539,23 @@ test('a covered acknowledgement restores a file that carries another source', ()
       requestedAt: '2026-11-27T04:04:00.000Z'
     })}\n`
   )
-  const disposition = acknowledgeCoveredSignalSource(
-    { ...fs, stateDir: '/state', process: fakeProcess(901) },
-    'codex',
-    '2026-11-27T04:05:00.000Z'
-  )
+  const runtime = { ...fs, stateDir: '/state', process: fakeProcess(901), now: () => 1234 }
+  const disposition = acknowledgeCoveredSignalSource(runtime, 'codex', '2026-11-27T04:05:00.000Z')
   assert.equal(disposition, 'kept')
-  assert.match(fs.files.get('/state/notify.signal.d/codex.json'), /claude-code/)
+  // The claimed entry is gone from its source name but still queued as a per-event file,
+  // which is what every reader consults.
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false)
+  const queued = [...fs.files.entries()].filter(([path]) => /\/notify\.signal\.d\/1234-901-[0-9a-f]+\.json$/.test(path))
+  assert.equal(queued.length, 1)
+  assert.match(queued[0][1], /claude-code/)
+  // Both requests stay queued: the file could not be split, and treating the source as
+  // not covered is the safe answer (one duplicate scan at worst).
+  assert.deepEqual(readSignalSources(runtime), ['codex', 'claude-code'])
 })
 
 // The claim is taken before the read, so a hook replacing the entry during the call has
-// its newer request restored, not deleted.
+// its newer request kept: the hook's own write stays at the source path and the claimed
+// file holds the stale entry.
 test('a request that replaces the entry during the claim survives', () => {
   const fs = memoryRuntime()
   fs.writeFile(
@@ -556,20 +563,29 @@ test('a request that replaces the entry during the claim survives', () => {
     `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:05:00.000Z' })}\n`
   )
   const newer = `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:31:00.000Z' })}\n`
+  let replaced = false
   const runtime = {
     ...fs,
     stateDir: '/state',
     process: fakeProcess(901),
+    now: () => 1234,
     rename: (from, to) => {
-      // The hook lands its update between the gate's read and our claim.
-      if (String(to).includes('.claim-')) fs.writeFile('/state/notify.signal.d/codex.json', newer)
       fs.rename(from, to)
+      // The hook lands its update between our claim and its disposition — the classic
+      // window a read-then-unlink acknowledgement deleted.
+      if (!replaced && String(to).startsWith('/state/notify.signal.d/1234-')) {
+        replaced = true
+        fs.writeFile('/state/notify.signal.d/.hook-tmp', newer)
+        fs.rename('/state/notify.signal.d/.hook-tmp', '/state/notify.signal.d/codex.json')
+      }
     }
   }
   const disposition = acknowledgeCoveredSignalSource(runtime, 'codex', '2026-11-27T04:05:00.000Z')
-  assert.equal(disposition, 'kept')
-  const restored = fs.files.get('/state/notify.signal.d/codex.json') ?? fs.files.get('/state/notify.signal')
-  assert.match(String(restored), /04:31/, 'the newer request must survive')
+  assert.equal(disposition, 'removed')
+  assert.equal(replaced, true, 'the concurrent replacement must actually have been exercised')
+  assert.match(String(fs.files.get('/state/notify.signal.d/codex.json')), /04:31/)
+  // And the request time the next gate sees is the newer one, not the judged one.
+  assert.equal(readSignalRequestTimes(runtime).get('codex'), '2026-11-27T04:31:00.000Z')
 })
 
 test('a covered acknowledgement keeps a queue entry a later request replaced', () => {
@@ -580,10 +596,40 @@ test('a covered acknowledgement keeps a queue entry a later request replaced', (
   )
   // The gate judged the 04:05 request; a hook has since queued a newer one, which the
   // scheduled run has not covered.
-  acknowledgeCoveredSignalSource(
-    { ...fs, stateDir: '/state', process: fakeProcess(901) },
-    'codex',
-    '2026-11-27T04:05:00.000Z'
+  const runtime = { ...fs, stateDir: '/state', process: fakeProcess(901), now: () => 1234 }
+  const disposition = acknowledgeCoveredSignalSource(runtime, 'codex', '2026-11-27T04:05:00.000Z')
+  assert.equal(disposition, 'kept')
+  assert.equal(readSignalRequestTimes(runtime).get('codex'), '2026-11-27T04:20:00.000Z')
+})
+
+// An interruption between the claim and its disposition leaves the entry under a name
+// nothing used to look at. The claim is now named like any per-event queue file, so the
+// stranded request is still read and drained instead of waiting for its source's next hook.
+test('an interrupted claim is still a readable queue entry', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/1234-901-abcdef.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:05:00.000Z' })}\n`
   )
-  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), true)
+  const runtime = { ...fs, stateDir: '/state', process: fakeProcess(901), now: () => 1234 }
+  assert.deepEqual(readSignalSources(runtime), ['codex'])
+  assert.deepEqual(drainSignalSources(runtime), ['codex'])
+  assert.equal(fs.files.has('/state/notify.signal.d/1234-901-abcdef.json'), false)
+})
+
+// A recovery record carries no timestamp and may describe a request newer than the one
+// the gate judged (a run drained it and then died before scanning). The covered
+// acknowledgement must not delete it; only a real scan acknowledges recovery records.
+test('a covered acknowledgement leaves recovery-journal records alone', () => {
+  const fs = memoryRuntime()
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: '2026-11-27T04:05:00.000Z' })}\n`
+  )
+  const recoveryPath = '/state/notify.signal.recovery.900.1.deadbeef.json'
+  fs.writeFile(recoveryPath, `${JSON.stringify({ version: 1, sources: ['codex'] })}\n`)
+  const runtime = { ...fs, stateDir: '/state', process: fakeProcess(901), now: () => 1234 }
+  assert.equal(acknowledgeCoveredSignalSource(runtime, 'codex', '2026-11-27T04:05:00.000Z'), 'removed')
+  assert.equal(fs.files.has(recoveryPath), true)
+  assert.deepEqual(readSignalSources(runtime), ['codex'])
 })

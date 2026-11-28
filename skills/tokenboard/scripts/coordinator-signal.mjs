@@ -127,24 +127,29 @@ export function readSignalRequestTimes(runtime) {
   return times
 }
 
-// Removes the active queue entry for a source a scheduled run has covered, together with
-// the recovery-journal records `acknowledgeSignalSource` owns. The claim is atomic: the
-// file is renamed aside before it is read, so a hook that replaces the entry between the
-// gate's read and this call can never have its newer request deleted. A claimed entry
-// that is not entirely the judged request — a newer timestamp, or another source sharing
-// the file — is put back; the legacy append-only channel is the fallback when the path
-// has been recreated in the meantime.
+// Removes the active queue entry for a source a scheduled run has covered. The claim is
+// atomic: the file is renamed aside before it is read, so a hook that replaces the entry
+// between the gate's read and this call can never have its newer request deleted. The
+// claim name is an ordinary per-event queue file, so an interruption anywhere in here
+// leaves a file every reader and drain already consumes — a crash cannot strand the
+// request under a name nothing looks at. A claimed entry that is not entirely the judged
+// request — a newer timestamp, or another source sharing the file — is left in place
+// under that same name: the request survives as a queued signal, and the caller must
+// treat the source as not covered this run.
+//
+// Recovery-journal records are deliberately left alone. They carry no timestamp, so a
+// record can describe a request newer than the one judged (a run drained it and then
+// died before scanning); only a real scan is evidence enough to acknowledge it.
 //
 // Returns `'removed'` when the judged entry is gone, `'kept'` when a newer request
 // survived (the caller must treat the source as not covered this run), and `'absent'`
 // when there was nothing to claim.
 export function acknowledgeCoveredSignalSource(runtime, source, judgedRequestedAt) {
-  acknowledgeSignalSource(runtime, source)
   if (typeof runtime.rename !== 'function' || typeof runtime.readdir !== 'function') return 'absent'
   const judgedMs = Date.parse(judgedRequestedAt)
   if (!Number.isFinite(judgedMs)) return 'absent'
   const path = join(signalQueueDir(runtime), `${signalSourceName(source)}.json`)
-  const claimPath = `${path}.claim-${runtime.process?.pid ?? 'x'}-${randomBytes(8).toString('hex')}`
+  const claimPath = join(signalQueueDir(runtime), perEventSignalName(runtime))
   try {
     runtime.rename(path, claimPath)
   } catch (error) {
@@ -154,10 +159,10 @@ export function acknowledgeCoveredSignalSource(runtime, source, judgedRequestedA
   let text
   try {
     text = runtime.readFile(claimPath)
-  } catch (error) {
-    // An unreadable claim must go back, not be dropped.
-    restoreSignalClaim(runtime, claimPath, path)
-    throw error
+  } catch {
+    // Unreadable is not evidence of anything; the claim is already a queue entry, so
+    // leaving it is lossless and the source reports not covered.
+    return 'kept'
   }
   const entries = text.split(/\r?\n/).filter((line) => parseSignalSource(line))
   const judgedOnly =
@@ -170,51 +175,22 @@ export function acknowledgeCoveredSignalSource(runtime, source, judgedRequestedA
         Date.parse(requestedAt) <= judgedMs
       )
     })
-  if (judgedOnly) {
-    try {
-      runtime.unlink(claimPath)
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error
-    }
-    return 'removed'
-  }
-  restoreSignalClaim(runtime, claimPath, path)
-  return 'kept'
-}
-
-// Puts a claimed entry back without ever overwriting a request another writer created in
-// the meantime: `link` fails with EEXIST if the path exists, and the append-only legacy
-// channel is the lossless fallback for that case (it may cost one duplicate scan, never a
-// dropped signal).
-function restoreSignalClaim(runtime, claimPath, path) {
-  if (typeof runtime.link === 'function') {
-    try {
-      runtime.link(claimPath, path)
-      unlinkClaim(runtime, claimPath)
-      return
-    } catch (error) {
-      if (error.code !== 'EEXIST' && error.code !== 'ENOENT') {
-        // Fall through to the append channel; the claim must not be lost either way.
-      }
-      if (error.code === 'ENOENT') return
-    }
-  }
-  let text = ''
-  try {
-    text = runtime.readFile(claimPath)
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error
-  }
-  if (text) runtime.writeFile(signalPath(runtime), text, { flag: 'a' })
-  unlinkClaim(runtime, claimPath)
-}
-
-function unlinkClaim(runtime, claimPath) {
+  if (!judgedOnly) return 'kept'
   try {
     runtime.unlink(claimPath)
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
   }
+  return 'removed'
+}
+
+// The same shape `hooks.mjs` and `appendSignal` use for per-event queue files, so the
+// claim is a first-class queue entry from the moment it exists.
+function perEventSignalName(runtime) {
+  const pid = runtime.process?.pid
+  const owner = Number.isSafeInteger(pid) && pid > 0 ? pid : 0
+  const nowMs = typeof runtime.now === 'function' ? runtime.now() : Date.now()
+  return `${nowMs}-${owner}-${randomBytes(6).toString('hex')}.json`
 }
 
 // `appendSignal` writes the full object, but the signal file is also appended to by hand and

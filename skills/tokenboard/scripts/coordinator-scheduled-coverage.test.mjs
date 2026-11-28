@@ -50,7 +50,10 @@ function queueSignal(fs, source, requestedAt) {
   fs.writeFile(`/state/notify.signal.d/${source}.json`, `${JSON.stringify({ source, requestedAt })}\n`)
 }
 
-function runAt(fs, { now, trailing = [], executeSync, source = 'codex' }) {
+function runAt(
+  fs,
+  { now, trailing = [], executeSync, source = 'codex', cooldownMs, failureBackoffMs, resourcePressure }
+) {
   return coordinatedSync(
     { kind: 'notify', source },
     {
@@ -59,6 +62,9 @@ function runAt(fs, { now, trailing = [], executeSync, source = 'codex' }) {
       now: () => now,
       process: fakeProcess(901),
       scheduleWindow,
+      cooldownMs,
+      failureBackoffMs,
+      resourcePressure,
       scheduleTrailing: (trigger, delayMs) => {
         trailing.push({ trigger, delayMs })
         return true
@@ -337,4 +343,173 @@ test('a covered source is not revived by the drain of the same run', () => {
 
   assert.deepEqual(ran, ['claude-code'])
   assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false)
+})
+
+// The window test and the deadline must read the clock once. With a constant `now` the
+// two-read bug is invisible; a reading that advances past the right edge between the two
+// calls is what it takes to see it (12:29:59.999 inside, 12:30:00.000 outside).
+test('the window test and the deadline share a single clock reading', () => {
+  const fs = memoryRuntime()
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  const trailing = []
+  // The coordinator reads the clock before the window test: the start stamp, the lock
+  // owner stamp, and the coverage gate's "now". The inside reading sits at the window
+  // test's position (fourth) and every later read is past the right edge, which is
+  // exactly what a second window/deadline read would pick up.
+  const readings = [localTime(12, 5), localTime(12, 5), localTime(12, 5), localTime(12, 30) - 1, localTime(12, 30)]
+  let calls = 0
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => readings[Math.min(calls++, readings.length - 1)],
+      process: fakeProcess(903),
+      scheduleWindow,
+      scheduleTrailing: (trigger, delayMs) => {
+        trailing.push({ trigger, delayMs })
+        return true
+      },
+      executeSync: () => ({})
+    }
+  )
+
+  assert.equal(result.skippedReason, 'scheduled-window')
+  // Built from the inside reading; a second read would land exactly on the window's
+  // right edge, find no containing span and book nothing.
+  assert.equal(result.trailingDelayMs, 1)
+  assert.deepEqual(
+    trailing.map(({ delayMs }) => delayMs),
+    [1]
+  )
+})
+
+// A hook that lands between the gate's read and its exit saw this worker holding the
+// dispatch lock and did not spawn one of its own, so exiting on the first empty answer
+// would strand its signal until the next external trigger. The gate re-reads the queue.
+test('a signal that arrives while the gate runs is scanned instead of being stranded', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  let injected = false
+  const ran = []
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(14, 0),
+      process: fakeProcess(904),
+      scheduleWindow,
+      rename: (from, to) => {
+        fs.rename(from, to)
+        // The claim rename is the hook's cue: it lands a claude-code request right after
+        // the covered codex entry has been taken out of the queue.
+        if (!injected && /\/notify\.signal\.d\/\d+-904-[0-9a-f]+\.json$/.test(to)) {
+          injected = true
+          queueSignal(fs, 'claude-code', utcForLocal(13, 59))
+        }
+      },
+      scheduleTrailing: () => true,
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.equal(injected, true, 'the concurrent arrival must actually have been exercised')
+  assert.deepEqual(ran, ['claude-code'])
+  assert.notEqual(result.skippedReason, 'scheduled-covered')
+})
+
+// An entry the claim cannot split (it carries another source's line) is kept queued and
+// reported as not covered — so the source is scanned this run, not skipped.
+test('a mixed-source entry the claim cannot split is scanned, not treated as covered', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  fs.writeFile(
+    '/state/notify.signal.d/codex.json',
+    `${JSON.stringify({ source: 'codex', requestedAt: utcForLocal(12, 5) })}\n${JSON.stringify({
+      source: 'claude-code',
+      requestedAt: utcForLocal(12, 20)
+    })}\n`
+  )
+  const ran = []
+
+  const result = runAt(fs, { now: localTime(14, 0), executeSync: (trigger) => ran.push(trigger.source) })
+
+  assert.ok(ran.includes('codex'), 'the split-impossible source must be scanned')
+  assert.ok(ran.includes('claude-code'))
+  assert.notEqual(result.skippedReason, 'scheduled-covered')
+})
+
+// Every skip path that re-queues a trigger must leave a covered one alone; `keepCooldownTrigger`
+// stamps the current time and would hand the source a scan the gate ruled out.
+test('a covered trigger is not revived by the cooldown skip', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  queueSignal(fs, 'claude-code', utcForLocal(12, 20))
+  fs.writeFile('/state/last-success.json', utcForLocal(12, 19))
+  const trailing = []
+
+  const result = runAt(fs, { now: localTime(12, 21), trailing })
+
+  assert.equal(result.skippedReason, 'cooldown')
+  assert.deepEqual(result.trailingSources, ['claude-code'])
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false, 'the covered trigger must stay removed')
+})
+
+test('a covered trigger is not revived by the resource-pressure skip', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  queueSignal(fs, 'claude-code', utcForLocal(12, 20))
+
+  const result = runAt(fs, {
+    now: localTime(14, 0),
+    resourcePressure: () => ({ pressured: true, detail: 'test pressure' })
+  })
+
+  assert.equal(result.skippedReason, 'resource-pressure')
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false, 'the covered trigger must stay removed')
+})
+
+test('a covered trigger is not revived by the failure-backoff skip', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  queueSignal(fs, 'claude-code', utcForLocal(12, 20))
+  fs.writeFile('/state/last-failure.json', utcForLocal(13, 59))
+
+  const result = runAt(fs, { now: localTime(14, 0), failureBackoffMs: 10 * 60_000 })
+
+  assert.equal(result.skippedReason, 'failure-backoff')
+  assert.equal(fs.files.has('/state/notify.signal.d/codex.json'), false, 'the covered trigger must stay removed')
+})
+
+// A half-width window wider than 12 hours spans more than a day on its own, so adjacent
+// days always overlap and there is no gap to wake into. Booking the merged span's end
+// would wake inside the next window and re-arm the chain forever.
+test('an injected window wider than half a day books no trailing retry', () => {
+  const wideFs = memoryRuntime()
+  queueSignal(wideFs, 'codex', utcForLocal(12, 5))
+  const wideTrailing = []
+  const wideResult = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...wideFs,
+      stateDir: '/state',
+      now: () => localTime(12, 5),
+      process: fakeProcess(905),
+      scheduleWindow: { times: ['12:00'], windowMs: 13 * 60 * 60_000 },
+      scheduleTrailing: (trigger, delayMs) => {
+        wideTrailing.push({ trigger, delayMs })
+        return true
+      },
+      executeSync: () => ({})
+    }
+  )
+
+  assert.equal(wideResult.skippedReason, 'scheduled-window')
+  assert.equal(wideResult.trailingScheduled, undefined)
+  assert.equal(wideTrailing.length, 0)
 })

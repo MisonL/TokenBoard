@@ -324,6 +324,10 @@ export async function runNotifyCli(options = {}) {
       // `env`, so a worker that inherited attempt 1 kept computing 2 on every round and the cap
       // in coordinator.mjs never bit. Tracked here and handed in per round.
       let transientAttempts = readTransientAttempts(env)
+      // The source the next round runs as. A round the coverage gate trimmed down reports
+      // which sources are still open; continuing under the original `--source` would merge
+      // the covered trigger back in and scan it after all.
+      let continuationFlags
       while (true) {
         await wait(delayMs)
         const result = notify({
@@ -336,7 +340,8 @@ export async function runNotifyCli(options = {}) {
           trailingProcess: Boolean(trailingLockPath) || delayMs > 0,
           transientAttempts,
           resourcePressure: options.resourcePressure,
-          version: config.updatedAt || config.createdAt || 'unknown'
+          version: config.updatedAt || config.createdAt || 'unknown',
+          ...(continuationFlags ? { flags: continuationFlags } : {})
         })
         if (result.error) {
           if (!result.trailingScheduled) throw new Error(result.error)
@@ -347,6 +352,9 @@ export async function runNotifyCli(options = {}) {
         }
         const nextDelayMs = trailingContinuationDelay(result, trailingLockPath, runtime)
         if (nextDelayMs === null) break
+        if (Array.isArray(result.trailingSources) && result.trailingSources.length > 0) {
+          continuationFlags = { source: result.trailingSources[0] }
+        }
         delayMs = nextDelayMs
       }
     }
