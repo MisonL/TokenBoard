@@ -133,7 +133,10 @@ function readSavedReleaseConfig() {
   try {
     return readConfig()
   } catch (error) {
-    if (String(error instanceof Error ? error.message : error).startsWith('TokenBoard config not found')) return {}
+    // Only a genuinely absent config means "nothing recorded". A permission or I/O error
+    // must surface: treating it as empty would install from the default feed on top of a
+    // config the process simply could not read.
+    if (error?.code === 'ENOENT') return {}
     throw error
   }
 }

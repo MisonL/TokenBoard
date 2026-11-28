@@ -421,14 +421,17 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
   flag 直接报错并提示 `--client binary`，不再静默吸收。`setup` 通道（`setup-options.mjs` 的
   `buildInstallCollectorArgs`）会转发用户实际给出的 release flag（含 inline 空值与裸 flag），
   否则 `setup --release-base-url=` 会被静默丢弃、旧 mirror 继续生效。`migrateToBinaryClient`
-  的默认 saved 读取器（配置缺失视为空、损坏抛错且不回声内容）与 install-collector 的单行
-  用法错误均有 CLI 级测试。Go 客户端只经环境变量读 feed（`TOKENBOARD_RELEASE_REPO` 等），
+  的默认 saved 读取器与 install-collector 的单行用法错误均有 CLI 级测试。配置读取按实际
+  errno 分类：只有 `ENOENT` 视为「未记录」，`EACCES`/`ENOTDIR` 等如实抛出——旧实现用
+  `existsSync` 先判存在，父目录不可读时会把它误报成「配置缺失」并静默回落到默认源；
+  `readRawConfig` 改为直接读取并按错误码归类，install-collector 的存在性判断也改用
+  try/readConfig + `ENOENT` 判定。Go 客户端只经环境变量读 feed（`TOKENBOARD_RELEASE_REPO` 等），
   配置字段由 skill 在 spawn 时按需注入，清除 override 后自然回落到默认。
 - 验证：`release-feed.test.mjs`（默认/已存/显式自定义/切回默认/清空 base URL/env 与 flag
   优先级/裸 flag 与空白值报错/经 parseArgs 的 inline 与两 token 两种拼写/tag 解析矩阵）；
   `config.test.mjs`（白名单内移除、白名单外拒绝、非数组拒绝、profile 合并路径、lockHeld 路径）；
   `setup-options.test.mjs`（显式空值与裸 flag 的转发）；`upgrade.test.mjs`（默认 saved 读取器
-  的缺失/损坏两态、裸 tag 拒绝、无参 `--to-binary` 沿用已存源）；`install-collector.test.mjs`
+  的缺失/损坏/无权限三态、裸 tag 拒绝、无参 `--to-binary` 沿用已存源）；`install-collector.test.mjs`
   的 CLI 级用例（裸 flag 单行错误、git 客户端拒绝 release flag）；两个入口各有「切回默认时
   以 `remove` 清除」的用例。
   变异核验：把切回默认改写为「记录默认值」时 `release-feed` 与 upgrade 用例变红；把

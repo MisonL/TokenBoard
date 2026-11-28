@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -2698,6 +2699,47 @@ test('an unflagged --to-binary without a config installs from the default feed',
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+// A config that exists but cannot be read must stop the migration: treating EACCES as
+// "no config" would install from the default feed on top of a config that does record a
+// custom one.
+test(
+  'a permission problem surfaces instead of falling back to the default feed',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const previous = process.env.TOKENBOARD_CONFIG_DIR
+    const parent = mkdtempSync(join(tmpdir(), 'tokenboard-upgrade-denied-'))
+    const directory = join(parent, 'config')
+    mkdirSync(directory)
+    writeFileSync(join(directory, 'config.json'), '{}')
+    chmodSync(directory, 0o000)
+    process.env.TOKENBOARD_CONFIG_DIR = directory
+    try {
+      const installed = []
+      await assert.rejects(
+        () =>
+          migrateToBinaryClient({
+            flags: {},
+            env: {},
+            configDirectory: directory,
+            install: async (options) => {
+              installed.push(options)
+              return { version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }
+            },
+            mergeConfigFile: (patch) => ({ ...patch }),
+            log: () => {}
+          }),
+        (error) => error.code === 'EACCES'
+      )
+      assert.deepEqual(installed, [])
+    } finally {
+      chmodSync(directory, 0o700)
+      if (previous === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+      else process.env.TOKENBOARD_CONFIG_DIR = previous
+      rmSync(parent, { recursive: true, force: true })
+    }
+  }
+)
 
 test('a malformed config fails the migration without echoing its contents', async () => {
   const previous = process.env.TOKENBOARD_CONFIG_DIR

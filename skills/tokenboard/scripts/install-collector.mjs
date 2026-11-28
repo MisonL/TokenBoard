@@ -153,8 +153,13 @@ function runCli() {
     // The saved config is consulted so a bare re-run on a binary install does
     // not silently clone git and switch the machine back to `git`, and so the
     // mirror, ref and package manager it records survive the re-run.
-    if (existsSync(join(configDir(), 'config.json'))) {
+    try {
       saved = readConfig()
+    } catch (error) {
+      // A missing config is normal on a first install; anything else (unreadable file,
+      // malformed JSON) must stop here instead of silently installing with defaults.
+      if (error?.code !== 'ENOENT') throw error
+      saved = {}
     }
     clientType = readClientType({ flags, env: process.env, config: saved })
   } catch (error) {

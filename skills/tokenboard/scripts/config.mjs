@@ -147,11 +147,22 @@ export function readConfig() {
 
 function readRawConfig() {
   const file = configPath()
-  if (!existsSync(file)) {
-    throw new Error(`TokenBoard config not found: ${file}`)
+  // Read first and classify the failure: `existsSync` answers false for a file whose
+  // parent directory is unreadable (`EACCES`) or not a directory (`ENOTDIR`), which would
+  // report a permission problem as "config missing" and let callers fall back to defaults
+  // on top of a config they simply could not see.
+  let text
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      const missing = new Error(`TokenBoard config not found: ${file}`)
+      missing.code = 'ENOENT'
+      throw missing
+    }
+    throw error
   }
-
-  const raw = stripUtf8Bom(readFileSync(file, 'utf8'))
+  const raw = stripUtf8Bom(text)
   try {
     return JSON.parse(raw)
   } catch (error) {

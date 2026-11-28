@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import test from 'node:test'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -204,6 +204,38 @@ test('normalizes config by mirroring the active server profile', () => {
 // anything a patch does not mention, so recording nothing would keep resolving the old
 // override forever. Removals are allow-listed — a patch must not be able to delete
 // credentials or endpoints.
+// `existsSync` answers false for a file under an unreadable directory, so a permission
+// problem used to be reported as "config not found" and callers silently used defaults.
+test(
+  'readConfig reports a permission problem instead of a missing config',
+  { skip: process.platform === 'win32' },
+  () => {
+    const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+    const parent = mkdtempSync(join(tmpdir(), 'tokenboard-config-denied-'))
+    const directory = join(parent, 'config')
+    mkdirSync(directory)
+    writeFileSync(join(directory, 'config.json'), '{}')
+    chmodSync(directory, 0o000)
+    process.env.TOKENBOARD_CONFIG_DIR = directory
+
+    try {
+      assert.throws(
+        () => readConfig(),
+        (error) => {
+          assert.equal(error.code, 'EACCES')
+          assert.equal(String(error.message).includes('config not found'), false)
+          return true
+        }
+      )
+    } finally {
+      chmodSync(directory, 0o700)
+      if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+      else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+      rmSync(parent, { recursive: true, force: true })
+    }
+  }
+)
+
 test('mergeConfig removes an allow-listed override on request', () => {
   const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
   const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
