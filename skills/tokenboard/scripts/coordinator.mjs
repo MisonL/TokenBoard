@@ -25,7 +25,7 @@ import {
 import { errorMessage } from './error-message.mjs'
 import { currentProcessStartIdentity, probeProcessStartIdentity } from './process-liveness.mjs'
 import { sourceCoveredByScheduledRun as scheduledRunCoversSource } from './scheduled-coverage.mjs'
-import { isWithinScheduleWindow } from './schedule.mjs'
+import { isWithinScheduleWindow, scheduleDayCandidate } from './schedule.mjs'
 
 const defaultLockTimeoutMs = 60_000
 const defaultLockTimeoutRetryDelayMs = 60_000
@@ -158,18 +158,33 @@ function runCoordinator(trigger, runtime, result) {
     // those sources from everything below (the skip paths would otherwise re-queue them
     // from `pendingSources`); a duplicate scan costs a multi-GB ccusage run for nothing.
     const coveredSet = new Set()
+    // The request time a source was judged on. A source already covered is not judged
+    // again for the *same* request, but a newer request is a different question: a hook
+    // can queue one between the gate's read and its exit, and the source name alone must
+    // not stand in for the request identity.
+    const judgedAt = new Map()
+    let removedAcks = 0
     for (let pass = 0; ; pass += 1) {
       const requestTimes = readSignalRequestTimes(runtime)
       for (const source of [...syncSources]) {
-        if (coveredSet.has(source)) continue
+        const judgedMs = judgedAt.get(source)
+        if (judgedMs !== undefined) {
+          const currentMs = Date.parse(requestTimes.get(source))
+          if (!Number.isFinite(currentMs) || currentMs <= judgedMs) continue
+          coveredSet.delete(source)
+          judgedAt.delete(source)
+        }
         const requestedAt = requestTimes.get(source)
         if (!sourceCoveredByScheduledRun(runtime, source, requestedAt)) continue
         // Drop the queue entry too: the gate runs before `runLockedCycles`, whose drain
         // re-reads the queue and would otherwise scan the covered source anyway. The claim is
         // atomic, so a hook that replaced the entry meanwhile keeps its newer request — and
         // that source is then *not* covered for this run.
-        if (acknowledgeCoveredSignalSource(runtime, source, requestedAt) === 'kept') continue
+        const disposition = acknowledgeCoveredSignalSource(runtime, source, requestedAt)
+        if (disposition === 'kept') continue
+        if (disposition === 'removed') removedAcks += 1
         coveredSet.add(source)
+        judgedAt.set(source, Date.parse(requestedAt))
         const index = pendingSources.indexOf(source)
         if (index >= 0) pendingSources.splice(index, 1)
       }
@@ -178,15 +193,31 @@ function runCoordinator(trigger, runtime, result) {
       // A hook that enqueued while the gate ran saw this worker holding the dispatch lock
       // and did not spawn its own, so exiting here would strand that signal until the next
       // external trigger — the freshness the hook exists for. Re-read the queue (bounded)
-      // and judge the late arrivals rather than exiting on the first empty answer.
+      // and judge the late arrivals rather than exiting on the first empty answer. The
+      // re-read is not filtered by `coveredSet`: a source judged covered may have queued a
+      // *newer* request since, and the fresh request time decides that (the claim is atomic,
+      // so a stale entry cannot masquerade as the new one).
       if (pass >= 2) break
-      const lateSources = readSignalSources(runtime).filter((source) => !coveredSet.has(source))
+      const lateSources = readSignalSources(runtime)
       if (lateSources.length === 0) break
       for (const source of lateSources) if (!pendingSources.includes(source)) pendingSources.push(source)
       syncSources = lateSources
     }
     if (syncSources.length === 0) {
-      return { ...result, waitedForLock: lock.waited, skippedSync: true, skippedReason: 'scheduled-covered' }
+      // The last re-read and the dispatch-lock release still have a gap: a hook landing in
+      // between sees this worker alive, enqueues, and never gets a worker of its own. Book
+      // one short wake whenever this run actually acknowledged a queued signal, so such a
+      // request is picked up seconds later instead of waiting for the next external trigger.
+      // A wake that acknowledges nothing books nothing, so the chain cannot outlive the
+      // signals that justified it.
+      const woken = removedAcks > 0 && runtime.scheduleTrailing(trigger, coveredExitWakeMs)
+      return {
+        ...result,
+        waitedForLock: lock.waited,
+        skippedSync: true,
+        skippedReason: 'scheduled-covered',
+        ...(woken ? { trailingScheduled: true, trailingDelayMs: coveredExitWakeMs } : {})
+      }
     }
     const remainingMs = cooldownRemainingMs(runtime)
     if (remainingMs > 0) {
@@ -347,6 +378,11 @@ function skipForCooldown({ trigger, runtime, result, pendingSources, syncSources
 // itself defines — the scheduled run is still expected to finish before then, and that
 // run's own state file (checked as the worker's gate) is what stops the retry from
 // re-scanning a source it covered.
+// A covered run's short wake-up. Its only job is to pick up a hook that landed after the
+// gate's last queue read but before the dispatch lock was released; the signal itself is
+// judged normally on that wake.
+const coveredExitWakeMs = 15_000
+
 function skippedForScheduledWindow({ trigger, runtime, result, lock, trailingSources, now }) {
   const delayMs = scheduleWindowTrailingDelayMs(runtime, now)
   // A zero deadline means there is no gap to wake into (an all-day merged window or no
@@ -379,14 +415,12 @@ function scheduleWindowTrailingDelayMs(runtime, now = runtime.now()) {
   for (const time of window.times) {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
     if (!match) continue
-    // Two days either side: a daylight-saving day is 23 or 25 hours long, and a span that
-    // starts yesterday may still be running while tomorrow's windows already merge with it.
-    for (const dayOffset of [-2, -1, 0, 1, 2]) {
-      // Build from noon of the target calendar day. A configured time can itself fall in
-      // a daylight-saving gap, and `setDate` on a base time that does not exist on the
-      // target day renormalises across the date boundary (America/Nuuk, 2026-03-27
-      // 23:45 + 1 day lands on 03-29 00:45, and its 03-28 00:00 window goes unseen).
-      const scheduled = new Date(current.getFullYear(), current.getMonth(), current.getDate() + dayOffset, 12, 0, 0, 0)
+    // Look well past the transition: a clock shift can make the days around it look
+    // contiguous while a real gap appears a few days on (a 13-hour half-width window under
+    // Antarctica/Casey's three-hour shift opens one three days out), and the horizon test
+    // below is only honest when the gap would have shown up inside the enumeration.
+    for (let dayOffset = -3; dayOffset <= 10; dayOffset += 1) {
+      const scheduled = scheduleDayCandidate(now, dayOffset)
       scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0)
       spans.push([scheduled.getTime() - window.windowMs, scheduled.getTime() + window.windowMs])
     }

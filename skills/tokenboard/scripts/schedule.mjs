@@ -255,19 +255,28 @@ export function windowsTaskName(startTime) {
 // retry use the same boundary as its deadline: a retry woken exactly at `T + windowMs`
 // must fall outside (a minute-bucketed check kept 12:30:00.2 inside the 12:00 window, so
 // the retry landed on itself — `trailingDelayMs: 0` — and the source was never scanned).
+// A scheduled run's wall-clock time on a given local calendar day. The candidate starts
+// from noon of that day, not from the current time: `setDate` on a base time that does not
+// exist on the target day renormalises across the date boundary (America/Nuuk, 2026-03-27
+// 23:45 + 1 day lands on 03-29 00:45), which silently loses the day's own window. The
+// coordinator's deadline builds its spans with this same helper, so the window test and
+// the deadline can never disagree about which day a candidate belongs to.
+export function scheduleDayCandidate(now, dayOffset) {
+  const base = new Date(now)
+  return new Date(base.getFullYear(), base.getMonth(), base.getDate() + dayOffset, 12, 0, 0, 0)
+}
+
 // Each candidate is built on its own local calendar day, so a daylight-saving switch
 // between the day offsets moves the wall-clock time, not the absolute one.
 export function isWithinScheduleWindow({ times, windowMs, now = Date.now() } = {}) {
   if (!Array.isArray(times) || times.length === 0) return false
   if (!Number.isFinite(windowMs) || windowMs <= 0) return false
 
-  const current = new Date(now)
   for (const time of times) {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time).trim())
     if (!match) continue
     for (const dayOffset of [-1, 0, 1]) {
-      const scheduled = new Date(current)
-      scheduled.setDate(scheduled.getDate() + dayOffset)
+      const scheduled = scheduleDayCandidate(now, dayOffset)
       scheduled.setHours(Number(match[1]), Number(match[2]), 0, 0)
       const delta = now - scheduled.getTime()
       // The wrap around midnight falls out of the day offsets: a 23:50 trigger is ten

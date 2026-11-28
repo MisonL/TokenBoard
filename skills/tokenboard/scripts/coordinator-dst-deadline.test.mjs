@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { coordinatedSync } from './coordinator.mjs'
+import { isWithinScheduleWindow } from './schedule.mjs'
 import { fakeProcess, memoryRuntime } from './coordinator-test-helpers.mjs'
 
 // These cases only exist on a wall clock that observes daylight saving, so this file pins
@@ -78,6 +79,59 @@ test('a midnight window right after a skipped hour keeps its own day', () => {
     const windowEnd = new Date(2026, 2, 28, 0, 30).getTime()
     assert.equal(trailing.length, 1)
     assert.equal(trailing[0].delayMs, windowEnd - now)
+  } finally {
+    process.env.TZ = originalTZ
+  }
+})
+
+// The window test itself shared the same `setDate` defect the deadline just lost. A single
+// midnight plan on the day after a skipped hour was not recognised as an open window, so
+// the trigger scanned ten minutes before the scheduled run existed to cover it.
+test('a single midnight window after a skipped hour is still a window', () => {
+  process.env.TZ = 'America/Nuuk'
+  try {
+    const fs = memoryRuntime()
+    const now = new Date(2026, 2, 27, 23, 50).getTime()
+    queueSignal(fs, new Date(2026, 2, 27, 23, 30).toISOString())
+
+    const { result, trailing } = runAt(fs, now, { times: ['00:00'], windowMs: 30 * 60_000 })
+
+    assert.equal(result.skippedReason, 'scheduled-window')
+    const windowEnd = new Date(2026, 2, 28, 0, 30).getTime()
+    assert.equal(trailing.length, 1)
+    assert.equal(trailing[0].delayMs, windowEnd - now)
+  } finally {
+    process.env.TZ = originalTZ
+  }
+})
+
+// A clock shift can leave the days around it looking contiguous while a real gap opens a
+// few days on. Casey's 2023-03-05 three-hour shift does exactly that with a 13-hour
+// half-width window: the wake belongs at the first instant the window test says "outside",
+// which the day-bounded enumeration must still see.
+test('a gap beyond the days around a clock shift still gets its wake-up', () => {
+  process.env.TZ = 'Antarctica/Casey'
+  try {
+    const fs = memoryRuntime()
+    const now = new Date(2023, 2, 6, 12, 5).getTime()
+    queueSignal(fs, new Date(2023, 2, 6, 12, 0).toISOString())
+    const window = { times: ['12:00'], windowMs: 13 * 60 * 60_000 }
+
+    const { result, trailing } = runAt(fs, now, window)
+
+    assert.equal(result.skippedReason, 'scheduled-window')
+    assert.equal(trailing.length, 1)
+    // The first minute from which the window test reports "outside".
+    let firstOutside = null
+    for (let minute = 1; minute <= 6 * 24 * 60; minute += 1) {
+      const candidate = now + minute * 60_000
+      if (!isWithinScheduleWindow({ ...window, now: candidate })) {
+        firstOutside = candidate
+        break
+      }
+    }
+    assert.ok(firstOutside !== null, 'the fixture must contain a gap')
+    assert.equal(trailing[0].delayMs, firstOutside - now)
   } finally {
     process.env.TZ = originalTZ
   }

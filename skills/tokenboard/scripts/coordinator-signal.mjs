@@ -149,7 +149,16 @@ export function acknowledgeCoveredSignalSource(runtime, source, judgedRequestedA
   const judgedMs = Date.parse(judgedRequestedAt)
   if (!Number.isFinite(judgedMs)) return 'absent'
   const path = join(signalQueueDir(runtime), `${signalSourceName(source)}.json`)
-  const claimPath = join(signalQueueDir(runtime), perEventSignalName(runtime))
+  const dir = signalQueueDir(runtime)
+  let claimPath
+  for (let attempt = 0; ; attempt += 1) {
+    claimPath = join(dir, perEventSignalName(runtime))
+    // `rename` overwrites its target: a name collision would silently destroy a claim this
+    // run left in place for a newer request. The suffix is 64 random bits; this check makes
+    // even that moot for same-process claims created within one millisecond.
+    if (runtime.exists && runtime.exists(claimPath) && attempt < 3) continue
+    break
+  }
   try {
     runtime.rename(path, claimPath)
   } catch (error) {
@@ -190,7 +199,7 @@ function perEventSignalName(runtime) {
   const pid = runtime.process?.pid
   const owner = Number.isSafeInteger(pid) && pid > 0 ? pid : 0
   const nowMs = typeof runtime.now === 'function' ? runtime.now() : Date.now()
-  return `${nowMs}-${owner}-${randomBytes(6).toString('hex')}.json`
+  return `${nowMs}-${owner}-${randomBytes(8).toString('hex')}.json`
 }
 
 // `appendSignal` writes the full object, but the signal file is also appended to by hand and

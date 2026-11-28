@@ -210,7 +210,12 @@ test('a signal already covered by a finished scheduled run is not re-scanned', (
   assert.deepEqual(ran, [], 'the scheduled run already collected this signal')
   assert.equal(result.skippedSync, true)
   assert.equal(result.skippedReason, 'scheduled-covered')
-  assert.notEqual(result.trailingScheduled, true)
+  // One short wake is booked even though nothing is left to scan: a hook that lands after
+  // the gate's last queue read but before the dispatch lock is released would otherwise be
+  // stranded until the next external trigger. The wake acknowledges nothing, so it books
+  // no further wake.
+  assert.equal(result.trailingScheduled, true)
+  assert.equal(result.trailingDelayMs, 15_000)
 })
 
 test('a signal the scheduled run has not covered yet is re-scanned after the window', () => {
@@ -512,4 +517,57 @@ test('an injected window wider than half a day books no trailing retry', () => {
   assert.equal(wideResult.skippedReason, 'scheduled-window')
   assert.equal(wideResult.trailingScheduled, undefined)
   assert.equal(wideTrailing.length, 0)
+})
+
+// A hook can land a *newer* request for a source the gate has already judged covered,
+// between the gate's read and its exit. The re-read must judge it on its own timestamp,
+// not skip the whole source because the name is in the covered set, or the request waits
+// for the next external trigger — exactly what the re-read exists to prevent.
+test('a newer request for an already-covered source is not filtered out by name', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  queueSignal(fs, 'codex', utcForLocal(12, 5))
+  let injected = false
+  const ran = []
+
+  const result = coordinatedSync(
+    { kind: 'notify', source: 'codex' },
+    {
+      ...fs,
+      stateDir: '/state',
+      now: () => localTime(14, 0),
+      process: fakeProcess(907),
+      scheduleWindow,
+      rename: (from, to) => {
+        fs.rename(from, to)
+        if (!injected && String(to).replace(/\\/g, '/').includes('/notify.signal.d/')) {
+          injected = true
+          queueSignal(fs, 'codex', utcForLocal(13, 59))
+        }
+      },
+      scheduleTrailing: () => true,
+      executeSync: (trigger) => {
+        ran.push(trigger.source)
+        return {}
+      }
+    }
+  )
+
+  assert.equal(injected, true, 'the concurrent arrival must actually have been exercised')
+  assert.deepEqual(ran, ['codex'])
+  assert.notEqual(result.skippedReason, 'scheduled-covered')
+})
+
+// The wake on a covered exit exists to catch a hook landing in the hand-off, and it must
+// not turn a source acknowledged only through the legacy channel (nothing was actually
+// claimed) into a recurring wake — the chain would outlive the signals that justify it.
+test('a covered exit books no wake when nothing was claimed from the queue', () => {
+  const fs = stateFsWith(memoryRuntime(), {})
+  fs.writeFile('/state/notify.signal', `${JSON.stringify({ source: 'codex', requestedAt: utcForLocal(12, 5) })}\n`)
+  const trailing = []
+
+  const result = runAt(fs, { now: localTime(12, 31), trailing })
+
+  assert.equal(result.skippedReason, 'scheduled-covered')
+  assert.notEqual(result.trailingScheduled, true)
+  assert.deepEqual(trailing, [])
 })
