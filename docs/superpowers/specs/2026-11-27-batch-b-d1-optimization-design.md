@@ -239,19 +239,20 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   下一次外部触发；门控会把复查到的来源按**请求时间**再判一轮（最多三轮）——覆盖结论按
   来源名缓存，同源**更新的请求**（`requestedAt` 大于已判时间）重新成为待判对象，而不是被
   来源名挡住（三轮评审的 P1）。复查仍为空才返回 `skippedReason: 'scheduled-covered'`。
-  即便复查为空，交接也不再依赖定时唤醒：`notify.mjs` 在**释放 trailing 锁之后**重读一次
-  队列，非空就以普通 trailing worker 续跑（delay 0，无跨进程标记）。这与 hook 的「先入队、
-  再查存活 worker」构成无竞态交接——hook 入队于 T2、查锁于 T3：若 T3 早于释放 T0，则
-  T2 < T0 < 重读 T1，本 worker 必能看到该信号；若 T3 晚于 T0，hook 看到锁已释放、自己
-  派发。续跑只在本轮是**真实覆盖退出**时触发（`skippedReason === 'scheduled-covered'`
-  且 `coveredAcks > 0`，即确实认领删除了队列 entry）：窗口/冷却/退避跳过各自已排续跑，
-  legacy-only 的 `absent` 若也续跑会与残留记录组成无限链。三至五轮评审曾用「15 秒短唤醒
-  - handoff 标记」关同一个洞，连续三次修出新的 P1（时钟回拨误删、延迟执行丢证据、被既有
-    trailing worker 吞掉），故改为本结构方案：不看挂钟、不需要跨进程状态。同一「顺序见证」
-    仍用于本轮 pass≥1 的复查——认领后 canonical 条目重新出现即新写入，按证据而非时间戳判
-    未覆盖（时钟回拨造不出「比已判更旧」的假象骗过它）。- 同一进程内的 trailing 续跑（`notify.mjs` 的 `runNotifyCli` 循环）在每轮之后按
-    `result.trailingSources[0]` 更新下一轮的 `--source`：原实现续跑沿用 worker 启动时的
-    argv，协调器会把已被覆盖的触发源重新并回本轮再扫一遍，正好抵消 C4 的目的。
+  即便复查为空，交接也不再依赖定时唤醒，而是**同进程原地续跑**：worker 在释放 trailing
+  锁与 dispatch 锁之后重读队列，非空就再跑一轮（上限 3 轮，每轮本身必须仍是
+  `scheduled-covered` 且 `coveredAcks > 0`）。这与 hook 的「先入队、再查存活 worker/
+  尝试拿 dispatch 锁」构成无竞态交接——hook 入队于 T2、检查于 T3：若 T3 时任一锁仍被
+  本进程持有，该锁的释放晚于 T3、早于重读 T1，故 T2 < T3 < T1，本进程必看到该信号；
+  若两把锁都已释放，hook 自己拿锁派发。重读必须在**两把锁都释放之后**：只放 trailing 锁时，hook 仍会卡在
+  `acquireDispatchLock`，双方都不派发（六轮评审实测）。续跑用同进程而不是 spawn：零延迟
+  子进程可能抢在父进程发布子 PID 之前跑完并退出，其清理因 PID 不匹配失败、调度因父进程
+  仍持锁而不 spawn（六轮评审实测）。续跑轮带进程内 `resumeWitness`：本进程刚认领删空它
+  覆盖的 canonical entry，重读后仍存在的 canonical 必是新写入，pass 0 同样按证据判未
+  覆盖（回应回拨）。重读失败（EIO 等）写诊断日志而不是静默丢弃。窗口/冷却/退避跳过各自
+  已排续跑，legacy-only 的 `absent` 不续跑——与残留记录组成的链因此有界。- 同一进程内的 trailing 续跑（`notify.mjs` 的 `runNotifyCli` 循环）在每轮之后按
+  `result.trailingSources[0]` 更新下一轮的 `--source`：原实现续跑沿用 worker 启动时的
+  argv，协调器会把已被覆盖的触发源重新并回本轮再扫一遍，正好抵消 C4 的目的。
 - 窗口判定（`schedule.mjs` `isWithinScheduleWindow`）改为**毫秒级半开区间**
   `[T−windowMs, T+windowMs)`，候选时刻与 deadline 共用 `scheduleDayCandidate`（目标日
   **正午**再 `setHours`）：两者曾各自用 `setDate` 于当前时刻构造，目标日存在被跳过的挂钟
@@ -300,7 +301,7 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
   压制、epoch 比较、半开窗口边界、零延迟不排续跑均经变异核验变红（共 20 项：门控复查、
   同源更新时间判定、顺序见证（工单反例：认领后重现按证据判定）、共用取钟、
   cooldown/pressure/failure 三处 coveredSet、正午构造、共用日构造、视界规则与 +10 枚举、
-  续跑换源、认领命名、恢复日志 ack、续查交接的有/空/跳过三种退出、`coveredAcks` 计数）。
+  续跑换源、认领命名、恢复日志 ack、续查交接的有/空/跳过/顺序四侧、resumeWitness、`coveredAcks` 计数）。
 - 已知边界（接受）：
   - **上传暂停的计划运行仍判覆盖**。覆盖语义是「一次全量/该来源扫描在该请求之后成功完成
     并结束」，不是「数据已送达」：上传暂停时行留在 collector 的 pending cursor / 投递
@@ -325,8 +326,10 @@ usageDate, timezone, model)` 组键），该机制自 A1 起存在，C2 只把 w
     可能被误判提前到达而 ack 删除。这是 C4 谓词 `requestedAt <= startedAt` 的固有边界，
     时钟同步是平台前提（launchd/systemd/Windows 计划任务本身按挂钟触发）；删除的只是
     触发信号，用量数据由下一次同源 hook 或计划运行以 cursor 补齐。
-  - 续查交接的残余：hook 若在本 worker 释放锁之前入队、却在重读之后才对该进程可见
-    （文件系统可见性滞后），信号留到下一次外部触发（毫秒级窗口）。
+  - 续查交接的残余：hook 若在本 worker 重读之后、下一次触发之前入队，且因仍见锁而
+    未派发，信号留到下一次外部触发（毫秒级窗口）。同样地，**成功扫描**后推出的 worker
+    不做续查（只有覆盖退出做）：此刻入队的信号要等下一次触发——这是 A1 起所有 hook
+    worker 的既有行为，C4 只新增了覆盖退出的续查。
 - 未覆盖：真实 launchd/systemd/Windows 计划任务的完成时间与状态写入时序只经合成时钟验证；
   DST 用例经 Node 的真实时区规则（`process.env.TZ` 切换）验证，未在真实 DST 切换日做端到端
   运行；计划同步在外部系统被杀死（状态停在 running/旧值）按未覆盖处理，下次 hook 触发会重采。
