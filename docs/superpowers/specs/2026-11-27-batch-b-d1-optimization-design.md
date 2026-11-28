@@ -404,7 +404,9 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
 - 实现：新增 `release-feed.mjs` 的 `resolveReleaseFeed` 统一两个入口的解析与持久化决策——
   显式输入（flag 或环境变量）优先于已存 override，并**精确记录**：切回默认仓库时产生
   `remove: ['releaseRepo']`（而不是不记录），空 base URL 产生 `remove: ['releaseBaseUrl']`；
-  没有任何显式输入时沿用已存值、不改配置。`mergeConfig(patch, { remove })` 支持移除，且
+  没有任何显式输入时沿用已存值、不改配置——两个入口一致：`install-collector` 本就读取已存
+  feed，`migrateToBinaryClient` 现在也读取（配置缺失视为空，损坏配置抛错而不是静默回退默认），
+  因此无参 `--to-binary` 在已记录自定义源的机器上从该源安装并保持记录。`mergeConfig(patch, { remove })` 支持移除，且
   移除名单白名单化（`releaseRepo`/`releaseBaseUrl`），防止补丁删除凭证或 endpoint。
   两个入口的写入路径分别为 `migrateToBinaryClient` 的 `mergeConfigFile({ clientType, ...patch }, { remove })`
   与 `install-collector` 的 `recordBinaryInstallConfig`（`buildBinaryInstallConfig` 的

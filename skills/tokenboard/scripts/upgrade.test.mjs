@@ -2595,6 +2595,7 @@ test('migrateToBinaryClient installs the release and flips clientType without to
     flags: {},
     env: {},
     configDirectory: '/home/user/.tokenboard',
+    readSavedConfig: () => ({}),
     install: async (options) => {
       installed.push(options)
       return { version: '1.2.3', path: '/home/user/.tokenboard/bin/tokenboard', tag: 'v1.2.3' }
@@ -2632,6 +2633,7 @@ test('migrateToBinaryClient honors an explicit release repo, tag and base URL', 
     },
     env: {},
     configDirectory: '/home/user/.tokenboard',
+    readSavedConfig: () => ({}),
     install: async (options) => {
       installed.push(options)
       return { version: '9.9.9', path: '/x/tokenboard', tag: 'v9.9.9' }
@@ -2655,6 +2657,7 @@ test('migrateToBinaryClient records a non-default release source', async () => {
     flags: { 'release-repo': 'other/TokenBoard', 'release-base-url': 'https://github.example' },
     env: {},
     configDirectory: '/home/user/.tokenboard',
+    readSavedConfig: () => ({}),
     install: async () => ({ version: '9.9.9', path: '/x/tokenboard', tag: 'v9.9.9' }),
     mergeConfigFile: (patch) => {
       merged.push(patch)
@@ -2676,6 +2679,7 @@ test('migrateToBinaryClient clears the stored feed when switching back to the de
     flags: { 'release-repo': defaultReleaseRepo },
     env: {},
     configDirectory: '/home/user/.tokenboard',
+    readSavedConfig: () => ({}),
     install: async () => ({ version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }),
     mergeConfigFile: (patch, options) => {
       calls.push({ patch, options })
@@ -2687,6 +2691,54 @@ test('migrateToBinaryClient clears the stored feed when switching back to the de
   assert.deepEqual(calls, [{ patch: { clientType: 'binary' }, options: { remove: ['releaseRepo'] } }])
 })
 
+// Switching the feed back to the default: the install must use the default *and* the
+// stored override must be cleared, or the next self-update resolves the old mirror.
+test('migrateToBinaryClient clears the stored feed when switching back to the default', async () => {
+  const calls = []
+  await migrateToBinaryClient({
+    flags: { 'release-repo': defaultReleaseRepo },
+    env: {},
+    configDirectory: '/home/user/.tokenboard',
+    readSavedConfig: () => ({}),
+    install: async () => ({ version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }),
+    mergeConfigFile: (patch, options) => {
+      calls.push({ patch, options })
+      return { ...patch }
+    },
+    log: () => {}
+  })
+
+  assert.deepEqual(calls, [{ patch: { clientType: 'binary' }, options: { remove: ['releaseRepo'] } }])
+})
+
+// An unflagged `--to-binary` on a machine that recorded a custom feed must install from
+// that feed, exactly like an unflagged binary install: resolving the default here while
+// keeping the stored override would install from one source and then self-update from
+// another.
+test('an unflagged --to-binary installs from the recorded feed and leaves it recorded', async () => {
+  const installed = []
+  const merged = []
+  await migrateToBinaryClient({
+    flags: {},
+    env: {},
+    configDirectory: '/home/user/.tokenboard',
+    readSavedConfig: () => ({ releaseRepo: 'other/TokenBoard', releaseBaseUrl: 'https://github.example' }),
+    install: async (options) => {
+      installed.push(options)
+      return { version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }
+    },
+    mergeConfigFile: (patch, options) => {
+      merged.push({ patch, options })
+      return { ...patch }
+    },
+    log: () => {}
+  })
+
+  assert.equal(installed[0].repo, 'other/TokenBoard')
+  assert.equal(installed[0].baseUrl, 'https://github.example')
+  assert.deepEqual(merged, [{ patch: { clientType: 'binary' }, options: { remove: [] } }])
+})
+
 // A tag pins one install; pinning it into the config would freeze the client
 // on that version forever, since self-update reads the same field.
 test('migrateToBinaryClient never records the pinned tag', async () => {
@@ -2695,6 +2747,7 @@ test('migrateToBinaryClient never records the pinned tag', async () => {
     flags: { 'release-tag': 'v9.9.9' },
     env: {},
     configDirectory: '/home/user/.tokenboard',
+    readSavedConfig: () => ({}),
     install: async () => ({ version: '9.9.9', path: '/x/tokenboard', tag: 'v9.9.9' }),
     mergeConfigFile: (patch) => {
       merged.push(patch)
@@ -2714,6 +2767,7 @@ test('migrateToBinaryClient leaves clientType alone when the install fails', asy
         flags: {},
         env: {},
         configDirectory: '/home/user/.tokenboard',
+        readSavedConfig: () => ({}),
         install: async () => {
           throw new Error('checksum mismatch for tokenboard_darwin_arm64.tar.gz')
         },

@@ -98,13 +98,14 @@ export async function migrateToBinaryClient({
   configDirectory = defaultConfigDir(),
   install = installClientBinary,
   mergeConfigFile = mergeConfig,
+  readSavedConfig = readSavedReleaseConfig,
   log = console.log
 } = {}) {
   // An explicit feed — including one that switches back to the default repository — is
   // recorded (or, for the default, cleared from the config): a later `self-update`
   // resolves the feed on its own, and keeping a stale override would silently move the
   // machine back to the previous feed.
-  const feed = resolveReleaseFeed({ flags, env })
+  const feed = resolveReleaseFeed({ flags, env, saved: readSavedConfig() })
   const tag = trimmedString(flags['release-tag'] || env.TOKENBOARD_RELEASE_TAG) || undefined
   const installed = await install({ repo: feed.repo, tag, baseUrl: feed.baseUrl, configDir: configDirectory, log })
   // The switch is recorded so the next sync knows which client to run. A
@@ -122,6 +123,19 @@ export async function migrateToBinaryClient({
       'Set clientType back to "git" in the config to return to the checkout install.'
   )
   return { installed, clientType: next.clientType }
+}
+
+// The stored feed decides an unflagged `--to-binary`, exactly as it decides an unflagged
+// binary install in install-collector. A missing config is normal here (the switch may be
+// the first thing a user runs); anything else — a malformed file in particular — must
+// surface rather than silently fall back to the default repository.
+function readSavedReleaseConfig() {
+  try {
+    return readConfig()
+  } catch (error) {
+    if (String(error instanceof Error ? error.message : error).startsWith('TokenBoard config not found')) return {}
+    throw error
+  }
 }
 
 export function buildUpgradePlan({
