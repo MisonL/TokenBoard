@@ -393,3 +393,27 @@ view` 读取版本配置确认）；仓库内 `apps/web/wrangler.jsonc` 的生�
   仍由 B6 每轮自愈收敛。chaosyn 当前配置值未知，翻转与回滚 SLA 由 yeton 执行。
 - 未覆盖：chaosyn 以 strict 运行的真实观察与回滚演练；private CF 上实际修复量（日志未
   持久化，只能从后续轮次的 `completed_at` 与数据观察推断）。
+
+### 4.5 C6 feed 切换显式写入/清除
+
+- 问题：`mergeConfig` 只做加法——patch 未提及的字段保留旧值，`undefined` 被过滤。两个 binary
+  入口（`upgrade.mjs` 的 `migrateToBinaryClient` 与 `install-collector.mjs` 的 binary 分支）
+  都只在「非默认源」时才记录，于是配置里已有自定义 `releaseRepo` 时无法切回默认源：传默认
+  地址等于什么都没记，旧 override 保留，之后每次 `self-update` 仍解析旧源；`releaseBaseUrl`
+  传空串时还会被 `|| saved` 回落到旧值，连表达清除的方式都没有。
+- 实现：新增 `release-feed.mjs` 的 `resolveReleaseFeed` 统一两个入口的解析与持久化决策——
+  显式输入（flag 或环境变量）优先于已存 override，并**精确记录**：切回默认仓库时产生
+  `remove: ['releaseRepo']`（而不是不记录），空 base URL 产生 `remove: ['releaseBaseUrl']`；
+  没有任何显式输入时沿用已存值、不改配置。`mergeConfig(patch, { remove })` 支持移除，且
+  移除名单白名单化（`releaseRepo`/`releaseBaseUrl`），防止补丁删除凭证或 endpoint。
+  两个入口的写入路径分别为 `migrateToBinaryClient` 的 `mergeConfigFile({ clientType, ...patch }, { remove })`
+  与 `install-collector` 的 `recordBinaryInstallConfig`（`buildBinaryInstallConfig` 的
+  `...feed.patch` + 同一 `remove`）。
+- 边界：无值裸 flag（`--release-repo` 后被下一个 `--flag` 或行尾截断，parseArgs 得 `true`）
+  视为用法错误而非「清除」，避免误触把自定义镜像静默重置；`--release-base-url ''` 才是清除
+  的表达方式。Go 客户端只经环境变量读 feed（`TOKENBOARD_RELEASE_REPO` 等），配置字段由
+  skill 在 spawn 时按需注入，清除 override 后自然回落到默认。
+- 验证：`release-feed.test.mjs`（默认/已存/显式自定义/切回默认/清空 base URL/env 与 flag 优先级/
+  裸 flag 报错）；`config.test.mjs`（白名单内移除、白名单外拒绝、非数组拒绝）；两个入口各有
+  「切回默认时以 `remove` 清除」的用例。变异核验：把切回默认改写为「记录默认值」时
+  `release-feed` 用例变红；把 `configRemovals` 改为恒返回空时 config 两例变红。

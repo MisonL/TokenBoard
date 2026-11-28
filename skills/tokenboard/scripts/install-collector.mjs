@@ -13,7 +13,8 @@ import {
   readConfig,
   readPackageManager
 } from './config.mjs'
-import { defaultReleaseRepo, installClientBinary } from './client-binary.mjs'
+import { installClientBinary } from './client-binary.mjs'
+import { resolveReleaseFeed } from './release-feed.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { assertSupportedNodeVersion } from './node-version.mjs'
 import {
@@ -47,17 +48,24 @@ function run(command, args, options = {}) {
   }
 }
 
-export function buildBinaryInstallConfig({ repo, baseUrl, updatedAt }) {
-  // Every later `self-update` resolves the feed on its own, so a non-default
+export function buildBinaryInstallConfig({ feed, updatedAt }) {
+  // Every later `self-update` resolves the feed on its own, so an explicit
   // source has to outlive this install — the same rule `migrateToBinaryClient`
-  // follows. The tag is deliberately not recorded: it pins one install, and
-  // persisting it would freeze the client on that version.
+  // follows. `feed.patch` carries the overrides to record; switching back to
+  // the default repository clears them through `feed.remove` at the merge.
+  // The tag is deliberately not recorded: it pins one install, and persisting
+  // it would freeze the client on that version.
   return {
     clientType: 'binary',
     updatedAt,
-    ...(repo && repo !== defaultReleaseRepo ? { releaseRepo: repo } : {}),
-    ...(baseUrl ? { releaseBaseUrl: baseUrl } : {})
+    ...feed.patch
   }
+}
+
+// The install path and `--to-binary` must record the feed the same way: the patch
+// carries explicit overrides, `remove` clears the ones an explicit switch retired.
+export function recordBinaryInstallConfig({ feed, updatedAt, merge = mergeConfig }) {
+  return merge(buildBinaryInstallConfig({ feed, updatedAt }), { remove: feed.remove })
 }
 
 export function buildInstallCollectorPlan({
@@ -159,13 +167,11 @@ function runCli() {
     // carries everything the client needs. The config directory is the binary's
     // home, so this is the only install step. A non-default feed recorded at
     // install time is reused, for the same reason as the git settings below.
-    const repo = flags['release-repo'] || process.env.TOKENBOARD_RELEASE_REPO || saved.releaseRepo || defaultReleaseRepo
-    const baseUrl =
-      flags['release-base-url'] || process.env.TOKENBOARD_RELEASE_BASE_URL || saved.releaseBaseUrl || undefined
+    const feed = resolveReleaseFeed({ flags, env: process.env, saved })
     installClientBinary({
-      repo,
+      repo: feed.repo,
       tag: flags['release-tag'] || process.env.TOKENBOARD_RELEASE_TAG || undefined,
-      baseUrl,
+      baseUrl: feed.baseUrl,
       configDir: configDir(),
       // The installer's notices (including "a ccusage from an earlier release
       // is left in place") go out through this channel. Without it the default
@@ -173,7 +179,7 @@ function runCli() {
       log: (line) => console.log(line)
     })
       .then((installed) => {
-        mergeConfig(buildBinaryInstallConfig({ repo, baseUrl, updatedAt: new Date().toISOString() }))
+        recordBinaryInstallConfig({ feed, updatedAt: new Date().toISOString() })
         console.log(`TokenBoard client ${installed.version} ready at ${installed.path}`)
       })
       .catch((error) => {

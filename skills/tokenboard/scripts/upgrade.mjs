@@ -14,7 +14,8 @@ import {
   readPackageManager
 } from './config.mjs'
 import { hasHelpFlag, printHelpIfRequested } from './cli-help.mjs'
-import { defaultReleaseRepo, installClientBinary } from './client-binary.mjs'
+import { installClientBinary } from './client-binary.mjs'
+import { resolveReleaseFeed } from './release-feed.mjs'
 import { redactUrlCredentials } from './redact-credentials.mjs'
 import { scrubbedChildEnv } from './child-env.mjs'
 import { assertSupportedNodeVersion } from './node-version.mjs'
@@ -99,10 +100,13 @@ export async function migrateToBinaryClient({
   mergeConfigFile = mergeConfig,
   log = console.log
 } = {}) {
-  const repo = trimmedString(flags['release-repo'] || env.TOKENBOARD_RELEASE_REPO) || defaultReleaseRepo
+  // An explicit feed — including one that switches back to the default repository — is
+  // recorded (or, for the default, cleared from the config): a later `self-update`
+  // resolves the feed on its own, and keeping a stale override would silently move the
+  // machine back to the previous feed.
+  const feed = resolveReleaseFeed({ flags, env })
   const tag = trimmedString(flags['release-tag'] || env.TOKENBOARD_RELEASE_TAG) || undefined
-  const baseUrl = trimmedString(flags['release-base-url'] || env.TOKENBOARD_RELEASE_BASE_URL) || undefined
-  const installed = await install({ repo, tag, baseUrl, configDir: configDirectory, log })
+  const installed = await install({ repo: feed.repo, tag, baseUrl: feed.baseUrl, configDir: configDirectory, log })
   // The switch is recorded so the next sync knows which client to run. A
   // release source that came from a flag or the environment is recorded too:
   // every later `self-update` resolves the feed on its own, and forgetting it
@@ -112,11 +116,7 @@ export async function migrateToBinaryClient({
   //
   // The install location is still derived from the config directory, so a
   // config copied to another machine cannot point at this one's binary.
-  const next = mergeConfigFile({
-    clientType: 'binary',
-    ...(repo !== defaultReleaseRepo ? { releaseRepo: repo } : {}),
-    ...(baseUrl ? { releaseBaseUrl: baseUrl } : {})
-  })
+  const next = mergeConfigFile({ clientType: 'binary', ...feed.patch }, { remove: feed.remove })
   log(
     `TokenBoard will run the released Go client (${installed.version}) from now on. ` +
       'Set clientType back to "git" in the config to return to the checkout install.'

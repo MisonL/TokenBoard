@@ -1,7 +1,29 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildBinaryInstallConfig, buildInstallCollectorPlan, resolveGitInstallOptions } from './install-collector.mjs'
-import { defaultReleaseRepo } from './client-binary.mjs'
+import {
+  buildBinaryInstallConfig,
+  buildInstallCollectorPlan,
+  recordBinaryInstallConfig,
+  resolveGitInstallOptions
+} from './install-collector.mjs'
+
+// The recorded feed is what every later self-update resolves, so an explicit switch
+// back to the default has to reach the merge as a removal — the patch alone is empty.
+test('recording an explicit default switch removes the stored overrides', () => {
+  const calls = []
+  recordBinaryInstallConfig({
+    feed: { patch: {}, remove: ['releaseRepo', 'releaseBaseUrl'] },
+    updatedAt: 'now',
+    merge: (patch, options) => {
+      calls.push({ patch, options })
+      return patch
+    }
+  })
+
+  assert.deepEqual(calls, [
+    { patch: { clientType: 'binary', updatedAt: 'now' }, options: { remove: ['releaseRepo', 'releaseBaseUrl'] } }
+  ])
+})
 
 // A bare re-run is the recovery path sync.mjs names ("run install-collector.mjs
 // again"), so it must not reset a configured mirror, ref or package manager to
@@ -354,9 +376,15 @@ test('refuses a case-variant Windows config directory as a non-git collector', (
 // automatic `self-update` resolves the feed on its own, and dropping it would
 // move the machine back to the default repository. The tag is not recorded —
 // it pins one install and would freeze the client on that version.
-test('a binary install records a non-default release source', () => {
+test('a binary install records an explicitly requested release source', () => {
   assert.deepEqual(
-    buildBinaryInstallConfig({ repo: 'other/TokenBoard', baseUrl: 'https://github.example', updatedAt: 'now' }),
+    buildBinaryInstallConfig({
+      feed: {
+        patch: { releaseRepo: 'other/TokenBoard', releaseBaseUrl: 'https://github.example' },
+        remove: []
+      },
+      updatedAt: 'now'
+    }),
     {
       clientType: 'binary',
       updatedAt: 'now',
@@ -366,9 +394,12 @@ test('a binary install records a non-default release source', () => {
   )
 })
 
-test('a default-source binary install records only the switch', () => {
-  assert.deepEqual(buildBinaryInstallConfig({ repo: defaultReleaseRepo, updatedAt: 'now' }), {
-    clientType: 'binary',
-    updatedAt: 'now'
-  })
+test('switching back to the default feed records only the switch and clears the overrides', () => {
+  assert.deepEqual(
+    buildBinaryInstallConfig({ feed: { patch: {}, remove: ['releaseRepo', 'releaseBaseUrl'] }, updatedAt: 'now' }),
+    {
+      clientType: 'binary',
+      updatedAt: 'now'
+    }
+  )
 })

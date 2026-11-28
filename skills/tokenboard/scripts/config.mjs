@@ -203,7 +203,8 @@ export function stripUtf8Bom(value) {
 }
 
 export function mergeConfig(patch, options = {}) {
-  const transform = (current) => mergeConfigPatch(current, patch)
+  const removals = configRemovals(options.remove)
+  const transform = (current) => removeConfigFields(mergeConfigPatch(current, patch), removals)
   if (options.lockHeld) {
     const current = existsSync(configPath()) ? readRawConfig() : {}
     const next = transform(current)
@@ -211,6 +212,31 @@ export function mergeConfig(patch, options = {}) {
     return next
   }
   return updateConfig(transform)
+}
+
+// `mergeConfig` is additive by design: a field a patch does not mention keeps its stored
+// value, and `undefined` is filtered out. That leaves no way to remove an override —
+// switching a release feed back to the default needs one, or the old feed is resolved
+// forever. Removals are an explicit, allow-listed list rather than a null sentinel so a
+// stray `null` in a patch can never delete credentials or endpoints.
+const clearableConfigKeys = new Set(['releaseRepo', 'releaseBaseUrl'])
+
+function configRemovals(remove) {
+  if (remove === undefined) return []
+  if (!Array.isArray(remove)) throw new Error('mergeConfig remove must be an array')
+  for (const key of remove) {
+    if (typeof key !== 'string' || !clearableConfigKeys.has(key)) {
+      throw new Error(`mergeConfig cannot remove ${String(key)}`)
+    }
+  }
+  return [...new Set(remove)]
+}
+
+function removeConfigFields(config, removals) {
+  if (removals.length === 0) return config
+  const next = { ...config }
+  for (const key of removals) delete next[key]
+  return next
 }
 
 export function updateConfig(transform) {

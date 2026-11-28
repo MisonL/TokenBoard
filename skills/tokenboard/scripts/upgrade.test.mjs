@@ -2668,6 +2668,25 @@ test('migrateToBinaryClient records a non-default release source', async () => {
   ])
 })
 
+// Switching the feed back to the default: the install must use the default *and* the
+// stored override must be cleared, or the next self-update resolves the old mirror.
+test('migrateToBinaryClient clears the stored feed when switching back to the default', async () => {
+  const calls = []
+  await migrateToBinaryClient({
+    flags: { 'release-repo': defaultReleaseRepo },
+    env: {},
+    configDirectory: '/home/user/.tokenboard',
+    install: async () => ({ version: '1.2.3', path: '/x/tokenboard', tag: 'v1.2.3' }),
+    mergeConfigFile: (patch, options) => {
+      calls.push({ patch, options })
+      return { ...patch }
+    },
+    log: () => {}
+  })
+
+  assert.deepEqual(calls, [{ patch: { clientType: 'binary' }, options: { remove: ['releaseRepo'] } }])
+})
+
 // A tag pins one install; pinning it into the config would freeze the client
 // on that version forever, since self-update reads the same field.
 test('migrateToBinaryClient never records the pinned tag', async () => {

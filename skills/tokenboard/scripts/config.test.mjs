@@ -200,6 +200,43 @@ test('normalizes config by mirroring the active server profile', () => {
   assert.equal(config.installationId, 'inst_prod')
 })
 
+// Switching a release feed back to the default needs removal: `mergeConfig` preserves
+// anything a patch does not mention, so recording nothing would keep resolving the old
+// override forever. Removals are allow-listed — a patch must not be able to delete
+// credentials or endpoints.
+test('mergeConfig removes an allow-listed override on request', () => {
+  const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
+  const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
+  process.env.TOKENBOARD_CONFIG_DIR = directory
+
+  try {
+    writeConfig({
+      releaseRepo: 'other/TokenBoard',
+      releaseBaseUrl: 'https://github.example',
+      deviceId: 'dev_keep'
+    })
+
+    const next = mergeConfig({ clientType: 'binary' }, { remove: ['releaseRepo', 'releaseBaseUrl'] })
+
+    assert.equal(next.releaseRepo, undefined)
+    assert.equal(next.releaseBaseUrl, undefined)
+    assert.equal(next.clientType, 'binary')
+    assert.equal(next.deviceId, 'dev_keep')
+    const stored = JSON.parse(readFileSync(join(directory, 'config.json'), 'utf8'))
+    assert.equal(stored.releaseRepo, undefined)
+    assert.equal(stored.deviceId, 'dev_keep')
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.TOKENBOARD_CONFIG_DIR
+    else process.env.TOKENBOARD_CONFIG_DIR = previousConfigDir
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('mergeConfig refuses removals outside the allow-list', () => {
+  assert.throws(() => mergeConfig({}, { remove: ['uploadToken'] }), /cannot remove uploadToken/)
+  assert.throws(() => mergeConfig({}, { remove: 'releaseRepo' }), /must be an array/)
+})
+
 test('mergeConfig updates the active server profile as well as the mirrored root fields', () => {
   const previousConfigDir = process.env.TOKENBOARD_CONFIG_DIR
   const directory = mkdtempSync(join(tmpdir(), 'tokenboard-config-'))
